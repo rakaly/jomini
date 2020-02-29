@@ -1,11 +1,5 @@
 use crate::scalar::Scalar;
 
-pub fn parse<'a>(data: &'a [u8]) -> Result<TextTape<'a>, MyError> {
-    let mut tape = TextTape::default();
-    tape.slurp_body(data);
-    Ok(tape)
-}
-
 #[derive(Debug, PartialEq)]
 pub enum TextToken<'a> {
     Array(usize),
@@ -48,12 +42,20 @@ BRACKET:
 type MyError = String;
 
 impl<'a> TextTape<'a> {
+    pub fn from_slice(data: &'a [u8]) -> Result<TextTape<'a>, MyError> {
+        let mut tape = TextTape::default();
+        tape.slurp_body(data);
+        Ok(tape)
+    }
+
+    #[inline]
     fn skip_ws(&mut self, d: &'a [u8]) -> &'a [u8] {
         let ind = d.iter().position(|&x| !is_whitespace(x)).unwrap_or_else(|| d.len());
         let (_, rest) = d.split_at(ind);
         rest
     }
 
+    #[inline]
     fn parse_scalar(&mut self, d: &'a [u8]) -> &'a [u8] {
         if d[0] == b'"' {
             let sd = &d[1..];
@@ -68,6 +70,7 @@ impl<'a> TextTape<'a> {
         }
     }
 
+    #[inline]
     fn first_val(&mut self, mut d: &'a [u8], open_idx: usize) -> &'a [u8] {
         d = self.parse_scalar(d);
         d = self.skip_ws(d);
@@ -82,6 +85,7 @@ impl<'a> TextTape<'a> {
         }
     }
 
+    #[inline]
     fn parse_array(
         &mut self,
         mut d: &'a [u8],
@@ -103,7 +107,6 @@ impl<'a> TextTape<'a> {
             d = self.parse_value(d);
         }
     }
-
 
     #[inline]
      fn parse_inner_object(
@@ -137,6 +140,7 @@ impl<'a> TextTape<'a> {
         }
     }
 
+    #[inline]
     fn parse_open(&mut self, mut d: &'a [u8], open_idx: usize) -> &'a [u8] {
         d = self.skip_ws(d);
         if d.is_empty() {
@@ -158,6 +162,7 @@ impl<'a> TextTape<'a> {
         }
     }
 
+    #[inline]
     fn parse_value(&mut self, d: &'a [u8]) -> &'a [u8] {
         if d.is_empty() {
             panic!("EEEK");
@@ -175,6 +180,7 @@ impl<'a> TextTape<'a> {
         }
     }
 
+    #[inline]
     fn slurp_body(&mut self, mut d: &'a [u8]) {
         while !d.is_empty() {
             d = self.skip_ws(d);
@@ -211,6 +217,12 @@ fn is_operator(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse<'a>(data: &'a [u8]) -> Result<TextTape<'a>, MyError> {
+        let mut tape = TextTape::default();
+        tape.slurp_body(data);
+        Ok(tape)
+    }
 
     #[test]
     fn test_simple_event() {

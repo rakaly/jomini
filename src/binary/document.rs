@@ -1,7 +1,5 @@
-use crate::core::{BinaryError, BinaryEvent, BinaryParser};
 use crate::de::binary::BinaryDeError;
-use crate::scalar::Scalar;
-use crate::text::Operator;
+use crate::{Scalar, Operator, BinaryError, BinaryEvent, BinaryParser};
 
 #[derive(Debug, PartialEq)]
 pub enum ScalarValue<'a> {

@@ -1,15 +1,4 @@
-use crate::scalar::Scalar;
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Operator {
-    Equal,
-    Lesser,
-    Greater,
-    LesserEqual,
-    GreaterEqual,
-    LesserGreater,
-    NotEqual,
-}
+use crate::{Operator, Scalar};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum TextEvent<'a> {

@@ -1,8 +1,47 @@
-use crate::de::binary::{BinaryDeError, FailedResolveStrategy, TokenResolver};
-use crate::scalar::Scalar;
-use crate::scratch::{self, BinaryToken, TapeParser};
+use crate::{FailedResolveStrategy, BinaryError, TokenResolver, Scalar, BinaryToken, BinTape};
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
+use std::fmt;
+use std::error;
+
+#[derive(Debug)]
+pub enum BinaryDeError {
+    UnexpectedEvent(String),
+    UnknownToken(u16),
+    Parsing(BinaryError),
+    Message(String),
+}
+
+impl fmt::Display for BinaryDeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BinaryDeError::UnknownToken(x) => write!(f, "unknown token encountered: 0x{:x}", x),
+            BinaryDeError::UnexpectedEvent(x) => write!(f, "unexpected event: {}", x),
+            _ => write!(f, "binary deserialization error"),
+        }
+    }
+}
+
+impl error::Error for BinaryDeError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match self {
+            BinaryDeError::Parsing(x) => Some(x),
+            _ => None,
+        }
+    }
+}
+
+impl de::Error for BinaryDeError {
+    fn custom<T: fmt::Display>(msg: T) -> Self {
+        BinaryDeError::Message(msg.to_string())
+    }
+}
+
+impl From<BinaryError> for BinaryDeError {
+    fn from(error: BinaryError) -> Self {
+        BinaryDeError::Parsing(error)
+    }
+}
 
 /// Builds a tweaked binary deserializer
 #[derive(Debug)]
@@ -42,7 +81,7 @@ impl BinaryDeserializerBuilder {
             failed_resolve_strategy: self.failed_resolve_strategy,
         };
 
-        let tape = scratch::parse(data).unwrap();
+        let tape = BinTape::from_slice(data).unwrap();
         let mut seen = vec![0; tape.token_tape.len()];
         let mut deserializer = RootDeserializer {
             doc: &tape,
@@ -69,7 +108,7 @@ struct BinaryConfig<RES> {
 }
 
 struct RootDeserializer<'b, 'a: 'b, RES> {
-    doc: &'b TapeParser<'a>,
+    doc: &'b BinTape<'a>,
     seen: &'b mut Vec<u8>,
     config: &'b BinaryConfig<RES>,
 }
@@ -122,7 +161,7 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
 
 struct BinaryMap<'c, 'a: 'c, 'de: 'a, RES: 'a> {
     config: &'a BinaryConfig<RES>,
-    doc: &'c TapeParser<'de>,
+    doc: &'c BinTape<'de>,
     seen: &'c mut Vec<u8>,
     tape_idx: usize,
     end_idx: usize,
@@ -132,7 +171,7 @@ struct BinaryMap<'c, 'a: 'c, 'de: 'a, RES: 'a> {
 impl<'c, 'a, 'de, RES> BinaryMap<'c, 'a, 'de, RES> {
     fn new(
         config: &'a BinaryConfig<RES>,
-        doc: &'c TapeParser<'de>,
+        doc: &'c BinTape<'de>,
         tape_idx: usize,
         end_idx: usize,
         seen: &'c mut Vec<u8>,
@@ -230,13 +269,13 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
 
 pub struct KeyDeserializer<'b, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
-    doc: &'b TapeParser<'de>,
+    doc: &'b BinTape<'de>,
     tape_idx: usize,
 }
 
 fn visit_key<'c, 'b: 'c, 'de: 'b, RES: TokenResolver, V: Visitor<'de>>(
     tape_idx: usize,
-    doc: &'b TapeParser<'de>,
+    doc: &'b BinTape<'de>,
     config: &'b BinaryConfig<RES>,
     visitor: V,
 ) -> Result<V::Value, BinaryDeError> {
@@ -285,7 +324,7 @@ impl<'b, 'de, RES: TokenResolver> de::Deserializer<'de> for KeyDeserializer<'b, 
 pub struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
     value_indices: &'c Vec<usize>,
-    doc: &'c TapeParser<'de>,
+    doc: &'c BinTape<'de>,
     seen: &'c mut Vec<u8>,
 }
 
@@ -414,7 +453,7 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
 
 pub struct BinarySequence<'b, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
-    doc: &'b TapeParser<'de>,
+    doc: &'b BinTape<'de>,
     idx: usize,
     de_idx: usize,
     end_idx: usize,
@@ -479,7 +518,7 @@ impl<'b, 'de, RES: TokenResolver> SeqAccess<'de> for BinarySequence<'b, 'de, RES
 
 pub struct SpanningSequence<'c, 'b: 'c, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
-    doc: &'b TapeParser<'de>,
+    doc: &'b BinTape<'de>,
     value_indices: &'c Vec<usize>,
     seen: &'c mut Vec<u8>,
     idx: usize,

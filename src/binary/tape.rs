@@ -29,24 +29,24 @@ const HSV: u16 = 0x0243;
 
 type MyError = String;
 
-pub fn parse(data: &[u8]) -> Result<TapeParser<'_>, MyError> {
-    let mut parser = TapeParser {
-        token_tape: Vec::new(),
-        data_tape: Vec::new(),
-    };
-
-    parser.parse(data)?;
-    Ok(parser)
-}
-
-pub struct TapeParser<'a> {
+pub struct BinTape<'a> {
     pub token_tape: Vec<BinaryToken>,
     pub data_tape: Vec<&'a [u8]>,
 }
 
-impl<'a> TapeParser<'a> {
+impl<'a> BinTape<'a> {
+    pub fn from_slice(data: &[u8]) -> Result<BinTape<'_>, MyError> {
+        let mut parser = BinTape {
+            token_tape: Vec::new(),
+            data_tape: Vec::new(),
+        };
+
+        parser.parse(data)?;
+        Ok(parser)
+    }
+
     #[inline]
-    pub fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], u16), MyError> {
+    fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], u16), MyError> {
         let val = data
             .get(..2)
             .map(le_u16)
@@ -55,7 +55,7 @@ impl<'a> TapeParser<'a> {
     }
 
     #[inline]
-    pub fn parse_u32(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+    fn parse_u32(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
         let val = data
             .get(..4)
             .map(le_u32)
@@ -65,7 +65,7 @@ impl<'a> TapeParser<'a> {
     }
 
     #[inline]
-    pub fn parse_u64(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+    fn parse_u64(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
         let val = data
             .get(..8)
             .map(le_u64)
@@ -75,7 +75,7 @@ impl<'a> TapeParser<'a> {
     }
 
     #[inline]
-    pub fn parse_i32(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+    fn parse_i32(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
         let val = data
             .get(..4)
             .map(le_i32)
@@ -85,7 +85,7 @@ impl<'a> TapeParser<'a> {
     }
 
     #[inline]
-    pub fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+    fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
         let val = data
             .get(..4)
             .map(le_i32)
@@ -96,7 +96,7 @@ impl<'a> TapeParser<'a> {
     }
 
     #[inline]
-    pub fn parse_q16(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+    fn parse_q16(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
         let val = data
             .get(..8)
             .map(le_i32)
@@ -111,7 +111,7 @@ impl<'a> TapeParser<'a> {
     }
 
     #[inline]
-    pub fn parse_bool(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+    fn parse_bool(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
         let val = data
             .get(0)
             .map(|&x| x != 0)
@@ -121,7 +121,7 @@ impl<'a> TapeParser<'a> {
     }
 
     #[inline]
-    pub fn parse_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+    fn parse_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
         let text = data
             .get(..2)
             .and_then(|size| {
@@ -136,7 +136,7 @@ impl<'a> TapeParser<'a> {
     }
 
     #[inline]
-    pub fn parse_inner_object(
+    fn parse_inner_object(
         &mut self,
         mut data: &'a [u8],
         open_idx: usize,
@@ -175,7 +175,7 @@ impl<'a> TapeParser<'a> {
     }
 
     #[inline]
-    pub fn parse_array(
+    fn parse_array(
         &mut self,
         mut data: &'a [u8],
         open_idx: usize,
@@ -212,7 +212,7 @@ impl<'a> TapeParser<'a> {
     }
 
     #[inline]
-    pub fn first_val(&mut self, data: &'a [u8], open_idx: usize) -> Result<&'a [u8], MyError> {
+    fn first_val(&mut self, data: &'a [u8], open_idx: usize) -> Result<&'a [u8], MyError> {
         let (d, token_id) = self.parse_next_id(data)?;
         match token_id {
             OPEN => self.parse_inner_object(data, open_idx),
@@ -222,7 +222,7 @@ impl<'a> TapeParser<'a> {
     }
 
     #[inline]
-    pub fn parse_open(&mut self, mut data: &'a [u8], open_idx: usize) -> Result<&'a [u8], MyError> {
+    fn parse_open(&mut self, mut data: &'a [u8], open_idx: usize) -> Result<&'a [u8], MyError> {
         let (d, token_id) = self.parse_next_id(data)?;
         let old_data = data;
         data = d;
@@ -275,7 +275,7 @@ impl<'a> TapeParser<'a> {
         }
     }
 
-    pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), MyError> {
+    fn parse(&mut self, mut data: &'a [u8]) -> Result<(), MyError> {
         while !data.is_empty() {
             let (d, token_id) = self.parse_next_id(data)?;
             data = d;
@@ -334,6 +334,10 @@ fn le_i32(data: &[u8]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse<'a>(data: &'a [u8]) -> Result<BinTape<'a>, MyError> {
+        BinTape::from_slice(data)
+    }
 
     #[test]
     fn test_false_event() {

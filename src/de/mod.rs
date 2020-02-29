@@ -1,5 +1,4 @@
 pub mod binary;
-pub mod tape;
 
 use crate::scalar::Scalar;
 use crate::{TextEvent, TextParser};

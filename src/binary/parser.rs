@@ -1,6 +1,5 @@
-use crate::core::depth::{Depth, DepthType};
-use crate::scalar::Scalar;
-use crate::text::Operator;
+use crate::depth::{Depth, DepthType};
+use crate::{Scalar, Operator};
 use byteorder::{ByteOrder, LE};
 use std::error;
 use std::fmt::{self, Display, Formatter};

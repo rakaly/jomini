@@ -1,6 +1,5 @@
-use crate::core::{BinaryError, BinaryEvent, BinaryParseEvent, BinaryParser};
-use crate::scalar::Scalar;
-use crate::text::Operator;
+use crate::{BinaryError, BinaryEvent, BinaryParseEvent, BinaryParser};
+use crate::{Scalar, Operator};
 use std::error;
 use std::fmt::{self, Display, Formatter};
 use std::fs::File;
