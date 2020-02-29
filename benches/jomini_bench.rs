@@ -67,7 +67,7 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
     });
     group.bench_function("meta-tape", |b| {
         b.iter(|| {
-            let _res: Meta = jomini::de::tape::from_slice(&data[..], &map).unwrap();
+            let _res: Meta = jomini::binary::de::from_slice(&data[..], &map).unwrap();
         })
     });
     group.finish();
@@ -92,7 +92,7 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
         b.iter(|| jomini::document::document_from_slice(&data[..]).unwrap())
     });
     group.bench_function("meta-tape", |b| {
-        b.iter(|| jomini::BinTape::parse(&data[..]).unwrap())
+        b.iter(|| jomini::BinTape::from_slice(&data[..]).unwrap())
     });
     group.finish();
 }
@@ -102,7 +102,7 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("text_parse");
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("meta-tape", |b| {
-        b.iter(|| jomini::TextTape::parse(&data[..]).unwrap())
+        b.iter(|| jomini::TextTape::from_slice(&data[..]).unwrap())
     });
     group.finish();
 }
