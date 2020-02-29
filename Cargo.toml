@@ -20,5 +20,5 @@ serde = { version = "1", features = ["derive"] }
 zip = { version =  "0.5", default-features = false, features = ["deflate"] }
 
 [[bench]]
-name = "pfars_bench"
+name = "jomini_bench"
 harness = false
