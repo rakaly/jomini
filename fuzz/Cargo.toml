@@ -1,0 +1,33 @@
+
+[package]
+name = "pfars-fuzz"
+version = "0.0.0"
+authors = ["Automatically generated"]
+publish = false
+edition = "2018"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.2.1"
+encoding_rs = "0.8"
+
+[dependencies.pfars]
+path = ".."
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_parser"
+path = "fuzz_targets/fuzz_parser.rs"
+
+[[bin]]
+name = "fuzz_scalar_text"
+path = "fuzz_targets/fuzz_scalar_text.rs"
+
+[[bin]]
+name = "fuzz_binary"
+path = "fuzz_targets/fuzz_binary.rs"
