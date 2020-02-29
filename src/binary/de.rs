@@ -1,8 +1,8 @@
-use crate::{FailedResolveStrategy, BinaryError, TokenResolver, Scalar, BinaryToken, BinTape};
+use crate::{BinTape, BinaryError, BinaryToken, FailedResolveStrategy, Scalar, TokenResolver};
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
-use std::fmt;
 use std::error;
+use std::fmt;
 
 #[derive(Debug)]
 pub enum BinaryDeError {
@@ -218,12 +218,14 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
                     let next_key = &self.doc.token_tape[next_key_idx];
                     if next_key == key {
                         self.seen[next_key_idx] = 1;
-                        self.values.push(next_key_idx + 1) 
+                        self.values.push(next_key_idx + 1)
                     } else {
                         match (key, next_key) {
-                            (BinaryToken::Text(s1), BinaryToken::Text(s2)) if self.doc.data_tape[*s1] == self.doc.data_tape[*s2] => {
+                            (BinaryToken::Text(s1), BinaryToken::Text(s2))
+                                if self.doc.data_tape[*s1] == self.doc.data_tape[*s2] =>
+                            {
                                 self.seen[next_key_idx] = 1;
-                                self.values.push(next_key_idx + 1) 
+                                self.values.push(next_key_idx + 1)
                             }
                             _ => {}
                         }
@@ -267,7 +269,7 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
     }
 }
 
-pub struct KeyDeserializer<'b, 'de: 'b, RES> {
+struct KeyDeserializer<'b, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
     doc: &'b BinTape<'de>,
     tape_idx: usize,
@@ -321,7 +323,7 @@ impl<'b, 'de, RES: TokenResolver> de::Deserializer<'de> for KeyDeserializer<'b, 
     }
 }
 
-pub struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, RES> {
+struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
     value_indices: &'c Vec<usize>,
     doc: &'c BinTape<'de>,
@@ -347,29 +349,16 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
                 idx: idx + 1,
                 end_idx: *x,
             }),
-            BinaryToken::Object(x) => {
-                visitor.visit_map(BinaryMap::new(&self.config, self.doc, idx + 1, *x, self.seen))
-            }
+            BinaryToken::Object(x) => visitor.visit_map(BinaryMap::new(
+                &self.config,
+                self.doc,
+                idx + 1,
+                *x,
+                self.seen,
+            )),
             BinaryToken::End(_) => todo!(),
             _ => visit_key(idx, self.doc, self.config, visitor),
         }
-        /*        match &self.doc[self.value_indices[0]].value {
-            BorrowedBinaryValue::Scalar(scalar) => visit_key(scalar, self.config, visitor),
-            BorrowedBinaryValue::Object(obj) => {
-                visitor.visit_map(BinaryMap::new(&self.config, &obj))
-            }
-            BorrowedBinaryValue::Array(x) => visitor.visit_seq(BinarySequence {
-                values: x,
-                config: self.config,
-                idx: 0,
-            }),
-            BorrowedBinaryValue::Hsv(first, second, third) => visitor.visit_seq(HsvSequence {
-                pos: 0,
-                first: *first,
-                second: *second,
-                third: *third,
-            }),
-        }*/
     }
 
     fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -387,16 +376,13 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
                 end_idx: *x,
             }),
             BinaryToken::End(_) => todo!(),
-
-            _ => {
-                visitor.visit_seq(SpanningSequence {
-                    doc: self.doc,
-                    config: self.config,
-                    value_indices: self.value_indices,
-                    seen: self.seen,
-                    idx: 0,
-                })
-            }
+            _ => visitor.visit_seq(SpanningSequence {
+                doc: self.doc,
+                config: self.config,
+                value_indices: self.value_indices,
+                seen: self.seen,
+                idx: 0,
+            }),
         }
     }
 
@@ -451,7 +437,7 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
     }
 }
 
-pub struct BinarySequence<'b, 'de: 'b, RES> {
+struct BinarySequence<'b, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
     doc: &'b BinTape<'de>,
     idx: usize,
@@ -470,18 +456,14 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
         V: Visitor<'de>,
     {
         match &self.doc.token_tape[self.de_idx] {
-            BinaryToken::Object(x) => {
-                visitor.visit_map(BinaryMap::new(self.config, self.doc, self.de_idx + 1, *x, self.seen))
-            }
+            BinaryToken::Object(x) => visitor.visit_map(BinaryMap::new(
+                self.config,
+                self.doc,
+                self.de_idx + 1,
+                *x,
+                self.seen,
+            )),
             _ => visit_key(self.de_idx, self.doc, self.config, visitor),
-            /*BorrowedBinaryValue::Array(vals) => visitor.visit_seq(BinarySequence {
-                values: vals,
-                config: self.config,
-                idx: 0,
-            }),
-            BorrowedBinaryValue::Hsv(_, _, _) => Err(BinaryDeError::Message(String::from(
-                "unable to support hsv sequence",
-            ))),*/
         }
     }
 
@@ -516,7 +498,7 @@ impl<'b, 'de, RES: TokenResolver> SeqAccess<'de> for BinarySequence<'b, 'de, RES
     }
 }
 
-pub struct SpanningSequence<'c, 'b: 'c, 'de: 'b, RES> {
+struct SpanningSequence<'c, 'b: 'c, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
     doc: &'b BinTape<'de>,
     value_indices: &'c Vec<usize>,
@@ -543,9 +525,13 @@ impl<'c, 'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
                 idx: idx + 1,
                 end_idx: *x,
             }),
-            BinaryToken::Object(x) => {
-                visitor.visit_map(BinaryMap::new(&self.config, self.doc, idx + 1, *x, self.seen))
-            }
+            BinaryToken::Object(x) => visitor.visit_map(BinaryMap::new(
+                &self.config,
+                self.doc,
+                idx + 1,
+                *x,
+                self.seen,
+            )),
             BinaryToken::End(_) => todo!(),
             _ => visit_key(idx, self.doc, self.config, visitor),
         }

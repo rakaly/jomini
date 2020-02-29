@@ -1,5 +1,5 @@
-use crate::BinaryError;
 use crate::document::{document_from_slice, BorrowedBinaryValue, ScalarValue, ValueEntry};
+use crate::BinaryError;
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
 use std::collections::HashMap;

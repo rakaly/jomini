@@ -47,29 +47,20 @@ impl<'a> BinTape<'a> {
 
     #[inline]
     fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], u16), MyError> {
-        let val = data
-            .get(..2)
-            .map(le_u16)
-            .expect("EEK");
+        let val = data.get(..2).map(le_u16).expect("EEK");
         Ok((&data[2..], val))
     }
 
     #[inline]
     fn parse_u32(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
-        let val = data
-            .get(..4)
-            .map(le_u32)
-            .expect("EEK");
+        let val = data.get(..4).map(le_u32).expect("EEK");
         self.token_tape.push(BinaryToken::U32(val));
         Ok(&data[4..])
     }
 
     #[inline]
     fn parse_u64(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
-        let val = data
-            .get(..8)
-            .map(le_u64)
-            .expect("EEK");
+        let val = data.get(..8).map(le_u64).expect("EEK");
         self.token_tape.push(BinaryToken::U64(val));
         Ok(&data[8..])
     }
@@ -112,10 +103,7 @@ impl<'a> BinTape<'a> {
 
     #[inline]
     fn parse_bool(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
-        let val = data
-            .get(0)
-            .map(|&x| x != 0)
-            .expect("EEK");
+        let val = data.get(0).map(|&x| x != 0).expect("EEK");
         self.token_tape.push(BinaryToken::Bool(val));
         Ok(&data[1..])
     }
@@ -124,10 +112,7 @@ impl<'a> BinTape<'a> {
     fn parse_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
         let text = data
             .get(..2)
-            .and_then(|size| {
-                data.get(2..2 + usize::from(le_u16(size)))
-                    .map(|data| data)
-            })
+            .and_then(|size| data.get(2..2 + usize::from(le_u16(size))).map(|data| data))
             .expect("EEK");
         self.token_tape
             .push(BinaryToken::Text(self.data_tape.len()));
@@ -175,11 +160,7 @@ impl<'a> BinTape<'a> {
     }
 
     #[inline]
-    fn parse_array(
-        &mut self,
-        mut data: &'a [u8],
-        open_idx: usize,
-    ) -> Result<&'a [u8], MyError> {
+    fn parse_array(&mut self, mut data: &'a [u8], open_idx: usize) -> Result<&'a [u8], MyError> {
         loop {
             let (d, token_id) = self.parse_next_id(data)?;
             data = d;
@@ -329,7 +310,6 @@ fn le_i32(data: &[u8]) -> i32 {
     let ptr = data.as_ptr() as *const u8 as *const i32;
     unsafe { ::std::ptr::read_unaligned(ptr).to_le() }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -50,7 +50,10 @@ impl<'a> TextTape<'a> {
 
     #[inline]
     fn skip_ws(&mut self, d: &'a [u8]) -> &'a [u8] {
-        let ind = d.iter().position(|&x| !is_whitespace(x)).unwrap_or_else(|| d.len());
+        let ind = d
+            .iter()
+            .position(|&x| !is_whitespace(x))
+            .unwrap_or_else(|| d.len());
         let (_, rest) = d.split_at(ind);
         rest
     }
@@ -60,10 +63,14 @@ impl<'a> TextTape<'a> {
         if d[0] == b'"' {
             let sd = &d[1..];
             let end_idx = memchr::memchr(b'"', &sd).expect("EEK");
-            self.token_tape.push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
+            self.token_tape
+                .push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
             &d[end_idx + 2..]
         } else {
-            let ind = d.iter().position(|&x| is_boundary(x)).unwrap_or_else(|| d.len());
+            let ind = d
+                .iter()
+                .position(|&x| is_boundary(x))
+                .unwrap_or_else(|| d.len());
             let (scalar, rest) = d.split_at(ind);
             self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
             rest
@@ -86,11 +93,7 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
-    fn parse_array(
-        &mut self,
-        mut d: &'a [u8],
-        open_idx: usize,
-    ) -> &'a [u8] {
+    fn parse_array(&mut self, mut d: &'a [u8], open_idx: usize) -> &'a [u8] {
         loop {
             d = self.skip_ws(d);
             if d.is_empty() {
@@ -101,19 +104,15 @@ impl<'a> TextTape<'a> {
                 let end_idx = self.token_tape.len();
                 self.token_tape[open_idx] = TextToken::Array(end_idx);
                 self.token_tape.push(TextToken::End(open_idx));
-                return &d[1..]
+                return &d[1..];
             }
-           
+
             d = self.parse_value(d);
         }
     }
 
     #[inline]
-     fn parse_inner_object(
-        &mut self,
-        mut d: &'a [u8],
-        open_idx: usize,
-    ) -> &'a [u8] {
+    fn parse_inner_object(&mut self, mut d: &'a [u8], open_idx: usize) -> &'a [u8] {
         d = self.skip_ws(d);
         d = self.parse_value(d);
 
@@ -127,9 +126,9 @@ impl<'a> TextTape<'a> {
                 let end_idx = self.token_tape.len();
                 self.token_tape[open_idx] = TextToken::Object(end_idx);
                 self.token_tape.push(TextToken::End(open_idx));
-                return &d[1..]
+                return &d[1..];
             }
-           
+
             d = self.parse_scalar(d);
             d = self.skip_ws(d);
             if d[0] == b'=' {
@@ -146,7 +145,7 @@ impl<'a> TextTape<'a> {
         if d.is_empty() {
             panic!("EEEK");
         }
-        
+
         match d[0] {
             // Empty array
             b'}' => {
@@ -154,7 +153,7 @@ impl<'a> TextTape<'a> {
                 self.token_tape[open_idx] = TextToken::Array(end_idx);
                 self.token_tape.push(TextToken::End(open_idx));
                 &d[1..]
-            },
+            }
 
             // array of objects
             b'{' => self.parse_array(d, open_idx),
@@ -174,9 +173,7 @@ impl<'a> TextTape<'a> {
                 self.token_tape.push(TextToken::Array(0));
                 self.parse_open(&d[1..], open_idx)
             }
-            _ => {
-                self.parse_scalar(d)
-            }
+            _ => self.parse_scalar(d),
         }
     }
 
@@ -187,7 +184,7 @@ impl<'a> TextTape<'a> {
             if d.is_empty() {
                 break;
             }
-            
+
             d = self.parse_scalar(d);
             d = self.skip_ws(d);
             if d[0] == b'=' {

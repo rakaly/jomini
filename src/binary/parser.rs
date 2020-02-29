@@ -1,5 +1,5 @@
 use crate::depth::{Depth, DepthType};
-use crate::{Scalar, Operator};
+use crate::{Operator, Scalar};
 use byteorder::{ByteOrder, LE};
 use std::error;
 use std::fmt::{self, Display, Formatter};

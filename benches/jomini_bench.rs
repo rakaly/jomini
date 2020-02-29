@@ -61,10 +61,14 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
     map.insert(0x337f, "campaign_id");
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("meta", |b| {
-        b.iter(|| { let _res: Meta = jomini::de::binary::from_slice(&data[..], &map).unwrap();})
+        b.iter(|| {
+            let _res: Meta = jomini::de::binary::from_slice(&data[..], &map).unwrap();
+        })
     });
     group.bench_function("meta-tape", |b| {
-        b.iter(|| { let _res: Meta = jomini::de::tape::from_slice(&data[..], &map).unwrap();})
+        b.iter(|| {
+            let _res: Meta = jomini::de::tape::from_slice(&data[..], &map).unwrap();
+        })
     });
     group.finish();
 }

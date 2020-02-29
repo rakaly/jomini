@@ -4,9 +4,11 @@ mod parser;
 mod reader;
 mod tape;
 
-pub use self::parser::{BinaryErrorKind, BinaryError, BinaryParseEvent, BinaryParser, BinaryEvent, BinaryEventsIter};
-pub use self::reader::{BinaryReadingError, EventRecord, BinaryReaderBuilder, BinaryReader};
-pub use self::tape::{BinaryToken, BinTape};
+pub use self::parser::{
+    BinaryError, BinaryErrorKind, BinaryEvent, BinaryEventsIter, BinaryParseEvent, BinaryParser,
+};
+pub use self::reader::{BinaryReader, BinaryReaderBuilder, BinaryReadingError, EventRecord};
+pub use self::tape::{BinTape, BinaryToken};
 
 use std::collections::HashMap;
 
