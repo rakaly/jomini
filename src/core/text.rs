@@ -1,25 +1,22 @@
-#![allow(dead_code)]
-#![allow(unused_variables)]
-
 use crate::scalar::Scalar;
-use byteorder::{ByteOrder, LE};
 
-fn parse(data: &[u8]) {
+pub fn parse<'a>(data: &'a [u8]) -> Result<TextTape<'a>, MyError> {
     let mut tape = TextTape::default();
     tape.slurp_body(data);
+    Ok(tape)
 }
 
 #[derive(Debug, PartialEq)]
-pub enum TextToken {
+pub enum TextToken<'a> {
     Array(usize),
     Object(usize),
-    Scalar(usize),
+    Scalar(Scalar<'a>),
+    End(usize),
 }
 
 #[derive(Debug, Default)]
 pub struct TextTape<'a> {
-    pub token_tape: Vec<TextToken>,
-    pub data_tape: Vec<Scalar<'a>>,
+    pub token_tape: Vec<TextToken<'a>>,
 }
 
 /*
@@ -48,353 +45,346 @@ BRACKET:
 
 */
 
-const fn aa() -> [u8; 256] {
-    [0; 256]
-}
-
-
-static FJFJ: [u8; 256] = aa();
+type MyError = String;
 
 impl<'a> TextTape<'a> {
-    fn skip_ws(&mut self, d: &'a [u8]) {
-        let data = LE::read_u64(d);
+    fn skip_ws(&mut self, d: &'a [u8]) -> &'a [u8] {
+        let ind = d.iter().position(|&x| !is_whitespace(x)).unwrap_or_else(|| d.len());
+        let (_, rest) = d.split_at(ind);
+        rest
+    }
+
+    fn parse_scalar(&mut self, d: &'a [u8]) -> &'a [u8] {
+        if d[0] == b'"' {
+            let sd = &d[1..];
+            let end_idx = memchr::memchr(b'"', &sd).expect("EEK");
+            self.token_tape.push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
+            &d[end_idx + 2..]
+        } else {
+            let ind = d.iter().position(|&x| is_boundary(x)).unwrap_or_else(|| d.len());
+            let (scalar, rest) = d.split_at(ind);
+            self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
+            rest
+        }
+    }
+
+    fn first_val(&mut self, mut d: &'a [u8], open_idx: usize) -> &'a [u8] {
+        d = self.parse_scalar(d);
+        d = self.skip_ws(d);
+        if d.is_empty() {
+            panic!("EEEK");
+        }
+
+        match d[0] {
+            b'{' => todo!(),
+            b'=' => self.parse_inner_object(&d[1..], open_idx),
+            _ => self.parse_array(d, open_idx),
+        }
+    }
+
+    fn parse_array(
+        &mut self,
+        mut d: &'a [u8],
+        open_idx: usize,
+    ) -> &'a [u8] {
+        loop {
+            d = self.skip_ws(d);
+            if d.is_empty() {
+                panic!("EEK");
+            }
+
+            if d[0] == b'}' {
+                let end_idx = self.token_tape.len();
+                self.token_tape[open_idx] = TextToken::Array(end_idx);
+                self.token_tape.push(TextToken::End(open_idx));
+                return &d[1..]
+            }
+           
+            d = self.parse_value(d);
+        }
     }
 
 
-    fn slurp_body(&mut self, d: &'a [u8]) {
+    #[inline]
+     fn parse_inner_object(
+        &mut self,
+        mut d: &'a [u8],
+        open_idx: usize,
+    ) -> &'a [u8] {
+        d = self.skip_ws(d);
+        d = self.parse_value(d);
 
+        loop {
+            d = self.skip_ws(d);
+            if d.is_empty() {
+                panic!("EEK");
+            }
+
+            if d[0] == b'}' {
+                let end_idx = self.token_tape.len();
+                self.token_tape[open_idx] = TextToken::Object(end_idx);
+                self.token_tape.push(TextToken::End(open_idx));
+                return &d[1..]
+            }
+           
+            d = self.parse_scalar(d);
+            d = self.skip_ws(d);
+            if d[0] == b'=' {
+                d = &d[1..];
+            }
+            d = self.skip_ws(d);
+            d = self.parse_value(d);
+        }
+    }
+
+    fn parse_open(&mut self, mut d: &'a [u8], open_idx: usize) -> &'a [u8] {
+        d = self.skip_ws(d);
+        if d.is_empty() {
+            panic!("EEEK");
+        }
+        
+        match d[0] {
+            // Empty array
+            b'}' => {
+                let end_idx = self.token_tape.len();
+                self.token_tape[open_idx] = TextToken::Array(end_idx);
+                self.token_tape.push(TextToken::End(open_idx));
+                &d[1..]
+            },
+
+            // array of objects
+            b'{' => self.parse_array(d, open_idx),
+            _ => self.first_val(d, open_idx),
+        }
+    }
+
+    fn parse_value(&mut self, d: &'a [u8]) -> &'a [u8] {
+        if d.is_empty() {
+            panic!("EEEK");
+        }
+
+        match d[0] {
+            b'{' => {
+                let open_idx = self.token_tape.len();
+                self.token_tape.push(TextToken::Array(0));
+                self.parse_open(&d[1..], open_idx)
+            }
+            _ => {
+                self.parse_scalar(d)
+            }
+        }
+    }
+
+    fn slurp_body(&mut self, mut d: &'a [u8]) {
         while !d.is_empty() {
-
+            d = self.skip_ws(d);
+            if d.is_empty() {
+                break;
+            }
+            
+            d = self.parse_scalar(d);
+            d = self.skip_ws(d);
+            if d[0] == b'=' {
+                d = &d[1..];
+            }
+            d = self.skip_ws(d);
+            d = self.parse_value(d);
         }
     }
 }
 
+#[inline]
 fn is_whitespace(b: u8) -> bool {
     b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
 }
 
-
-/*use crate::core::depth::{Depth, DepthType};
-use crate::scalar::Scalar;
-use crate::text::Operator;
-use std::error;
-use std::fmt::{self, Display, Formatter};
-use std::ops::{Add, AddAssign};
-use std::cmp::min;
-
-/// The type of binary error that occurred
-#[derive(Debug)]
-pub enum TextErrorKind {
-    /// When too many '}' are seen
-    EmptyStack,
-
-    /// When too many '{' are seen
-    FullStack,
+#[inline]
+fn is_boundary(b: u8) -> bool {
+    is_whitespace(b) || b == b'{' || b == b'}' || is_operator(b)
 }
 
-/// Error that occurred while parsing binary data with positional data
-#[derive(Debug)]
-pub struct TextError {
-    pub kind: TextErrorKind,
-    pub position: Position,
-}
-
-impl Display for TextError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self.kind {
-            TextErrorKind::EmptyStack => write!(f, "empty stack"),
-            TextErrorKind::FullStack => write!(f, "full stack"),
-        }?;
-
-        write!(f, " {}", self.position)
-    }
-}
-
-#[derive(Debug, PartialEq, Clone, Copy, Default)]
-pub struct Position {
-    pub column: u32,
-    pub line: u32,
-    pub offset: usize,
-}
-
-impl Position {
-    fn from_column(spaces: usize) -> Self {
-        Position {
-            line: 0,
-            column: spaces as u32,
-            offset: spaces,
-        }
-    }
-
-    fn advance_column(&mut self, spaces: usize) {
-        self.offset += spaces;
-        self.column += spaces as u32;
-    }
-}
-
-impl Display for Position {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(
-            f,
-            "(ln: {}, col: {}, offset: {})",
-            self.line, self.column, self.offset
-        )
-    }
-}
-
-impl Add for Position {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        Self {
-            column: self.column + other.column,
-            line: self.line + other.line,
-            offset: self.offset + other.offset,
-        }
-    }
-}
-
-impl AddAssign for Position {
-    fn add_assign(&mut self, other: Self) {
-        *self = *self + other;
-    }
-}
-
-
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum TextEvent<'a> {
-    StartArray,
-    StartObject,
-    End,
-    Operator(Operator),
-    Comment(Scalar<'a>),
-    Quoted(Scalar<'a>),
-    Value(Scalar<'a>),
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum EventType {
-    Key,
-    Operator,
-    Value,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum TextParseEvent<'a> {
-    /// The event that was parsed
-    Event(TextEvent<'a>),
-
-    /// The input did not have enough data to read the next event
-    Eof,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct TextParserState {
-    position: Position,
-    expectant: EventType,
-    depth: Depth,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct TextParser {
-    state: TextParserState,
-}
-
-impl TextParser {
-    pub fn new() -> Self {
-        let mut depth = Depth::new();
-        let pushed = depth.push(DepthType::Object);
-        debug_assert!(pushed);
-
-        TextParser {
-            state: TextParserState {
-                expectant: EventType::Key,
-                position: Position {
-                    line: 1,
-                    column: 1,
-                    offset: 0,
-                },
-                depth,
-            },
-        }
-    }
-
-    fn skip_whitespace(input: &[u8]) -> Position {
-        let mut position = Position::default();
-        for (i, x) in input.iter().enumerate() {
-            match x {
-                b' ' | b'\r' | b'\t' => {
-                    position.column += 1;
-                    position.offset += 1;
-                }
-                b'\n' => {
-                    position.column = 1;
-                    position.line += 1;
-                    position.offset += 1;
-                }
-                _ => break,
-            }
-        }
-
-        position
-    }
-
-    fn consume_scalar<'a>(input: &'a [u8], is_final_block: bool) -> (TextParseEvent<'a>, Position) {
-        let pos = input.iter().position(|&x| is_boundary(x));
-        match pos {
-            None => {
-                if is_final_block {
-                    let evt = TextEvent::Value(Scalar::new(input));
-                    let position = Position::from_column(input.len());
-                    (TextParseEvent::Event(evt), position)
-                } else {
-                    (TextParseEvent::Eof, Position::default())
-                }
-            }
-            Some(idx) => {
-                let evt = TextEvent::Value(Scalar::new(&input[..idx]));
-                let position = Position::from_column(idx);
-                (TextParseEvent::Event(evt), position)
-            }
-        }
-    }
-
-    fn consume_operator<'a>(
-        input: &'a [u8],
-        is_final_block: bool,
-    ) -> Result<(TextParseEvent<'a>, Position), TextError> {
-        // The only operator that begins with an equals is the equal operator
-        // This is also a fast path as most (sometimes all) will be equal
-        if input[0] == b'=' {
-            return Ok((
-                TextParseEvent::Event(TextEvent::Operator(Operator::Equal)),
-                Position::from_column(1),
-            ));
-        }
-
-        match input.get(..2).unwrap_or(input) {
-            [b'>', b'='] => Ok((
-                TextParseEvent::Event(TextEvent::Operator(Operator::GreaterEqual)),
-                Position::from_column(2),
-            )),
-            [b'<', b'='] => Ok((
-                TextParseEvent::Event(TextEvent::Operator(Operator::LesserEqual)),
-                Position::from_column(2),
-            )),
-            [b'<', b'>'] => Ok((
-                TextParseEvent::Event(TextEvent::Operator(Operator::LesserGreater)),
-                Position::from_column(2),
-            )),
-            [b'!', b'='] => Ok((
-                TextParseEvent::Event(TextEvent::Operator(Operator::NotEqual)),
-                Position::from_column(2),
-            )),
-            [b'<', _] => Ok((
-                TextParseEvent::Event(TextEvent::Operator(Operator::Lesser)),
-                Position::from_column(1),
-            )),
-            [b'>', _] => Ok((
-                TextParseEvent::Event(TextEvent::Operator(Operator::Greater)),
-                Position::from_column(1),
-            )),
-            [a, b] => panic!("did not expect {} and {} operators", a, b),
-            [x] => {
-                if is_final_block {
-                    Ok((TextParseEvent::Eof, Position::default()))
-                } else {
-                    panic!("early eof")
-                }
-            }
-            x => unreachable!(),
-        }
-    }
-
-    fn current_depth(&self) -> Result<DepthType, TextError> {
-        self.state.depth.last().ok_or_else(|| TextError {
-            kind: TextErrorKind::EmptyStack,
-            position: self.state.position,
-        })
-    }
-
-    fn read_event_inner<'a>(
-        &mut self,
-        input: &'a [u8],
-        is_final_block: bool,
-    ) -> Result<(TextParseEvent<'a>, Position), TextError> {
-        let pos = TextParser::skip_whitespace(input);
-        let input = &input[..pos.offset];
-        if input.is_empty() {
-            return Ok((TextParseEvent::Eof, Position::default()));
-        }
-
-        match input[0] {
-            b'{' => {
-                let total_pos = pos + Position::from_column(1);
-                Ok((TextParseEvent::Event(TextEvent::End), total_pos))
-            }
-            b'=' | b'!' | b'<' | b'>' => {
-                let (evt, new_pos) = TextParser::consume_operator(input, is_final_block)?;
-                let total_pos = new_pos + pos;
-                Ok((evt, total_pos))
-            },
-            _ => {
-                let (evt, scalar_pos) = TextParser::consume_scalar(input, is_final_block);
-                let total_pos = scalar_pos + pos;
-                Ok((evt, total_pos))
-            }
-/*            b'}' => {
-                self.advance_column(1);
-                Some(TextEvent::End)
-            }
-            b'=' | b'!' | b'<' | b'>' => self.consume_operator(),
-            b'#' => self.consume_comment().map(TextEvent::Comment),
-            b'"' => self.consume_quoted().map(TextEvent::Quoted),
-            _ => self.consume_scalar().map(TextEvent::Scalar),*/
-        }
-
-        /*        match self.state.expectant {
-            EventType::Key if token == b'}' => {
-                self.state.depth.pop().ok_or_else(|| TextError {
-                    kind: TextErrorKind::EmptyStack,
-                    position: self.state.position,
-                })?;
-
-                self.state.expectant = match self.current_depth()? {
-                    DepthType::Array => EventType::Value,
-                    DepthType::Object => EventType::Key,
-                };
-
-                Ok((TextParseEvent::Event(TextEvent::End), pos.offset))
-            }
-            _ => unimplemented!(),
-        }*/
-    }
-
-    pub fn read_event<'a>(
-        &mut self,
-        input: &'a [u8],
-        is_final_block: bool,
-    ) -> Result<(TextParseEvent<'a>, usize), TextError> {
-        match self.read_event_inner(input, is_final_block)? {
-            (next_event, read) if next_event != TextParseEvent::Eof => {
-                self.state.position += read;
-                Ok((next_event, read.offset))
-            }
-            (next_event, read) => Ok((next_event, read.offset)),
-        }
-    }
-}
-
+#[inline]
 fn is_operator(b: u8) -> bool {
     b == b'=' || b == b'!' || b == b'>' || b == b'<'
 }
 
-fn is_whitespace(b: u8) -> bool {
-    b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn is_boundary(b: u8) -> bool {
-    is_whitespace(b) || b == b'{' || b == b'}' || is_operator(b)
+    #[test]
+    fn test_simple_event() {
+        let data = b"foo=bar";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Scalar(Scalar::new(b"bar")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_simple_event_with_spaces() {
+        let data = b"  \t\t foo =bar \r\ndef=\tqux";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Scalar(Scalar::new(b"bar")),
+                TextToken::Scalar(Scalar::new(b"def")),
+                TextToken::Scalar(Scalar::new(b"qux")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_scalars_with_quotes() {
+        let data = br#""foo"="bar" "3"="1444.11.11""#;
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Scalar(Scalar::new(b"bar")),
+                TextToken::Scalar(Scalar::new(b"3")),
+                TextToken::Scalar(Scalar::new(b"1444.11.11")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_numbers_are_scalars() {
+        let data = b"foo=1.000";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Scalar(Scalar::new(b"1.000")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_object_event() {
+        let data = b"foo={bar=qux}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Object(4),
+                TextToken::Scalar(Scalar::new(b"bar")),
+                TextToken::Scalar(Scalar::new(b"qux")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_object_multi_field_event() {
+        let data = b"foo={bar=1 qux=28}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Object(6),
+                TextToken::Scalar(Scalar::new(b"bar")),
+                TextToken::Scalar(Scalar::new(b"1")),
+                TextToken::Scalar(Scalar::new(b"qux")),
+                TextToken::Scalar(Scalar::new(b"28")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_array_event() {
+        let data = b"versions={\r\n\t\"1.28.3.0\"\r\n}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"versions")),
+                TextToken::Array(3),
+                TextToken::Scalar(Scalar::new(b"1.28.3.0")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_array_multievent() {
+        let data = b"versions={\r\n\t\"1.28.3.0\"\r\n foo}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"versions")),
+                TextToken::Array(4),
+                TextToken::Scalar(Scalar::new(b"1.28.3.0")),
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_no_equal_object_event() {
+        let data = b"foo{bar=qux}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Object(4),
+                TextToken::Scalar(Scalar::new(b"bar")),
+                TextToken::Scalar(Scalar::new(b"qux")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_empty_array() {
+        let data = b"discovered_by={}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"discovered_by")),
+                TextToken::Array(2),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_array_of_objects() {
+        let data = b"stats={{id=0 type=general} {id=1 type=admiral}}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"stats")),
+                TextToken::Array(14),
+                TextToken::Object(7),
+                TextToken::Scalar(Scalar::new(b"id")),
+                TextToken::Scalar(Scalar::new(b"0")),
+                TextToken::Scalar(Scalar::new(b"type")),
+                TextToken::Scalar(Scalar::new(b"general")),
+                TextToken::End(2),
+                TextToken::Object(13),
+                TextToken::Scalar(Scalar::new(b"id")),
+                TextToken::Scalar(Scalar::new(b"1")),
+                TextToken::Scalar(Scalar::new(b"type")),
+                TextToken::Scalar(Scalar::new(b"admiral")),
+                TextToken::End(8),
+                TextToken::End(1),
+            ]
+        );
+    }
 }
-*/

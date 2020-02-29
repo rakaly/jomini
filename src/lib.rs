@@ -12,7 +12,7 @@ pub mod document;
 
 pub use self::binary::{BinaryReader, BinaryReaderBuilder, BinaryReadingError, EventRecord};
 pub use self::core::{
-    BinaryError, BinaryErrorKind, BinaryEvent, BinaryEventsIter, BinaryParseEvent, BinaryParser,
+    BinaryError, BinaryErrorKind, BinaryEvent, BinaryEventsIter, BinaryParseEvent, BinaryParser, TextTape, parse
 };
 pub use self::scalar::Scalar;
 pub use self::text::{Operator, TextEvent, TextParser, TextParserState};
