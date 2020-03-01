@@ -5,6 +5,7 @@ use std::fmt::{self, Display, Formatter};
 #[derive(Debug)]
 pub enum TextErrorKind {
     Eof,
+    Separator(u8),
 }
 
 #[derive(Debug)]
@@ -16,6 +17,9 @@ impl Display for TextError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self.kind {
             TextErrorKind::Eof => write!(f, "unexpected end of file"),
+            TextErrorKind::Separator(x) => {
+                write!(f, "unexpected separator: {}", Scalar::new(&[x]).to_utf8())
+            }
         }
     }
 }
@@ -72,6 +76,7 @@ impl<'a> TextTape<'a> {
         Ok(tape)
     }
 
+    /// Skips whitespace, but we must not reach the end of the file
     #[inline]
     fn skip_ws(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
         let ind = d
@@ -83,6 +88,7 @@ impl<'a> TextTape<'a> {
         Ok(&d[ind..])
     }
 
+    /// Skips whitespace that may terminate the file
     #[inline]
     fn skip_ws_t(&mut self, d: &'a [u8]) -> &'a [u8] {
         let ind = d
@@ -118,7 +124,6 @@ impl<'a> TextTape<'a> {
         d = self.skip_ws(d)?;
 
         match d[0] {
-            b'{' => todo!(),
             b'=' => self.parse_inner_object(&d[1..], open_idx),
             _ => self.parse_array(d, open_idx),
         }
@@ -161,9 +166,7 @@ impl<'a> TextTape<'a> {
 
             d = self.parse_scalar(d);
             d = self.skip_ws(d)?;
-            if d[0] == b'=' {
-                d = &d[1..];
-            }
+            d = self.parse_key_value_separator(d)?;
             d = self.skip_ws(d)?;
             d = self.parse_value(d)?;
         }
@@ -200,6 +203,21 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
+    fn parse_key_value_separator(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
+        // Most key values are separated by an equal sign but there are some fields like
+        // map_area_data that does not have a separator
+        match d[0] {
+            b'=' => Ok(&d[1..]),
+            b'{' => Ok(d),
+            x => {
+                return Err(TextError {
+                    kind: TextErrorKind::Separator(x),
+                })
+            }
+        }
+    }
+
+    #[inline]
     fn slurp_body(&mut self, mut d: &'a [u8]) -> Result<(), TextError> {
         while !d.is_empty() {
             d = self.skip_ws_t(d);
@@ -209,9 +227,7 @@ impl<'a> TextTape<'a> {
 
             d = self.parse_scalar(d);
             d = self.skip_ws(d)?;
-            if d[0] == b'=' {
-                d = &d[1..];
-            }
+            d = self.parse_key_value_separator(d)?;
             d = self.skip_ws(d)?;
             d = self.parse_value(d)?;
         }
