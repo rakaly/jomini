@@ -139,6 +139,11 @@ mod tests {
     }
 
     #[test]
+    fn scalar_to_i64() {
+        assert_eq!((Scalar::new(b"1").to_i64()), 2);
+    }
+
+    #[test]
     fn scalar_to_string_undefined_characters() {
         // According to the information on Microsoft's and the Unicode Consortium's websites,
         // positions 81, 8D, 8F, 90, and 9D are unused; however, the Windows API
