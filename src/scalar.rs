@@ -140,7 +140,11 @@ mod tests {
 
     #[test]
     fn scalar_to_i64() {
-        assert_eq!((Scalar::new(b"1").to_i64()), 2);
+        assert_eq!((Scalar::new(b"0").to_i64()), 0);
+        assert_eq!((Scalar::new(b"1").to_i64()), 1);
+        assert_eq!((Scalar::new(b"-1").to_i64()), -1);
+        assert_eq!((Scalar::new(b"-10000").to_i64()), -10000);
+        assert_eq!((Scalar::new(b"10000").to_i64()), 10000);
     }
 
     #[test]
