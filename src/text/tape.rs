@@ -1,4 +1,30 @@
-use crate::scalar::Scalar;
+use crate::Scalar;
+use std::error;
+use std::fmt::{self, Display, Formatter};
+
+#[derive(Debug)]
+pub enum TextErrorKind {
+    Eof,
+}
+
+#[derive(Debug)]
+pub struct TextError {
+    pub kind: TextErrorKind,
+}
+
+impl Display for TextError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self.kind {
+            TextErrorKind::Eof => write!(f, "unexpected end of file"),
+        }
+    }
+}
+
+impl error::Error for TextError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        None
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub enum TextToken<'a> {
@@ -39,17 +65,26 @@ BRACKET:
 
 */
 
-type MyError = String;
-
 impl<'a> TextTape<'a> {
-    pub fn from_slice(data: &'a [u8]) -> Result<TextTape<'a>, MyError> {
+    pub fn from_slice(data: &'a [u8]) -> Result<TextTape<'a>, TextError> {
         let mut tape = TextTape::default();
-        tape.slurp_body(data);
+        tape.slurp_body(data)?;
         Ok(tape)
     }
 
     #[inline]
-    fn skip_ws(&mut self, d: &'a [u8]) -> &'a [u8] {
+    fn skip_ws(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
+        let ind = d
+            .iter()
+            .position(|&x| !is_whitespace(x))
+            .ok_or_else(|| TextError {
+                kind: TextErrorKind::Eof,
+            })?;
+        Ok(&d[ind..])
+    }
+
+    #[inline]
+    fn skip_ws_t(&mut self, d: &'a [u8]) -> &'a [u8] {
         let ind = d
             .iter()
             .position(|&x| !is_whitespace(x))
@@ -78,12 +113,9 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
-    fn first_val(&mut self, mut d: &'a [u8], open_idx: usize) -> &'a [u8] {
+    fn first_val(&mut self, mut d: &'a [u8], open_idx: usize) -> Result<&'a [u8], TextError> {
         d = self.parse_scalar(d);
-        d = self.skip_ws(d);
-        if d.is_empty() {
-            panic!("EEEK");
-        }
+        d = self.skip_ws(d)?;
 
         match d[0] {
             b'{' => todo!(),
@@ -93,66 +125,60 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
-    fn parse_array(&mut self, mut d: &'a [u8], open_idx: usize) -> &'a [u8] {
+    fn parse_array(&mut self, mut d: &'a [u8], open_idx: usize) -> Result<&'a [u8], TextError> {
         loop {
-            d = self.skip_ws(d);
-            if d.is_empty() {
-                panic!("EEK");
-            }
+            d = self.skip_ws(d)?;
 
             if d[0] == b'}' {
                 let end_idx = self.token_tape.len();
                 self.token_tape[open_idx] = TextToken::Array(end_idx);
                 self.token_tape.push(TextToken::End(open_idx));
-                return &d[1..];
+                return Ok(&d[1..]);
             }
 
-            d = self.parse_value(d);
+            d = self.parse_value(d)?;
         }
     }
 
     #[inline]
-    fn parse_inner_object(&mut self, mut d: &'a [u8], open_idx: usize) -> &'a [u8] {
-        d = self.skip_ws(d);
-        d = self.parse_value(d);
+    fn parse_inner_object(
+        &mut self,
+        mut d: &'a [u8],
+        open_idx: usize,
+    ) -> Result<&'a [u8], TextError> {
+        d = self.skip_ws(d)?;
+        d = self.parse_value(d)?;
 
         loop {
-            d = self.skip_ws(d);
-            if d.is_empty() {
-                panic!("EEK");
-            }
+            d = self.skip_ws(d)?;
 
             if d[0] == b'}' {
                 let end_idx = self.token_tape.len();
                 self.token_tape[open_idx] = TextToken::Object(end_idx);
                 self.token_tape.push(TextToken::End(open_idx));
-                return &d[1..];
+                return Ok(&d[1..]);
             }
 
             d = self.parse_scalar(d);
-            d = self.skip_ws(d);
+            d = self.skip_ws(d)?;
             if d[0] == b'=' {
                 d = &d[1..];
             }
-            d = self.skip_ws(d);
-            d = self.parse_value(d);
+            d = self.skip_ws(d)?;
+            d = self.parse_value(d)?;
         }
     }
 
     #[inline]
-    fn parse_open(&mut self, mut d: &'a [u8], open_idx: usize) -> &'a [u8] {
-        d = self.skip_ws(d);
-        if d.is_empty() {
-            panic!("EEEK");
-        }
-
+    fn parse_open(&mut self, mut d: &'a [u8], open_idx: usize) -> Result<&'a [u8], TextError> {
+        d = self.skip_ws(d)?;
         match d[0] {
             // Empty array
             b'}' => {
                 let end_idx = self.token_tape.len();
                 self.token_tape[open_idx] = TextToken::Array(end_idx);
                 self.token_tape.push(TextToken::End(open_idx));
-                &d[1..]
+                Ok(&d[1..])
             }
 
             // array of objects
@@ -162,37 +188,35 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
-    fn parse_value(&mut self, d: &'a [u8]) -> &'a [u8] {
-        if d.is_empty() {
-            panic!("EEEK");
-        }
-
+    fn parse_value(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
         match d[0] {
             b'{' => {
                 let open_idx = self.token_tape.len();
                 self.token_tape.push(TextToken::Array(0));
                 self.parse_open(&d[1..], open_idx)
             }
-            _ => self.parse_scalar(d),
+            _ => Ok(self.parse_scalar(d)),
         }
     }
 
     #[inline]
-    fn slurp_body(&mut self, mut d: &'a [u8]) {
+    fn slurp_body(&mut self, mut d: &'a [u8]) -> Result<(), TextError> {
         while !d.is_empty() {
-            d = self.skip_ws(d);
+            d = self.skip_ws_t(d);
             if d.is_empty() {
                 break;
             }
 
             d = self.parse_scalar(d);
-            d = self.skip_ws(d);
+            d = self.skip_ws(d)?;
             if d[0] == b'=' {
                 d = &d[1..];
             }
-            d = self.skip_ws(d);
-            d = self.parse_value(d);
+            d = self.skip_ws(d)?;
+            d = self.parse_value(d)?;
         }
+
+        Ok(())
     }
 }
 
@@ -215,10 +239,8 @@ fn is_operator(b: u8) -> bool {
 mod tests {
     use super::*;
 
-    fn parse<'a>(data: &'a [u8]) -> Result<TextTape<'a>, MyError> {
-        let mut tape = TextTape::default();
-        tape.slurp_body(data);
-        Ok(tape)
+    fn parse<'a>(data: &'a [u8]) -> Result<TextTape<'a>, TextError> {
+        TextTape::from_slice(data)
     }
 
     #[test]
