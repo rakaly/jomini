@@ -1,7 +1,7 @@
 use crate::ascii::is_ascii;
 use std::borrow::Cow;
-use std::fmt;
 use std::error;
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarError {
@@ -143,9 +143,7 @@ fn to_windows_1252(d: &[u8]) -> String {
     // encountering non-ascii text
     if d.len() < 10 {
         use crate::data::WINDOWS_1252;
-            d.iter()
-            .map(|&x| WINDOWS_1252[x as usize])
-            .collect()
+        d.iter().map(|&x| WINDOWS_1252[x as usize]).collect()
     } else {
         let (cow, _) = encoding_rs::WINDOWS_1252.decode_without_bom_handling(d);
         cow.into_owned()
@@ -223,9 +221,7 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
     let chunks = d.chunks_exact(8);
     for chunk in chunks {
         let chunk_ptr = chunk.as_ptr() as *const u8 as *const u64;
-        let val = unsafe {
-            ::std::ptr::read_unaligned(chunk_ptr).to_le()
-        };
+        let val = unsafe { ::std::ptr::read_unaligned(chunk_ptr).to_le() };
 
         result += result * 100_000_000 + ascii_u64_to_digits(val);
     }
@@ -291,8 +287,14 @@ mod tests {
         assert_eq!((Scalar::new(b"10000").to_f64()), Ok(10000.0));
         assert_eq!((Scalar::new(b"20405029").to_f64()), Ok(20405029.0));
         assert_eq!((Scalar::new(b"-20405029").to_f64()), Ok(-20405029.0));
-        assert_eq!((Scalar::new(b"20405029553322").to_f64()), Ok(20405029553322.0));
-        assert_eq!((Scalar::new(b"-20405029553322").to_f64()), Ok(-20405029553322.0));
+        assert_eq!(
+            (Scalar::new(b"20405029553322").to_f64()),
+            Ok(20405029553322.0)
+        );
+        assert_eq!(
+            (Scalar::new(b"-20405029553322").to_f64()),
+            Ok(-20405029553322.0)
+        );
 
         assert_eq!((Scalar::new(b"0.504").to_f64()), Ok(0.504));
         assert_eq!((Scalar::new(b"1.00125").to_f64()), Ok(1.00125));
@@ -301,8 +303,14 @@ mod tests {
         assert_eq!((Scalar::new(b"10000.000").to_f64()), Ok(10000.0));
         assert_eq!((Scalar::new(b"20405029.125").to_f64()), Ok(20405029.125));
         assert_eq!((Scalar::new(b"-20405029.125").to_f64()), Ok(-20405029.125));
-        assert_eq!((Scalar::new(b"20405029553322.015").to_f64()), Ok(20405029553322.015));
-        assert_eq!((Scalar::new(b"-20405029553322.015").to_f64()), Ok(-20405029553322.015));
+        assert_eq!(
+            (Scalar::new(b"20405029553322.015").to_f64()),
+            Ok(20405029553322.015)
+        );
+        assert_eq!(
+            (Scalar::new(b"-20405029553322.015").to_f64()),
+            Ok(-20405029553322.015)
+        );
     }
 
     #[test]
@@ -314,8 +322,14 @@ mod tests {
         assert_eq!((Scalar::new(b"10000").to_i64()), Ok(10000));
         assert_eq!((Scalar::new(b"20405029").to_i64()), Ok(20405029));
         assert_eq!((Scalar::new(b"-20405029").to_i64()), Ok(-20405029));
-        assert_eq!((Scalar::new(b"20405029553322").to_i64()), Ok(20405029553322));
-        assert_eq!((Scalar::new(b"-20405029553322").to_i64()), Ok(-20405029553322));
+        assert_eq!(
+            (Scalar::new(b"20405029553322").to_i64()),
+            Ok(20405029553322)
+        );
+        assert_eq!(
+            (Scalar::new(b"-20405029553322").to_i64()),
+            Ok(-20405029553322)
+        );
     }
 
     #[test]
@@ -324,7 +338,10 @@ mod tests {
         assert_eq!((Scalar::new(b"1").to_u64()), Ok(1));
         assert_eq!((Scalar::new(b"10000").to_u64()), Ok(10000));
         assert_eq!((Scalar::new(b"20405029").to_u64()), Ok(20405029));
-        assert_eq!((Scalar::new(b"20405029553322").to_u64()), Ok(20405029553322));
+        assert_eq!(
+            (Scalar::new(b"20405029553322").to_u64()),
+            Ok(20405029553322)
+        );
     }
 
     #[test]

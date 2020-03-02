@@ -9,5 +9,5 @@ mod text;
 
 pub use self::binary::*;
 pub use self::operator::*;
-pub use self::scalar::Scalar;
+pub use self::scalar::{Scalar, ScalarError};
 pub use self::text::*;

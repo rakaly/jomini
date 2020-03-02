@@ -1,4 +1,4 @@
-use crate::{TextError, TextErrorKind, TextTape, TextToken};
+use crate::{Scalar, TextError, TextErrorKind, TextTape, TextToken};
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
 
@@ -125,6 +125,7 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
                 return seed
                     .deserialize(KeyDeserializer {
                         tape_idx: self.tape_idx,
+                        seen: self.seen,
                         doc: self.doc,
                     })
                     .map(Some);
@@ -155,17 +156,29 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
     }
 }
 
+fn ensure_scalar<'a>(s: &TextToken<'a>) -> Result<Scalar<'a>, TextError> {
+    match s {
+        TextToken::Scalar(s) => Ok(*s),
+        x => Err(TextError {
+            kind: TextErrorKind::Message(format!(" {:?} as a string", x)),
+        }),
+    }
+}
+
 struct KeyDeserializer<'b, 'de: 'b> {
     doc: &'b TextTape<'de>,
+    seen: &'b mut Vec<u8>,
     tape_idx: usize,
 }
 
-fn visit_key<'c, 'b: 'c, 'de: 'b, V: Visitor<'de>>(
-    tape_idx: usize,
-    doc: &'b TextTape<'de>,
-    visitor: V,
-) -> Result<V::Value, TextError> {
-    todo!()
+impl<'b, 'de> KeyDeserializer<'b, 'de> {
+    fn new(doc: &'b TextTape<'de>, seen: &'b mut Vec<u8>, tape_idx: usize) -> Self {
+        KeyDeserializer {
+            doc,
+            seen,
+            tape_idx,
+        }
+    }
 }
 
 impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
@@ -175,29 +188,197 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        visit_key(self.tape_idx, self.doc, visitor)
+        todo!()
+    }
+
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        todo!()
+    }
+
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        todo!()
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        todo!()
+    }
+
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_some(self)
+    }
+
+    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_tuple_struct<V>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_unit()
+    }
+
+    fn deserialize_newtype_struct<V>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_newtype_struct(self)
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        match self.doc.token_tape[self.tape_idx] {
-            TextToken::Scalar(s) => match s.to_utf8() {
-                Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
-                Cow::Owned(s) => visitor.visit_string(s),
-            },
-            _ => panic!("EEEEK"),
-        }
+        self.deserialize_str(visitor)
+    }
+
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        ensure_scalar(&self.doc.token_tape[self.tape_idx])
+            .and_then(|s| visitor.visit_string(s.to_utf8_owned()))
+    }
+
+    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        ensure_scalar(&self.doc.token_tape[self.tape_idx]).and_then(|s| match s.to_utf8() {
+            Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
+            Cow::Owned(s) => visitor.visit_string(s),
+        })
+    }
+
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        ensure_scalar(&self.doc.token_tape[self.tape_idx])
+            .and_then(|x| Ok(x.to_bool()?))
+            .and_then(|x| visitor.visit_bool(x))
+    }
+
+    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        ensure_scalar(&self.doc.token_tape[self.tape_idx])
+            .and_then(|x| Ok(x.to_u64()?))
+            .and_then(|x| visitor.visit_u64(x))
+    }
+
+    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_u64(visitor)
+    }
+
+    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_u64(visitor)
+    }
+
+    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_u64(visitor)
+    }
+
+    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        ensure_scalar(&self.doc.token_tape[self.tape_idx])
+            .and_then(|x| Ok(x.to_i64()?))
+            .and_then(|x| visitor.visit_i64(x))
+    }
+
+    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_i64(visitor)
+    }
+
+    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_i64(visitor)
+    }
+
+    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_i64(visitor)
+    }
+
+    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        ensure_scalar(&self.doc.token_tape[self.tape_idx])
+            .and_then(|x| Ok(x.to_f64()?))
+            .and_then(|x| visitor.visit_f64(x))
+    }
+
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_f64(visitor)
     }
 
     serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map enum ignored_any struct
+        i128 u128 char
+        bytes byte_buf unit unit_struct
+        enum
     }
 }
 
+#[derive(Debug)]
 struct ValueDeserializer<'b, 'de: 'b> {
     value_indices: &'b Vec<usize>,
     doc: &'b TextTape<'de>,
@@ -224,7 +405,7 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
                 visitor.visit_map(BinaryMap::new(self.doc, idx + 1, *x, self.seen))
             }
             TextToken::End(_) => todo!(),
-            _ => visit_key(idx, self.doc, visitor),
+            _ => self.deserialize_str(visitor),
         }
     }
 
@@ -299,36 +480,101 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        match self.doc.token_tape[self.value_indices[0]] {
-            TextToken::Scalar(s) => visitor.visit_string(s.to_utf8_owned()),
-            ref x => Err(TextError {
-                kind: TextErrorKind::Message(format!("unable to deserialize {:?} as a string", x)),
-            }),
-        }
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_string(visitor)
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        match self.doc.token_tape[self.value_indices[0]] {
-            TextToken::Scalar(s) => match s.to_utf8() {
-                Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
-                Cow::Owned(s) => visitor.visit_string(s),
-            },
-            ref x => Err(TextError {
-                kind: TextErrorKind::Message(format!("unable to deserialize {:?} as a string", x)),
-            }),
-        }
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_str(visitor)
+    }
+
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_bool(visitor)
+    }
+
+    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_u64(visitor)
+    }
+
+    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_u32(visitor)
+    }
+
+    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_u16(visitor)
+    }
+
+    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_u8(visitor)
+    }
+
+    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_i64(visitor)
+    }
+
+    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_i32(visitor)
+    }
+
+    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_i16(visitor)
+    }
+
+    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_i8(visitor)
+    }
+
+    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_f64(visitor)
+    }
+
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_f32(visitor)
     }
 
     serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char
-        bytes byte_buf unit unit_struct
-        map enum identifier struct
+        i128 u128 char
+        bytes byte_buf unit unit_struct identifier
+        map enum struct
     }
 }
 
+#[derive(Debug)]
 struct BinarySequence<'b, 'de: 'b> {
     doc: &'b TextTape<'de>,
     idx: usize,
@@ -348,12 +594,111 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
             TextToken::Object(x) => {
                 visitor.visit_map(BinaryMap::new(self.doc, self.de_idx + 1, *x, self.seen))
             }
-            _ => visit_key(self.de_idx, self.doc, visitor),
+            TextToken::Array(x) => visitor.visit_seq(BinarySequence {
+                doc: self.doc,
+                seen: self.seen,
+                de_idx: 0,
+                idx: self.de_idx + 1,
+                end_idx: *x,
+            }),
+            TextToken::Scalar(x) => self.deserialize_str(visitor),
+            TextToken::End(x) => todo!(),
         }
     }
 
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_string(visitor)
+    }
+
+    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_str(visitor)
+    }
+
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_bool(visitor)
+    }
+
+    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_u64(visitor)
+    }
+
+    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_u32(visitor)
+    }
+
+    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_u16(visitor)
+    }
+
+    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_u8(visitor)
+    }
+
+    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_i64(visitor)
+    }
+
+    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_i32(visitor)
+    }
+
+    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_i16(visitor)
+    }
+
+    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_i8(visitor)
+    }
+
+    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_f64(visitor)
+    }
+
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_f32(visitor)
+    }
+
     serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        i128 u128 char
         bytes byte_buf option unit unit_struct newtype_struct tuple
         tuple_struct map enum ignored_any identifier struct seq
     }
@@ -377,12 +722,12 @@ impl<'b, 'de> SeqAccess<'de> for BinarySequence<'b, 'de> {
 
             self.de_idx = self.idx;
             self.idx = next_key + 1;
-            let res = seed.deserialize(self).map(Some);
-            res
+            seed.deserialize(self).map(Some)
         }
     }
 }
 
+#[derive(Debug)]
 struct SpanningSequence<'c, 'b: 'c, 'de: 'b> {
     doc: &'b TextTape<'de>,
     value_indices: &'c Vec<usize>,
@@ -397,25 +742,128 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
     where
         V: Visitor<'de>,
     {
-        let idx = self.value_indices[self.idx - 1];
-        match &self.doc.token_tape[idx] {
+        match &self.doc.token_tape[self.idx - 1] {
+            TextToken::Object(x) => {
+                visitor.visit_map(BinaryMap::new(self.doc, self.idx + 1, *x, self.seen))
+            }
             TextToken::Array(x) => visitor.visit_seq(BinarySequence {
                 doc: self.doc,
                 seen: self.seen,
                 de_idx: 0,
-                idx: idx + 1,
+                idx: self.idx + 1,
                 end_idx: *x,
             }),
-            TextToken::Object(x) => {
-                visitor.visit_map(BinaryMap::new(self.doc, idx + 1, *x, self.seen))
-            }
-            TextToken::End(_) => todo!(),
-            _ => visit_key(idx, self.doc, visitor),
+            TextToken::Scalar(x) => self.deserialize_str(visitor),
+            TextToken::End(x) => todo!(),
         }
     }
 
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_string(visitor)
+    }
+
+    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_str(visitor)
+    }
+
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_bool(visitor)
+    }
+
+    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_u64(visitor)
+    }
+
+    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_u32(visitor)
+    }
+
+    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_u16(visitor)
+    }
+
+    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_u8(visitor)
+    }
+
+    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_i64(visitor)
+    }
+
+    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_i32(visitor)
+    }
+
+    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_i16(visitor)
+    }
+
+    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_i8(visitor)
+    }
+
+    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_f64(visitor)
+    }
+
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_indices[self.idx - 1];
+        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_f32(visitor)
+    }
+
     serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        i128 u128 char
         bytes byte_buf option unit unit_struct newtype_struct tuple
         tuple_struct map enum ignored_any identifier struct seq
     }
@@ -487,6 +935,362 @@ mod tests {
             actual,
             MyStruct {
                 field1: Cow::Borrowed("ENG")
+            }
+        );
+    }
+
+    #[test]
+    fn test_false_field() {
+        let data = b"field1=no";
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: bool,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: false });
+    }
+
+    #[test]
+    fn test_true_field() {
+        let data = b"field1=yes";
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: bool,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: true });
+    }
+
+    #[test]
+    fn test_u64_field() {
+        let data = b"field1=1000";
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: u64,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: 1000 });
+    }
+
+    #[test]
+    fn test_u32_field() {
+        let data = b"field1=1000";
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: u32,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: 1000 });
+    }
+
+    #[test]
+    fn test_u8_field() {
+        let data = b"field1=100";
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: u8,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: 100 });
+    }
+
+    #[test]
+    fn test_u16_field() {
+        let data = b"field1=1000";
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: u16,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: 1000 });
+    }
+
+    #[test]
+    fn test_i8_field() {
+        let data = b"field1=-100";
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: i8,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: -100 });
+    }
+
+    #[test]
+    fn test_i16_field() {
+        let data = b"field1=-1000";
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: i16,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: -1000 });
+    }
+
+    #[test]
+    fn test_i32_field() {
+        let data = b"field1=-1000";
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: i32,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: -1000 });
+    }
+
+    #[test]
+    fn test_i64_field() {
+        let data = b"field1=-1000";
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: i64,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: -1000 });
+    }
+
+    #[test]
+    fn test_f32_field() {
+        let data = b"field1=-100.535";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            field1: f32,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: -100.535 });
+    }
+
+    #[test]
+    fn test_f64_field() {
+        let data = b"field1=-100.535";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            field1: f64,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: -100.535 });
+    }
+
+    #[test]
+    fn test_multiple_to_level_events() {
+        let data = b"field1=yes\r\nfield2=no";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            field1: bool,
+            field2: bool,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                field1: true,
+                field2: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_string_array() {
+        let data = include_bytes!("../../../../assets/fixtures/partials/string-array.txt");
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            dlc_enabled: Vec<String>,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                dlc_enabled: vec![
+                    String::from("Conquest of Paradise"),
+                    String::from("Wealth of Nations"),
+                    String::from("Res Publica"),
+                    String::from("Art of War"),
+                    String::from("El Dorado"),
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn test_nested_object() {
+        let data = include_bytes!("../../../../assets/fixtures/partials/savegame.txt");
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            savegame_version: Version,
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Version {
+            first: u32,
+            second: u32,
+            third: u32,
+            forth: u32,
+            name: Option<String>,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                savegame_version: Version {
+                    first: 1,
+                    second: 29,
+                    third: 5,
+                    forth: 0,
+                    name: Some(String::from("Manchu")),
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn test_empty_array() {
+        let data = b"discovered_by = {}";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            discovered_by: Vec<String>,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                discovered_by: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_array_of_objects() {
+        let data = include_bytes!("../../../../assets/fixtures/partials/campaign_stats.txt");
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            campaign_stats: Vec<Stat>,
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Stat {
+            id: u32,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                campaign_stats: vec![
+                    Stat { id: 0 },
+                    Stat { id: 1 },
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn test_skip_unwanted() {
+        let data = b"a = b\r\nc = d\r\ne = f";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            c: String,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                c: String::from("d"),
+            }
+        );
+    }
+
+    #[test]
+    fn test_consecutive_fields() {
+        let data = b"a = b\r\nc = d1\r\nc = d2\r\ne = f";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            a: String,
+            c: Vec<String>,
+            e: String,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                a: String::from("b"),
+                c: vec![String::from("d1"), String::from("d2")],
+                e: String::from("f"),
+            }
+        );
+    }
+
+    #[test]
+    fn test_non_consecutive_fields() {
+        let data = b"c = d1\r\na = b\r\nc = d2\r\ne = f";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            a: String,
+            c: Vec<String>,
+            e: String,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                a: String::from("b"),
+                c: vec![String::from("d1"), String::from("d2")],
+                e: String::from("f"),
+            }
+        );
+    }
+
+    #[test]
+    fn test_optional_field() {
+        let data = b"field1=ENG";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            field1: Option<String>,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                field1: Some(String::from("ENG")),
             }
         );
     }
