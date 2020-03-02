@@ -315,7 +315,7 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
             TextToken::Scalar(s) => match s.to_utf8() {
                 Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
                 Cow::Owned(s) => visitor.visit_string(s),
-            }
+            },
             ref x => Err(TextError {
                 kind: TextErrorKind::Message(format!("unable to deserialize {:?} as a string", x)),
             }),
@@ -483,6 +483,11 @@ mod tests {
         }
 
         let actual: MyStruct = from_slice(&data[..]).unwrap();
-        assert_eq!(actual, MyStruct { field1: Cow::Borrowed("ENG") });
+        assert_eq!(
+            actual,
+            MyStruct {
+                field1: Cow::Borrowed("ENG")
+            }
+        );
     }
 }

@@ -49,6 +49,10 @@ pub fn from_windows_string_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+pub fn to_u64_benchmark(c: &mut Criterion) {
+    c.bench_function("to_u64", |b| b.iter(|| Scalar::new(b"20405029").to_u64()));
+}
+
 pub fn binary_deserialize_benchmark(c: &mut Criterion) {
     #[derive(serde::Deserialize, PartialEq, Eq, Debug)]
     struct Meta {
@@ -115,5 +119,6 @@ criterion_group!(
     binary_parse_benchmark,
     text_parse_benchmark,
     binary_deserialize_benchmark,
+    to_u64_benchmark,
 );
 criterion_main!(benches);

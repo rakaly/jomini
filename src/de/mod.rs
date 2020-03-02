@@ -127,7 +127,7 @@ impl<'de, 'r> de::Deserializer<'de> for &'r mut Deserializer<'de> {
         V: Visitor<'de>,
     {
         if let Some(TextEvent::Scalar(scalar)) = self.get_value() {
-            visitor.visit_i64(scalar.to_i64())
+            visitor.visit_i64(scalar.to_i64().unwrap())
         } else {
             todo!()
         }
