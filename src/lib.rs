@@ -5,7 +5,7 @@ pub mod de;
 pub(crate) mod depth;
 mod operator;
 mod scalar;
-mod text;
+pub mod text;
 
 pub use self::binary::*;
 pub use self::operator::*;

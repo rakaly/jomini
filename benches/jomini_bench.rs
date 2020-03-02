@@ -117,6 +117,23 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+pub fn text_deserialize_benchmark(c: &mut Criterion) {
+    #[derive(serde::Deserialize, PartialEq, Eq, Debug)]
+    struct Meta {
+        campaign_id: String,
+    }
+
+    let data = &METADATA_TXT["EU4txt".len()..];
+    let mut group = c.benchmark_group("text_deserialize");
+    group.throughput(Throughput::Bytes(data.len() as u64));
+    group.bench_function("meta-tape", |b| {
+        b.iter(|| {
+            let _res: Meta = jomini::text::de::from_slice(&data[..]).unwrap();
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     is_ascii_benchmark,
@@ -125,6 +142,7 @@ criterion_group!(
     binary_parse_benchmark,
     text_parse_benchmark,
     binary_deserialize_benchmark,
+    text_deserialize_benchmark,
     to_u64_benchmark,
     to_f64_benchmark,
 );

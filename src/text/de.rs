@@ -125,7 +125,6 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
                 return seed
                     .deserialize(KeyDeserializer {
                         tape_idx: self.tape_idx,
-                        seen: self.seen,
                         doc: self.doc,
                     })
                     .map(Some);
@@ -167,15 +166,13 @@ fn ensure_scalar<'a>(s: &TextToken<'a>) -> Result<Scalar<'a>, TextError> {
 
 struct KeyDeserializer<'b, 'de: 'b> {
     doc: &'b TextTape<'de>,
-    seen: &'b mut Vec<u8>,
     tape_idx: usize,
 }
 
 impl<'b, 'de> KeyDeserializer<'b, 'de> {
-    fn new(doc: &'b TextTape<'de>, seen: &'b mut Vec<u8>, tape_idx: usize) -> Self {
+    fn new(doc: &'b TextTape<'de>, tape_idx: usize) -> Self {
         KeyDeserializer {
             doc,
-            seen,
             tape_idx,
         }
     }
@@ -188,33 +185,39 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        todo!()
+        self.deserialize_str(visitor)
     }
 
-    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_map<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        todo!()
+        Err(TextError {
+            kind: TextErrorKind::Message(String::from("can't deserialize map as key")),
+        })
     }
 
-    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_seq<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        todo!()
+        Err(TextError {
+            kind: TextErrorKind::Message(String::from("can't deserialize seq as key")),
+        })
     }
 
     fn deserialize_struct<V>(
         self,
         _name: &'static str,
         _fields: &'static [&'static str],
-        visitor: V,
+        _visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        todo!()
+        Err(TextError {
+            kind: TextErrorKind::Message(String::from("can't deserialize struct as key")),
+        })
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -404,7 +407,11 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
             TextToken::Object(x) => {
                 visitor.visit_map(BinaryMap::new(self.doc, idx + 1, *x, self.seen))
             }
-            TextToken::End(_) => todo!(),
+            TextToken::End(_x) => Err(TextError {
+                kind: TextErrorKind::Message(String::from(
+                    "encountered end when trying to deserialize",
+                )),
+            }),
             _ => self.deserialize_str(visitor),
         }
     }
@@ -422,7 +429,11 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
                 idx: idx + 1,
                 end_idx: *x,
             }),
-            TextToken::End(_) => todo!(),
+            TextToken::End(_x) => Err(TextError {
+                kind: TextErrorKind::Message(String::from(
+                    "encountered end when trying to deserialize",
+                )),
+            }),
             _ => visitor.visit_seq(SpanningSequence {
                 doc: self.doc,
                 value_indices: self.value_indices,
@@ -480,91 +491,91 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_string(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_string(visitor)
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_str(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_str(visitor)
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_bool(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_bool(visitor)
     }
 
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_u64(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_u64(visitor)
     }
 
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_u32(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_u32(visitor)
     }
 
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_u16(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_u16(visitor)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_u8(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_u8(visitor)
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_i64(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_i64(visitor)
     }
 
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_i32(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_i32(visitor)
     }
 
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_i16(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_i16(visitor)
     }
 
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_i8(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_i8(visitor)
     }
 
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_f64(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_f64(visitor)
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.value_indices[0]).deserialize_f32(visitor)
+        KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_f32(visitor)
     }
 
     serde::forward_to_deserialize_any! {
@@ -601,8 +612,12 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
                 idx: self.de_idx + 1,
                 end_idx: *x,
             }),
-            TextToken::Scalar(x) => self.deserialize_str(visitor),
-            TextToken::End(x) => todo!(),
+            TextToken::Scalar(_x) => self.deserialize_str(visitor),
+            TextToken::End(_x) => Err(TextError {
+                kind: TextErrorKind::Message(String::from(
+                    "encountered end when trying to deserialize",
+                )),
+            }),
         }
     }
 
@@ -610,91 +625,91 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_string(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_string(visitor)
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_str(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_str(visitor)
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_bool(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_bool(visitor)
     }
 
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_u64(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_u64(visitor)
     }
 
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_u32(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_u32(visitor)
     }
 
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_u16(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_u16(visitor)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_u8(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_u8(visitor)
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_i64(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_i64(visitor)
     }
 
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_i32(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_i32(visitor)
     }
 
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_i16(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_i16(visitor)
     }
 
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_i8(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_i8(visitor)
     }
 
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_f64(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_f64(visitor)
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.seen, self.de_idx).deserialize_f32(visitor)
+        KeyDeserializer::new(self.doc, self.de_idx).deserialize_f32(visitor)
     }
 
     serde::forward_to_deserialize_any! {
@@ -753,8 +768,12 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
                 idx: self.idx + 1,
                 end_idx: *x,
             }),
-            TextToken::Scalar(x) => self.deserialize_str(visitor),
-            TextToken::End(x) => todo!(),
+            TextToken::Scalar(_x) => self.deserialize_str(visitor),
+            TextToken::End(_x) => Err(TextError {
+                kind: TextErrorKind::Message(String::from(
+                    "encountered end when trying to deserialize",
+                )),
+            }),
         }
     }
 
@@ -763,7 +782,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_string(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_string(visitor)
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -771,7 +790,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_str(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_str(visitor)
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -779,7 +798,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_bool(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_bool(visitor)
     }
 
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -787,7 +806,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_u64(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_u64(visitor)
     }
 
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -795,7 +814,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_u32(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_u32(visitor)
     }
 
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -803,7 +822,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_u16(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_u16(visitor)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -811,7 +830,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_u8(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_u8(visitor)
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -819,7 +838,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_i64(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_i64(visitor)
     }
 
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -827,7 +846,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_i32(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_i32(visitor)
     }
 
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -835,7 +854,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_i16(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_i16(visitor)
     }
 
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -843,7 +862,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_i8(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_i8(visitor)
     }
 
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -851,7 +870,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_f64(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_f64(visitor)
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -859,7 +878,7 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
         V: Visitor<'de>,
     {
         let idx = self.value_indices[self.idx - 1];
-        KeyDeserializer::new(self.doc, self.seen, idx).deserialize_f32(visitor)
+        KeyDeserializer::new(self.doc, idx).deserialize_f32(visitor)
     }
 
     serde::forward_to_deserialize_any! {
@@ -1207,10 +1226,7 @@ mod tests {
         assert_eq!(
             actual,
             MyStruct {
-                campaign_stats: vec![
-                    Stat { id: 0 },
-                    Stat { id: 1 },
-                ]
+                campaign_stats: vec![Stat { id: 0 }, Stat { id: 1 },]
             }
         );
     }
