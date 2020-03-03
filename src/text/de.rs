@@ -171,10 +171,7 @@ struct KeyDeserializer<'b, 'de: 'b> {
 
 impl<'b, 'de> KeyDeserializer<'b, 'de> {
     fn new(doc: &'b TextTape<'de>, tape_idx: usize) -> Self {
-        KeyDeserializer {
-            doc,
-            tape_idx,
-        }
+        KeyDeserializer { doc, tape_idx }
     }
 }
 
