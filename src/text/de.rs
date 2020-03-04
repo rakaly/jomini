@@ -6,21 +6,28 @@ pub fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, TextError>
 where
     T: Deserialize<'a>,
 {
-    let tape = TextTape::from_slice(data)?;
-    let mut seen = vec![0; tape.token_tape.len()];
-    let mut deserializer = RootDeserializer {
-        doc: &tape,
-        seen: &mut seen,
-    };
+    let mut deserializer = TextDeserializer::from_slice(data)?;
     T::deserialize(&mut deserializer)
 }
 
-struct RootDeserializer<'b, 'a: 'b> {
-    doc: &'b TextTape<'a>,
-    seen: &'b mut Vec<u8>,
+#[derive(Debug)]
+pub struct TextDeserializer<'a> {
+    doc: TextTape<'a>,
+    seen: Vec<u8>,
 }
 
-impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut RootDeserializer<'b, 'de> {
+impl<'a> TextDeserializer<'a> {
+    pub fn from_slice(data: &'a [u8]) -> Result<Self, TextError>{
+        let tape = TextTape::from_slice(data)?;
+        let seen = vec![0; tape.token_tape.len()];
+        Ok(TextDeserializer {
+            doc: tape,
+            seen: seen,
+        })
+    }
+}
+
+impl<'de, 'r> de::Deserializer<'de> for &'r mut TextDeserializer<'de> {
     type Error = TextError;
 
     fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
@@ -39,10 +46,10 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut RootDeserializer<'b, 'de> {
         V: Visitor<'de>,
     {
         visitor.visit_map(BinaryMap::new(
-            self.doc,
+            &self.doc,
             0,
             self.doc.token_tape.len(),
-            self.seen,
+            &mut self.seen,
         ))
     }
 
@@ -122,6 +129,7 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
                     value_idx = next_key_idx + 1;
                 }
 
+
                 return seed
                     .deserialize(KeyDeserializer {
                         tape_idx: self.tape_idx,
@@ -156,12 +164,14 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
 }
 
 fn ensure_scalar<'a>(s: &TextToken<'a>) -> Result<Scalar<'a>, TextError> {
-    match s {
+    let res = match s {
         TextToken::Scalar(s) => Ok(*s),
         x => Err(TextError {
-            kind: TextErrorKind::Message(format!(" {:?} as a string", x)),
+            kind: TextErrorKind::Message(format!("{:?} is not a scalar", x)),
         }),
-    }
+    };
+
+    Ok(res.unwrap())
 }
 
 struct KeyDeserializer<'b, 'de: 'b> {
@@ -371,10 +381,65 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
         self.deserialize_f64(visitor)
     }
 
-    serde::forward_to_deserialize_any! {
-        i128 u128 char
-        bytes byte_buf unit unit_struct
-        enum
+    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_unit()
+    }
+
+    fn deserialize_unit_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_unit()
+    }
+
+    fn deserialize_enum<V>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        _visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        todo!()
+    }
+
+    fn deserialize_i128<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        todo!()
+    }
+
+    fn deserialize_u128<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        todo!()
+    }
+
+    fn deserialize_char<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        todo!()
+    }
+
+    fn deserialize_bytes<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        todo!()
+    }
+
+    fn deserialize_byte_buf<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        todo!()
     }
 }
 
@@ -575,10 +640,29 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
         KeyDeserializer::new(self.doc, self.value_indices[0]).deserialize_f32(visitor)
     }
 
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_map(visitor)
+    }
+
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_any(visitor)
+    }
+
     serde::forward_to_deserialize_any! {
         i128 u128 char
         bytes byte_buf unit unit_struct identifier
-        map enum struct
+        enum
     }
 }
 
@@ -754,15 +838,16 @@ impl<'c, 'b, 'de, 'r> de::Deserializer<'de> for &'r mut SpanningSequence<'c, 'b,
     where
         V: Visitor<'de>,
     {
-        match &self.doc.token_tape[self.idx - 1] {
+        let idx = self.value_indices[self.idx - 1];
+        match &self.doc.token_tape[idx] {
             TextToken::Object(x) => {
-                visitor.visit_map(BinaryMap::new(self.doc, self.idx + 1, *x, self.seen))
+                visitor.visit_map(BinaryMap::new(self.doc, idx + 1, *x, self.seen))
             }
             TextToken::Array(x) => visitor.visit_seq(BinarySequence {
                 doc: self.doc,
                 seen: self.seen,
                 de_idx: 0,
-                idx: self.idx + 1,
+                idx: idx + 1,
                 end_idx: *x,
             }),
             TextToken::Scalar(_x) => self.deserialize_str(visitor),
@@ -905,6 +990,7 @@ impl<'c, 'b, 'de> SeqAccess<'de> for SpanningSequence<'c, 'b, 'de> {
 mod tests {
     use super::*;
     use serde::Deserialize;
+    use std::collections::HashMap;
 
     #[test]
     fn test_single_field() {
@@ -1304,6 +1390,124 @@ mod tests {
             actual,
             MyStruct {
                 field1: Some(String::from("ENG")),
+            }
+        );
+    }
+
+    #[test]
+    fn test_deserialize_hashmap() {
+        let data = b"-1=a\r\n-2=b";
+
+        let actual: HashMap<i32, String> = from_slice(&data[..]).unwrap();
+        let mut expected = HashMap::new();
+        expected.insert(-1, String::from("a"));
+        expected.insert(-2, String::from("b"));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_deserialize_nested_hashmap() {
+        let data = b"provinces={ -1={ name=\"abc\" } }";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            provinces: HashMap<i32, Province>,
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Province {
+            name: String,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let mut expected = HashMap::new();
+        expected.insert(-1, Province { name: String::from("abc") });
+        assert_eq!(actual, MyStruct { provinces: expected });
+    }
+
+    #[test]
+    fn test_empty_objects() {
+        let data = b"a={foo={bar=val} {} { } me=you}";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            a: MyNest,
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyNest {
+            foo: MyFoo,
+            me: String,
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyFoo {
+            bar: String
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                a: MyNest {
+                    foo: MyFoo {
+                        bar: String::from("val"),
+                    },
+                    me: String::from("you"),
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn test_empty_objects2() {
+        let data = b"foo={bar=val {}} me=you";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            foo: MyFoo,
+            me: String,
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyFoo {
+            bar: String
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                foo: MyFoo {
+                    bar: String::from("val"),
+                },
+                me: String::from("you"),
+            }
+        );
+    }
+
+    #[test]
+    fn test_spanning_objects() {
+        let data = b"army={name=abc} army={name=def}";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            army: Vec<Army>
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Army {
+            name: String,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                army: vec![
+                    Army { name: String::from("abc") },
+                    Army { name: String::from("def") },
+                ]
             }
         );
     }

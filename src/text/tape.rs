@@ -127,18 +127,31 @@ impl<'a> TextTape<'a> {
         loop {
             d = self.skip_ws(d)?;
 
-            if d[0] == b'}' {
-                let end_idx = self.token_tape.len();
-                self.token_tape[open_idx] = TextToken::Object(end_idx);
-                self.token_tape.push(TextToken::End(open_idx));
-                return Ok(&d[1..]);
-            }
+            match d[0] {
+                b'}' => {
+                    let end_idx = self.token_tape.len();
+                    self.token_tape[open_idx] = TextToken::Object(end_idx);
+                    self.token_tape.push(TextToken::End(open_idx));
+                    return Ok(&d[1..]);
+                }
+                
+                // Empty object! Skip
+                b'{' => {
+                    d = self.skip_ws(&d[1..])?;
+                    if d[0] != b'}' {
+                        panic!("EEEK");
+                    }
 
-            d = self.parse_scalar(d);
-            d = self.skip_ws(d)?;
-            d = self.parse_key_value_separator(d)?;
-            d = self.skip_ws(d)?;
-            d = self.parse_value(d)?;
+                    d = &d[1..];
+                }
+                _ => {
+                    d = self.parse_scalar(d);
+                    d = self.skip_ws(d)?;
+                    d = self.parse_key_value_separator(d)?;
+                    d = self.skip_ws(d)?;
+                    d = self.parse_value(d)?;
+                }
+            }
         }
     }
 
@@ -401,6 +414,45 @@ mod tests {
                 TextToken::Scalar(Scalar::new(b"admiral")),
                 TextToken::End(8),
                 TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_empty_objects2() {
+        let data = b"foo={bar=val {}} me=you";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Object(4),
+                TextToken::Scalar(Scalar::new(b"bar")),
+                TextToken::Scalar(Scalar::new(b"val")),
+                TextToken::End(1),
+                TextToken::Scalar(Scalar::new(b"me")),
+                TextToken::Scalar(Scalar::new(b"you")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_spanning_objects() {
+        let data = b"army={name=abc} army={name=def}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"army")),
+                TextToken::Object(4),
+                TextToken::Scalar(Scalar::new(b"name")),
+                TextToken::Scalar(Scalar::new(b"abc")),
+                TextToken::End(1),
+                TextToken::Scalar(Scalar::new(b"army")),
+                TextToken::Object(9),
+                TextToken::Scalar(Scalar::new(b"name")),
+                TextToken::Scalar(Scalar::new(b"def")),
+                TextToken::End(6),
             ]
         );
     }
