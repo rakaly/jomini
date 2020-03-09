@@ -214,8 +214,7 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
     let mut chunks = d.chunks_exact(8);
     let all_digits = chunks.all(is_digits);
     if !(all_digits & is_digits(chunks.remainder())) {
-        panic!("EEEK");
-//        return Err(ScalarError::AllDigits(to_utf8_owned(d)));
+        return Err(ScalarError::AllDigits(to_utf8_owned(d)));
     }
 
     let mut result = 0;
