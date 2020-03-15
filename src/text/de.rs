@@ -17,7 +17,7 @@ pub struct TextDeserializer<'a> {
 }
 
 impl<'a> TextDeserializer<'a> {
-    pub fn from_slice(data: &'a [u8]) -> Result<Self, TextError>{
+    pub fn from_slice(data: &'a [u8]) -> Result<Self, TextError> {
         let tape = TextTape::from_slice(data)?;
         let seen = vec![0; tape.token_tape.len()];
         Ok(TextDeserializer {
@@ -128,7 +128,6 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
 
                     value_idx = next_key_idx + 1;
                 }
-
 
                 return seed
                     .deserialize(KeyDeserializer {
@@ -388,7 +387,11 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
         visitor.visit_unit()
     }
 
-    fn deserialize_unit_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_unit_struct<V>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
@@ -1421,8 +1424,18 @@ mod tests {
 
         let actual: MyStruct = from_slice(&data[..]).unwrap();
         let mut expected = HashMap::new();
-        expected.insert(-1, Province { name: String::from("abc") });
-        assert_eq!(actual, MyStruct { provinces: expected });
+        expected.insert(
+            -1,
+            Province {
+                name: String::from("abc"),
+            },
+        );
+        assert_eq!(
+            actual,
+            MyStruct {
+                provinces: expected
+            }
+        );
     }
 
     #[test]
@@ -1442,7 +1455,7 @@ mod tests {
 
         #[derive(Deserialize, PartialEq, Debug)]
         struct MyFoo {
-            bar: String
+            bar: String,
         }
 
         let actual: MyStruct = from_slice(&data[..]).unwrap();
@@ -1471,7 +1484,7 @@ mod tests {
 
         #[derive(Deserialize, PartialEq, Debug)]
         struct MyFoo {
-            bar: String
+            bar: String,
         }
 
         let actual: MyStruct = from_slice(&data[..]).unwrap();
@@ -1492,7 +1505,7 @@ mod tests {
 
         #[derive(Deserialize, PartialEq, Debug)]
         struct MyStruct {
-            army: Vec<Army>
+            army: Vec<Army>,
         }
 
         #[derive(Deserialize, PartialEq, Debug)]
@@ -1505,8 +1518,12 @@ mod tests {
             actual,
             MyStruct {
                 army: vec![
-                    Army { name: String::from("abc") },
-                    Army { name: String::from("def") },
+                    Army {
+                        name: String::from("abc")
+                    },
+                    Army {
+                        name: String::from("def")
+                    },
                 ]
             }
         );

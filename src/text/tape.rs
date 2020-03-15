@@ -134,7 +134,7 @@ impl<'a> TextTape<'a> {
                     self.token_tape.push(TextToken::End(open_idx));
                     return Ok(&d[1..]);
                 }
-                
+
                 // Empty object! Skip
                 b'{' => {
                     d = self.skip_ws(&d[1..])?;
