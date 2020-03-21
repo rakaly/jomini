@@ -285,6 +285,7 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, RES: TokenResolver, V: Visitor<'de>>(
         BinaryToken::Object(_) => todo!(),
         BinaryToken::Array(_) => todo!(),
         BinaryToken::End(_) => todo!(),
+        BinaryToken::Rgb(_) => todo!(),
         BinaryToken::Bool(x) => visitor.visit_bool(x),
         BinaryToken::U32(x) => visitor.visit_u32(x),
         BinaryToken::U64(x) => visitor.visit_u64(x),

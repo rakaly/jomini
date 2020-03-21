@@ -1,6 +1,5 @@
 #[derive(Debug, PartialEq)]
 pub enum BinaryToken {
-    //    Hsv(u32, u32, u32),
     Array(usize),
     Object(usize),
     End(usize),
@@ -12,6 +11,7 @@ pub enum BinaryToken {
     F32(f32),
     Q16(f32),
     Token(u16),
+    Rgb(usize),
 }
 
 const END: u16 = 0x0004;
@@ -25,13 +25,21 @@ const STRING_1: u16 = 0x000f;
 const STRING_2: u16 = 0x0017;
 const F32: u16 = 0x000d;
 const Q16: u16 = 0x0167;
-const HSV: u16 = 0x0243;
+const RGB: u16 = 0x0243;
 
 type MyError = String;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rgb {
+    pub r: u32,
+    pub g: u32,
+    pub b: u32,
+}
 
 pub struct BinTape<'a> {
     pub token_tape: Vec<BinaryToken>,
     pub data_tape: Vec<&'a [u8]>,
+    pub rgb_tape: Vec<Rgb>,
 }
 
 impl<'a> BinTape<'a> {
@@ -39,6 +47,7 @@ impl<'a> BinTape<'a> {
         let mut parser = BinTape {
             token_tape: Vec::new(),
             data_tape: Vec::new(),
+            rgb_tape: Vec::new(),
         };
 
         parser.parse(data)?;
@@ -109,6 +118,24 @@ impl<'a> BinTape<'a> {
     }
 
     #[inline]
+    fn parse_rgb(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+        let val = data
+            .get(..22) // u16 `{` + (u16 + u32) * 3 + u16 `}`
+            .map(|x| {
+                Rgb {
+                    r: le_u32(&x[4..]),
+                    g: le_u32(&x[10..]),
+                    b: le_u32(&x[16..]),
+                }
+            })
+            .expect("EEK");
+        let rgb_index = self.rgb_tape.len();
+        self.token_tape.push(BinaryToken::Rgb(rgb_index));
+        self.rgb_tape.push(val);
+        Ok(&data[22..])
+    }
+
+    #[inline]
     fn parse_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
         let text = data
             .get(..2)
@@ -149,7 +176,7 @@ impl<'a> BinTape<'a> {
                     self.token_tape.push(BinaryToken::Array(0));
                     self.parse_open(data, open_idx2)?
                 }
-                HSV => todo!(),
+                RGB => self.parse_rgb(data)?,
                 EQUAL => &data,
                 x => {
                     self.token_tape.push(BinaryToken::Token(x));
@@ -183,7 +210,7 @@ impl<'a> BinTape<'a> {
                     self.token_tape.push(BinaryToken::Object(0));
                     self.parse_inner_object(data, open_idx2)?
                 }
-                HSV | EQUAL => todo!(),
+                RGB | EQUAL => todo!(),
                 x => {
                     self.token_tape.push(BinaryToken::Token(x));
                     &data
@@ -248,7 +275,7 @@ impl<'a> BinTape<'a> {
                 data = self.parse_q16(data)?;
                 self.first_val(data, open_idx)
             }
-            HSV => todo!(),
+            RGB => todo!(),
             x => {
                 self.token_tape.push(BinaryToken::Token(x));
                 self.first_val(data, open_idx)
@@ -274,7 +301,7 @@ impl<'a> BinTape<'a> {
                     self.parse_open(data, open_idx)?
                 }
                 END => todo!(),
-                HSV => todo!(),
+                RGB => self.parse_rgb(data)?,
                 EQUAL => &data,
                 x => {
                     self.token_tape.push(BinaryToken::Token(x));
@@ -569,33 +596,6 @@ mod tests {
         );
     }
 
-    /*    #[test]
-    fn test_empty_objects() {
-        let mut data = vec![0x63, 0x28, 0x01, 0x00, 0x17, 0x00, 0x07, 0x00];
-        data.extend_from_slice(b"western");
-        data.extend_from_slice(&[
-            0x03, 0x00, 0x04, 0x00, 0x03, 0x00, 0x04, 0x00, 0x03, 0x00, 0x04, 0x00,
-        ]);
-        data.extend_from_slice(&[0x0f, 0x00, 0x08, 0x00]);
-        data.extend_from_slice(b"1451.5.2");
-        data.extend_from_slice(&[0x01, 0x00]);
-        data.extend_from_slice(b"abc");
-        let tape = parse(&data[..]).unwrap();
-        assert_eq!(
-            tape.token_tape,
-            vec![
-                BinaryToken::Token(0x2863),
-                BinaryToken::Text(0),Scalar::new(b"western")),
-                BinaryToken::Text(1), Scalar::new(b"1451.5.2")),
-            ]
-        );
-
-        let data: Vec<&'static [u8]> = vec![
-                b"schools_initiated",
-                b"1444.11.11\n",
-            ];
-    }*/
-
     #[test]
     fn test_array_of_objects() {
         let data = [
@@ -621,24 +621,24 @@ mod tests {
         );
     }
 
-    /*#[test]
-    fn test_hsv() {
+    #[test]
+    fn test_rgb() {
         let data = [
             0x3a, 0x05, 0x01, 0x00, 0x43, 0x02, 0x03, 0x00, 0x14, 0x00, 0x6e, 0x00, 0x00, 0x00,
             0x14, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x14, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x04, 0x00,
         ];
 
-        let mut parser = BinaryParser::new();
+        let tape = parse(&data[..]).unwrap();
         assert_eq!(
-            parser.events(&data).collect::<Result<Vec<_>, _>>().unwrap(),
+            tape.token_tape,
             vec![
                 BinaryToken::Token(0x053a),
-                BinaryToken::Operator(Operator::Equal),
-                BinaryToken::Hsv(110, 27, 27),
+                BinaryToken::Rgb(0),
             ]
         );
-        assert_eq!(parser.position(), data.len());
-    }*/
+        let rgb_tape = vec![Rgb { r: 110, g: 27, b: 27 }];
+        assert_eq!(tape.rgb_tape, rgb_tape);
+    }
 
     #[test]
     fn test_u64() {
