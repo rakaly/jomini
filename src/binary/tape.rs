@@ -148,42 +148,117 @@ impl<'a> BinTape<'a> {
     }
 
     #[inline]
+    fn parse_scalar(&mut self, mut data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
+        let (d, token_id) = self.parse_next_id(data)?;
+        data = d;
+        match token_id {
+            END => Err(BinaryDeError::Message(String::from("END seen for scalar"))),
+            OPEN => Err(BinaryDeError::Message(String::from("START seen for scalar"))),
+            EQUAL => Err(BinaryDeError::Message(String::from("EQUAL seen for scalar"))),
+            U32 => self.parse_u32(data),
+            U64 => self.parse_u64(data),
+            I32 => self.parse_i32(data),
+            BOOL => self.parse_bool(data),
+            STRING_1 | STRING_2 => self.parse_string(data),
+            F32 => self.parse_f32(data),
+            Q16 => self.parse_q16(data),
+            RGB => self.parse_rgb(data),
+            x => {
+                self.token_tape.push(BinaryToken::Token(x));
+                Ok(&data)
+            }
+        }
+    }
+
+    #[inline]
+    fn parse_value(&mut self, mut data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
+        let (d, token_id) = self.parse_next_id(data)?;
+        data = d;
+        match token_id {
+            U32 => self.parse_u32(data),
+            U64 => self.parse_u64(data),
+            I32 => self.parse_i32(data),
+            BOOL => self.parse_bool(data),
+            STRING_1 | STRING_2 => self.parse_string(data),
+            F32 => self.parse_f32(data),
+            Q16 => self.parse_q16(data),
+            OPEN => {
+                let open_idx2 = self.token_tape.len();
+                self.token_tape.push(BinaryToken::Array(0));
+                self.parse_open(data, open_idx2)
+            }
+            RGB => self.parse_rgb(data),
+            END => todo!(),
+            EQUAL => todo!(),
+            x => {
+                self.token_tape.push(BinaryToken::Token(x));
+                Ok(&data)
+            }
+        }
+    }
+
+    #[inline]
+    fn parse_key_value_separator(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
+        let (d, token_id) = self.parse_next_id(data)?;
+        match token_id {
+            EQUAL => Ok(&d),
+            OPEN => Ok(&data),
+            _ => Err(BinaryDeError::Message(String::from("expected an equal to separate key values"))),
+        }
+    }
+
+    #[inline]
     fn parse_inner_object(
         &mut self,
         mut data: &'a [u8],
         open_idx: usize,
     ) -> Result<&'a [u8], BinaryDeError> {
+        data = self.parse_value(data)?;
         loop {
-            let (d, token_id) = self.parse_next_id(data)?;
-            data = d;
-
+            let (mut d, token_id) = self.parse_next_id(data)?;
             data = match token_id {
                 END => {
                     let end_idx = self.token_tape.len();
                     self.token_tape[open_idx] = BinaryToken::Object(end_idx);
                     self.token_tape.push(BinaryToken::End(open_idx));
-                    return Ok(&data);
+                    return Ok(&d);
                 }
-                U32 => self.parse_u32(data)?,
-                U64 => self.parse_u64(data)?,
-                I32 => self.parse_i32(data)?,
-                BOOL => self.parse_bool(data)?,
-                STRING_1 | STRING_2 => self.parse_string(data)?,
-                F32 => self.parse_f32(data)?,
-                Q16 => self.parse_q16(data)?,
+
+                // Empty object Skip
                 OPEN => {
-                    let open_idx2 = self.token_tape.len();
-                    self.token_tape.push(BinaryToken::Array(0));
-                    self.parse_open(data, open_idx2)?
+                    let (d, token_id) = self.parse_next_id(d)?;
+                    if token_id != END {
+                        return Err(BinaryDeError::Message(String::from("expected to skip empty object")));
+                    }
+                    d
                 }
-                RGB => self.parse_rgb(data)?,
-                EQUAL => &data,
-                x => {
-                    self.token_tape.push(BinaryToken::Token(x));
-                    &data
+
+                _ => {
+                    d = self.parse_scalar(data)?;
+                    d = self.parse_key_value_separator(d)?;
+                    d = self.parse_value(d)?;
+                    d
                 }
             }
         }
+    }
+
+    fn parse_object(
+        &mut self,
+        data: &'a [u8],
+        open_idx: usize,
+    ) -> Result<&'a [u8], BinaryDeError> {
+        let (mut d, token_id) = self.parse_next_id(data)?;
+        if token_id == END {
+            let end_idx = self.token_tape.len();
+            self.token_tape[open_idx] = BinaryToken::Object(end_idx);
+            self.token_tape.push(BinaryToken::End(open_idx));
+            return Ok(&d);
+        }
+
+        d = self.parse_scalar(data)?;
+        d = self.parse_key_value_separator(d)?;
+        self.parse_inner_object(d, open_idx)
     }
 
     #[inline]
@@ -208,7 +283,7 @@ impl<'a> BinTape<'a> {
                 OPEN => {
                     let open_idx2 = self.token_tape.len();
                     self.token_tape.push(BinaryToken::Object(0));
-                    self.parse_inner_object(data, open_idx2)?
+                    self.parse_object(data, open_idx2)?
                 }
                 RGB => return Err(BinaryDeError::Message(String::from("Unexpected RGB in array"))),
                 EQUAL => return Err(BinaryDeError::Message(String::from("Unexpected EQUAL in array"))),
@@ -623,6 +698,31 @@ mod tests {
                 BinaryToken::End(1),
             ]
         );
+    }
+
+    #[test]
+    fn test_empty_objects_to_skip() {
+        let data = [
+0x38, 0x28, 0x01, 0x00, 0x03, 0x00, 0x63, 0x28, 0x01, 0x00, 0x17, 0x00, 0x07, 0x00, 0x77, 0x65, 0x73, 0x74, 0x65, 0x72, 0x6e, 0x03, 0x00, 0x04, 0x00, 0x03, 0x00, 0x04, 0x00, 0x03, 0x00, 0x04, 0x00, 0x03, 0x00, 0x04, 0x00, 0x03, 0x00, 0x04, 0x00, 0x03, 0x00, 0x04, 0x00, 0x03, 0x00, 0x04, 0x00, 0x03, 0x00, 0x04, 0x00, 0x03, 0x00, 0x04, 0x00, 0x0f, 0x00, 0x09, 0x00, 0x31, 0x34, 0x34, 0x36, 0x2e, 0x35, 0x2e, 0x33, 0x31, 0x01, 0x00, 0x38, 0x28, 0x04, 0x00
+        ];
+
+        let tape = parse(&data[..]).unwrap();
+        assert_eq!(
+            tape.token_tape,
+            vec![
+                BinaryToken::Token(0x2838),
+                BinaryToken::Object(6),
+                BinaryToken::Token(0x2863),
+                BinaryToken::Text(0),
+                BinaryToken::Text(1),
+                BinaryToken::Token(0x2838),
+                BinaryToken::End(1),
+            ]
+        );
+
+        let data: Vec<&'static [u8]> = vec![b"western", b"1446.5.31"];
+
+        assert_eq!(tape.data_tape, data);
     }
 
     #[test]
