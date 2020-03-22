@@ -1,6 +1,6 @@
+use serde::de;
 use std::error;
 use std::fmt;
-use serde::de;
 
 #[derive(Debug)]
 pub enum BinaryDeError {
