@@ -1,47 +1,6 @@
-use crate::{BinTape, BinaryError, BinaryToken, FailedResolveStrategy, Scalar, TokenResolver};
+use crate::{BinTape, BinaryDeError, BinaryToken, FailedResolveStrategy, Scalar, TokenResolver};
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
-use std::error;
-use std::fmt;
-
-#[derive(Debug)]
-pub enum BinaryDeError {
-    UnexpectedEvent(String),
-    UnknownToken(u16),
-    Parsing(BinaryError),
-    Message(String),
-}
-
-impl fmt::Display for BinaryDeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            BinaryDeError::UnknownToken(x) => write!(f, "unknown token encountered: 0x{:x}", x),
-            BinaryDeError::UnexpectedEvent(x) => write!(f, "unexpected event: {}", x),
-            _ => write!(f, "binary deserialization error"),
-        }
-    }
-}
-
-impl error::Error for BinaryDeError {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match self {
-            BinaryDeError::Parsing(x) => Some(x),
-            _ => None,
-        }
-    }
-}
-
-impl de::Error for BinaryDeError {
-    fn custom<T: fmt::Display>(msg: T) -> Self {
-        BinaryDeError::Message(msg.to_string())
-    }
-}
-
-impl From<BinaryError> for BinaryDeError {
-    fn from(error: BinaryError) -> Self {
-        BinaryDeError::Parsing(error)
-    }
-}
 
 /// Builds a tweaked binary deserializer
 #[derive(Debug)]
@@ -81,7 +40,7 @@ impl BinaryDeserializerBuilder {
             failed_resolve_strategy: self.failed_resolve_strategy,
         };
 
-        let tape = BinTape::from_slice(data).unwrap();
+        let tape = BinTape::from_slice(data)?;
         let mut seen = vec![0; tape.token_tape.len()];
         let mut deserializer = RootDeserializer {
             doc: &tape,
@@ -299,7 +258,7 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, RES: TokenResolver, V: Visitor<'de>>(
         BinaryToken::Token(s) => match config.resolver.resolve(s) {
             Some(id) => visitor.visit_str(id),
             None => match config.failed_resolve_strategy {
-                FailedResolveStrategy::Error => Err(BinaryDeError::UnknownToken(s)),
+                FailedResolveStrategy::Error => Err(BinaryDeError::UnresolvedToken(s)),
                 FailedResolveStrategy::Stringify => visitor.visit_string(format!("0x{:x}", s)),
                 FailedResolveStrategy::Ignore => visitor.visit_str("__internal_identifier_ignore"),
             },

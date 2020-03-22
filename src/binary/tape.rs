@@ -1,3 +1,5 @@
+use crate::BinaryDeError;
+
 #[derive(Debug, PartialEq)]
 pub enum BinaryToken {
     Array(usize),
@@ -27,8 +29,6 @@ const F32: u16 = 0x000d;
 const Q16: u16 = 0x0167;
 const RGB: u16 = 0x0243;
 
-type MyError = String;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb {
     pub r: u32,
@@ -43,7 +43,7 @@ pub struct BinTape<'a> {
 }
 
 impl<'a> BinTape<'a> {
-    pub fn from_slice(data: &[u8]) -> Result<BinTape<'_>, MyError> {
+    pub fn from_slice(data: &[u8]) -> Result<BinTape<'_>, BinaryDeError> {
         let mut parser = BinTape {
             token_tape: Vec::new(),
             data_tape: Vec::new(),
@@ -55,48 +55,48 @@ impl<'a> BinTape<'a> {
     }
 
     #[inline]
-    fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], u16), MyError> {
-        let val = data.get(..2).map(le_u16).expect("EEK");
+    fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], u16), BinaryDeError> {
+        let val = data.get(..2).map(le_u16).ok_or(BinaryDeError::EarlyEof)?;
         Ok((&data[2..], val))
     }
 
     #[inline]
-    fn parse_u32(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
-        let val = data.get(..4).map(le_u32).expect("EEK");
+    fn parse_u32(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
+        let val = data.get(..4).map(le_u32).ok_or(BinaryDeError::EarlyEof)?;
         self.token_tape.push(BinaryToken::U32(val));
         Ok(&data[4..])
     }
 
     #[inline]
-    fn parse_u64(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
-        let val = data.get(..8).map(le_u64).expect("EEK");
+    fn parse_u64(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
+        let val = data.get(..8).map(le_u64).ok_or(BinaryDeError::EarlyEof)?;
         self.token_tape.push(BinaryToken::U64(val));
         Ok(&data[8..])
     }
 
     #[inline]
-    fn parse_i32(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+    fn parse_i32(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
         let val = data
             .get(..4)
             .map(le_i32)
-            .ok_or_else(|| MyError::from("EEK"))?;
+            .ok_or(BinaryDeError::EarlyEof)?;
         self.token_tape.push(BinaryToken::I32(val));
         Ok(&data[4..])
     }
 
     #[inline]
-    fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+    fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
         let val = data
             .get(..4)
             .map(le_i32)
             .map(|x| (x as f32) / 1000.0)
-            .expect("EEK");
+            .ok_or(BinaryDeError::EarlyEof)?;
         self.token_tape.push(BinaryToken::F32(val));
         Ok(&data[4..])
     }
 
     #[inline]
-    fn parse_q16(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+    fn parse_q16(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
         let val = data
             .get(..8)
             .map(le_i32)
@@ -105,20 +105,20 @@ impl<'a> BinTape<'a> {
                 val = val * 2.0 / 65536.0 * 100_000.0;
                 val.floor() / 100_000.0
             })
-            .expect("EEK");
+            .ok_or(BinaryDeError::EarlyEof)?;
         self.token_tape.push(BinaryToken::Q16(val));
         Ok(&data[8..])
     }
 
     #[inline]
-    fn parse_bool(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
-        let val = data.get(0).map(|&x| x != 0).expect("EEK");
+    fn parse_bool(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
+        let val = data.get(0).map(|&x| x != 0).ok_or(BinaryDeError::EarlyEof)?;
         self.token_tape.push(BinaryToken::Bool(val));
         Ok(&data[1..])
     }
 
     #[inline]
-    fn parse_rgb(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+    fn parse_rgb(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
         let val = data
             .get(..22) // u16 `{` + (u16 + u32) * 3 + u16 `}`
             .map(|x| {
@@ -128,7 +128,7 @@ impl<'a> BinTape<'a> {
                     b: le_u32(&x[16..]),
                 }
             })
-            .expect("EEK");
+            .ok_or(BinaryDeError::EarlyEof)?;
         let rgb_index = self.rgb_tape.len();
         self.token_tape.push(BinaryToken::Rgb(rgb_index));
         self.rgb_tape.push(val);
@@ -136,11 +136,11 @@ impl<'a> BinTape<'a> {
     }
 
     #[inline]
-    fn parse_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], MyError> {
+    fn parse_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
         let text = data
             .get(..2)
             .and_then(|size| data.get(2..2 + usize::from(le_u16(size))).map(|data| data))
-            .expect("EEK");
+            .ok_or(BinaryDeError::EarlyEof)?;
         self.token_tape
             .push(BinaryToken::Text(self.data_tape.len()));
         self.data_tape.push(text);
@@ -152,7 +152,7 @@ impl<'a> BinTape<'a> {
         &mut self,
         mut data: &'a [u8],
         open_idx: usize,
-    ) -> Result<&'a [u8], MyError> {
+    ) -> Result<&'a [u8], BinaryDeError> {
         loop {
             let (d, token_id) = self.parse_next_id(data)?;
             data = d;
@@ -187,7 +187,7 @@ impl<'a> BinTape<'a> {
     }
 
     #[inline]
-    fn parse_array(&mut self, mut data: &'a [u8], open_idx: usize) -> Result<&'a [u8], MyError> {
+    fn parse_array(&mut self, mut data: &'a [u8], open_idx: usize) -> Result<&'a [u8], BinaryDeError> {
         loop {
             let (d, token_id) = self.parse_next_id(data)?;
             data = d;
@@ -210,7 +210,8 @@ impl<'a> BinTape<'a> {
                     self.token_tape.push(BinaryToken::Object(0));
                     self.parse_inner_object(data, open_idx2)?
                 }
-                RGB | EQUAL => todo!(),
+                RGB => return Err(BinaryDeError::Message(String::from("Unexpected RGB in array"))),
+                EQUAL => return Err(BinaryDeError::Message(String::from("Unexpected EQUAL in array"))),
                 x => {
                     self.token_tape.push(BinaryToken::Token(x));
                     &data
@@ -220,7 +221,7 @@ impl<'a> BinTape<'a> {
     }
 
     #[inline]
-    fn first_val(&mut self, data: &'a [u8], open_idx: usize) -> Result<&'a [u8], MyError> {
+    fn first_val(&mut self, data: &'a [u8], open_idx: usize) -> Result<&'a [u8], BinaryDeError> {
         let (d, token_id) = self.parse_next_id(data)?;
         match token_id {
             OPEN => self.parse_inner_object(data, open_idx),
@@ -230,7 +231,7 @@ impl<'a> BinTape<'a> {
     }
 
     #[inline]
-    fn parse_open(&mut self, mut data: &'a [u8], open_idx: usize) -> Result<&'a [u8], MyError> {
+    fn parse_open(&mut self, mut data: &'a [u8], open_idx: usize) -> Result<&'a [u8], BinaryDeError> {
         let (d, token_id) = self.parse_next_id(data)?;
         let old_data = data;
         data = d;
@@ -275,7 +276,10 @@ impl<'a> BinTape<'a> {
                 data = self.parse_q16(data)?;
                 self.first_val(data, open_idx)
             }
-            RGB => todo!(),
+            RGB => {
+                data = self.parse_rgb(data)?;
+                self.first_val(data, open_idx)
+            }
             x => {
                 self.token_tape.push(BinaryToken::Token(x));
                 self.first_val(data, open_idx)
@@ -283,7 +287,7 @@ impl<'a> BinTape<'a> {
         }
     }
 
-    fn parse(&mut self, mut data: &'a [u8]) -> Result<(), MyError> {
+    fn parse(&mut self, mut data: &'a [u8]) -> Result<(), BinaryDeError> {
         while !data.is_empty() {
             let (d, token_id) = self.parse_next_id(data)?;
             data = d;
@@ -300,7 +304,7 @@ impl<'a> BinTape<'a> {
                     self.token_tape.push(BinaryToken::Array(0));
                     self.parse_open(data, open_idx)?
                 }
-                END => todo!(),
+                END => return Err(BinaryDeError::Message(String::from("Unexpected END in object"))),
                 RGB => self.parse_rgb(data)?,
                 EQUAL => &data,
                 x => {
@@ -342,7 +346,7 @@ fn le_i32(data: &[u8]) -> i32 {
 mod tests {
     use super::*;
 
-    fn parse<'a>(data: &'a [u8]) -> Result<BinTape<'a>, MyError> {
+    fn parse<'a>(data: &'a [u8]) -> Result<BinTape<'a>, BinaryDeError> {
         BinTape::from_slice(data)
     }
 
