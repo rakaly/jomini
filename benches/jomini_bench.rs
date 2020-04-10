@@ -102,7 +102,11 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
         b.iter(|| jomini::document::document_from_slice(&data[..]).unwrap())
     });
     group.bench_function("meta-tape", |b| {
-        b.iter(|| jomini::BinTape::from_slice(&data[..]).unwrap())
+        let mut tape = jomini::BinTape::default();
+        b.iter(|| {
+            tape.parse(&data[..]).unwrap();
+            tape.clear();
+        })
     });
     group.finish();
 }

@@ -36,6 +36,7 @@ pub struct Rgb {
     pub b: u32,
 }
 
+#[derive(Debug, Default)]
 pub struct BinTape<'a> {
     pub token_tape: Vec<BinaryToken>,
     pub data_tape: Vec<&'a [u8]>,
@@ -44,14 +45,16 @@ pub struct BinTape<'a> {
 
 impl<'a> BinTape<'a> {
     pub fn from_slice(data: &[u8]) -> Result<BinTape<'_>, BinaryDeError> {
-        let mut parser = BinTape {
-            token_tape: Vec::new(),
-            data_tape: Vec::new(),
-            rgb_tape: Vec::new(),
-        };
-
+        
+        let mut parser = BinTape::default();
         parser.parse(data)?;
         Ok(parser)
+    }
+
+    pub fn clear(&mut self) {
+        self.token_tape.clear();
+        self.data_tape.clear();
+        self.rgb_tape.clear();
     }
 
     #[inline]
@@ -380,7 +383,10 @@ impl<'a> BinTape<'a> {
         }
     }
 
-    fn parse(&mut self, mut data: &'a [u8]) -> Result<(), BinaryDeError> {
+    pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), BinaryDeError> {
+        self.token_tape.reserve(data.len() / 100 * 15);
+        self.data_tape.reserve(data.len() / 10);
+
         while !data.is_empty() {
             let (d, token_id) = self.parse_next_id(data)?;
             data = d;
