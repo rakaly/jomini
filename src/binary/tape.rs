@@ -45,7 +45,6 @@ pub struct BinTape<'a> {
 
 impl<'a> BinTape<'a> {
     pub fn from_slice(data: &[u8]) -> Result<BinTape<'_>, BinaryDeError> {
-        
         let mut parser = BinTape::default();
         parser.parse(data)?;
         Ok(parser)
