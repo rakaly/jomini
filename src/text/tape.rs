@@ -55,7 +55,18 @@ impl<'a> TextTape<'a> {
             .ok_or_else(|| TextError {
                 kind: TextErrorKind::Eof,
             })?;
-        Ok(&d[ind..])
+
+        let ret = &d[ind..];
+        if ret[0] == b'#' {
+            let end_idx = 
+                memchr::memchr(b'\n', &ret)
+                    .ok_or_else(|| TextError {
+                        kind: TextErrorKind::Eof,
+                    })?;
+            self.skip_ws(&ret[end_idx..])
+        } else {
+            Ok(ret)
+        }
     }
 
     /// Skips whitespace that may terminate the file
@@ -66,7 +77,15 @@ impl<'a> TextTape<'a> {
             .position(|&x| !is_whitespace(x))
             .unwrap_or_else(|| d.len());
         let (_, rest) = d.split_at(ind);
-        rest
+        if rest.get(0).map_or(false, |x| *x == b'#') {
+            if let Some(idx) = memchr::memchr(b'\n', &rest) {
+                self.skip_ws_t(&rest[idx..])
+            } else {
+                rest
+            }
+        } else {
+            rest
+        }
     }
 
     #[inline]
@@ -149,7 +168,11 @@ impl<'a> TextTape<'a> {
                     d = self.skip_ws(d)?;
                     d = self.parse_key_value_separator(d)?;
                     d = self.skip_ws(d)?;
-                    d = self.parse_value(d)?;
+
+                    // Check to not parse too far into the object's array trailer
+                    if d[0] != b'}' {
+                        d = self.parse_value(d)?;
+                    }
                 }
             }
         }
@@ -192,10 +215,10 @@ impl<'a> TextTape<'a> {
         match d[0] {
             b'=' => Ok(&d[1..]),
             b'{' => Ok(d),
-            x => {
-                return Err(TextError {
-                    kind: TextErrorKind::Separator(x),
-                })
+            _ => {
+                // This should normally be an error, but there are some formats eg:
+                // brittany_area = { color = { 10 10 10 } 100 200 300 }
+                Ok(d)
             }
         }
     }
@@ -453,6 +476,36 @@ mod tests {
                 TextToken::Scalar(Scalar::new(b"name")),
                 TextToken::Scalar(Scalar::new(b"def")),
                 TextToken::End(6),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mixed_object_array() {
+        // This is something that probably won't have a deserialized test
+        // as ... how should one interpret it?
+        let data = br#"brittany_area = { #5
+            color = { 118  99  151 }
+            169 170 171 172 4384
+        }"#;
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"brittany_area")),
+                TextToken::Object(13),
+                TextToken::Scalar(Scalar::new(b"color")),
+                TextToken::Array(7),
+                TextToken::Scalar(Scalar::new(b"118")),
+                TextToken::Scalar(Scalar::new(b"99")),
+                TextToken::Scalar(Scalar::new(b"151")),
+                TextToken::End(3),
+                TextToken::Scalar(Scalar::new(b"169")),
+                TextToken::Scalar(Scalar::new(b"170")),
+                TextToken::Scalar(Scalar::new(b"171")),
+                TextToken::Scalar(Scalar::new(b"172")),
+                TextToken::Scalar(Scalar::new(b"4384")),
+                TextToken::End(1),
             ]
         );
     }
