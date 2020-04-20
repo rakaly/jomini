@@ -58,11 +58,9 @@ impl<'a> TextTape<'a> {
 
         let ret = &d[ind..];
         if ret[0] == b'#' {
-            let end_idx = 
-                memchr::memchr(b'\n', &ret)
-                    .ok_or_else(|| TextError {
-                        kind: TextErrorKind::Eof,
-                    })?;
+            let end_idx = memchr::memchr(b'\n', &ret).ok_or_else(|| TextError {
+                kind: TextErrorKind::Eof,
+            })?;
             self.skip_ws(&ret[end_idx..])
         } else {
             Ok(ret)
