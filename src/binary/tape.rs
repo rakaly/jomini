@@ -251,20 +251,6 @@ impl<'a> BinTape<'a> {
         }
     }
 
-    fn parse_object(&mut self, data: &'a [u8], open_idx: usize) -> Result<&'a [u8], BinaryDeError> {
-        let (mut d, token_id) = self.parse_next_id(data)?;
-        if token_id == END {
-            let end_idx = self.token_tape.len();
-            self.token_tape[open_idx] = BinaryToken::Object(end_idx);
-            self.token_tape.push(BinaryToken::End(open_idx));
-            return Ok(&d);
-        }
-
-        d = self.parse_scalar(data)?;
-        d = self.parse_key_value_separator(d)?;
-        self.parse_inner_object(d, open_idx)
-    }
-
     #[inline]
     fn parse_array(
         &mut self,
@@ -291,7 +277,7 @@ impl<'a> BinTape<'a> {
                 OPEN => {
                     let open_idx2 = self.token_tape.len();
                     self.token_tape.push(BinaryToken::Object(0));
-                    self.parse_object(data, open_idx2)?
+                    self.parse_open(data, open_idx2)?
                 }
                 RGB => {
                     return Err(BinaryDeError::Message(String::from(
@@ -340,7 +326,7 @@ impl<'a> BinTape<'a> {
                 Ok(&data)
             }
 
-            // array of objects
+            // array of objects or another array
             OPEN => self.parse_array(old_data, open_idx),
 
             U32 => {
@@ -785,6 +771,27 @@ mod tests {
         assert_eq!(
             parse(&data).unwrap().token_tape,
             vec![BinaryToken::Token(0x326b), BinaryToken::U64(128),]
+        );
+    }
+
+    #[test]
+    fn test_nested_arrays() {
+        let data = [
+            0x63, 0x28, 0x01, 0x00, 0x03, 0x00, 0x03, 0x00, 0x04, 0x00, 0x03, 0x00, 0x9c, 0x02, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x04, 0x00,
+        ];
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                BinaryToken::Token(0x2863),
+                BinaryToken::Array(7),
+                BinaryToken::Array(3),
+                BinaryToken::End(2),
+                BinaryToken::Array(6),
+                BinaryToken::U64(128),
+                BinaryToken::End(4),
+                BinaryToken::End(1),
+            ]
         );
     }
 }
