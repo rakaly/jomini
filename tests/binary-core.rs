@@ -1,7 +1,6 @@
 use jomini::{BinaryEvent, BinaryParser, BinaryReader, EventRecord, Scalar};
 use std::io::{Cursor, Read};
 
-
 #[test]
 fn test_ragusa() {
     let ragusa = std::fs::read("../../assets/eu4-saves/ironman/ragusa.bin.eu4").unwrap();
