@@ -1,11 +1,11 @@
 use jomini::{BinaryEvent, BinaryParser, BinaryReader, EventRecord, Scalar};
 use std::io::{Cursor, Read};
 
-static RAGUSA: &'static [u8] = include_bytes!("../../../assets/fixtures/ragusa.bin.eu4");
 
 #[test]
 fn test_ragusa() {
-    let reader = Cursor::new(&RAGUSA);
+    let ragusa = std::fs::read("../../assets/eu4-saves/ironman/ragusa.bin.eu4").unwrap();
+    let reader = Cursor::new(&ragusa);
     let mut zip = zip::ZipArchive::new(reader).unwrap();
     let mut buffer = Vec::with_capacity(0);
     let mut zip_file = zip.by_name("gamestate").unwrap();
