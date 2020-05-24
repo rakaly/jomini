@@ -87,13 +87,15 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
-    fn parse_scalar(&mut self, d: &'a [u8]) -> &'a [u8] {
+    fn parse_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
         if d[0] == b'"' {
             let sd = &d[1..];
-            let end_idx = memchr::memchr(b'"', &sd).expect("EEK");
+            let end_idx = memchr::memchr(b'"', &sd).ok_or_else(|| TextError {
+                kind: TextErrorKind::Eof,
+            })?;
             self.token_tape
                 .push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
-            &d[end_idx + 2..]
+            Ok(&d[end_idx + 2..])
         } else {
             let ind = d
                 .iter()
@@ -101,13 +103,13 @@ impl<'a> TextTape<'a> {
                 .unwrap_or_else(|| d.len());
             let (scalar, rest) = d.split_at(ind);
             self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
-            rest
+            Ok(rest)
         }
     }
 
     #[inline]
     fn first_val(&mut self, mut d: &'a [u8], open_idx: usize) -> Result<&'a [u8], TextError> {
-        d = self.parse_scalar(d);
+        d = self.parse_scalar(d)?;
         d = self.skip_ws(d)?;
 
         match d[0] {
@@ -156,13 +158,15 @@ impl<'a> TextTape<'a> {
                 b'{' => {
                     d = self.skip_ws(&d[1..])?;
                     if d[0] != b'}' {
-                        panic!("EEEK");
+                        return Err(TextError {
+                            kind: TextErrorKind::Message(String::from("expected first non-whitespace character after an empty object starter to be a close group")),
+                        });
                     }
 
                     d = &d[1..];
                 }
                 _ => {
-                    d = self.parse_scalar(d);
+                    d = self.parse_scalar(d)?;
                     d = self.skip_ws(d)?;
                     d = self.parse_key_value_separator(d)?;
                     d = self.skip_ws(d)?;
@@ -202,7 +206,7 @@ impl<'a> TextTape<'a> {
                 self.token_tape.push(TextToken::Array(0));
                 self.parse_open(&d[1..], open_idx)
             }
-            _ => Ok(self.parse_scalar(d)),
+            _ => self.parse_scalar(d),
         }
     }
 
@@ -229,7 +233,7 @@ impl<'a> TextTape<'a> {
                 break;
             }
 
-            d = self.parse_scalar(d);
+            d = self.parse_scalar(d)?;
             d = self.skip_ws(d)?;
             d = self.parse_key_value_separator(d)?;
             d = self.skip_ws(d)?;
@@ -506,5 +510,11 @@ mod tests {
                 TextToken::End(1),
             ]
         );
+    }
+
+    #[test]
+    fn test_regression() {
+        let data = [0, 32, 34, 0];
+        assert!(parse(&data[..]).is_err());
     }
 }
