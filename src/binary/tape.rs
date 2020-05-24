@@ -192,8 +192,8 @@ impl<'a> BinTape<'a> {
                 self.parse_open(data, open_idx2)
             }
             RGB => self.parse_rgb(data),
-            END => todo!(),
-            EQUAL => todo!(),
+            END => self.parse_value(data),
+            EQUAL => self.parse_value(data),
             x => {
                 self.token_tape.push(BinaryToken::Token(x));
                 Ok(&data)
@@ -794,5 +794,11 @@ mod tests {
                 BinaryToken::End(1),
             ]
         );
+    }
+
+    #[test]
+    fn test_binary_regression() {
+        let data = [3, 0, 0, 0, 1, 0, 1, 0];
+        assert!(parse(&data[..]).is_err());
     }
 }
