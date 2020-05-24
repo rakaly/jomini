@@ -10,10 +10,10 @@ edition = "2018"
 cargo-fuzz = true
 
 [dependencies]
-libfuzzer-sys = "0.2.1"
+libfuzzer-sys = "0.3"
 encoding_rs = "0.8"
 
-[dependencies.pfars]
+[dependencies.jomini]
 path = ".."
 
 # Prevent this from interfering with workspaces
@@ -21,8 +21,8 @@ path = ".."
 members = ["."]
 
 [[bin]]
-name = "fuzz_parser"
-path = "fuzz_targets/fuzz_parser.rs"
+name = "fuzz_text"
+path = "fuzz_targets/fuzz_text.rs"
 
 [[bin]]
 name = "fuzz_scalar_text"

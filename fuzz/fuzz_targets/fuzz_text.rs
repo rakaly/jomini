@@ -1,7 +1,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use jomini::binary::BinTape;
+use jomini::text::TextTape;
 
 fuzz_target!(|data: &[u8]| {
-    let _ = BinTape::from_slice(data);
+    let _ = TextTape::from_slice(data);
 });
