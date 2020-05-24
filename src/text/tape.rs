@@ -101,6 +101,11 @@ impl<'a> TextTape<'a> {
                 .iter()
                 .position(|&x| is_boundary(x))
                 .unwrap_or_else(|| d.len());
+            if ind == 0 {
+                return Err(TextError {
+                    kind: TextErrorKind::Message(String::from("zero sized scalar")),
+                });
+            }
             let (scalar, rest) = d.split_at(ind);
             self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
             Ok(rest)
@@ -515,6 +520,12 @@ mod tests {
     #[test]
     fn test_regression() {
         let data = [0, 32, 34, 0];
+        assert!(parse(&data[..]).is_err());
+    }
+
+    #[test]
+    fn test_regression2() {
+        let data = [0, 4, 33, 0];
         assert!(parse(&data[..]).is_err());
     }
 }
