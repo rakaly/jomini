@@ -1,5 +1,51 @@
 use crate::BinaryDeError;
 
+const MAX_DEPTH: usize = 16;
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum DepthType {
+    Object(usize),
+    Array(usize),
+}
+
+impl Default for DepthType {
+    fn default() -> Self {
+        DepthType::Object(0)
+    }
+}
+
+/// A pseudo fixed-length vector with a fallible push method. The core binary parser shouldn't
+/// allocate so using a Vec was out of the question and outsourcing to an external crate (eg:
+/// arrayvec) seemed overkill. Having a fixed length depth that a parser can reach has the nice
+/// property that it prevents any sort of exhaustion or overflow.
+#[derive(Debug, PartialEq, Clone, Default)]
+struct Depth {
+    depth: usize,
+    values: [DepthType; MAX_DEPTH],
+}
+
+impl Depth {
+    pub fn push(&mut self, val: DepthType) -> bool {
+        if self.depth >= self.values.len() {
+            false
+        } else {
+            self.values[self.depth] = val;
+            self.depth += 1;
+            true
+        }
+    }
+
+    pub fn pop(&mut self) -> Option<DepthType> {
+        if self.depth > 0 {
+            self.depth -= 1;
+            let res = self.values[self.depth];
+            Some(res)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum BinaryToken {
     Array(usize),
@@ -41,6 +87,15 @@ pub struct BinTape<'a> {
     pub token_tape: Vec<BinaryToken>,
     pub data_tape: Vec<&'a [u8]>,
     pub rgb_tape: Vec<Rgb>,
+    depth: Depth,
+}
+
+#[derive(Debug)]
+enum ParseState {
+    AtKey,
+    AtKeyValueSeparator,
+    AtObjectValue,
+    AtArrayValue,
 }
 
 impl<'a> BinTape<'a> {
@@ -147,257 +202,386 @@ impl<'a> BinTape<'a> {
         Ok(&data[text.len() + 2..])
     }
 
-    #[inline]
-    fn parse_scalar(&mut self, mut data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
-        let (d, token_id) = self.parse_next_id(data)?;
-        data = d;
-        match token_id {
-            END => Err(BinaryDeError::Message(String::from("END seen for scalar"))),
-            OPEN => Err(BinaryDeError::Message(String::from(
-                "START seen for scalar",
-            ))),
-            EQUAL => Err(BinaryDeError::Message(String::from(
-                "EQUAL seen for scalar",
-            ))),
-            U32 => self.parse_u32(data),
-            U64 => self.parse_u64(data),
-            I32 => self.parse_i32(data),
-            BOOL => self.parse_bool(data),
-            STRING_1 | STRING_2 => self.parse_string(data),
-            F32 => self.parse_f32(data),
-            Q16 => self.parse_q16(data),
-            RGB => self.parse_rgb(data),
-            x => {
-                self.token_tape.push(BinaryToken::Token(x));
-                Ok(&data)
-            }
-        }
-    }
-
-    #[inline]
-    fn parse_value(&mut self, mut data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
-        let (d, token_id) = self.parse_next_id(data)?;
-        data = d;
-        match token_id {
-            U32 => self.parse_u32(data),
-            U64 => self.parse_u64(data),
-            I32 => self.parse_i32(data),
-            BOOL => self.parse_bool(data),
-            STRING_1 | STRING_2 => self.parse_string(data),
-            F32 => self.parse_f32(data),
-            Q16 => self.parse_q16(data),
-            OPEN => {
-                let open_idx2 = self.token_tape.len();
-                self.token_tape.push(BinaryToken::Array(0));
-                self.parse_open(data, open_idx2)
-            }
-            RGB => self.parse_rgb(data),
-            END => self.parse_value(data),
-            EQUAL => self.parse_value(data),
-            x => {
-                self.token_tape.push(BinaryToken::Token(x));
-                Ok(&data)
-            }
-        }
-    }
-
-    #[inline]
-    fn parse_key_value_separator(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
-        let (d, token_id) = self.parse_next_id(data)?;
-        match token_id {
-            EQUAL => Ok(&d),
-            OPEN => Ok(&data),
-            _ => Err(BinaryDeError::Message(String::from(
-                "expected an equal to separate key values",
-            ))),
-        }
-    }
-
-    #[inline]
-    fn parse_inner_object(
-        &mut self,
-        mut data: &'a [u8],
-        open_idx: usize,
-    ) -> Result<&'a [u8], BinaryDeError> {
-        data = self.parse_value(data)?;
-        loop {
-            let (mut d, token_id) = self.parse_next_id(data)?;
-            data = match token_id {
-                END => {
-                    let end_idx = self.token_tape.len();
-                    self.token_tape[open_idx] = BinaryToken::Object(end_idx);
-                    self.token_tape.push(BinaryToken::End(open_idx));
-                    return Ok(&d);
-                }
-
-                // Empty object Skip
-                OPEN => {
-                    let (d, token_id) = self.parse_next_id(d)?;
-                    if token_id != END {
-                        return Err(BinaryDeError::Message(String::from(
-                            "expected to skip empty object",
-                        )));
-                    }
-                    d
-                }
-
-                _ => {
-                    d = self.parse_scalar(data)?;
-                    d = self.parse_key_value_separator(d)?;
-                    d = self.parse_value(d)?;
-                    d
-                }
-            }
-        }
-    }
-
-    #[inline]
-    fn parse_array(
-        &mut self,
-        mut data: &'a [u8],
-        open_idx: usize,
-    ) -> Result<&'a [u8], BinaryDeError> {
-        loop {
-            let (d, token_id) = self.parse_next_id(data)?;
-            data = d;
-            data = match token_id {
-                END => {
-                    let end_idx = self.token_tape.len();
-                    self.token_tape[open_idx] = BinaryToken::Array(end_idx);
-                    self.token_tape.push(BinaryToken::End(open_idx));
-                    return Ok(&data);
-                }
-                U32 => self.parse_u32(data)?,
-                U64 => self.parse_u64(data)?,
-                I32 => self.parse_i32(data)?,
-                BOOL => self.parse_bool(data)?,
-                STRING_1 | STRING_2 => self.parse_string(data)?,
-                F32 => self.parse_f32(data)?,
-                Q16 => self.parse_q16(data)?,
-                OPEN => {
-                    let open_idx2 = self.token_tape.len();
-                    self.token_tape.push(BinaryToken::Object(0));
-                    self.parse_open(data, open_idx2)?
-                }
-                RGB => {
-                    return Err(BinaryDeError::Message(String::from(
-                        "Unexpected RGB in array",
-                    )))
-                }
-                EQUAL => {
-                    return Err(BinaryDeError::Message(String::from(
-                        "Unexpected EQUAL in array",
-                    )))
-                }
-                x => {
-                    self.token_tape.push(BinaryToken::Token(x));
-                    &data
-                }
-            }
-        }
-    }
-
-    #[inline]
-    fn first_val(&mut self, data: &'a [u8], open_idx: usize) -> Result<&'a [u8], BinaryDeError> {
-        let (d, token_id) = self.parse_next_id(data)?;
-        match token_id {
-            OPEN => self.parse_inner_object(data, open_idx),
-            EQUAL => self.parse_inner_object(d, open_idx),
-            _ => self.parse_array(data, open_idx),
-        }
-    }
-
-    #[inline]
-    fn parse_open(
-        &mut self,
-        mut data: &'a [u8],
-        open_idx: usize,
-    ) -> Result<&'a [u8], BinaryDeError> {
-        let (d, token_id) = self.parse_next_id(data)?;
-        let old_data = data;
-        data = d;
-
-        match token_id {
-            // Empty array
-            END => {
-                let end_idx = self.token_tape.len();
-                self.token_tape[open_idx] = BinaryToken::Array(end_idx);
-                self.token_tape.push(BinaryToken::End(open_idx));
-                Ok(&data)
-            }
-
-            // array of objects or another array
-            OPEN => self.parse_array(old_data, open_idx),
-
-            U32 => {
-                data = self.parse_u32(data)?;
-                self.first_val(data, open_idx)
-            }
-            U64 => {
-                data = self.parse_u64(data)?;
-                self.first_val(data, open_idx)
-            }
-            I32 => {
-                data = self.parse_i32(data)?;
-                self.first_val(data, open_idx)
-            }
-            BOOL => {
-                data = self.parse_bool(data)?;
-                self.first_val(data, open_idx)
-            }
-            STRING_1 | STRING_2 => {
-                data = self.parse_string(data)?;
-                self.first_val(data, open_idx)
-            }
-            F32 => {
-                data = self.parse_f32(data)?;
-                self.first_val(data, open_idx)
-            }
-            Q16 => {
-                data = self.parse_q16(data)?;
-                self.first_val(data, open_idx)
-            }
-            RGB => {
-                data = self.parse_rgb(data)?;
-                self.first_val(data, open_idx)
-            }
-            x => {
-                self.token_tape.push(BinaryToken::Token(x));
-                self.first_val(data, open_idx)
-            }
-        }
-    }
-
     pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), BinaryDeError> {
         self.token_tape.reserve(data.len() / 100 * 15);
         self.data_tape.reserve(data.len() / 10);
+        let mut state = ParseState::AtKey;
 
         while !data.is_empty() {
-            let (d, token_id) = self.parse_next_id(data)?;
-            data = d;
-            data = match token_id {
-                U32 => self.parse_u32(data)?,
-                U64 => self.parse_u64(data)?,
-                I32 => self.parse_i32(data)?,
-                BOOL => self.parse_bool(data)?,
-                STRING_1 | STRING_2 => self.parse_string(data)?,
-                F32 => self.parse_f32(data)?,
-                Q16 => self.parse_q16(data)?,
-                OPEN => {
-                    let open_idx = self.token_tape.len();
-                    self.token_tape.push(BinaryToken::Array(0));
-                    self.parse_open(data, open_idx)?
+            match state {
+                ParseState::AtKey => {
+                    let (d, token_id) = self.parse_next_id(data)?;
+                    data = d;
+                    data = match token_id {
+                        U32 => {
+                            let res = self.parse_u32(data)?;
+                            state = ParseState::AtKeyValueSeparator;
+                            res
+                        }
+                        U64 => {
+                            let res = self.parse_u64(data)?;
+                            state = ParseState::AtKeyValueSeparator;
+                            res
+                        }
+                        I32 => {
+                            let res = self.parse_i32(data)?;
+                            state = ParseState::AtKeyValueSeparator;
+                            res
+                        }
+                        BOOL => {
+                            let res = self.parse_bool(data)?;
+                            state = ParseState::AtKeyValueSeparator;
+                            res
+                        },
+                        STRING_1 | STRING_2 => {
+                            let res = self.parse_string(data)?;
+                            state = ParseState::AtKeyValueSeparator;
+                            res
+                        }
+                        F32 => {
+                            let res = self.parse_f32(data)?;
+                            state = ParseState::AtKeyValueSeparator;
+                            res
+                        }
+                        Q16 => { 
+                            let res = self.parse_q16(data)?;
+                            state = ParseState::AtKeyValueSeparator;
+                            res
+                        }
+
+                        // Skip empty object
+                        OPEN => {
+                            let (d, token_id) = self.parse_next_id(d)?;
+                            if token_id != END {
+                                return Err(BinaryDeError::Message(String::from(
+                                    "expected to skip empty object",
+                                )));
+                            }
+                            d
+                        }
+                        END => {
+                            let end_idx = self.token_tape.len();
+                            let old_state = self.depth.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
+                            let (old_parse_state, open_idx) = match old_state {
+                                DepthType::Object(ind) => (ParseState::AtKey, ind),
+                                DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                            };
+                            state = old_parse_state;
+                            self.token_tape[open_idx] = BinaryToken::Object(end_idx);
+                            self.token_tape.push(BinaryToken::End(open_idx));
+                            data
+                        }
+                        RGB => {
+                            return Err(BinaryDeError::Message(String::from(
+                                "RGB not valid for a key",
+                            )));
+                        }
+                        EQUAL => {
+                            return Err(BinaryDeError::Message(String::from(
+                                "EQUAL not valid for a key",
+                            )));
+                        }
+                        x => {
+                            self.token_tape.push(BinaryToken::Token(x));
+                            state = ParseState::AtKeyValueSeparator;
+                            &data
+                        }
+                    }
                 }
-                END => {
-                    return Err(BinaryDeError::Message(String::from(
-                        "Unexpected END in object",
-                    )))
+                ParseState::AtKeyValueSeparator => {
+                    let (d, token_id) = self.parse_next_id(data)?;
+                    data = match token_id {
+                        EQUAL => Ok(&d),
+                        OPEN => Ok(&data),
+                        _ => Err(BinaryDeError::Message(String::from(
+                            "expected an equal to separate key values",
+                        ))),
+                    }?;
+                    state = ParseState::AtObjectValue;
                 }
-                RGB => self.parse_rgb(data)?,
-                EQUAL => &data,
-                x => {
-                    self.token_tape.push(BinaryToken::Token(x));
-                    &data
+                ParseState::AtObjectValue => {
+                    let (d, token_id) = self.parse_next_id(data)?;
+                    data = d;
+                    data = match token_id {
+                        U32 => {
+                            let res = self.parse_u32(data)?;
+                            state = ParseState::AtKey;
+                            res
+                        }
+                        U64 => {
+                            let res = self.parse_u64(data)?;
+                            state = ParseState::AtKey;
+                            res
+                        }
+                        I32 => {
+                            let res = self.parse_i32(data)?;
+                            state = ParseState::AtKey;
+                            res
+                        }
+                        BOOL => {
+                            let res = self.parse_bool(data)?;
+                            state = ParseState::AtKey;
+                            res
+                        },
+                        STRING_1 | STRING_2 => {
+                            let res = self.parse_string(data)?;
+                            state = ParseState::AtKey;
+                            res
+                        }
+                        F32 => {
+                            let res = self.parse_f32(data)?;
+                            state = ParseState::AtKey;
+                            res
+                        }
+                        Q16 => { 
+                            let res = self.parse_q16(data)?;
+                            state = ParseState::AtKey;
+                            res
+                        }
+                        OPEN => {
+                            if !self.depth.push(DepthType::Object(self.token_tape.len())) {
+                                return Err(BinaryDeError::StackExhausted);
+                            }
+
+                            self.token_tape.push(BinaryToken::Array(0));
+                            let (d, token_id) = self.parse_next_id(data)?;
+                            let old_data = data;
+                            data = d;
+
+                            match token_id {
+                                // Empty array
+                                END => {
+                                    let end_idx = self.token_tape.len();
+                                    let old_state = self.depth.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
+                                    let (old_parse_state, open_idx) = match old_state {
+                                        DepthType::Object(ind) => (ParseState::AtKey, ind),
+                                        DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                                    };
+                                    state = old_parse_state;
+                                    self.token_tape[open_idx] = BinaryToken::Array(end_idx);
+                                    self.token_tape.push(BinaryToken::End(open_idx));
+                                    continue;
+                                }
+
+                                // array of objects or another array
+                                OPEN => {
+                                    state = ParseState::AtArrayValue;
+
+                                    // Rewind the data so that we can parse the nested open
+                                    data = old_data;
+                                    continue;
+                                }
+
+                                U32 => {
+                                    data = self.parse_u32(data)?;
+                                }
+                                U64 => {
+                                    data = self.parse_u64(data)?;
+                                }
+                                I32 => {
+                                    data = self.parse_i32(data)?;
+                                }
+                                BOOL => {
+                                    data = self.parse_bool(data)?;
+                                }
+                                STRING_1 | STRING_2 => {
+                                    data = self.parse_string(data)?;
+                                }
+                                F32 => {
+                                    data = self.parse_f32(data)?;
+                                }
+                                Q16 => {
+                                    data = self.parse_q16(data)?;
+                                }
+                                RGB => {
+                                    data = self.parse_rgb(data)?;
+                                }
+                                x => {
+                                    self.token_tape.push(BinaryToken::Token(x));
+                                }
+                            }
+
+                            let (d, token_id) = self.parse_next_id(data)?;
+                            match token_id {
+                                OPEN => {
+                                    state = ParseState::AtObjectValue;
+                                    data
+                                },
+                                EQUAL => {
+                                    state = ParseState::AtObjectValue;
+                                    d
+                                },
+                                _ => {
+                                    state = ParseState::AtArrayValue;
+                                    data
+                                }
+                            }
+                        }
+                        END => {
+                            return Err(BinaryDeError::Message(String::from(
+                                "END not valid for an object value",
+                            )));
+                        }
+                        RGB => {
+                            self.parse_rgb(data)?
+                        }
+                        EQUAL => {
+                            return Err(BinaryDeError::Message(String::from(
+                                "EQUAL not valid for an object value",
+                            )));
+                        }
+                        x => {
+                            self.token_tape.push(BinaryToken::Token(x));
+                            state = ParseState::AtKey;
+                            &data
+                        }
+                    }
+                }
+                ParseState::AtArrayValue => {
+                    let (d, token_id) = self.parse_next_id(data)?;
+                    data = d;
+                    data = match token_id {
+                        U32 => {
+                            let res = self.parse_u32(data)?;
+                            state = ParseState::AtArrayValue;
+                            res
+                        }
+                        U64 => {
+                            let res = self.parse_u64(data)?;
+                            state = ParseState::AtArrayValue;
+                            res
+                        }
+                        I32 => {
+                            let res = self.parse_i32(data)?;
+                            state = ParseState::AtArrayValue;
+                            res
+                        }
+                        BOOL => {
+                            let res = self.parse_bool(data)?;
+                            state = ParseState::AtArrayValue;
+                            res
+                        },
+                        STRING_1 | STRING_2 => {
+                            let res = self.parse_string(data)?;
+                            state = ParseState::AtArrayValue;
+                            res
+                        }
+                        F32 => {
+                            let res = self.parse_f32(data)?;
+                            state = ParseState::AtArrayValue;
+                            res
+                        }
+                        Q16 => { 
+                            let res = self.parse_q16(data)?;
+                            state = ParseState::AtArrayValue;
+                            res
+                        }
+                        OPEN => {
+                            if !self.depth.push(DepthType::Array(self.token_tape.len())) {
+                                return Err(BinaryDeError::StackExhausted);
+                            }
+
+                            self.token_tape.push(BinaryToken::Array(0));
+                            let (d, token_id) = self.parse_next_id(data)?;
+                            data = d;
+
+                            match token_id {
+                                // Empty array
+                                END => {
+                                    let end_idx = self.token_tape.len();
+                                    let old_state = self.depth.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
+                                    let (old_parse_state, open_idx) = match old_state {
+                                        DepthType::Object(ind) => (ParseState::AtKey, ind),
+                                        DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                                    };
+                                    state = old_parse_state;
+                                    self.token_tape[open_idx] = BinaryToken::Array(end_idx);
+                                    self.token_tape.push(BinaryToken::End(open_idx));
+                                    continue;
+                                }
+
+                                // array of objects or another array
+                                OPEN => {
+                                    if !self.depth.push(DepthType::Array(self.token_tape.len())) {
+                                        return Err(BinaryDeError::StackExhausted);
+                                    }
+
+                                    self.token_tape.push(BinaryToken::Array(0));
+                                    state = ParseState::AtArrayValue;
+                                    continue;
+                                }
+
+                                U32 => {
+                                    data = self.parse_u32(data)?;
+                                }
+                                U64 => {
+                                    data = self.parse_u64(data)?;
+                                }
+                                I32 => {
+                                    data = self.parse_i32(data)?;
+                                }
+                                BOOL => {
+                                    data = self.parse_bool(data)?;
+                                }
+                                STRING_1 | STRING_2 => {
+                                    data = self.parse_string(data)?;
+                                }
+                                F32 => {
+                                    data = self.parse_f32(data)?;
+                                }
+                                Q16 => {
+                                    data = self.parse_q16(data)?;
+                                }
+                                RGB => {
+                                    data = self.parse_rgb(data)?;
+                                }
+                                x => {
+                                    self.token_tape.push(BinaryToken::Token(x));
+                                }
+                            }
+
+                            let (d, token_id) = self.parse_next_id(data)?;
+                            match token_id {
+                                OPEN => {
+                                    state = ParseState::AtObjectValue;
+                                    data
+                                },
+                                EQUAL => {
+                                    state = ParseState::AtObjectValue;
+                                    d
+                                },
+                                _ => {
+                                    state = ParseState::AtArrayValue;
+                                    data
+                                }
+                            }
+                        }
+                        END => {
+                            let end_idx = self.token_tape.len();
+                            let old_state = self.depth.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
+                            let (old_parse_state, open_idx) = match old_state {
+                                DepthType::Object(ind) => (ParseState::AtKey, ind),
+                                DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                            };
+                            state = old_parse_state;
+                            self.token_tape[open_idx] = BinaryToken::Array(end_idx);
+                            self.token_tape.push(BinaryToken::End(open_idx));
+                            data
+                        }
+                        RGB => {
+                            self.parse_rgb(data)?
+                        }
+                        EQUAL => {
+                            return Err(BinaryDeError::Message(String::from(
+                                "EQUAL not valid for an array value",
+                            )));
+                        }
+                        x => {
+                            self.token_tape.push(BinaryToken::Token(x));
+                            state = ParseState::AtArrayValue;
+                            &data
+                        }
+                    }
                 }
             }
         }
