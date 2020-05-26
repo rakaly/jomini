@@ -985,4 +985,13 @@ mod tests {
         let data = [3, 0, 0, 0, 1, 0, 1, 0];
         assert!(parse(&data[..]).is_err());
     }
+
+    #[test]
+    fn test_binary_protect_against_deeply_nested() {
+        let mut data = vec![0x63, 0x28, 0x01, 0x00];
+        for _ in 0..10000 {
+            data.extend(&[0x03, 0x00])
+        }
+        assert!(parse(&data[..]).is_err());
+    }
 }
