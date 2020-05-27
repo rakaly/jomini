@@ -95,7 +95,7 @@ pub struct BinTape<'a> {
     depth: Depth,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum ParseState {
     AtKey,
     AtKeyValueSeparator,
@@ -428,7 +428,9 @@ impl<'a> BinTape<'a> {
                             )));
                         }
                         RGB => {
-                            self.parse_rgb(data)?
+                            let res = self.parse_rgb(data)?;
+                            state = ParseState::AtKey;
+                            res
                         }
                         EQUAL => {
                             return Err(BinaryDeError::Message(String::from(
@@ -591,7 +593,7 @@ impl<'a> BinTape<'a> {
             }
         }
 
-        if self.depth.is_empty() {
+        if self.depth.is_empty() && state == ParseState::AtKey {
             Ok(())
         } else {
             Err(BinaryDeError::EarlyEof)
@@ -992,6 +994,12 @@ mod tests {
     #[test]
     fn test_incomplete_array() {
         let data = [0x63, 0x28, 0x01, 0x00, 0x03, 0x00, 0x63, 0x28, 0x63, 0x28];
+        assert!(parse(&data[..]).is_err());
+    }
+
+    #[test]
+    fn test_incomplete_object() {
+        let data = [77, 40, 1, 0];
         assert!(parse(&data[..]).is_err());
     }
 
