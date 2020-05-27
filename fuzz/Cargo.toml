@@ -36,3 +36,7 @@ path = "fuzz_targets/fuzz_binary.rs"
 [[bin]]
 name = "fuzz_text_de"
 path = "fuzz_targets/fuzz_text_de.rs"
+
+[[bin]]
+name = "fuzz_binary_de"
+path = "fuzz_targets/fuzz_binary_de.rs"

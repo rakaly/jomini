@@ -3,3 +3,4 @@ target
 corpus
 artifacts
 !corpus/fuzz_text_de/meta.txt
+!corpus/fuzz_binary_de/meta.bin
