@@ -316,7 +316,10 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
                 *x,
                 self.seen,
             )),
-            BinaryToken::End(_) => todo!(),
+            BinaryToken::End(_x) => Err(BinaryDeError::Message(String::from(
+                    "encountered end when trying to deserialize",
+                )),
+            ),
             _ => visit_key(idx, self.doc, self.config, visitor),
         }
     }
@@ -423,6 +426,18 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
                 *x,
                 self.seen,
             )),
+            BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
+                config: self.config,
+                doc: self.doc,
+                seen: self.seen,
+                de_idx: 0,
+                idx: self.de_idx + 1,
+                end_idx: *x,
+            }),
+            BinaryToken::End(_x) => Err(BinaryDeError::Message(String::from(
+                    "encountered end when trying to deserialize",
+                )),
+            ),
             _ => visit_key(self.de_idx, self.doc, self.config, visitor),
         }
     }
@@ -492,7 +507,10 @@ impl<'c, 'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
                 *x,
                 self.seen,
             )),
-            BinaryToken::End(_) => todo!(),
+            BinaryToken::End(_x) => Err(BinaryDeError::Message(String::from(
+                    "encountered end when trying to deserialize",
+                )),
+            ),
             _ => visit_key(idx, self.doc, self.config, visitor),
         }
     }

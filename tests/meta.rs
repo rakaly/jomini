@@ -93,8 +93,15 @@ fn test_binary_slice_index_crash() {
 }
 
 #[test]
-fn test_binary_slice_index_crash2() {
+fn test_binary_incomplete_array() {
     let data = include_bytes!("../../../assets/fixtures/meta.bin.crash2");
+    let hash = create_bin_lookup();
+    assert!(jomini::binary::de::from_slice::<_, BinMeta>(&data[..], hash).is_err());
+}
+
+#[test]
+fn test_binary_heterogenous_object_crash() {
+    let data = include_bytes!("../../../assets/fixtures/meta.bin.crash3");
     let hash = create_bin_lookup();
     assert!(jomini::binary::de::from_slice::<_, BinMeta>(&data[..], hash).is_err());
 }
