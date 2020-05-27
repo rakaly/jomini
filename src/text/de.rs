@@ -163,14 +163,12 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
 }
 
 fn ensure_scalar<'a>(s: &TextToken<'a>) -> Result<Scalar<'a>, TextError> {
-    let res = match s {
+    match s {
         TextToken::Scalar(s) => Ok(*s),
         x => Err(TextError {
             kind: TextErrorKind::Message(format!("{:?} is not a scalar", x)),
         }),
-    };
-
-    Ok(res.unwrap())
+    }
 }
 
 struct KeyDeserializer<'b, 'de: 'b> {

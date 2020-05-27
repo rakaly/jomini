@@ -35,3 +35,10 @@ fn test_scalar_u64_overflow_crash() {
     let actual: Result<Meta, _> = jomini::text::de::from_slice(&data[..]);
     assert!(actual.is_err());
 }
+
+#[test]
+fn test_text_de_non_scalar_crash() {
+    let data = include_bytes!("../../../assets/fixtures/meta.txt.crash2");
+    let actual: Result<Meta, _> = jomini::text::de::from_slice(&data[..]);
+    assert!(actual.is_err());
+}
