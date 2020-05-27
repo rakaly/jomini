@@ -44,6 +44,11 @@ impl Depth {
             None
         }
     }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.depth == 0
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -586,7 +591,11 @@ impl<'a> BinTape<'a> {
             }
         }
 
-        Ok(())
+        if self.depth.is_empty() {
+            Ok(())
+        } else {
+            Err(BinaryDeError::EarlyEof)
+        }
     }
 }
 
@@ -978,6 +987,12 @@ mod tests {
                 BinaryToken::End(1),
             ]
         );
+    }
+
+    #[test]
+    fn test_incomplete_array() {
+        let data = [0x63, 0x28, 0x01, 0x00, 0x03, 0x00, 0x63, 0x28, 0x63, 0x28];
+        assert!(parse(&data[..]).is_err());
     }
 
     #[test]
