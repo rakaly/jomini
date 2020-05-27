@@ -235,7 +235,9 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
 
     let left_over = d.len() % 8;
     let remainder = &d[d.len() - left_over..];
-    result *= 10_u64.pow(remainder.len() as u32);
+    result = 10_u64.checked_pow(remainder.len() as u32)
+        .and_then(|x| result.checked_mul(x))
+        .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
 
     let mut local_buf: [u8; 8] = [b'0'; 8];
     let dst = &mut local_buf[8 - remainder.len()..];
@@ -357,6 +359,7 @@ mod tests {
     #[test]
     fn scalar_to_u64_overflow() {
         assert!(Scalar::new(b"888888888888888888888888888888888").to_u64().is_err());
+        assert!(Scalar::new(b"666666666666666685902").to_u64().is_err());
     }
 
     #[test]
