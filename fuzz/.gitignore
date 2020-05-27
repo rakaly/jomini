@@ -2,3 +2,4 @@ Cargo.lock
 target
 corpus
 artifacts
+!corpus/fuzz_text_de/meta.txt
