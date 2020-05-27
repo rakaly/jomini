@@ -203,9 +203,9 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
             }
 
             let value_idx = self.tape_idx + 1;
-            let next_key = match self.doc.token_tape[value_idx] {
-                BinaryToken::Array(x) => x,
-                BinaryToken::Object(x) => x,
+            let next_key = match self.doc.token_tape.get(value_idx) {
+                Some(BinaryToken::Array(x)) => *x,
+                Some(BinaryToken::Object(x)) => *x,
                 _ => value_idx,
             };
 

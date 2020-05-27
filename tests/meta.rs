@@ -57,10 +57,7 @@ fn test_text_de_non_scalar_crash() {
     assert!(actual.is_err());
 }
 
-#[test]
-fn test_binary_meta_deserialization() {
-    let data = include_bytes!("../../../assets/fixtures/meta.bin");
-    let data = &data["EU4bin".len()..];
+fn create_bin_lookup() -> HashMap<u16, &'static str> {
     let mut hash = HashMap::new();
     hash.insert(0x000bu16, "id");
     hash.insert(0x284du16, "date");
@@ -76,6 +73,21 @@ fn test_binary_meta_deserialization() {
     hash.insert(0xdcu16, "key");
     hash.insert(0x354eu16, "selector");
     hash.insert(0x209u16, "localization");
+    hash
+}
+
+#[test]
+fn test_binary_meta_deserialization() {
+    let data = include_bytes!("../../../assets/fixtures/meta.bin");
+    let data = &data["EU4bin".len()..];
+    let hash = create_bin_lookup();
     let actual = jomini::binary::de::from_slice::<_, BinMeta>(&data, hash).unwrap();
     assert_eq!(actual.date, 57790056);
+}
+
+#[test]
+fn test_binary_slice_index_crash() {
+    let data = include_bytes!("../../../assets/fixtures/meta.bin.crash");
+    let hash = create_bin_lookup();
+    assert!(jomini::binary::de::from_slice::<_, BinMeta>(&data[..], hash).is_err());
 }
