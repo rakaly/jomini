@@ -6,6 +6,7 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarError {
     AllDigits(String),
+    Overflow(String),
     InvalidBool(String),
 }
 
@@ -14,6 +15,7 @@ impl fmt::Display for ScalarError {
         match self {
             ScalarError::AllDigits(x) => write!(f, "did not contain all digits: {}", x),
             ScalarError::InvalidBool(x) => write!(f, "is not a valid bool: {}", x),
+            ScalarError::Overflow(x) => write!(f, "caused an overflow: {}", x),
         }
     }
 }
@@ -219,13 +221,16 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
         return Err(ScalarError::AllDigits(to_utf8_owned(d)));
     }
 
-    let mut result = 0;
+    let mut result: u64 = 0;
     let chunks = d.chunks_exact(8);
     for chunk in chunks {
         let chunk_ptr = chunk.as_ptr() as *const u8 as *const u64;
         let val = unsafe { ::std::ptr::read_unaligned(chunk_ptr).to_le() };
 
-        result += result * 100_000_000 + ascii_u64_to_digits(val);
+        result = result.checked_mul(100_000_000)
+            .and_then(|x| x.checked_add(ascii_u64_to_digits(val)))
+            .and_then(|x| x.checked_add(result))
+            .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
     }
 
     let left_over = d.len() % 8;
@@ -237,7 +242,10 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
     dst.copy_from_slice(remainder);
 
     let val = u64::from_le_bytes(local_buf);
-    Ok(result + ascii_u64_to_digits(val))
+    let result = result.checked_add(ascii_u64_to_digits(val))
+        .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
+
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -344,6 +352,11 @@ mod tests {
             (Scalar::new(b"20405029553322").to_u64()),
             Ok(20405029553322)
         );
+    }
+
+    #[test]
+    fn scalar_to_u64_overflow() {
+        assert!(Scalar::new(b"888888888888888888888888888888888").to_u64().is_err());
     }
 
     #[test]
