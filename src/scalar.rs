@@ -169,8 +169,10 @@ fn is_digits(d: &[u8]) -> bool {
     dst.copy_from_slice(d);
 
     let val = u64::from_le_bytes(local_buf);
-    ((val & 0xF0F0_F0F0_F0F0_F0F0) | (((val + 0x0606_0606_0606_0606) & 0xF0F0_F0F0_F0F0_F0F0) >> 4))
-        == 0x3333_3333_3333_3333
+    val.checked_add(0x0606_0606_0606_0606).map_or(false, |x| {
+        ((val & 0xF0F0_F0F0_F0F0_F0F0) | ((x & 0xF0F0_F0F0_F0F0_F0F0) >> 4))
+            == 0x3333_3333_3333_3333
+    })
 }
 
 #[inline]

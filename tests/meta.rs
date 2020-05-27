@@ -28,3 +28,10 @@ fn test_text_deserialization() {
     let actual: Meta = jomini::text::de::from_slice(&data["EU4txt".len()..]).unwrap();
     assert_eq!(actual.date, String::from("1444.11.11"));
 }
+
+#[test]
+fn test_scalar_u64_overflow_crash() {
+    let data = include_bytes!("../../../assets/fixtures/meta.txt.crash");
+    let actual: Result<Meta, _> = jomini::text::de::from_slice(&data[..]);
+    assert!(actual.is_err());
+}
