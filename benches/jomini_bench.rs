@@ -116,7 +116,11 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("text_parse");
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("meta-tape", |b| {
-        b.iter(|| jomini::TextTape::from_slice(&data[..]).unwrap())
+        let mut tape = jomini::TextTape::default();
+        b.iter(|| {
+            tape.parse(&data[..]).unwrap();
+            tape.clear();
+        })
     });
     group.finish();
 }

@@ -1,5 +1,56 @@
 use crate::{Scalar, TextError, TextErrorKind};
 
+const MAX_DEPTH: usize = 16;
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum DepthType {
+    Object(usize),
+    Array(usize),
+}
+
+impl Default for DepthType {
+    fn default() -> Self {
+        DepthType::Object(0)
+    }
+}
+
+/// A pseudo fixed-length vector with a fallible push method. The core binary parser shouldn't
+/// allocate so using a Vec was out of the question and outsourcing to an external crate (eg:
+/// arrayvec) seemed overkill. Having a fixed length depth that a parser can reach has the nice
+/// property that it prevents any sort of exhaustion or overflow.
+#[derive(Debug, PartialEq, Clone, Default)]
+struct Depth {
+    depth: usize,
+    values: [DepthType; MAX_DEPTH],
+}
+
+impl Depth {
+    pub fn push(&mut self, val: DepthType) -> bool {
+        if self.depth >= self.values.len() {
+            false
+        } else {
+            self.values[self.depth] = val;
+            self.depth += 1;
+            true
+        }
+    }
+
+    pub fn pop(&mut self) -> Option<DepthType> {
+        if self.depth > 0 {
+            self.depth -= 1;
+            let res = self.values[self.depth];
+            Some(res)
+        } else {
+            None
+        }
+    }
+    
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.depth == 0
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum TextToken<'a> {
     Array(usize),
@@ -11,6 +62,18 @@ pub enum TextToken<'a> {
 #[derive(Debug, Default)]
 pub struct TextTape<'a> {
     pub token_tape: Vec<TextToken<'a>>,
+    depth: Depth,
+}
+
+#[derive(Debug, PartialEq)]
+enum ParseState {
+    AtKey,
+    AtKeyValueSeparator,
+    AtObjectValue,
+    AtArrayValue,
+    AtParseOpen,
+    AtFirstValue,
+    AtEmptyObject,
 }
 
 /*
@@ -42,47 +105,34 @@ BRACKET:
 impl<'a> TextTape<'a> {
     pub fn from_slice(data: &'a [u8]) -> Result<TextTape<'a>, TextError> {
         let mut tape = TextTape::default();
-        tape.slurp_body(data)?;
+        tape.parse(data)?;
         Ok(tape)
     }
 
-    /// Skips whitespace, but we must not reach the end of the file
-    #[inline]
-    fn skip_ws(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
-        let ind = d
-            .iter()
-            .position(|&x| !is_whitespace(x))
-            .ok_or_else(|| TextError {
-                kind: TextErrorKind::Eof,
-            })?;
-
-        let ret = &d[ind..];
-        if ret[0] == b'#' {
-            let end_idx = memchr::memchr(b'\n', &ret).ok_or_else(|| TextError {
-                kind: TextErrorKind::Eof,
-            })?;
-            self.skip_ws(&ret[end_idx..])
-        } else {
-            Ok(ret)
-        }
+    pub fn clear(&mut self) {
+        self.token_tape.clear();
     }
 
     /// Skips whitespace that may terminate the file
     #[inline]
-    fn skip_ws_t(&mut self, d: &'a [u8]) -> &'a [u8] {
-        let ind = d
-            .iter()
-            .position(|&x| !is_whitespace(x))
-            .unwrap_or_else(|| d.len());
-        let (_, rest) = d.split_at(ind);
-        if rest.get(0).map_or(false, |x| *x == b'#') {
-            if let Some(idx) = memchr::memchr(b'\n', &rest) {
-                self.skip_ws_t(&rest[idx..])
+    fn skip_ws_t(&mut self, mut data: &'a [u8]) -> &'a [u8] {
+        loop {
+            let ind = data
+                .iter()
+                .position(|&x| !is_whitespace(x))
+                .unwrap_or_else(|| data.len());
+            let (_, rest) = data.split_at(ind);
+            data = rest;
+
+            if data.get(0).map_or(false, |x| *x == b'#') {
+                if let Some(idx) = memchr::memchr(b'\n', &data) {
+                    data = &data[idx..];
+                } else {
+                    return data;
+                }
             } else {
-                rest
+                return data;
             }
-        } else {
-            rest
         }
     }
 
@@ -113,109 +163,6 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
-    fn first_val(&mut self, mut d: &'a [u8], open_idx: usize) -> Result<&'a [u8], TextError> {
-        d = self.parse_scalar(d)?;
-        d = self.skip_ws(d)?;
-
-        match d[0] {
-            b'=' => self.parse_inner_object(&d[1..], open_idx),
-            _ => self.parse_array(d, open_idx),
-        }
-    }
-
-    #[inline]
-    fn parse_array(&mut self, mut d: &'a [u8], open_idx: usize) -> Result<&'a [u8], TextError> {
-        loop {
-            d = self.skip_ws(d)?;
-
-            if d[0] == b'}' {
-                let end_idx = self.token_tape.len();
-                self.token_tape[open_idx] = TextToken::Array(end_idx);
-                self.token_tape.push(TextToken::End(open_idx));
-                return Ok(&d[1..]);
-            }
-
-            d = self.parse_value(d)?;
-        }
-    }
-
-    #[inline]
-    fn parse_inner_object(
-        &mut self,
-        mut d: &'a [u8],
-        open_idx: usize,
-    ) -> Result<&'a [u8], TextError> {
-        d = self.skip_ws(d)?;
-        d = self.parse_value(d)?;
-
-        loop {
-            d = self.skip_ws(d)?;
-
-            match d[0] {
-                b'}' => {
-                    let end_idx = self.token_tape.len();
-                    self.token_tape[open_idx] = TextToken::Object(end_idx);
-                    self.token_tape.push(TextToken::End(open_idx));
-                    return Ok(&d[1..]);
-                }
-
-                // Empty object! Skip
-                b'{' => {
-                    d = self.skip_ws(&d[1..])?;
-                    if d[0] != b'}' {
-                        return Err(TextError {
-                            kind: TextErrorKind::Message(String::from("expected first non-whitespace character after an empty object starter to be a close group")),
-                        });
-                    }
-
-                    d = &d[1..];
-                }
-                _ => {
-                    d = self.parse_scalar(d)?;
-                    d = self.skip_ws(d)?;
-                    d = self.parse_key_value_separator(d)?;
-                    d = self.skip_ws(d)?;
-
-                    // Check to not parse too far into the object's array trailer
-                    if d[0] != b'}' {
-                        d = self.parse_value(d)?;
-                    }
-                }
-            }
-        }
-    }
-
-    #[inline]
-    fn parse_open(&mut self, mut d: &'a [u8], open_idx: usize) -> Result<&'a [u8], TextError> {
-        d = self.skip_ws(d)?;
-        match d[0] {
-            // Empty array
-            b'}' => {
-                let end_idx = self.token_tape.len();
-                self.token_tape[open_idx] = TextToken::Array(end_idx);
-                self.token_tape.push(TextToken::End(open_idx));
-                Ok(&d[1..])
-            }
-
-            // array of objects
-            b'{' => self.parse_array(d, open_idx),
-            _ => self.first_val(d, open_idx),
-        }
-    }
-
-    #[inline]
-    fn parse_value(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
-        match d[0] {
-            b'{' => {
-                let open_idx = self.token_tape.len();
-                self.token_tape.push(TextToken::Array(0));
-                self.parse_open(&d[1..], open_idx)
-            }
-            _ => self.parse_scalar(d),
-        }
-    }
-
-    #[inline]
     fn parse_key_value_separator(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
         // Most key values are separated by an equal sign but there are some fields like
         // map_area_data that does not have a separator
@@ -231,6 +178,168 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
+    pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), TextError> {
+        self.token_tape.reserve(data.len() / 5);
+        let mut state = ParseState::AtKey;
+        
+        loop {
+            data = self.skip_ws_t(data);
+            if data.is_empty() {
+                if self.depth.is_empty() && state == ParseState::AtKey {
+                    return Ok(());
+                } else {
+                    return Err(TextError {
+                        kind: TextErrorKind::Eof
+                    });
+                }
+            }
+
+            match state {
+                ParseState::AtEmptyObject => {
+                    if data[0] != b'}' {
+                        return Err(TextError {
+                            kind: TextErrorKind::Message(String::from("expected first non-whitespace character after an empty object starter to be a close group")),
+                        });
+                    }
+                    data = &data[1..];
+                    state = ParseState::AtKey;
+                }
+                ParseState::AtKey => {
+                    match data[0] {
+                        b'}' => {
+                            let end_idx = self.token_tape.len();
+                            let old_state = self.depth.pop().ok_or_else(|| TextError{
+                                kind: TextErrorKind::StackEmpty
+                            })?;
+                            let (old_parse_state, open_idx) = match old_state {
+                                DepthType::Object(ind) => (ParseState::AtKey, ind),
+                                DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                            };
+                            state = old_parse_state;
+                            self.token_tape[open_idx] = TextToken::Object(end_idx);
+                            self.token_tape.push(TextToken::End(open_idx));
+                            data = &data[1..];
+                        }
+
+                        // Empty object! Skip
+                        b'{' => {
+                            data = &data[1..];
+                            state = ParseState::AtEmptyObject;
+                        }
+
+                        _ => {
+                            data = self.parse_scalar(data)?;
+                            state = ParseState::AtKeyValueSeparator;
+                        }
+                    }
+                }
+                ParseState::AtKeyValueSeparator => {
+                    data = self.parse_key_value_separator(data)?;
+                    state = ParseState::AtObjectValue;
+                }
+                ParseState::AtObjectValue => {
+                    match data[0] {
+                        b'{' => {
+                            if !self.depth.push(DepthType::Object(self.token_tape.len())) {
+                                return Err(TextError {
+                                    kind: TextErrorKind::StackExhausted,
+                                });
+                            }
+
+                            self.token_tape.push(TextToken::Array(0));
+                            state = ParseState::AtParseOpen;
+                            data = &data[1..];
+                        }
+
+                        // Check to not parse too far into the object's array trailer
+                        b'}' => {
+                            state = ParseState::AtKey;
+                        }
+
+                        _ => {
+                            data = self.parse_scalar(data)?;
+                            state = ParseState::AtKey;
+                        }
+                    }
+                }
+                ParseState::AtParseOpen => {
+                    match data[0] {
+                        // Empty array
+                        b'}' => {
+                            let end_idx = self.token_tape.len();
+                            let old_state = self.depth.pop().ok_or_else(|| TextError{
+                                kind: TextErrorKind::StackEmpty
+                            })?;
+                            let (old_parse_state, open_idx) = match old_state {
+                                DepthType::Object(ind) => (ParseState::AtKey, ind),
+                                DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                            };
+                            state = old_parse_state;
+                            self.token_tape[open_idx] = TextToken::Array(end_idx);
+                            self.token_tape.push(TextToken::End(open_idx));
+                            data = &data[1..];
+                        }
+                        
+                        // Array of objects
+                        b'{' => {
+                            state = ParseState::AtArrayValue;
+                        }
+
+                        _ => {
+                            data = self.parse_scalar(data)?;
+                            state = ParseState::AtFirstValue;
+                        }
+                    }
+                }
+                ParseState::AtFirstValue => {
+                    match data[0] {
+                        b'=' => {
+                            data = &data[1..];
+                            state = ParseState::AtObjectValue;
+                        }
+                        _ => {
+                            state = ParseState::AtArrayValue;
+                        }
+                    }
+                }
+                ParseState::AtArrayValue => {
+                    match data[0] {
+                        b'{' => {
+                            if !self.depth.push(DepthType::Array(self.token_tape.len())) {
+                                return Err(TextError {
+                                    kind: TextErrorKind::StackExhausted,
+                                });
+                            }
+
+                            self.token_tape.push(TextToken::Array(0));
+                            state = ParseState::AtParseOpen;
+                            data = &data[1..];
+                        }
+                        b'}' => {
+                            let end_idx = self.token_tape.len();
+                            let old_state = self.depth.pop().ok_or_else(|| TextError{
+                                kind: TextErrorKind::StackEmpty
+                            })?;
+                            let (old_parse_state, open_idx) = match old_state {
+                                DepthType::Object(ind) => (ParseState::AtKey, ind),
+                                DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                            };
+                            state = old_parse_state;
+                            self.token_tape[open_idx] = TextToken::Array(end_idx);
+                            self.token_tape.push(TextToken::End(open_idx));
+                            data = &data[1..];
+                        }
+                        _ => {
+                            data = self.parse_scalar(data)?;
+                            state = ParseState::AtArrayValue;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+/*    #[inline]
     fn slurp_body(&mut self, mut d: &'a [u8]) -> Result<(), TextError> {
         while !d.is_empty() {
             d = self.skip_ws_t(d);
@@ -246,7 +355,7 @@ impl<'a> TextTape<'a> {
         }
 
         Ok(())
-    }
+    }*/
 }
 
 #[inline]
@@ -527,5 +636,36 @@ mod tests {
     fn test_regression2() {
         let data = [0, 4, 33, 0];
         assert!(parse(&data[..]).is_err());
+    }
+
+    #[test]
+    fn test_too_heavily_nested() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"foo=");
+        for _ in 0..100000 {
+            data.extend_from_slice(b"{");
+        }
+        assert!(parse(&data[..]).is_err());
+    }
+
+    #[test]
+    fn test_many_line_comment() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"foo=1.000\n");
+        for _ in 0..100000 {
+            data.extend_from_slice(b"# this is a comment\n");
+        }
+        data.extend_from_slice(b"foo=2.000\n");
+
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Scalar(Scalar::new(b"1.000")),
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Scalar(Scalar::new(b"2.000")),
+            ]
+        );
     }
 }
