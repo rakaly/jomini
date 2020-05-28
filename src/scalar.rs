@@ -200,12 +200,12 @@ fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
 
             // https://graphics.stanford.edu/~seander/bithacks.html#CopyIntegerSign
             let sign = 1 | (lead >> (std::mem::size_of::<i64>() * 8 - 1));
-
             let leadf = lead as f64;
             let trail = &d[idx + 1..];
             let frac = to_i64(&trail)? as f64;
-            let digits = 10u32.pow(trail.len() as u32) as f64;
-            Ok(leadf + (sign as f64) * (frac / digits))
+            let digits = 10u32.checked_pow(trail.len() as u32)
+                .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))? as f64;
+            Ok((sign as f64).mul_add(frac / digits, leadf))
         }
         None => to_i64(d).map(|x| x as f64),
     }
@@ -213,7 +213,7 @@ fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
 
 #[inline]
 fn to_i64(d: &[u8]) -> Result<i64, ScalarError> {
-    let is_negative = d[0] == b'-';
+    let is_negative = d.get(0).map_or(false, |&x| x == b'-');
     let isn = is_negative as u64;
     let sign = -((isn as i64 * 2).wrapping_sub(1));
     let rest = to_u64(&d[isn as usize..])?;
@@ -367,6 +367,14 @@ mod tests {
     fn scalar_to_u64_overflow() {
         assert!(Scalar::new(b"888888888888888888888888888888888").to_u64().is_err());
         assert!(Scalar::new(b"666666666666666685902").to_u64().is_err());
+    }
+
+    #[test]
+    fn scalar_to_f64_overflow() {
+        assert!(Scalar::new(b"9999999999.99999999999999999").to_f64().is_err());
+        assert!(Scalar::new(b"999999999999999999999.999999999").to_f64().is_err());
+        assert!(Scalar::new(b"10.99999990999999999999999").to_f64().is_err());
+        assert!(Scalar::new(b"10.99999999999999").to_f64().is_err());
     }
 
     #[test]
