@@ -1,55 +1,5 @@
 use crate::{Scalar, TextError, TextErrorKind};
-
-const MAX_DEPTH: usize = 16;
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum DepthType {
-    Object(usize),
-    Array(usize),
-}
-
-impl Default for DepthType {
-    fn default() -> Self {
-        DepthType::Object(0)
-    }
-}
-
-/// A pseudo fixed-length vector with a fallible push method. The core binary parser shouldn't
-/// allocate so using a Vec was out of the question and outsourcing to an external crate (eg:
-/// arrayvec) seemed overkill. Having a fixed length depth that a parser can reach has the nice
-/// property that it prevents any sort of exhaustion or overflow.
-#[derive(Debug, PartialEq, Clone, Default)]
-struct Depth {
-    depth: usize,
-    values: [DepthType; MAX_DEPTH],
-}
-
-impl Depth {
-    pub fn push(&mut self, val: DepthType) -> bool {
-        if self.depth >= self.values.len() {
-            false
-        } else {
-            self.values[self.depth] = val;
-            self.depth += 1;
-            true
-        }
-    }
-
-    pub fn pop(&mut self) -> Option<DepthType> {
-        if self.depth > 0 {
-            self.depth -= 1;
-            let res = self.values[self.depth];
-            Some(res)
-        } else {
-            None
-        }
-    }
-    
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.depth == 0
-    }
-}
+use crate::stack::{Stack, StackType};
 
 #[derive(Debug, PartialEq)]
 pub enum TextToken<'a> {
@@ -62,7 +12,7 @@ pub enum TextToken<'a> {
 #[derive(Debug, Default)]
 pub struct TextTape<'a> {
     pub token_tape: Vec<TextToken<'a>>,
-    depth: Depth,
+    stack: Stack,
 }
 
 #[derive(Debug, PartialEq)]
@@ -185,7 +135,7 @@ impl<'a> TextTape<'a> {
         loop {
             data = self.skip_ws_t(data);
             if data.is_empty() {
-                if self.depth.is_empty() && state == ParseState::AtKey {
+                if self.stack.is_empty() && state == ParseState::AtKey {
                     return Ok(());
                 } else {
                     return Err(TextError {
@@ -208,12 +158,12 @@ impl<'a> TextTape<'a> {
                     match data[0] {
                         b'}' => {
                             let end_idx = self.token_tape.len();
-                            let old_state = self.depth.pop().ok_or_else(|| TextError{
+                            let old_state = self.stack.pop().ok_or_else(|| TextError{
                                 kind: TextErrorKind::StackEmpty
                             })?;
                             let (old_parse_state, open_idx) = match old_state {
-                                DepthType::Object(ind) => (ParseState::AtKey, ind),
-                                DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                                StackType::Object(ind) => (ParseState::AtKey, ind),
+                                StackType::Array(ind) => (ParseState::AtArrayValue, ind),
                             };
                             state = old_parse_state;
                             self.token_tape[open_idx] = TextToken::Object(end_idx);
@@ -240,7 +190,7 @@ impl<'a> TextTape<'a> {
                 ParseState::AtObjectValue => {
                     match data[0] {
                         b'{' => {
-                            if !self.depth.push(DepthType::Object(self.token_tape.len())) {
+                            if !self.stack.push(StackType::Object(self.token_tape.len())) {
                                 return Err(TextError {
                                     kind: TextErrorKind::StackExhausted,
                                 });
@@ -267,12 +217,12 @@ impl<'a> TextTape<'a> {
                         // Empty array
                         b'}' => {
                             let end_idx = self.token_tape.len();
-                            let old_state = self.depth.pop().ok_or_else(|| TextError{
+                            let old_state = self.stack.pop().ok_or_else(|| TextError{
                                 kind: TextErrorKind::StackEmpty
                             })?;
                             let (old_parse_state, open_idx) = match old_state {
-                                DepthType::Object(ind) => (ParseState::AtKey, ind),
-                                DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                                StackType::Object(ind) => (ParseState::AtKey, ind),
+                                StackType::Array(ind) => (ParseState::AtArrayValue, ind),
                             };
                             state = old_parse_state;
                             self.token_tape[open_idx] = TextToken::Array(end_idx);
@@ -305,7 +255,7 @@ impl<'a> TextTape<'a> {
                 ParseState::AtArrayValue => {
                     match data[0] {
                         b'{' => {
-                            if !self.depth.push(DepthType::Array(self.token_tape.len())) {
+                            if !self.stack.push(StackType::Array(self.token_tape.len())) {
                                 return Err(TextError {
                                     kind: TextErrorKind::StackExhausted,
                                 });
@@ -317,12 +267,12 @@ impl<'a> TextTape<'a> {
                         }
                         b'}' => {
                             let end_idx = self.token_tape.len();
-                            let old_state = self.depth.pop().ok_or_else(|| TextError{
+                            let old_state = self.stack.pop().ok_or_else(|| TextError{
                                 kind: TextErrorKind::StackEmpty
                             })?;
                             let (old_parse_state, open_idx) = match old_state {
-                                DepthType::Object(ind) => (ParseState::AtKey, ind),
-                                DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                                StackType::Object(ind) => (ParseState::AtKey, ind),
+                                StackType::Array(ind) => (ParseState::AtArrayValue, ind),
                             };
                             state = old_parse_state;
                             self.token_tape[open_idx] = TextToken::Array(end_idx);

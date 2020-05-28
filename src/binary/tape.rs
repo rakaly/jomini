@@ -1,56 +1,6 @@
 use crate::BinaryDeError;
 use crate::util::{le_u16, le_u32, le_u64, le_i32};
-
-const MAX_DEPTH: usize = 16;
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum DepthType {
-    Object(usize),
-    Array(usize),
-}
-
-impl Default for DepthType {
-    fn default() -> Self {
-        DepthType::Object(0)
-    }
-}
-
-/// A pseudo fixed-length vector with a fallible push method. The core binary parser shouldn't
-/// allocate so using a Vec was out of the question and outsourcing to an external crate (eg:
-/// arrayvec) seemed overkill. Having a fixed length depth that a parser can reach has the nice
-/// property that it prevents any sort of exhaustion or overflow.
-#[derive(Debug, PartialEq, Clone, Default)]
-struct Depth {
-    depth: usize,
-    values: [DepthType; MAX_DEPTH],
-}
-
-impl Depth {
-    pub fn push(&mut self, val: DepthType) -> bool {
-        if self.depth >= self.values.len() {
-            false
-        } else {
-            self.values[self.depth] = val;
-            self.depth += 1;
-            true
-        }
-    }
-
-    pub fn pop(&mut self) -> Option<DepthType> {
-        if self.depth > 0 {
-            self.depth -= 1;
-            let res = self.values[self.depth];
-            Some(res)
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.depth == 0
-    }
-}
+use crate::stack::{Stack, StackType};
 
 #[derive(Debug, PartialEq)]
 pub enum BinaryToken {
@@ -93,7 +43,7 @@ pub struct BinTape<'a> {
     pub token_tape: Vec<BinaryToken>,
     pub data_tape: Vec<&'a [u8]>,
     pub rgb_tape: Vec<Rgb>,
-    depth: Depth,
+    stack: Stack,
 }
 
 #[derive(Debug, PartialEq)]
@@ -267,10 +217,10 @@ impl<'a> BinTape<'a> {
                         }
                         END => {
                             let end_idx = self.token_tape.len();
-                            let old_state = self.depth.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
+                            let old_state = self.stack.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
                             let (old_parse_state, open_idx) = match old_state {
-                                DepthType::Object(ind) => (ParseState::AtKey, ind),
-                                DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                                StackType::Object(ind) => (ParseState::AtKey, ind),
+                                StackType::Array(ind) => (ParseState::AtArrayValue, ind),
                             };
                             state = old_parse_state;
                             self.token_tape[open_idx] = BinaryToken::Object(end_idx);
@@ -345,7 +295,7 @@ impl<'a> BinTape<'a> {
                             res
                         }
                         OPEN => {
-                            if !self.depth.push(DepthType::Object(self.token_tape.len())) {
+                            if !self.stack.push(StackType::Object(self.token_tape.len())) {
                                 return Err(BinaryDeError::StackExhausted);
                             }
 
@@ -358,10 +308,10 @@ impl<'a> BinTape<'a> {
                                 // Empty array
                                 END => {
                                     let end_idx = self.token_tape.len();
-                                    let old_state = self.depth.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
+                                    let old_state = self.stack.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
                                     let (old_parse_state, open_idx) = match old_state {
-                                        DepthType::Object(ind) => (ParseState::AtKey, ind),
-                                        DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                                        StackType::Object(ind) => (ParseState::AtKey, ind),
+                                        StackType::Array(ind) => (ParseState::AtArrayValue, ind),
                                     };
                                     state = old_parse_state;
                                     self.token_tape[open_idx] = BinaryToken::Array(end_idx);
@@ -485,7 +435,7 @@ impl<'a> BinTape<'a> {
                             res
                         }
                         OPEN => {
-                            if !self.depth.push(DepthType::Array(self.token_tape.len())) {
+                            if !self.stack.push(StackType::Array(self.token_tape.len())) {
                                 return Err(BinaryDeError::StackExhausted);
                             }
 
@@ -497,10 +447,10 @@ impl<'a> BinTape<'a> {
                                 // Empty array
                                 END => {
                                     let end_idx = self.token_tape.len();
-                                    let old_state = self.depth.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
+                                    let old_state = self.stack.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
                                     let (old_parse_state, open_idx) = match old_state {
-                                        DepthType::Object(ind) => (ParseState::AtKey, ind),
-                                        DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                                        StackType::Object(ind) => (ParseState::AtKey, ind),
+                                        StackType::Array(ind) => (ParseState::AtArrayValue, ind),
                                     };
                                     state = old_parse_state;
                                     self.token_tape[open_idx] = BinaryToken::Array(end_idx);
@@ -510,7 +460,7 @@ impl<'a> BinTape<'a> {
 
                                 // array of objects or another array
                                 OPEN => {
-                                    if !self.depth.push(DepthType::Array(self.token_tape.len())) {
+                                    if !self.stack.push(StackType::Array(self.token_tape.len())) {
                                         return Err(BinaryDeError::StackExhausted);
                                     }
 
@@ -566,10 +516,10 @@ impl<'a> BinTape<'a> {
                         }
                         END => {
                             let end_idx = self.token_tape.len();
-                            let old_state = self.depth.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
+                            let old_state = self.stack.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
                             let (old_parse_state, open_idx) = match old_state {
-                                DepthType::Object(ind) => (ParseState::AtKey, ind),
-                                DepthType::Array(ind) => (ParseState::AtArrayValue, ind),
+                                StackType::Object(ind) => (ParseState::AtKey, ind),
+                                StackType::Array(ind) => (ParseState::AtArrayValue, ind),
                             };
                             state = old_parse_state;
                             self.token_tape[open_idx] = BinaryToken::Array(end_idx);
@@ -594,7 +544,7 @@ impl<'a> BinTape<'a> {
             }
         }
 
-        if self.depth.is_empty() && state == ParseState::AtKey {
+        if self.stack.is_empty() && state == ParseState::AtKey {
             Ok(())
         } else {
             Err(BinaryDeError::EarlyEof)
