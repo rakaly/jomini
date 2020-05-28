@@ -194,7 +194,7 @@ fn ascii_u64_to_digits(mut val: u64) -> u64 {
 
 #[inline]
 fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
-    match memchr::memchr(b'.', d) {
+    match d.iter().position(|&x| x == b'.') {
         Some(idx) => {
             let lead = to_i64(&d[..idx])?;
 

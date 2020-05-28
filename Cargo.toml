@@ -6,8 +6,6 @@ edition = "2018"
 
 [dependencies]
 serde = "1"
-memchr = "2"
-byteorder = "1"
 
 # Make encoding_rs optional as it adds 150KB to the wasm bundle and the
 # performance in real world tests didn't change

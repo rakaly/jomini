@@ -3,6 +3,7 @@ pub mod binary;
 mod data;
 mod scalar;
 pub mod text;
+pub(crate) mod util;
 
 pub use self::binary::*;
 pub use self::scalar::{Scalar, ScalarError};
