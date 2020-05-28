@@ -125,7 +125,7 @@ impl<'a> TextTape<'a> {
             data = rest;
 
             if data.get(0).map_or(false, |x| *x == b'#') {
-                if let Some(idx) = memchr::memchr(b'\n', &data) {
+                if let Some(idx) = data.iter().position(|&x| x == b'\n') {
                     data = &data[idx..];
                 } else {
                     return data;
@@ -140,7 +140,7 @@ impl<'a> TextTape<'a> {
     fn parse_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
         if d[0] == b'"' {
             let sd = &d[1..];
-            let end_idx = memchr::memchr(b'"', &sd).ok_or_else(|| TextError {
+            let end_idx = sd.iter().position(|&x| x == b'"').ok_or_else(|| TextError {
                 kind: TextErrorKind::Eof,
             })?;
             self.token_tape
