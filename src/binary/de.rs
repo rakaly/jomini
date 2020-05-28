@@ -241,10 +241,10 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, RES: TokenResolver, V: Visitor<'de>>(
     visitor: V,
 ) -> Result<V::Value, BinaryDeError> {
     match doc.token_tape[tape_idx] {
-        BinaryToken::Object(_) => todo!(),
-        BinaryToken::Array(_) => todo!(),
-        BinaryToken::End(_) => todo!(),
-        BinaryToken::Rgb(_) => todo!(),
+        BinaryToken::Object(_)
+        | BinaryToken::Array(_)
+        | BinaryToken::End(_)
+        | BinaryToken::Rgb(_) => Err(BinaryDeError::Message(String::from("unable to deserialize key type"))),
         BinaryToken::Bool(x) => visitor.visit_bool(x),
         BinaryToken::U32(x) => visitor.visit_u32(x),
         BinaryToken::U64(x) => visitor.visit_u64(x),
@@ -338,7 +338,10 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
                 idx: idx + 1,
                 end_idx: *x,
             }),
-            BinaryToken::End(_) => todo!(),
+            BinaryToken::End(_x) => Err(BinaryDeError::Message(String::from(
+                    "encountered end when trying to deserialize",
+                )),
+            ),
             _ => visitor.visit_seq(SpanningSequence {
                 doc: self.doc,
                 config: self.config,

@@ -105,3 +105,10 @@ fn test_binary_heterogenous_object_crash() {
     let hash = create_bin_lookup();
     assert!(jomini::binary::de::from_slice::<_, BinMeta>(&data[..], hash).is_err());
 }
+
+#[test]
+fn test_binary_unknown_key_object() {
+    let data = include_bytes!("../../../assets/fixtures/meta.bin.crash4");
+    let hash = create_bin_lookup();
+    assert!(jomini::binary::de::from_slice::<_, BinMeta>(&data[..], hash).is_err());
+}
