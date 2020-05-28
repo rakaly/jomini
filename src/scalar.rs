@@ -138,6 +138,13 @@ fn to_utf8<'a>(d: &'a [u8]) -> Cow<'a, str> {
     }
 }
 
+#[cfg(not(feature = "encoding_rs"))]
+#[inline]
+fn to_windows_1252(d: &[u8]) -> String {
+    d.iter().map(|&x| crate::data::WINDOWS_1252[x as usize]).collect()
+}
+
+#[cfg(feature = "encoding_rs")]
 #[inline]
 fn to_windows_1252(d: &[u8]) -> String {
     // For short strings, creating the string a byte at a time is 50% faster than encoding_rs.

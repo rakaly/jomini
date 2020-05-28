@@ -8,7 +8,10 @@ edition = "2018"
 serde = "1"
 memchr = "2"
 byteorder = "1"
-encoding_rs = "0.8"
+
+# Make encoding_rs optional as it adds 150KB to the wasm bundle and the
+# performance in real world tests didn't change
+encoding_rs = { version = "0.8", optional = true }
 
 [dev-dependencies]
 jemallocator = "0.3"
