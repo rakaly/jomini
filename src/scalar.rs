@@ -127,7 +127,7 @@ fn to_utf8_owned(d: &[u8]) -> String {
 }
 
 #[inline]
-fn to_utf8<'a>(d: &'a [u8]) -> Cow<'a, str> {
+fn to_utf8(d: &[u8]) -> Cow<str> {
     if is_ascii(d) {
         // This is safe as we just checked that the data is ascii and ascii is a subset of utf8
         debug_assert!(std::str::from_utf8(d).is_ok());

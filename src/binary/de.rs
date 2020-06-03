@@ -470,8 +470,7 @@ impl<'b, 'de, RES: TokenResolver> SeqAccess<'de> for BinarySequence<'b, 'de, RES
 
             self.de_idx = self.idx;
             self.idx = next_key + 1;
-            let res = seed.deserialize(self).map(Some);
-            res
+            seed.deserialize(self).map(Some)
         }
     }
 }

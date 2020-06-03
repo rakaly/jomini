@@ -22,7 +22,7 @@ impl<'a> TextDeserializer<'a> {
         let seen = vec![0; tape.token_tape.len()];
         Ok(TextDeserializer {
             doc: tape,
-            seen: seen,
+            seen,
         })
     }
 }
