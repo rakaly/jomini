@@ -2,9 +2,9 @@ pub(crate) mod ascii;
 pub mod binary;
 mod data;
 mod scalar;
+pub(crate) mod stack;
 pub mod text;
 pub(crate) mod util;
-pub(crate) mod stack;
 
 pub use self::binary::*;
 pub use self::scalar::{Scalar, ScalarError};

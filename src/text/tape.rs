@@ -1,5 +1,5 @@
-use crate::{Scalar, TextError, TextErrorKind};
 use crate::stack::{Stack, StackType};
+use crate::{Scalar, TextError, TextErrorKind};
 
 #[derive(Debug, PartialEq)]
 pub enum TextToken<'a> {
@@ -90,9 +90,12 @@ impl<'a> TextTape<'a> {
     fn parse_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
         if d[0] == b'"' {
             let sd = &d[1..];
-            let end_idx = sd.iter().position(|&x| x == b'"').ok_or_else(|| TextError {
-                kind: TextErrorKind::Eof,
-            })?;
+            let end_idx = sd
+                .iter()
+                .position(|&x| x == b'"')
+                .ok_or_else(|| TextError {
+                    kind: TextErrorKind::Eof,
+                })?;
             self.token_tape
                 .push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
             Ok(&d[end_idx + 2..])
@@ -131,7 +134,7 @@ impl<'a> TextTape<'a> {
     pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), TextError> {
         self.token_tape.reserve(data.len() / 5);
         let mut state = ParseState::AtKey;
-        
+
         loop {
             data = self.skip_ws_t(data);
             if data.is_empty() {
@@ -139,7 +142,7 @@ impl<'a> TextTape<'a> {
                     return Ok(());
                 } else {
                     return Err(TextError {
-                        kind: TextErrorKind::Eof
+                        kind: TextErrorKind::Eof,
                     });
                 }
             }
@@ -158,8 +161,8 @@ impl<'a> TextTape<'a> {
                     match data[0] {
                         b'}' => {
                             let end_idx = self.token_tape.len();
-                            let old_state = self.stack.pop().ok_or_else(|| TextError{
-                                kind: TextErrorKind::StackEmpty
+                            let old_state = self.stack.pop().ok_or_else(|| TextError {
+                                kind: TextErrorKind::StackEmpty,
                             })?;
                             let (old_parse_state, open_idx) = match old_state {
                                 StackType::Object(ind) => (ParseState::AtKey, ind),
@@ -217,8 +220,8 @@ impl<'a> TextTape<'a> {
                         // Empty array
                         b'}' => {
                             let end_idx = self.token_tape.len();
-                            let old_state = self.stack.pop().ok_or_else(|| TextError{
-                                kind: TextErrorKind::StackEmpty
+                            let old_state = self.stack.pop().ok_or_else(|| TextError {
+                                kind: TextErrorKind::StackEmpty,
                             })?;
                             let (old_parse_state, open_idx) = match old_state {
                                 StackType::Object(ind) => (ParseState::AtKey, ind),
@@ -229,7 +232,7 @@ impl<'a> TextTape<'a> {
                             self.token_tape.push(TextToken::End(open_idx));
                             data = &data[1..];
                         }
-                        
+
                         // Array of objects
                         b'{' => {
                             state = ParseState::AtArrayValue;
@@ -241,55 +244,51 @@ impl<'a> TextTape<'a> {
                         }
                     }
                 }
-                ParseState::AtFirstValue => {
-                    match data[0] {
-                        b'=' => {
-                            data = &data[1..];
-                            state = ParseState::AtObjectValue;
-                        }
-                        _ => {
-                            state = ParseState::AtArrayValue;
-                        }
+                ParseState::AtFirstValue => match data[0] {
+                    b'=' => {
+                        data = &data[1..];
+                        state = ParseState::AtObjectValue;
                     }
-                }
-                ParseState::AtArrayValue => {
-                    match data[0] {
-                        b'{' => {
-                            if !self.stack.push(StackType::Array(self.token_tape.len())) {
-                                return Err(TextError {
-                                    kind: TextErrorKind::StackExhausted,
-                                });
-                            }
+                    _ => {
+                        state = ParseState::AtArrayValue;
+                    }
+                },
+                ParseState::AtArrayValue => match data[0] {
+                    b'{' => {
+                        if !self.stack.push(StackType::Array(self.token_tape.len())) {
+                            return Err(TextError {
+                                kind: TextErrorKind::StackExhausted,
+                            });
+                        }
 
-                            self.token_tape.push(TextToken::Array(0));
-                            state = ParseState::AtParseOpen;
-                            data = &data[1..];
-                        }
-                        b'}' => {
-                            let end_idx = self.token_tape.len();
-                            let old_state = self.stack.pop().ok_or_else(|| TextError{
-                                kind: TextErrorKind::StackEmpty
-                            })?;
-                            let (old_parse_state, open_idx) = match old_state {
-                                StackType::Object(ind) => (ParseState::AtKey, ind),
-                                StackType::Array(ind) => (ParseState::AtArrayValue, ind),
-                            };
-                            state = old_parse_state;
-                            self.token_tape[open_idx] = TextToken::Array(end_idx);
-                            self.token_tape.push(TextToken::End(open_idx));
-                            data = &data[1..];
-                        }
-                        _ => {
-                            data = self.parse_scalar(data)?;
-                            state = ParseState::AtArrayValue;
-                        }
+                        self.token_tape.push(TextToken::Array(0));
+                        state = ParseState::AtParseOpen;
+                        data = &data[1..];
                     }
-                }
+                    b'}' => {
+                        let end_idx = self.token_tape.len();
+                        let old_state = self.stack.pop().ok_or_else(|| TextError {
+                            kind: TextErrorKind::StackEmpty,
+                        })?;
+                        let (old_parse_state, open_idx) = match old_state {
+                            StackType::Object(ind) => (ParseState::AtKey, ind),
+                            StackType::Array(ind) => (ParseState::AtArrayValue, ind),
+                        };
+                        state = old_parse_state;
+                        self.token_tape[open_idx] = TextToken::Array(end_idx);
+                        self.token_tape.push(TextToken::End(open_idx));
+                        data = &data[1..];
+                    }
+                    _ => {
+                        data = self.parse_scalar(data)?;
+                        state = ParseState::AtArrayValue;
+                    }
+                },
             }
         }
     }
 
-/*    #[inline]
+    /*    #[inline]
     fn slurp_body(&mut self, mut d: &'a [u8]) -> Result<(), TextError> {
         while !d.is_empty() {
             d = self.skip_ws_t(d);
@@ -621,7 +620,6 @@ mod tests {
             data.extend_from_slice(b"# this is a comment\n");
         }
         data.extend_from_slice(b"foo=2.000\n");
-
 
         assert_eq!(
             parse(&data[..]).unwrap().token_tape,

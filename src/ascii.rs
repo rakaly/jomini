@@ -7,10 +7,7 @@ use crate::util::le_u64;
 pub fn is_ascii(data: &[u8]) -> bool {
     let mut iter = data.chunks_exact(8 * 4);
     let mut res = iter.all(|data| {
-        (le_u64(data)
-            | le_u64(&data[8..])
-            | le_u64(&data[16..])
-            | le_u64(&data[24..]))
+        (le_u64(data) | le_u64(&data[8..]) | le_u64(&data[16..]) | le_u64(&data[24..]))
             & 0x80808080_80808080
             == 0
     });

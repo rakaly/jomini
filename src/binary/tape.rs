@@ -1,6 +1,6 @@
-use crate::BinaryDeError;
-use crate::util::{le_u16, le_u32, le_u64, le_i32};
 use crate::stack::{Stack, StackType};
+use crate::util::{le_i32, le_u16, le_u32, le_u64};
+use crate::BinaryDeError;
 
 #[derive(Debug, PartialEq)]
 pub enum BinaryToken {
@@ -188,7 +188,7 @@ impl<'a> BinTape<'a> {
                             let res = self.parse_bool(data)?;
                             state = ParseState::AtKeyValueSeparator;
                             res
-                        },
+                        }
                         STRING_1 | STRING_2 => {
                             let res = self.parse_string(data)?;
                             state = ParseState::AtKeyValueSeparator;
@@ -199,7 +199,7 @@ impl<'a> BinTape<'a> {
                             state = ParseState::AtKeyValueSeparator;
                             res
                         }
-                        Q16 => { 
+                        Q16 => {
                             let res = self.parse_q16(data)?;
                             state = ParseState::AtKeyValueSeparator;
                             res
@@ -217,7 +217,8 @@ impl<'a> BinTape<'a> {
                         }
                         END => {
                             let end_idx = self.token_tape.len();
-                            let old_state = self.stack.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
+                            let old_state =
+                                self.stack.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
                             let (old_parse_state, open_idx) = match old_state {
                                 StackType::Object(ind) => (ParseState::AtKey, ind),
                                 StackType::Array(ind) => (ParseState::AtArrayValue, ind),
@@ -278,7 +279,7 @@ impl<'a> BinTape<'a> {
                             let res = self.parse_bool(data)?;
                             state = ParseState::AtKey;
                             res
-                        },
+                        }
                         STRING_1 | STRING_2 => {
                             let res = self.parse_string(data)?;
                             state = ParseState::AtKey;
@@ -289,7 +290,7 @@ impl<'a> BinTape<'a> {
                             state = ParseState::AtKey;
                             res
                         }
-                        Q16 => { 
+                        Q16 => {
                             let res = self.parse_q16(data)?;
                             state = ParseState::AtKey;
                             res
@@ -308,7 +309,10 @@ impl<'a> BinTape<'a> {
                                 // Empty array
                                 END => {
                                     let end_idx = self.token_tape.len();
-                                    let old_state = self.stack.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
+                                    let old_state = self
+                                        .stack
+                                        .pop()
+                                        .ok_or_else(|| BinaryDeError::StackEmpty)?;
                                     let (old_parse_state, open_idx) = match old_state {
                                         StackType::Object(ind) => (ParseState::AtKey, ind),
                                         StackType::Array(ind) => (ParseState::AtArrayValue, ind),
@@ -362,11 +366,11 @@ impl<'a> BinTape<'a> {
                                 OPEN => {
                                     state = ParseState::AtObjectValue;
                                     data
-                                },
+                                }
                                 EQUAL => {
                                     state = ParseState::AtObjectValue;
                                     d
-                                },
+                                }
                                 _ => {
                                     state = ParseState::AtArrayValue;
                                     data
@@ -418,7 +422,7 @@ impl<'a> BinTape<'a> {
                             let res = self.parse_bool(data)?;
                             state = ParseState::AtArrayValue;
                             res
-                        },
+                        }
                         STRING_1 | STRING_2 => {
                             let res = self.parse_string(data)?;
                             state = ParseState::AtArrayValue;
@@ -429,7 +433,7 @@ impl<'a> BinTape<'a> {
                             state = ParseState::AtArrayValue;
                             res
                         }
-                        Q16 => { 
+                        Q16 => {
                             let res = self.parse_q16(data)?;
                             state = ParseState::AtArrayValue;
                             res
@@ -447,7 +451,10 @@ impl<'a> BinTape<'a> {
                                 // Empty array
                                 END => {
                                     let end_idx = self.token_tape.len();
-                                    let old_state = self.stack.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
+                                    let old_state = self
+                                        .stack
+                                        .pop()
+                                        .ok_or_else(|| BinaryDeError::StackEmpty)?;
                                     let (old_parse_state, open_idx) = match old_state {
                                         StackType::Object(ind) => (ParseState::AtKey, ind),
                                         StackType::Array(ind) => (ParseState::AtArrayValue, ind),
@@ -503,11 +510,11 @@ impl<'a> BinTape<'a> {
                                 OPEN => {
                                     state = ParseState::AtObjectValue;
                                     data
-                                },
+                                }
                                 EQUAL => {
                                     state = ParseState::AtObjectValue;
                                     d
-                                },
+                                }
                                 _ => {
                                     state = ParseState::AtArrayValue;
                                     data
@@ -516,7 +523,8 @@ impl<'a> BinTape<'a> {
                         }
                         END => {
                             let end_idx = self.token_tape.len();
-                            let old_state = self.stack.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
+                            let old_state =
+                                self.stack.pop().ok_or_else(|| BinaryDeError::StackEmpty)?;
                             let (old_parse_state, open_idx) = match old_state {
                                 StackType::Object(ind) => (ParseState::AtKey, ind),
                                 StackType::Array(ind) => (ParseState::AtArrayValue, ind),
@@ -526,9 +534,7 @@ impl<'a> BinTape<'a> {
                             self.token_tape.push(BinaryToken::End(open_idx));
                             data
                         }
-                        RGB => {
-                            self.parse_rgb(data)?
-                        }
+                        RGB => self.parse_rgb(data)?,
                         EQUAL => {
                             return Err(BinaryDeError::Message(String::from(
                                 "EQUAL not valid for an array value",
