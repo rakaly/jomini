@@ -315,7 +315,7 @@ fn is_whitespace(b: u8) -> bool {
 
 #[inline]
 fn is_boundary(b: u8) -> bool {
-    is_whitespace(b) || b == b'{' || b == b'}' || is_operator(b)
+    is_whitespace(b) || b == b'{' || b == b'}' || is_operator(b) || b == b'#'
 }
 
 #[inline]
@@ -596,6 +596,21 @@ mod tests {
             data.extend_from_slice(b"{");
         }
         assert!(parse(&data[..]).is_err());
+    }
+
+    #[test]
+    fn test_no_ws_comment() {
+        let data = b"foo=abc#def\nbar=qux";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Scalar(Scalar::new(b"abc")),
+                TextToken::Scalar(Scalar::new(b"bar")),
+                TextToken::Scalar(Scalar::new(b"qux")),
+            ]
+        );
     }
 
     #[test]
