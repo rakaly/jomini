@@ -613,6 +613,19 @@ mod tests {
     }
 
     #[test]
+    fn test_period_in_identifiers() {
+        let data = b"flavor_tur.8=yes";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"flavor_tur.8")),
+                TextToken::Scalar(Scalar::new(b"yes")),
+            ]
+        );
+    }
+
+    #[test]
     fn test_many_line_comment() {
         let mut data = Vec::new();
         data.extend_from_slice(b"foo=1.000\n");
