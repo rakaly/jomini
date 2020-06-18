@@ -653,6 +653,19 @@ mod tests {
     }
 
     #[test]
+    fn test_variables() {
+        let data = b"@planet_standard_scale = 11";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"@planet_standard_scale")),
+                TextToken::Scalar(Scalar::new(b"11")),
+            ]
+        );
+    }
+
+    #[test]
     fn test_many_line_comment() {
         let mut data = Vec::new();
         data.extend_from_slice(b"foo=1.000\n");
