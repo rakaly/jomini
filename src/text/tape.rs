@@ -626,6 +626,20 @@ mod tests {
     }
 
     #[test]
+    fn test_dashed_identifiers() {
+        // From stellaris saves
+        let data = b"dashed-identifier=yes";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"dashed-identifier")),
+                TextToken::Scalar(Scalar::new(b"yes")),
+            ]
+        );
+    }
+
+    #[test]
     fn test_many_line_comment() {
         let mut data = Vec::new();
         data.extend_from_slice(b"foo=1.000\n");
