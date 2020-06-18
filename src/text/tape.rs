@@ -100,15 +100,13 @@ impl<'a> TextTape<'a> {
                 .push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
             Ok(&d[end_idx + 2..])
         } else {
-            let ind = d
+            let mut ind = d
                 .iter()
                 .position(|&x| is_boundary(x))
                 .unwrap_or_else(|| d.len());
-            if ind == 0 {
-                return Err(TextError {
-                    kind: TextErrorKind::Message(String::from("zero sized scalar")),
-                });
-            }
+
+            // To work with cases where we have "==bar" we ensure that found index is at least one
+            ind = std::cmp::max(ind, 1);
             let (scalar, rest) = d.split_at(ind);
             self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
             Ok(rest)
@@ -661,6 +659,19 @@ mod tests {
             vec![
                 TextToken::Scalar(Scalar::new(b"@planet_standard_scale")),
                 TextToken::Scalar(Scalar::new(b"11")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_equal_identifier() {
+        let data = br#"=="bar""#;
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"=")),
+                TextToken::Scalar(Scalar::new(b"bar")),
             ]
         );
     }
