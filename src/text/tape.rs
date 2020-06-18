@@ -640,6 +640,19 @@ mod tests {
     }
 
     #[test]
+    fn test_colon_values() {
+        let data = b"province_id = event_target:agenda_province";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"province_id")),
+                TextToken::Scalar(Scalar::new(b"event_target:agenda_province")),
+            ]
+        );
+    }
+
+    #[test]
     fn test_many_line_comment() {
         let mut data = Vec::new();
         data.extend_from_slice(b"foo=1.000\n");
