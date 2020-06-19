@@ -90,19 +90,66 @@ impl<'a> TextTape<'a> {
     fn parse_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
         if d[0] == b'"' {
             let sd = &d[1..];
-            let end_idx = sd
+            let mut offset = 0;
+            let mut chunk_iter = sd.chunks_exact(8);
+            while let Some(n) = chunk_iter.next() {
+                let acc = unsafe { (n.as_ptr() as *const u64).read_unaligned() };
+                if contains_zero_byte(acc ^ repeat_byte(b'"')) {
+                    let end_idx = n.iter().position(|&x| x == b'"').unwrap_or(0) + offset;
+                    self.token_tape
+                        .push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
+                    return Ok(&d[end_idx + 2..]);
+                }
+
+                offset += 8;
+            }
+
+            let pos = chunk_iter
+                .remainder()
                 .iter()
                 .position(|&x| x == b'"')
                 .ok_or_else(|| TextError {
                     kind: TextErrorKind::Eof,
                 })?;
+
+            let end_idx = pos + offset;
             self.token_tape
                 .push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
             Ok(&d[end_idx + 2..])
         } else {
-            let mut ind = d
+            let mut offset = 0;
+            let mut chunk_iter = d.chunks_exact(8);
+
+            while let Some(n) = chunk_iter.next() {
+                let acc = unsafe { (n.as_ptr() as *const u64).read_unaligned() };
+                if contains_zero_byte(acc ^ repeat_byte(b' '))
+                    || contains_zero_byte(acc ^ repeat_byte(b'\t'))
+                    || contains_zero_byte(acc ^ repeat_byte(b'\n'))
+                    || contains_zero_byte(acc ^ repeat_byte(b'\r'))
+                    || contains_zero_byte(acc ^ repeat_byte(b'{'))
+                    || contains_zero_byte(acc ^ repeat_byte(b'}'))
+                    || contains_zero_byte(acc ^ repeat_byte(b'='))
+                    || contains_zero_byte(acc ^ repeat_byte(b'#'))
+                    || contains_zero_byte(acc ^ repeat_byte(b'!'))
+                    || contains_zero_byte(acc ^ repeat_byte(b'>'))
+                    || contains_zero_byte(acc ^ repeat_byte(b'<'))
+                {
+                    let mut ind = n.iter().position(|&x| is_boundary(x)).unwrap_or(0) + offset;
+                    // To work with cases where we have "==bar" we ensure that found index is at least one
+                    ind = std::cmp::max(ind, 1);
+                    let (scalar, rest) = d.split_at(ind);
+                    self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
+                    return Ok(rest);
+                }
+
+                offset += 8;
+            }
+
+            let mut ind = chunk_iter
+                .remainder()
                 .iter()
                 .position(|&x| is_boundary(x))
+                .map(|x| x + offset)
                 .unwrap_or_else(|| d.len());
 
             // To work with cases where we have "==bar" we ensure that found index is at least one
@@ -285,24 +332,19 @@ impl<'a> TextTape<'a> {
             }
         }
     }
+}
 
-    /*    #[inline]
-    fn slurp_body(&mut self, mut d: &'a [u8]) -> Result<(), TextError> {
-        while !d.is_empty() {
-            d = self.skip_ws_t(d);
-            if d.is_empty() {
-                break;
-            }
+/// From the memchr crate which bases its implementation on several others
+#[inline(always)]
+fn contains_zero_byte(x: u64) -> bool {
+    const LO_U64: u64 = 0x0101010101010101;
+    const HI_U64: u64 = 0x8080808080808080;
+    x.wrapping_sub(LO_U64) & !x & HI_U64 != 0
+}
 
-            d = self.parse_scalar(d)?;
-            d = self.skip_ws(d)?;
-            d = self.parse_key_value_separator(d)?;
-            d = self.skip_ws(d)?;
-            d = self.parse_value(d)?;
-        }
-
-        Ok(())
-    }*/
+#[inline(always)]
+const fn repeat_byte(b: u8) -> u64 {
+    (b as u64) * (u64::MAX / 255)
 }
 
 #[inline]
@@ -312,9 +354,13 @@ fn is_whitespace(b: u8) -> bool {
 
 #[inline]
 fn is_boundary(b: u8) -> bool {
-    is_whitespace(b) || b == b'{' || b == b'}' || is_operator(b) || b == b'#'
+    // Function is written in such a way to reduce the number of operators needed. This function is
+    // essentially:
+    // is_whitespace(b) || b == b'{' || b == b'}' || is_operator(b) || b == b'#'
+    (b < 0x40 || (b == b'{' || b == b'}')) && !(b > 0x24 && b < 0x3c)
 }
 
+#[allow(dead_code)]
 #[inline]
 fn is_operator(b: u8) -> bool {
     b == b'=' || b == b'!' || b == b'>' || b == b'<'
@@ -582,7 +628,7 @@ mod tests {
     #[test]
     fn test_regression2() {
         let data = [0, 4, 33, 0];
-        assert!(parse(&data[..]).is_err());
+        let _ = parse(&data[..]);
     }
 
     #[test]
