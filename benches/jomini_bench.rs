@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use jomini::{BinaryParser, Scalar};
+use jomini::Scalar;
 use std::collections::HashMap;
 
 #[global_allocator]
@@ -70,11 +70,6 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
     let mut map = HashMap::new();
     map.insert(0x337f, "campaign_id");
     group.throughput(Throughput::Bytes(data.len() as u64));
-    group.bench_function("meta", |b| {
-        b.iter(|| {
-            let _res: Meta = jomini::de::binary::from_slice(&data[..], &map).unwrap();
-        })
-    });
     group.bench_function("meta-tape", |b| {
         b.iter(|| {
             let _res: Meta = jomini::binary::de::from_slice(&data[..], &map).unwrap();
@@ -87,20 +82,6 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     let data = &METADATA_BIN["EU4bin".len()..];
     let mut group = c.benchmark_group("binary_parse");
     group.throughput(Throughput::Bytes(data.len() as u64));
-    group.bench_function("meta", |b| {
-        b.iter(|| {
-            let mut parser = BinaryParser::new();
-            let mut count = 0;
-            for event in parser.events(&data[..]) {
-                event.unwrap();
-                count += 1;
-            }
-            count
-        })
-    });
-    group.bench_function("meta-document", |b| {
-        b.iter(|| jomini::document::document_from_slice(&data[..]).unwrap())
-    });
     group.bench_function("meta-tape", |b| {
         let mut tape = jomini::BinTape::default();
         b.iter(|| {
