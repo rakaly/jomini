@@ -26,9 +26,9 @@ impl BinaryDeserializerBuilder {
         self
     }
 
-    pub fn from_slice<'a, 'b, RES, T>(
+    pub fn from_tape<'a, 'b, RES, T>(
         &'b self,
-        data: &'a [u8],
+        tape: &BinTape<'a>,
         resolver: RES,
     ) -> Result<T, BinaryDeError>
     where
@@ -40,7 +40,6 @@ impl BinaryDeserializerBuilder {
             failed_resolve_strategy: self.failed_resolve_strategy,
         };
 
-        let tape = BinTape::from_slice(data)?;
         let mut seen = vec![0; tape.token_tape.len()];
         let mut deserializer = RootDeserializer {
             doc: &tape,
@@ -48,6 +47,19 @@ impl BinaryDeserializerBuilder {
             config: &config,
         };
         T::deserialize(&mut deserializer)
+    }
+
+    pub fn from_slice<'a, 'b, RES, T>(
+        &'b self,
+        data: &'a [u8],
+        resolver: RES,
+    ) -> Result<T, BinaryDeError>
+    where
+        T: Deserialize<'a>,
+        RES: TokenResolver,
+    {
+        let tape = BinTape::from_slice(data)?;
+        self.from_tape(&tape, resolver)
     }
 }
 

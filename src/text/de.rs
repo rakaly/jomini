@@ -19,6 +19,10 @@ pub struct TextDeserializer<'a> {
 impl<'a> TextDeserializer<'a> {
     pub fn from_slice(data: &'a [u8]) -> Result<Self, TextError> {
         let tape = TextTape::from_slice(data)?;
+        TextDeserializer::from_tape(tape)
+    }
+
+    pub fn from_tape(tape: TextTape<'a>) -> Result<Self, TextError> {
         let seen = vec![0; tape.token_tape.len()];
         Ok(TextDeserializer { doc: tape, seen })
     }
