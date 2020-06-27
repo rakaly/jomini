@@ -950,4 +950,17 @@ mod tests {
         }
         assert!(parse(&data[..]).is_err());
     }
+
+    #[test]
+    fn test_brace_regression() {
+        let data = [137, 53, 3, 0, 4, 0];
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                BinaryToken::Token(13705),
+                BinaryToken::Array(2),
+                BinaryToken::End(1)
+            ]
+        );
+    }
 }
