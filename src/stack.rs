@@ -1,4 +1,4 @@
-const MAX_DEPTH: usize = 16;
+const MAX_DEPTH: usize = 30;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) enum StackType {
