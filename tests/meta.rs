@@ -112,3 +112,10 @@ fn test_binary_unknown_key_object() {
     let hash = create_bin_lookup();
     assert!(jomini::binary::de::from_slice::<_, BinMeta>(&data[..], hash).is_err());
 }
+
+#[test]
+fn test_binary_timeout() {
+    let data = include_bytes!("fixtures/bin-timeout");
+    let hash = create_bin_lookup();
+    assert!(jomini::binary::de::from_slice::<_, BinMeta>(&data[..], hash).is_err());
+}
