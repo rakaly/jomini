@@ -1,3 +1,4 @@
+use crate::data::{BOUNDARY, CHARACTER_CLASS, WHITESPACE};
 use crate::{Scalar, TextError, TextErrorKind};
 
 #[derive(Debug, PartialEq)]
@@ -357,21 +358,12 @@ const fn repeat_byte(b: u8) -> u64 {
 
 #[inline]
 fn is_whitespace(b: u8) -> bool {
-    b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
+    CHARACTER_CLASS[usize::from(b)] & WHITESPACE == WHITESPACE
 }
 
 #[inline]
 fn is_boundary(b: u8) -> bool {
-    // Function is written in such a way to reduce the number of operators needed. This function is
-    // essentially:
-    // is_whitespace(b) || b == b'{' || b == b'}' || is_operator(b) || b == b'#'
-    (b < 0x40 || (b == b'{' || b == b'}')) && !(b > 0x24 && b < 0x3c)
-}
-
-#[allow(dead_code)]
-#[inline]
-fn is_operator(b: u8) -> bool {
-    b == b'=' || b == b'!' || b == b'>' || b == b'<'
+    CHARACTER_CLASS[usize::from(b)] & BOUNDARY == BOUNDARY
 }
 
 #[cfg(test)]
