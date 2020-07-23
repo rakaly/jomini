@@ -261,6 +261,13 @@ pub(crate) const BOUNDARY: u8 = 1;
 pub(crate) const WHITESPACE: u8 = 2;
 pub(crate) const OPERATOR: u8 = 4;
 
+/// This table probably looks pretty weird but it serves as a way to encode multiple attributes of
+/// a character in a single place. This way we increase the likelihood that the table is in the
+/// cache as it is used in multiple call sites. The reason why the table has (0 - 0) is so that I
+/// can remember what index is being modified -- much better than calculating by hand where an edit
+/// needs to go. Unfortunately, clippy hates this and so several lints have to be turned off for
+/// it.
+#[allow(clippy::eq_op, clippy::identity_op)]
 pub(crate) static CHARACTER_CLASS: [u8; 256] = [
     (0 - 0),
     (1 - 1),

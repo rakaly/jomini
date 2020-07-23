@@ -1,4 +1,5 @@
 use crate::ascii::is_ascii;
+use crate::util::le_u64;
 use std::borrow::Cow;
 use std::error;
 use std::fmt;
@@ -235,8 +236,7 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
     let mut result: u64 = 0;
     let chunks = d.chunks_exact(8);
     for chunk in chunks {
-        let chunk_ptr = chunk.as_ptr() as *const u8 as *const u64;
-        let val = unsafe { ::std::ptr::read_unaligned(chunk_ptr).to_le() };
+        let val = le_u64(chunk);
 
         result = result
             .checked_mul(100_000_000)

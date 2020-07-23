@@ -1,5 +1,5 @@
-use crate::data::{BOUNDARY, CHARACTER_CLASS, WHITESPACE};
 use crate::{Scalar, TextError, TextErrorKind};
+use crate::data::{BOUNDARY, WHITESPACE, CHARACTER_CLASS};
 
 #[derive(Debug, PartialEq)]
 pub enum TextToken<'a> {
@@ -66,10 +66,11 @@ impl<'a> TextTape<'a> {
     #[inline]
     fn skip_ws_t(&mut self, mut data: &'a [u8]) -> &'a [u8] {
         loop {
-            let ind = data
-                .iter()
-                .position(|&x| !is_whitespace(x))
-                .unwrap_or_else(|| data.len());
+            let start_ptr = data.as_ptr();
+            let end_ptr = unsafe { start_ptr.add(data.len()) };
+
+            let nind = unsafe { forward_search(start_ptr, end_ptr, |x| !is_whitespace(x)) };
+            let ind = nind.unwrap_or_else(|| data.len());
             let (_, rest) = data.split_at(ind);
             data = rest;
 
@@ -86,77 +87,49 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
-    fn parse_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
-        if d[0] == b'"' {
-            let sd = &d[1..];
-            let mut offset = 0;
-            let mut chunk_iter = sd.chunks_exact(8);
-            while let Some(n) = chunk_iter.next() {
-                let acc = unsafe { (n.as_ptr() as *const u64).read_unaligned() };
-                if contains_zero_byte(acc ^ repeat_byte(b'"')) {
-                    let end_idx = n.iter().position(|&x| x == b'"').unwrap_or(0) + offset;
-                    self.token_tape
-                        .push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
-                    return Ok(&d[end_idx + 2..]);
-                }
-
-                offset += 8;
+    fn parse_quote_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
+        let sd = &d[1..];
+        let mut offset = 0;
+        let mut chunk_iter = sd.chunks_exact(8);
+        while let Some(n) = chunk_iter.next() {
+            let acc = unsafe { (n.as_ptr() as *const u64).read_unaligned() };
+            if contains_zero_byte(acc ^ repeat_byte(b'"')) {
+                let end_idx = n.iter().position(|&x| x == b'"').unwrap_or(0) + offset;
+                self.token_tape
+                    .push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
+                return Ok(&d[end_idx + 2..]);
             }
 
-            let pos = chunk_iter
-                .remainder()
-                .iter()
-                .position(|&x| x == b'"')
-                .ok_or_else(|| TextError {
-                    kind: TextErrorKind::Eof,
-                })?;
-
-            let end_idx = pos + offset;
-            self.token_tape
-                .push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
-            Ok(&d[end_idx + 2..])
-        } else {
-            let mut offset = 0;
-            let mut chunk_iter = d.chunks_exact(8);
-
-            while let Some(n) = chunk_iter.next() {
-                let acc = unsafe { (n.as_ptr() as *const u64).read_unaligned() };
-                if contains_zero_byte(acc ^ repeat_byte(b' '))
-                    || contains_zero_byte(acc ^ repeat_byte(b'\t'))
-                    || contains_zero_byte(acc ^ repeat_byte(b'\n'))
-                    || contains_zero_byte(acc ^ repeat_byte(b'\r'))
-                    || contains_zero_byte(acc ^ repeat_byte(b'{'))
-                    || contains_zero_byte(acc ^ repeat_byte(b'}'))
-                    || contains_zero_byte(acc ^ repeat_byte(b'='))
-                    || contains_zero_byte(acc ^ repeat_byte(b'#'))
-                    || contains_zero_byte(acc ^ repeat_byte(b'!'))
-                    || contains_zero_byte(acc ^ repeat_byte(b'>'))
-                    || contains_zero_byte(acc ^ repeat_byte(b'<'))
-                {
-                    let mut ind = n.iter().position(|&x| is_boundary(x)).unwrap_or(0) + offset;
-                    // To work with cases where we have "==bar" we ensure that found index is at least one
-                    ind = std::cmp::max(ind, 1);
-                    let (scalar, rest) = d.split_at(ind);
-                    self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
-                    return Ok(rest);
-                }
-
-                offset += 8;
-            }
-
-            let mut ind = chunk_iter
-                .remainder()
-                .iter()
-                .position(|&x| is_boundary(x))
-                .map(|x| x + offset)
-                .unwrap_or_else(|| d.len());
-
-            // To work with cases where we have "==bar" we ensure that found index is at least one
-            ind = std::cmp::max(ind, 1);
-            let (scalar, rest) = d.split_at(ind);
-            self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
-            Ok(rest)
+            offset += 8;
         }
+
+        let pos = chunk_iter
+            .remainder()
+            .iter()
+            .position(|&x| x == b'"')
+            .ok_or_else(|| TextError {
+                kind: TextErrorKind::Eof,
+            })?;
+
+        let end_idx = pos + offset;
+        self.token_tape
+            .push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
+        Ok(&d[end_idx + 2..])
+    }
+
+    #[inline]
+    fn parse_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
+        let start_ptr = d.as_ptr();
+        let end_ptr = unsafe { start_ptr.add(d.len()) };
+
+        let nind = unsafe { forward_search(start_ptr, end_ptr, is_boundary) };
+        let mut ind = nind.unwrap_or_else(|| d.len());
+
+        // To work with cases where we have "==bar" we ensure that found index is at least one
+        ind = std::cmp::max(ind, 1);
+        let (scalar, rest) = d.split_at(ind);
+        self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
+        Ok(rest)
     }
 
     #[inline]
@@ -238,6 +211,10 @@ impl<'a> TextTape<'a> {
                             state = ParseState::AtEmptyObject;
                         }
 
+                        b'"' => {
+                            data = self.parse_quote_scalar(data)?;
+                            state = ParseState::AtKeyValueSeparator;
+                        }
                         _ => {
                             data = self.parse_scalar(data)?;
                             state = ParseState::AtKeyValueSeparator;
@@ -261,6 +238,10 @@ impl<'a> TextTape<'a> {
                             state = ParseState::AtKey;
                         }
 
+                        b'"' => {
+                            data = self.parse_quote_scalar(data)?;
+                            state = ParseState::AtKey;
+                        }
                         _ => {
                             data = self.parse_scalar(data)?;
                             state = ParseState::AtKey;
@@ -290,7 +271,12 @@ impl<'a> TextTape<'a> {
                             parent_ind = ind;
                             state = ParseState::AtArrayValue;
                         }
-
+                        b'"' => {
+                            self.token_tape[ind] = TextToken::Object(parent_ind);
+                            parent_ind = ind;
+                            data = self.parse_quote_scalar(data)?;
+                            state = ParseState::AtFirstValue;
+                        }
                         _ => {
                             self.token_tape[ind] = TextToken::Object(parent_ind);
                             parent_ind = ind;
@@ -333,6 +319,10 @@ impl<'a> TextTape<'a> {
                         parent_ind = grand_ind;
                         data = &data[1..];
                     }
+                    b'"' => {
+                        data = self.parse_quote_scalar(data)?;
+                        state = ParseState::AtArrayValue;
+                    }
                     _ => {
                         data = self.parse_scalar(data)?;
                         state = ParseState::AtArrayValue;
@@ -341,6 +331,28 @@ impl<'a> TextTape<'a> {
             }
         }
     }
+}
+
+fn sub(a: *const u8, b: *const u8) -> usize {
+    debug_assert!(a >= b);
+    (a as usize) - (b as usize)
+}
+
+#[inline(always)]
+unsafe fn forward_search<F: Fn(u8) -> bool>(
+    start_ptr: *const u8,
+    end_ptr: *const u8,
+    confirm: F,
+) -> Option<usize> {
+    let mut ptr = start_ptr;
+    while ptr < end_ptr {
+        if confirm(*ptr) {
+            return Some(sub(ptr, start_ptr));
+        }
+        ptr = ptr.offset(1);
+    }
+
+    None
 }
 
 /// From the memchr crate which bases its implementation on several others
