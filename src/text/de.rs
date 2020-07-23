@@ -455,14 +455,11 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
                     "encountered end when trying to deserialize",
                 )),
             }),
-            _ => {
-                dbg!(&self.doc.token_tape[idx - 1..idx + 1]);
-                Err(TextError {
-                    kind: TextErrorKind::Message(String::from(
-                        "encountered non-seq when trying to deserialize seq",
-                    )),
-                })
-            }
+            _ => Err(TextError {
+                kind: TextErrorKind::Message(String::from(
+                    "encountered non-seq when trying to deserialize seq",
+                )),
+            }),
         }
     }
 

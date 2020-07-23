@@ -1,5 +1,5 @@
+use crate::data::{BOUNDARY, CHARACTER_CLASS, WHITESPACE};
 use crate::{Scalar, TextError, TextErrorKind};
-use crate::data::{BOUNDARY, WHITESPACE, CHARACTER_CLASS};
 
 #[derive(Debug, PartialEq)]
 pub enum TextToken<'a> {
