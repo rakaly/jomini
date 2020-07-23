@@ -17,6 +17,7 @@ jemallocator = "0.3"
 criterion = "0.3"
 quickcheck = "0.9"
 quickcheck_macros = "0.9"
+jomini_derive = { path = "../jomini_derive" }
 serde = { version = "1", features = ["derive"] }
 zip = { version =  "0.5", default-features = false, features = ["deflate"] }
 

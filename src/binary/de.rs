@@ -40,10 +40,8 @@ impl BinaryDeserializerBuilder {
             failed_resolve_strategy: self.failed_resolve_strategy,
         };
 
-        let mut seen = vec![0; tape.token_tape.len()];
         let mut deserializer = RootDeserializer {
             doc: &tape,
-            seen: &mut seen,
             config: &config,
         };
         T::deserialize(&mut deserializer)
@@ -80,7 +78,6 @@ struct BinaryConfig<RES> {
 
 struct RootDeserializer<'b, 'a: 'b, RES> {
     doc: &'b BinTape<'a>,
-    seen: &'b mut Vec<u8>,
     config: &'b BinaryConfig<RES>,
 }
 
@@ -107,7 +104,6 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
             self.doc,
             0,
             self.doc.token_tape.len(),
-            self.seen,
         ))
     }
 
@@ -133,10 +129,9 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
 struct BinaryMap<'c, 'a: 'c, 'de: 'a, RES: 'a> {
     config: &'a BinaryConfig<RES>,
     doc: &'c BinTape<'de>,
-    seen: &'c mut Vec<u8>,
     tape_idx: usize,
     end_idx: usize,
-    values: Vec<usize>,
+    value_ind: usize,
 }
 
 impl<'c, 'a, 'de, RES> BinaryMap<'c, 'a, 'de, RES> {
@@ -145,15 +140,13 @@ impl<'c, 'a, 'de, RES> BinaryMap<'c, 'a, 'de, RES> {
         doc: &'c BinTape<'de>,
         tape_idx: usize,
         end_idx: usize,
-        seen: &'c mut Vec<u8>,
     ) -> Self {
         BinaryMap {
             config,
             doc,
             tape_idx,
             end_idx,
-            seen,
-            values: Vec::new(),
+            value_ind: 0,
         }
     }
 }
@@ -165,66 +158,27 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
     where
         K: DeserializeSeed<'de>,
     {
-        self.values.clear();
+        if self.tape_idx < self.end_idx {
+            let current_idx = self.tape_idx;
 
-        while self.tape_idx < self.end_idx {
-            if self.seen[self.tape_idx] == 0 {
-                let key = &self.doc.token_tape[self.tape_idx];
-                self.seen[self.tape_idx] = 1;
-                self.values.push(self.tape_idx + 1);
-
-                let mut value_idx = self.tape_idx + 1;
-                while value_idx < self.end_idx {
-                    let add_for_key = match self.doc.token_tape[value_idx] {
-                        BinaryToken::Array(x) => x,
-                        BinaryToken::Object(x) => x,
-                        _ => value_idx,
-                    };
-
-                    let next_key_idx = add_for_key + 1;
-                    if next_key_idx >= self.end_idx {
-                        break;
-                    }
-
-                    let next_key = &self.doc.token_tape[next_key_idx];
-                    if next_key == key {
-                        self.seen[next_key_idx] = 1;
-                        self.values.push(next_key_idx + 1)
-                    } else {
-                        match (key, next_key) {
-                            (BinaryToken::Text(s1), BinaryToken::Text(s2))
-                                if self.doc.data_tape[*s1] == self.doc.data_tape[*s2] =>
-                            {
-                                self.seen[next_key_idx] = 1;
-                                self.values.push(next_key_idx + 1)
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    value_idx = next_key_idx + 1;
-                }
-
-                return seed
-                    .deserialize(KeyDeserializer {
-                        tape_idx: self.tape_idx,
-                        doc: self.doc,
-                        config: self.config,
-                    })
-                    .map(Some);
-            }
-
-            let value_idx = self.tape_idx + 1;
-            let next_key = match self.doc.token_tape.get(value_idx) {
-                Some(BinaryToken::Array(x)) => *x,
-                Some(BinaryToken::Object(x)) => *x,
-                _ => value_idx,
+            self.value_ind = self.tape_idx + 1;
+            let next_key = match self.doc.token_tape[self.value_ind] {
+                BinaryToken::Array(x) => x,
+                BinaryToken::Object(x) => x,
+                _ => self.value_ind,
             };
 
             self.tape_idx = next_key + 1;
+            return seed
+                .deserialize(KeyDeserializer {
+                    tape_idx: current_idx,
+                    doc: self.doc,
+                    config: self.config,
+                })
+                .map(Some);
+        } else {
+            Ok(None)
         }
-
-        Ok(None)
     }
 
     fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
@@ -232,10 +186,9 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
         V: DeserializeSeed<'de>,
     {
         seed.deserialize(ValueDeserializer {
-            value_indices: &self.values,
+            value_ind: self.value_ind,
             doc: &self.doc,
             config: self.config,
-            seen: self.seen,
         })
     }
 }
@@ -299,9 +252,8 @@ impl<'b, 'de, RES: TokenResolver> de::Deserializer<'de> for KeyDeserializer<'b, 
 
 struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
-    value_indices: &'c Vec<usize>,
+    value_ind: usize,
     doc: &'c BinTape<'de>,
-    seen: &'c mut Vec<u8>,
 }
 
 impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
@@ -313,23 +265,18 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        let idx = self.value_indices[0];
+        let idx = self.value_ind;
         match &self.doc.token_tape[idx] {
             BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
                 config: self.config,
                 doc: self.doc,
-                seen: self.seen,
                 de_idx: 0,
                 idx: idx + 1,
                 end_idx: *x,
             }),
-            BinaryToken::Object(x) => visitor.visit_map(BinaryMap::new(
-                &self.config,
-                self.doc,
-                idx + 1,
-                *x,
-                self.seen,
-            )),
+            BinaryToken::Object(x) => {
+                visitor.visit_map(BinaryMap::new(&self.config, self.doc, idx + 1, *x))
+            }
             BinaryToken::End(_x) => Err(BinaryDeError::Message(String::from(
                 "encountered end when trying to deserialize",
             ))),
@@ -341,12 +288,11 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        let idx = self.value_indices[0];
+        let idx = self.value_ind;
         match &self.doc.token_tape[idx] {
             BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
                 config: self.config,
                 doc: self.doc,
-                seen: self.seen,
                 de_idx: 0,
                 idx: idx + 1,
                 end_idx: *x,
@@ -354,13 +300,9 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
             BinaryToken::End(_x) => Err(BinaryDeError::Message(String::from(
                 "encountered end when trying to deserialize",
             ))),
-            _ => visitor.visit_seq(SpanningSequence {
-                doc: self.doc,
-                config: self.config,
-                value_indices: self.value_indices,
-                seen: self.seen,
-                idx: 0,
-            }),
+            _ => Err(BinaryDeError::Message(String::from(
+                "encountered non-array when trying to deserialize array",
+            ))),
         }
     }
 
@@ -408,10 +350,42 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
         visitor.visit_newtype_struct(self)
     }
 
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_map(visitor)
+    }
+
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.value_ind;
+        match &self.doc.token_tape[idx] {
+            BinaryToken::Object(x) => {
+                visitor.visit_map(BinaryMap::new(&self.config, self.doc, idx + 1, *x))
+            }
+
+            // An array is supported if it is empty
+            BinaryToken::Array(x) => {
+                visitor.visit_map(BinaryMap::new(&self.config, self.doc, idx + 1, *x))
+            }
+            _ => Err(BinaryDeError::Message(String::from(
+                "encountered unexpected token when trying to deserialize map",
+            ))),
+        }
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf unit unit_struct
-        map enum identifier struct
+        enum identifier
     }
 }
 
@@ -421,7 +395,6 @@ struct BinarySequence<'b, 'de: 'b, RES> {
     idx: usize,
     de_idx: usize,
     end_idx: usize,
-    seen: &'b mut Vec<u8>,
 }
 
 impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
@@ -434,17 +407,12 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
         V: Visitor<'de>,
     {
         match &self.doc.token_tape[self.de_idx] {
-            BinaryToken::Object(x) => visitor.visit_map(BinaryMap::new(
-                self.config,
-                self.doc,
-                self.de_idx + 1,
-                *x,
-                self.seen,
-            )),
+            BinaryToken::Object(x) => {
+                visitor.visit_map(BinaryMap::new(self.config, self.doc, self.de_idx + 1, *x))
+            }
             BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
                 config: self.config,
                 doc: self.doc,
-                seen: self.seen,
                 de_idx: 0,
                 idx: self.de_idx + 1,
                 end_idx: *x,
@@ -486,73 +454,10 @@ impl<'b, 'de, RES: TokenResolver> SeqAccess<'de> for BinarySequence<'b, 'de, RES
     }
 }
 
-struct SpanningSequence<'c, 'b: 'c, 'de: 'b, RES> {
-    config: &'b BinaryConfig<RES>,
-    doc: &'b BinTape<'de>,
-    value_indices: &'c Vec<usize>,
-    seen: &'c mut Vec<u8>,
-    idx: usize,
-}
-
-impl<'c, 'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
-    for &'r mut SpanningSequence<'c, 'b, 'de, RES>
-{
-    type Error = BinaryDeError;
-
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        let idx = self.value_indices[self.idx - 1];
-        match &self.doc.token_tape[idx] {
-            BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
-                config: self.config,
-                doc: self.doc,
-                seen: self.seen,
-                de_idx: 0,
-                idx: idx + 1,
-                end_idx: *x,
-            }),
-            BinaryToken::Object(x) => visitor.visit_map(BinaryMap::new(
-                &self.config,
-                self.doc,
-                idx + 1,
-                *x,
-                self.seen,
-            )),
-            BinaryToken::End(_x) => Err(BinaryDeError::Message(String::from(
-                "encountered end when trying to deserialize",
-            ))),
-            _ => visit_key(idx, self.doc, self.config, visitor),
-        }
-    }
-
-    serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct tuple
-        tuple_struct map enum ignored_any identifier struct seq
-    }
-}
-
-impl<'c, 'b, 'de, RES: TokenResolver> SeqAccess<'de> for SpanningSequence<'c, 'b, 'de, RES> {
-    type Error = BinaryDeError;
-
-    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
-    where
-        T: DeserializeSeed<'de>,
-    {
-        if self.idx >= self.value_indices.len() {
-            Ok(None)
-        } else {
-            self.idx += 1;
-            seed.deserialize(self).map(Some)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jomini_derive::JominiDeserialize;
     use serde::Deserialize;
     use std::collections::HashMap;
 
@@ -1040,8 +945,9 @@ mod tests {
             0x00, 0x00,
         ];
 
-        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        #[derive(JominiDeserialize, PartialEq, Eq, Debug)]
         struct MyStruct {
+            #[jomini(duplicated)]
             field1: Vec<u32>,
             second: i32,
         }
@@ -1203,8 +1109,9 @@ mod tests {
             0x03, 0x00, 0x45, 0x4e, 0x47,
         ];
 
-        #[derive(Deserialize, PartialEq, Debug)]
+        #[derive(JominiDeserialize, PartialEq, Debug)]
         struct MyStruct {
+            #[jomini(duplicated)]
             savegame_version: Vec<Version>,
             field1: String,
         }
@@ -1238,13 +1145,15 @@ mod tests {
             0x0c, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x04, 0x00,
         ];
 
-        #[derive(Deserialize, PartialEq, Debug)]
+        #[derive(JominiDeserialize, PartialEq, Debug)]
         struct MyStruct {
+            #[jomini(duplicated)]
             savegame_version: Vec<Version>,
         }
 
-        #[derive(Deserialize, PartialEq, Debug)]
+        #[derive(JominiDeserialize, PartialEq, Debug)]
         struct Version {
+            #[jomini(duplicated)]
             field: Vec<MyField>,
         }
 
@@ -1275,6 +1184,50 @@ mod tests {
     }
 
     #[test]
+    fn test_consecutive_empty_nested_nested_object() {
+        let data = [
+            0xc9, 0x2e, 0x01, 0x00, 0x03, 0x00, 0x04, 0x00, 0xc9, 0x2e, 0x01, 0x00, 0x03, 0x00,
+            0xe2, 0x28, 0x01, 0x00, 0x03, 0x00, 0x82, 0x2d, 0x01, 0x00, 0x0c, 0x00, 0x03, 0x00,
+            0x00, 0x00, 0x04, 0x00, 0x04, 0x00,
+        ];
+
+        #[derive(JominiDeserialize, PartialEq, Debug)]
+        struct MyStruct {
+            #[jomini(duplicated)]
+            savegame_version: Vec<Version>,
+        }
+
+        #[derive(JominiDeserialize, PartialEq, Debug)]
+        struct Version {
+            #[jomini(duplicated)]
+            field: Vec<MyField>,
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyField {
+            first: i32,
+        }
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, "first");
+        map.insert(0x2ec9, "savegame_version");
+        map.insert(0x28e2, "field");
+
+        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                savegame_version: vec![
+                    Version { field: vec![] },
+                    Version {
+                        field: vec![MyField { first: 3 }]
+                    }
+                ]
+            }
+        );
+    }
+
+    #[test]
     fn test_non_consecutive_fields() {
         let data = [
             0x82, 0x2d, 0x01, 0x00, 0x14, 0x00, 0x59, 0x00, 0x00, 0x00, 0x82, 0x2d, 0x01, 0x00,
@@ -1282,8 +1235,9 @@ mod tests {
             0x00, 0x00, 0x82, 0x2d, 0x01, 0x00, 0x14, 0x00, 0x5b, 0x00, 0x00, 0x00,
         ];
 
-        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        #[derive(JominiDeserialize, PartialEq, Eq, Debug)]
         struct MyStruct {
+            #[jomini(duplicated)]
             field1: Vec<u32>,
             second: i32,
         }
