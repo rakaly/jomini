@@ -1,4 +1,3 @@
-use serde::de;
 use std::error;
 use std::fmt;
 
@@ -28,7 +27,8 @@ impl error::Error for BinaryDeError {
     }
 }
 
-impl de::Error for BinaryDeError {
+#[cfg(feature = "serde")]
+impl serde::de::Error for BinaryDeError {
     fn custom<T: fmt::Display>(msg: T) -> Self {
         BinaryDeError::Message(msg.to_string())
     }

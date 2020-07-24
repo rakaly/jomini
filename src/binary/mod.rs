@@ -1,3 +1,4 @@
+#[cfg(feature = "derive")]
 pub mod de;
 mod errors;
 mod resolver;

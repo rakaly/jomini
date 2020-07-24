@@ -8,3 +8,6 @@ pub(crate) mod util;
 pub use self::binary::*;
 pub use self::scalar::{Scalar, ScalarError};
 pub use self::text::*;
+
+#[cfg(feature = "derive")]
+pub use jomini_derive::*;

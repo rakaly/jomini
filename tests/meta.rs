@@ -1,3 +1,5 @@
+#![cfg(feature = "derive")]
+
 use serde::Deserialize;
 use std::collections::HashMap;
 

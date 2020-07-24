@@ -1,5 +1,4 @@
 use crate::{Scalar, ScalarError};
-use serde::de;
 use std::error;
 use std::fmt::{self, Display, Formatter};
 
@@ -42,7 +41,8 @@ impl error::Error for TextError {
     }
 }
 
-impl de::Error for TextError {
+#[cfg(feature = "serde")]
+impl serde::de::Error for TextError {
     fn custom<T: fmt::Display>(msg: T) -> Self {
         TextError {
             kind: TextErrorKind::Message(msg.to_string()),
