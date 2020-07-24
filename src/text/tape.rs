@@ -1,4 +1,5 @@
 use crate::data::{BOUNDARY, CHARACTER_CLASS, WHITESPACE};
+use crate::util::le_u64;
 use crate::{Scalar, TextError, TextErrorKind};
 
 #[derive(Debug, PartialEq)]
@@ -16,13 +17,13 @@ pub struct TextTape<'a> {
 
 #[derive(Debug, PartialEq)]
 enum ParseState {
-    AtKey,
-    AtKeyValueSeparator,
-    AtObjectValue,
-    AtArrayValue,
-    AtParseOpen,
-    AtFirstValue,
-    AtEmptyObject,
+    Key,
+    KeyValueSeparator,
+    ObjectValue,
+    ArrayValue,
+    ParseOpen,
+    FirstValue,
+    EmptyObject,
 }
 
 /*
@@ -92,7 +93,7 @@ impl<'a> TextTape<'a> {
         let mut offset = 0;
         let mut chunk_iter = sd.chunks_exact(8);
         while let Some(n) = chunk_iter.next() {
-            let acc = unsafe { (n.as_ptr() as *const u64).read_unaligned() };
+            let acc = le_u64(n);
             if contains_zero_byte(acc ^ repeat_byte(b'"')) {
                 let end_idx = n.iter().position(|&x| x == b'"').unwrap_or(0) + offset;
                 self.token_tape
@@ -150,13 +151,13 @@ impl<'a> TextTape<'a> {
     #[inline]
     pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), TextError> {
         self.token_tape.reserve(data.len() / 5);
-        let mut state = ParseState::AtKey;
+        let mut state = ParseState::Key;
 
         let mut parent_ind = 0;
         loop {
             data = self.skip_ws_t(data);
             if data.is_empty() {
-                if parent_ind == 0 && state == ParseState::AtKey {
+                if parent_ind == 0 && state == ParseState::Key {
                     return Ok(());
                 } else {
                     return Err(TextError {
@@ -166,16 +167,16 @@ impl<'a> TextTape<'a> {
             }
 
             match state {
-                ParseState::AtEmptyObject => {
+                ParseState::EmptyObject => {
                     if data[0] != b'}' {
                         return Err(TextError {
                             kind: TextErrorKind::Message(String::from("expected first non-whitespace character after an empty object starter to be a close group")),
                         });
                     }
                     data = &data[1..];
-                    state = ParseState::AtKey;
+                    state = ParseState::Key;
                 }
-                ParseState::AtKey => {
+                ParseState::Key => {
                     match data[0] {
                         b'}' => {
                             let grand_ind = match self.token_tape.get(parent_ind) {
@@ -185,9 +186,9 @@ impl<'a> TextTape<'a> {
                             };
 
                             state = match self.token_tape.get(grand_ind) {
-                                Some(TextToken::Array(_x)) => ParseState::AtArrayValue,
-                                Some(TextToken::Object(_x)) => ParseState::AtKey,
-                                _ => ParseState::AtKey,
+                                Some(TextToken::Array(_x)) => ParseState::ArrayValue,
+                                Some(TextToken::Object(_x)) => ParseState::Key,
+                                _ => ParseState::Key,
                             };
 
                             let end_idx = self.token_tape.len();
@@ -208,56 +209,56 @@ impl<'a> TextTape<'a> {
                         // Empty object! Skip
                         b'{' => {
                             data = &data[1..];
-                            state = ParseState::AtEmptyObject;
+                            state = ParseState::EmptyObject;
                         }
 
                         b'"' => {
                             data = self.parse_quote_scalar(data)?;
-                            state = ParseState::AtKeyValueSeparator;
+                            state = ParseState::KeyValueSeparator;
                         }
                         _ => {
                             data = self.parse_scalar(data)?;
-                            state = ParseState::AtKeyValueSeparator;
+                            state = ParseState::KeyValueSeparator;
                         }
                     }
                 }
-                ParseState::AtKeyValueSeparator => {
+                ParseState::KeyValueSeparator => {
                     data = self.parse_key_value_separator(data)?;
-                    state = ParseState::AtObjectValue;
+                    state = ParseState::ObjectValue;
                 }
-                ParseState::AtObjectValue => {
+                ParseState::ObjectValue => {
                     match data[0] {
                         b'{' => {
                             self.token_tape.push(TextToken::Array(0));
-                            state = ParseState::AtParseOpen;
+                            state = ParseState::ParseOpen;
                             data = &data[1..];
                         }
 
                         // Check to not parse too far into the object's array trailer
                         b'}' => {
-                            state = ParseState::AtKey;
+                            state = ParseState::Key;
                         }
 
                         b'"' => {
                             data = self.parse_quote_scalar(data)?;
-                            state = ParseState::AtKey;
+                            state = ParseState::Key;
                         }
                         _ => {
                             data = self.parse_scalar(data)?;
-                            state = ParseState::AtKey;
+                            state = ParseState::Key;
                         }
                     }
                 }
-                ParseState::AtParseOpen => {
+                ParseState::ParseOpen => {
                     let ind = self.token_tape.len() - 1;
 
                     match data[0] {
                         // Empty array
                         b'}' => {
                             state = match self.token_tape.get(parent_ind) {
-                                Some(TextToken::Array(_x)) => ParseState::AtArrayValue,
-                                Some(TextToken::Object(_x)) => ParseState::AtKey,
-                                _ => ParseState::AtKey,
+                                Some(TextToken::Array(_x)) => ParseState::ArrayValue,
+                                Some(TextToken::Object(_x)) => ParseState::Key,
+                                _ => ParseState::Key,
                             };
 
                             self.token_tape[ind] = TextToken::Array(ind + 1);
@@ -269,35 +270,35 @@ impl<'a> TextTape<'a> {
                         b'{' => {
                             self.token_tape[ind] = TextToken::Array(parent_ind);
                             parent_ind = ind;
-                            state = ParseState::AtArrayValue;
+                            state = ParseState::ArrayValue;
                         }
                         b'"' => {
                             self.token_tape[ind] = TextToken::Object(parent_ind);
                             parent_ind = ind;
                             data = self.parse_quote_scalar(data)?;
-                            state = ParseState::AtFirstValue;
+                            state = ParseState::FirstValue;
                         }
                         _ => {
                             self.token_tape[ind] = TextToken::Object(parent_ind);
                             parent_ind = ind;
                             data = self.parse_scalar(data)?;
-                            state = ParseState::AtFirstValue;
+                            state = ParseState::FirstValue;
                         }
                     }
                 }
-                ParseState::AtFirstValue => match data[0] {
+                ParseState::FirstValue => match data[0] {
                     b'=' => {
                         data = &data[1..];
-                        state = ParseState::AtObjectValue;
+                        state = ParseState::ObjectValue;
                     }
                     _ => {
-                        state = ParseState::AtArrayValue;
+                        state = ParseState::ArrayValue;
                     }
                 },
-                ParseState::AtArrayValue => match data[0] {
+                ParseState::ArrayValue => match data[0] {
                     b'{' => {
                         self.token_tape.push(TextToken::Array(0));
-                        state = ParseState::AtParseOpen;
+                        state = ParseState::ParseOpen;
                         data = &data[1..];
                     }
                     b'}' => {
@@ -308,9 +309,9 @@ impl<'a> TextTape<'a> {
                         };
 
                         state = match self.token_tape.get(grand_ind) {
-                            Some(TextToken::Array(_x)) => ParseState::AtArrayValue,
-                            Some(TextToken::Object(_x)) => ParseState::AtKey,
-                            _ => ParseState::AtKey,
+                            Some(TextToken::Array(_x)) => ParseState::ArrayValue,
+                            Some(TextToken::Object(_x)) => ParseState::Key,
+                            _ => ParseState::Key,
                         };
 
                         let end_idx = self.token_tape.len();
@@ -321,11 +322,11 @@ impl<'a> TextTape<'a> {
                     }
                     b'"' => {
                         data = self.parse_quote_scalar(data)?;
-                        state = ParseState::AtArrayValue;
+                        state = ParseState::ArrayValue;
                     }
                     _ => {
                         data = self.parse_scalar(data)?;
-                        state = ParseState::AtArrayValue;
+                        state = ParseState::ArrayValue;
                     }
                 },
             }

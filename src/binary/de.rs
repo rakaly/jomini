@@ -169,13 +169,12 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
             };
 
             self.tape_idx = next_key + 1;
-            return seed
-                .deserialize(KeyDeserializer {
-                    tape_idx: current_idx,
-                    doc: self.doc,
-                    config: self.config,
-                })
-                .map(Some);
+            seed.deserialize(KeyDeserializer {
+                tape_idx: current_idx,
+                doc: self.doc,
+                config: self.config,
+            })
+            .map(Some)
         } else {
             Ok(None)
         }

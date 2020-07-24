@@ -46,10 +46,10 @@ pub struct BinTape<'a> {
 
 #[derive(Debug, PartialEq)]
 enum ParseState {
-    AtKey,
-    AtKeyValueSeparator,
-    AtObjectValue,
-    AtArrayValue,
+    Key,
+    KeyValueSeparator,
+    ObjectValue,
+    ArrayValue,
 }
 
 impl<'a> BinTape<'a> {
@@ -159,48 +159,48 @@ impl<'a> BinTape<'a> {
     pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), BinaryDeError> {
         self.token_tape.reserve(data.len() / 100 * 15);
         self.data_tape.reserve(data.len() / 10);
-        let mut state = ParseState::AtKey;
+        let mut state = ParseState::Key;
 
         let mut parent_ind = 0;
         while !data.is_empty() {
             match state {
-                ParseState::AtKey => {
+                ParseState::Key => {
                     let (d, token_id) = self.parse_next_id(data)?;
                     data = d;
                     data = match token_id {
                         U32 => {
                             let res = self.parse_u32(data)?;
-                            state = ParseState::AtKeyValueSeparator;
+                            state = ParseState::KeyValueSeparator;
                             res
                         }
                         U64 => {
                             let res = self.parse_u64(data)?;
-                            state = ParseState::AtKeyValueSeparator;
+                            state = ParseState::KeyValueSeparator;
                             res
                         }
                         I32 => {
                             let res = self.parse_i32(data)?;
-                            state = ParseState::AtKeyValueSeparator;
+                            state = ParseState::KeyValueSeparator;
                             res
                         }
                         BOOL => {
                             let res = self.parse_bool(data)?;
-                            state = ParseState::AtKeyValueSeparator;
+                            state = ParseState::KeyValueSeparator;
                             res
                         }
                         STRING_1 | STRING_2 => {
                             let res = self.parse_string(data)?;
-                            state = ParseState::AtKeyValueSeparator;
+                            state = ParseState::KeyValueSeparator;
                             res
                         }
                         F32 => {
                             let res = self.parse_f32(data)?;
-                            state = ParseState::AtKeyValueSeparator;
+                            state = ParseState::KeyValueSeparator;
                             res
                         }
                         Q16 => {
                             let res = self.parse_q16(data)?;
-                            state = ParseState::AtKeyValueSeparator;
+                            state = ParseState::KeyValueSeparator;
                             res
                         }
 
@@ -222,9 +222,9 @@ impl<'a> BinTape<'a> {
                             };
 
                             state = match self.token_tape.get(grand_ind) {
-                                Some(BinaryToken::Array(_x)) => ParseState::AtArrayValue,
-                                Some(BinaryToken::Object(_x)) => ParseState::AtKey,
-                                _ => ParseState::AtKey,
+                                Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
+                                Some(BinaryToken::Object(_x)) => ParseState::Key,
+                                _ => ParseState::Key,
                             };
 
                             let end_idx = self.token_tape.len();
@@ -251,12 +251,12 @@ impl<'a> BinTape<'a> {
                         }
                         x => {
                             self.token_tape.push(BinaryToken::Token(x));
-                            state = ParseState::AtKeyValueSeparator;
+                            state = ParseState::KeyValueSeparator;
                             &data
                         }
                     }
                 }
-                ParseState::AtKeyValueSeparator => {
+                ParseState::KeyValueSeparator => {
                     let (d, token_id) = self.parse_next_id(data)?;
                     data = match token_id {
                         EQUAL => Ok(&d),
@@ -265,45 +265,45 @@ impl<'a> BinTape<'a> {
                             "expected an equal to separate key values",
                         ))),
                     }?;
-                    state = ParseState::AtObjectValue;
+                    state = ParseState::ObjectValue;
                 }
-                ParseState::AtObjectValue => {
+                ParseState::ObjectValue => {
                     let (d, token_id) = self.parse_next_id(data)?;
                     data = d;
                     data = match token_id {
                         U32 => {
                             let res = self.parse_u32(data)?;
-                            state = ParseState::AtKey;
+                            state = ParseState::Key;
                             res
                         }
                         U64 => {
                             let res = self.parse_u64(data)?;
-                            state = ParseState::AtKey;
+                            state = ParseState::Key;
                             res
                         }
                         I32 => {
                             let res = self.parse_i32(data)?;
-                            state = ParseState::AtKey;
+                            state = ParseState::Key;
                             res
                         }
                         BOOL => {
                             let res = self.parse_bool(data)?;
-                            state = ParseState::AtKey;
+                            state = ParseState::Key;
                             res
                         }
                         STRING_1 | STRING_2 => {
                             let res = self.parse_string(data)?;
-                            state = ParseState::AtKey;
+                            state = ParseState::Key;
                             res
                         }
                         F32 => {
                             let res = self.parse_f32(data)?;
-                            state = ParseState::AtKey;
+                            state = ParseState::Key;
                             res
                         }
                         Q16 => {
                             let res = self.parse_q16(data)?;
-                            state = ParseState::AtKey;
+                            state = ParseState::Key;
                             res
                         }
                         OPEN => {
@@ -318,9 +318,9 @@ impl<'a> BinTape<'a> {
                                 // Empty array
                                 END => {
                                     state = match self.token_tape.get(parent_ind) {
-                                        Some(BinaryToken::Array(_x)) => ParseState::AtArrayValue,
-                                        Some(BinaryToken::Object(_x)) => ParseState::AtKey,
-                                        _ => ParseState::AtKey,
+                                        Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
+                                        Some(BinaryToken::Object(_x)) => ParseState::Key,
+                                        _ => ParseState::Key,
                                     };
 
                                     self.token_tape[ind] = BinaryToken::Array(ind + 1);
@@ -333,7 +333,7 @@ impl<'a> BinTape<'a> {
                                     self.token_tape[ind] = BinaryToken::Array(parent_ind);
                                     parent_ind = ind;
 
-                                    state = ParseState::AtArrayValue;
+                                    state = ParseState::ArrayValue;
 
                                     // Rewind the data so that we can parse the nested open
                                     data = old_data;
@@ -374,19 +374,19 @@ impl<'a> BinTape<'a> {
                                 OPEN => {
                                     self.token_tape[ind] = BinaryToken::Object(parent_ind);
                                     parent_ind = ind;
-                                    state = ParseState::AtObjectValue;
+                                    state = ParseState::ObjectValue;
                                     data
                                 }
                                 EQUAL => {
                                     self.token_tape[ind] = BinaryToken::Object(parent_ind);
                                     parent_ind = ind;
-                                    state = ParseState::AtObjectValue;
+                                    state = ParseState::ObjectValue;
                                     d
                                 }
                                 _ => {
                                     self.token_tape[ind] = BinaryToken::Array(parent_ind);
                                     parent_ind = ind;
-                                    state = ParseState::AtArrayValue;
+                                    state = ParseState::ArrayValue;
                                     data
                                 }
                             }
@@ -398,7 +398,7 @@ impl<'a> BinTape<'a> {
                         }
                         RGB => {
                             let res = self.parse_rgb(data)?;
-                            state = ParseState::AtKey;
+                            state = ParseState::Key;
                             res
                         }
                         EQUAL => {
@@ -408,48 +408,48 @@ impl<'a> BinTape<'a> {
                         }
                         x => {
                             self.token_tape.push(BinaryToken::Token(x));
-                            state = ParseState::AtKey;
+                            state = ParseState::Key;
                             &data
                         }
                     }
                 }
-                ParseState::AtArrayValue => {
+                ParseState::ArrayValue => {
                     let (d, token_id) = self.parse_next_id(data)?;
                     data = d;
                     data = match token_id {
                         U32 => {
                             let res = self.parse_u32(data)?;
-                            state = ParseState::AtArrayValue;
+                            state = ParseState::ArrayValue;
                             res
                         }
                         U64 => {
                             let res = self.parse_u64(data)?;
-                            state = ParseState::AtArrayValue;
+                            state = ParseState::ArrayValue;
                             res
                         }
                         I32 => {
                             let res = self.parse_i32(data)?;
-                            state = ParseState::AtArrayValue;
+                            state = ParseState::ArrayValue;
                             res
                         }
                         BOOL => {
                             let res = self.parse_bool(data)?;
-                            state = ParseState::AtArrayValue;
+                            state = ParseState::ArrayValue;
                             res
                         }
                         STRING_1 | STRING_2 => {
                             let res = self.parse_string(data)?;
-                            state = ParseState::AtArrayValue;
+                            state = ParseState::ArrayValue;
                             res
                         }
                         F32 => {
                             let res = self.parse_f32(data)?;
-                            state = ParseState::AtArrayValue;
+                            state = ParseState::ArrayValue;
                             res
                         }
                         Q16 => {
                             let res = self.parse_q16(data)?;
-                            state = ParseState::AtArrayValue;
+                            state = ParseState::ArrayValue;
                             res
                         }
                         OPEN => {
@@ -462,9 +462,9 @@ impl<'a> BinTape<'a> {
                                 // Empty array
                                 END => {
                                     state = match self.token_tape.get(parent_ind) {
-                                        Some(BinaryToken::Array(_x)) => ParseState::AtArrayValue,
-                                        Some(BinaryToken::Object(_x)) => ParseState::AtKey,
-                                        _ => ParseState::AtKey,
+                                        Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
+                                        Some(BinaryToken::Object(_x)) => ParseState::Key,
+                                        _ => ParseState::Key,
                                     };
 
                                     self.token_tape[ind] = BinaryToken::Array(ind + 1);
@@ -475,7 +475,7 @@ impl<'a> BinTape<'a> {
                                 // array of objects or another array
                                 OPEN => {
                                     self.token_tape.push(BinaryToken::Array(0));
-                                    state = ParseState::AtArrayValue;
+                                    state = ParseState::ArrayValue;
                                     continue;
                                 }
 
@@ -513,19 +513,19 @@ impl<'a> BinTape<'a> {
                                 OPEN => {
                                     self.token_tape[ind] = BinaryToken::Object(parent_ind);
                                     parent_ind = ind;
-                                    state = ParseState::AtObjectValue;
+                                    state = ParseState::ObjectValue;
                                     data
                                 }
                                 EQUAL => {
                                     self.token_tape[ind] = BinaryToken::Object(parent_ind);
                                     parent_ind = ind;
-                                    state = ParseState::AtObjectValue;
+                                    state = ParseState::ObjectValue;
                                     d
                                 }
                                 _ => {
                                     self.token_tape[ind] = BinaryToken::Array(parent_ind);
                                     parent_ind = ind;
-                                    state = ParseState::AtArrayValue;
+                                    state = ParseState::ArrayValue;
                                     data
                                 }
                             }
@@ -538,9 +538,9 @@ impl<'a> BinTape<'a> {
                             };
 
                             state = match self.token_tape.get(grand_ind) {
-                                Some(BinaryToken::Array(_x)) => ParseState::AtArrayValue,
-                                Some(BinaryToken::Object(_x)) => ParseState::AtKey,
-                                _ => ParseState::AtKey,
+                                Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
+                                Some(BinaryToken::Object(_x)) => ParseState::Key,
+                                _ => ParseState::Key,
                             };
 
                             let end_idx = self.token_tape.len();
@@ -557,7 +557,7 @@ impl<'a> BinTape<'a> {
                         }
                         x => {
                             self.token_tape.push(BinaryToken::Token(x));
-                            state = ParseState::AtArrayValue;
+                            state = ParseState::ArrayValue;
                             &data
                         }
                     }
@@ -565,7 +565,7 @@ impl<'a> BinTape<'a> {
             }
         }
 
-        if parent_ind == 0 && state == ParseState::AtKey {
+        if parent_ind == 0 && state == ParseState::Key {
             Ok(())
         } else {
             Err(BinaryDeError::EarlyEof)

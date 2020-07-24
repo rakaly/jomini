@@ -103,12 +103,11 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
 
             self.tape_idx = next_key + 1;
 
-            return seed
-                .deserialize(KeyDeserializer {
-                    tape_idx: current_idx,
-                    doc: self.doc,
-                })
-                .map(Some);
+            seed.deserialize(KeyDeserializer {
+                tape_idx: current_idx,
+                doc: self.doc,
+            })
+            .map(Some)
         } else {
             Ok(None)
         }

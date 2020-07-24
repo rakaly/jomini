@@ -1,3 +1,7 @@
+// Allow cast_ptr_alignment issues as we are using them correctly (ie: read_unaligned):
+// https://github.com/rust-lang/rust-clippy/issues/2881
+#![allow(clippy::cast_ptr_alignment)]
+
 #[inline]
 pub(crate) fn le_u16(data: &[u8]) -> u16 {
     let ptr = data.as_ptr() as *const u8 as *const u16;
