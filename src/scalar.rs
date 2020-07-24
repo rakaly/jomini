@@ -4,10 +4,16 @@ use std::borrow::Cow;
 use std::error;
 use std::fmt;
 
+/// An error that can occur when converting a scalar into the requested type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarError {
+    /// The given string did not contain only numbers
     AllDigits(String),
+
+    /// The given string caused an overflow when calculating its numerical value
     Overflow(String),
+
+    /// The given string was not a recognized boolean value
     InvalidBool(String),
 }
 
@@ -27,7 +33,16 @@ impl error::Error for ScalarError {
     }
 }
 
-/// Single value encapsulating windows-1252 data
+/// Single value encapsulating windows-1252 data.
+///
+/// Since windows-1252 is a single byte character encoding, a scalar will never fail to be created.
+///
+/// ```
+/// use jomini::Scalar;
+///
+/// let v1 = Scalar::new(b"a");
+/// assert_eq!(v1.to_utf8(), "a");
+/// ```
 #[derive(PartialEq, Copy, Clone)]
 pub struct Scalar<'a> {
     data: &'a [u8],
