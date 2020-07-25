@@ -119,7 +119,7 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
-    fn parse_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
+    fn parse_scalar(&mut self, d: &'a [u8]) -> &'a [u8] {
         let start_ptr = d.as_ptr();
         let end_ptr = unsafe { start_ptr.add(d.len()) };
 
@@ -130,7 +130,7 @@ impl<'a> TextTape<'a> {
         ind = std::cmp::max(ind, 1);
         let (scalar, rest) = d.split_at(ind);
         self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
-        Ok(rest)
+        rest
     }
 
     #[inline]
@@ -217,7 +217,7 @@ impl<'a> TextTape<'a> {
                             state = ParseState::KeyValueSeparator;
                         }
                         _ => {
-                            data = self.parse_scalar(data)?;
+                            data = self.parse_scalar(data);
                             state = ParseState::KeyValueSeparator;
                         }
                     }
@@ -244,7 +244,7 @@ impl<'a> TextTape<'a> {
                             state = ParseState::Key;
                         }
                         _ => {
-                            data = self.parse_scalar(data)?;
+                            data = self.parse_scalar(data);
                             state = ParseState::Key;
                         }
                     }
@@ -281,7 +281,7 @@ impl<'a> TextTape<'a> {
                         _ => {
                             self.token_tape[ind] = TextToken::Object(parent_ind);
                             parent_ind = ind;
-                            data = self.parse_scalar(data)?;
+                            data = self.parse_scalar(data);
                             state = ParseState::FirstValue;
                         }
                     }
@@ -325,7 +325,7 @@ impl<'a> TextTape<'a> {
                         state = ParseState::ArrayValue;
                     }
                     _ => {
-                        data = self.parse_scalar(data)?;
+                        data = self.parse_scalar(data);
                         state = ParseState::ArrayValue;
                     }
                 },
