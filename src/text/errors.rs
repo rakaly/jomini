@@ -1,11 +1,10 @@
-use crate::{Scalar, ScalarError};
+use crate::ScalarError;
 use std::error;
 use std::fmt::{self, Display, Formatter};
 
 #[derive(Debug)]
 pub enum TextErrorKind {
     Eof,
-    Separator(u8),
     Message(String),
     Scalar(ScalarError),
     StackEmpty,
@@ -21,9 +20,6 @@ impl Display for TextError {
         match self.kind {
             TextErrorKind::StackEmpty => write!(f, "stack empty"),
             TextErrorKind::Eof => write!(f, "unexpected end of file"),
-            TextErrorKind::Separator(x) => {
-                write!(f, "unexpected separator: {}", Scalar::new(&[x]).to_utf8())
-            }
             TextErrorKind::Message(ref x) => write!(f, "text parsing error: {}", x),
             TextErrorKind::Scalar(ref x) => write!(f, "scalar error: {}", x),
         }

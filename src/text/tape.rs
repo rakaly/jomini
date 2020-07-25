@@ -134,17 +134,28 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
-    fn parse_key_value_separator(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
+    fn parse_key_value_separator(&mut self, d: &'a [u8]) -> &'a [u8] {
         // Most key values are separated by an equal sign but there are some fields like
-        // map_area_data that does not have a separator
-        match d[0] {
-            b'=' => Ok(&d[1..]),
-            b'{' => Ok(d),
-            _ => {
-                // This should normally be an error, but there are some formats eg:
-                // brittany_area = { color = { 10 10 10 } 100 200 300 }
-                Ok(d)
-            }
+        // map_area_data that does not have a separator.
+        //
+        // ```
+        // map_area_data{
+        //   brittany_area={
+        //   # ...
+        // ```
+        //
+        // Additionally it's possible for there to be heterogenus objects:
+        //
+        // ```
+        // brittany_area = { color = { 10 10 10 } 100 200 300 }
+        // ```
+        //
+        // These are especially tricky, but essentially this function's job is to skip the equal
+        // token (the 99.9% typical case) if possible.
+        if d[0] == b'=' {
+            &d[1..]
+        } else {
+            d
         }
     }
 
@@ -223,7 +234,7 @@ impl<'a> TextTape<'a> {
                     }
                 }
                 ParseState::KeyValueSeparator => {
-                    data = self.parse_key_value_separator(data)?;
+                    data = self.parse_key_value_separator(data);
                     state = ParseState::ObjectValue;
                 }
                 ParseState::ObjectValue => {
