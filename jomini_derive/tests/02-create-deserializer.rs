@@ -9,7 +9,8 @@ pub struct Model {
     names: Vec<String>,
 }
 
-fn main() {
+#[test]
+fn test_create_deserializer() {
     let data = r#"
         {
             "human": true,

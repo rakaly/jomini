@@ -10,7 +10,8 @@ pub struct Model {
     names: Vec<String>,
 }
 
-fn main() {
+#[test]
+fn test_options() {
     let data = r#"
         {
             "human": true,

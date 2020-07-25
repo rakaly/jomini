@@ -37,7 +37,8 @@ where
     deserializer.deserialize_any(TokenBoolVisitor)
 }
 
-fn main() {
+#[test]
+fn test_deserialize_with() {
     let data = r#"
         {
             "human": "yes",

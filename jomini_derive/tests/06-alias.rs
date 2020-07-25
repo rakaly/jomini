@@ -11,7 +11,8 @@ pub struct Model {
     names: Vec<String>,
 }
 
-fn main() {
+#[test]
+fn test_alias() {
     let data = r#"
         {
             "human": true,

@@ -15,7 +15,8 @@ fn default_first() -> u16 {
     1
 }
 
-fn main() {
+#[test]
+fn test_default_fn() {
     let data = r#"
         {
             "human": true,
