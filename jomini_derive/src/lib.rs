@@ -129,6 +129,86 @@ fn ungroup(mut ty: &Type) -> &Type {
     ty
 }
 
+/// Creates a serde compatible `Deserialize` implementation
+///
+/// ```rust
+/// use jomini_derive::JominiDeserialize;
+///
+/// #[derive(JominiDeserialize)]
+/// pub struct Model {
+///     #[jomini(default = "default_true")]
+///     human: bool,
+///     first: Option<u16>,
+///     #[jomini(alias = "forth")]
+///     fourth: u16,
+///     #[jomini(alias = "core", duplicated)]
+///     cores: Vec<String>,
+///     names: Vec<String>,
+/// }
+///
+/// fn default_true() -> bool {
+///     true
+/// }
+/// ```
+///
+/// ## The What
+///
+/// Most rust programmers should be already familiar with serde's `Deserialize` derive macro. If
+/// not, [read the serde docs](https://serde.rs/derive.html).
+///
+/// The `JominiDeserialize` macro produces an implementation for the serde `Deserialize` trait.
+///
+/// When unadored with field attributes, both `JominiDeserialize` and `Deserialize` would produce
+/// extremely similar `Deserialize` implementations. It's a goal for `JominiDeserialize` to be as
+/// compatible as possible.
+///
+/// The value add for `JominiDeserialize` is the `#[jomini(duplicated)]` field attribute, which can
+/// decorate a `Vec<T>` field. The `duplicated` attribute will allow multiple instances of the
+/// field, no matter how far separated they are in the data, to be aggregated into a single vector.
+/// See "The Why" section below for further info.
+///
+/// In addition to the `duplicated` attribute, several of the most common serde attributes have
+/// been implemented:
+///
+/// - `#[jomini(alias = "abc")]`
+/// - `#[jomini(default)]`
+/// - `#[jomini(default = "...")]`
+/// - `#[jomini(deserialize_with = "...")]`
+///
+/// ## The Why
+///
+/// Serde's `Deserialize` implementation will raise an error if a field occurs more than once in
+/// the data like shown below:
+///
+/// ```json
+/// {
+///    "core": "core1",
+///    "nums": [1, 2, 3, 4, 5],
+///    "core": "core2"
+/// }
+/// ```
+///
+/// The `core` field occurs twice in the JSON and serde will be unable to aggregate that into a
+/// `Vec<String>` by itself. See this [serde issue](https://github.com/serde-rs/serde/issues/1859)
+/// for more information.
+///
+/// Initial implementations that used the `Deserialize` derive macro natively required a
+/// translation layer that would present the aggregated fields to `serde`. This translation layer
+/// could have a heavy cost especially as documents increased in size.
+///
+/// Thus the need was born to be able to generate a `Deserialize` implementation that could
+/// aggregate fields. This is why there is a `JominiDeserialize` derive macro and `duplicated` and
+/// field attribute.
+///
+/// ## When to Use
+///
+/// `JominiDeserialize` is not intended to replace the `Deserialize` derive macro, as
+/// `JominiDeserialize` has an incredibly narrow scope -- to allow efficient deserialization of
+/// duplicated and non-consecutive fields. Many field / container attributes are not implemented
+/// for `JominiDeserialize`, so when needed opt to use serde's `Deserialize` derive macro.
+///
+/// Since both macros result in an implementation of the `Deserialize` trait for the given data
+/// structure, these macros can be used
 #[proc_macro_derive(JominiDeserialize, attributes(jomini))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let dinput = parse_macro_input!(input as DeriveInput);
