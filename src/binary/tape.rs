@@ -229,7 +229,7 @@ impl<'a> BinTape<'a> {
 
                             let end_idx = self.token_tape.len();
                             if parent_ind == 0 && grand_ind == 0 {
-                                return Err(BinaryDeError::StackExhausted);
+                                return Err(BinaryDeError::StackEmpty);
                             }
 
                             if let Some(parent) = self.token_tape.get_mut(parent_ind) {

@@ -194,7 +194,7 @@ impl<'a> TextTape<'a> {
                             let end_idx = self.token_tape.len();
                             if parent_ind == 0 && grand_ind == 0 {
                                 return Err(TextError {
-                                    kind: TextErrorKind::StackExhausted,
+                                    kind: TextErrorKind::StackEmpty,
                                 });
                             }
 

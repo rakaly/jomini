@@ -8,7 +8,6 @@ pub enum TextErrorKind {
     Separator(u8),
     Message(String),
     Scalar(ScalarError),
-    StackExhausted,
     StackEmpty,
 }
 
@@ -20,7 +19,6 @@ pub struct TextError {
 impl Display for TextError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self.kind {
-            TextErrorKind::StackExhausted => write!(f, "stack exhausted"),
             TextErrorKind::StackEmpty => write!(f, "stack empty"),
             TextErrorKind::Eof => write!(f, "unexpected end of file"),
             TextErrorKind::Separator(x) => {
