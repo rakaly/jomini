@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use jomini::Scalar;
+use jomini::{BinaryDeserializer, BinaryTape, Scalar, TextDeserializer, TextTape};
 use std::collections::HashMap;
 
 #[global_allocator]
@@ -72,7 +72,7 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("meta-tape", |b| {
         b.iter(|| {
-            let _res: Meta = jomini::binary::de::from_slice(&data[..], &map).unwrap();
+            let _res: Meta = BinaryDeserializer::from_slice(&data[..], &map).unwrap();
         })
     });
     group.finish();
@@ -83,7 +83,7 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("binary_parse");
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("meta-tape", |b| {
-        let mut tape = jomini::BinTape::default();
+        let mut tape = BinaryTape::default();
         b.iter(|| {
             tape.parse(&data[..]).unwrap();
             tape.clear();
@@ -97,7 +97,7 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("text_parse");
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("meta-tape", |b| {
-        let mut tape = jomini::TextTape::default();
+        let mut tape = TextTape::default();
         b.iter(|| {
             tape.parse(&data[..]).unwrap();
             tape.clear();
@@ -117,7 +117,7 @@ pub fn text_deserialize_benchmark(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("meta-tape", |b| {
         b.iter(|| {
-            let _res: Meta = jomini::text::de::from_slice(&data[..]).unwrap();
+            let _res: Meta = TextDeserializer::from_slice(&data[..]).unwrap();
         })
     });
     group.finish();
