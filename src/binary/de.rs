@@ -1,5 +1,5 @@
 use crate::{
-    BinTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error, FailedResolveStrategy,
+    BinaryTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error, FailedResolveStrategy,
     Scalar, TokenResolver,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
@@ -45,7 +45,7 @@ impl BinaryDeserializerBuilder {
 
     pub fn from_tape<'a, 'b, RES, T>(
         &'b self,
-        tape: &BinTape<'a>,
+        tape: &BinaryTape<'a>,
         resolver: RES,
     ) -> Result<T, Error>
     where
@@ -69,7 +69,7 @@ impl BinaryDeserializerBuilder {
         T: Deserialize<'a>,
         RES: TokenResolver,
     {
-        let tape = BinTape::from_slice(data)?;
+        let tape = BinaryTape::from_slice(data)?;
         Ok(self.from_tape(&tape, resolver)?)
     }
 }
@@ -80,7 +80,7 @@ struct BinaryConfig<RES> {
 }
 
 struct RootDeserializer<'b, 'a: 'b, RES> {
-    doc: &'b BinTape<'a>,
+    doc: &'b BinaryTape<'a>,
     config: &'b BinaryConfig<RES>,
 }
 
@@ -133,7 +133,7 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
 
 struct BinaryMap<'c, 'a: 'c, 'de: 'a, RES: 'a> {
     config: &'a BinaryConfig<RES>,
-    doc: &'c BinTape<'de>,
+    doc: &'c BinaryTape<'de>,
     tape_idx: usize,
     end_idx: usize,
     value_ind: usize,
@@ -142,7 +142,7 @@ struct BinaryMap<'c, 'a: 'c, 'de: 'a, RES: 'a> {
 impl<'c, 'a, 'de, RES> BinaryMap<'c, 'a, 'de, RES> {
     fn new(
         config: &'a BinaryConfig<RES>,
-        doc: &'c BinTape<'de>,
+        doc: &'c BinaryTape<'de>,
         tape_idx: usize,
         end_idx: usize,
     ) -> Self {
@@ -199,13 +199,13 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
 
 struct KeyDeserializer<'b, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
-    doc: &'b BinTape<'de>,
+    doc: &'b BinaryTape<'de>,
     tape_idx: usize,
 }
 
 fn visit_key<'c, 'b: 'c, 'de: 'b, RES: TokenResolver, V: Visitor<'de>>(
     tape_idx: usize,
-    doc: &'b BinTape<'de>,
+    doc: &'b BinaryTape<'de>,
     config: &'b BinaryConfig<RES>,
     visitor: V,
 ) -> Result<V::Value, DeserializeError> {
@@ -259,7 +259,7 @@ impl<'b, 'de, RES: TokenResolver> de::Deserializer<'de> for KeyDeserializer<'b, 
 struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
     value_ind: usize,
-    doc: &'c BinTape<'de>,
+    doc: &'c BinaryTape<'de>,
 }
 
 impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
@@ -400,7 +400,7 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
 
 struct BinarySequence<'b, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
-    doc: &'b BinTape<'de>,
+    doc: &'b BinaryTape<'de>,
     idx: usize,
     de_idx: usize,
     end_idx: usize,

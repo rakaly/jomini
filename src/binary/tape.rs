@@ -38,7 +38,7 @@ pub struct Rgb {
 }
 
 #[derive(Debug, Default)]
-pub struct BinTape<'a> {
+pub struct BinaryTape<'a> {
     pub token_tape: Vec<BinaryToken>,
     pub data_tape: Vec<&'a [u8]>,
     pub rgb_tape: Vec<Rgb>,
@@ -53,9 +53,9 @@ enum ParseState {
     ArrayValue,
 }
 
-impl<'a> BinTape<'a> {
-    pub fn from_slice(data: &[u8]) -> Result<BinTape<'_>, Error> {
-        let mut parser = BinTape {
+impl<'a> BinaryTape<'a> {
+    pub fn from_slice(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
+        let mut parser = BinaryTape {
             original_length: data.len(),
             ..Default::default()
         };
@@ -591,8 +591,8 @@ impl<'a> BinTape<'a> {
 mod tests {
     use super::*;
 
-    fn parse<'a>(data: &'a [u8]) -> Result<BinTape<'a>, Error> {
-        BinTape::from_slice(data)
+    fn parse<'a>(data: &'a [u8]) -> Result<BinaryTape<'a>, Error> {
+        BinaryTape::from_slice(data)
     }
 
     #[test]
