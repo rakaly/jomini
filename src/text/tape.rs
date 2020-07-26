@@ -1,6 +1,6 @@
 use crate::data::{BOUNDARY, CHARACTER_CLASS, WHITESPACE};
 use crate::util::le_u64;
-use crate::{Scalar, TextError, TextErrorKind};
+use crate::{Error, ErrorKind, Scalar};
 
 #[derive(Debug, PartialEq)]
 pub enum TextToken<'a> {
@@ -13,6 +13,7 @@ pub enum TextToken<'a> {
 #[derive(Debug, Default)]
 pub struct TextTape<'a> {
     pub token_tape: Vec<TextToken<'a>>,
+    original_length: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -26,37 +27,19 @@ enum ParseState {
     EmptyObject,
 }
 
-/*
-CHARACTER CLASSES:
-
-- WHITESPACE: (' ', '\t', '\n', '\r' / 0x09, 0x20, 0x0a, 0x0d)
-- OPERATOR: ('!', '>', '=', '<' / 0x3d)
-- BRACKET: ('{', '}' / 0x7b, 0x7d)
-- SCALAR
-
-WHITESPACE:
-
-0000 1001
-0010 0000
-0000 1010
-0000 1101
-
-OPERATOR:
-
-0011 1101
-
-BRACKET:
-
-0111 1011
-0111 1101
-
-*/
-
 impl<'a> TextTape<'a> {
-    pub fn from_slice(data: &'a [u8]) -> Result<TextTape<'a>, TextError> {
-        let mut tape = TextTape::default();
+    pub fn from_slice(data: &'a [u8]) -> Result<TextTape<'a>, Error> {
+        let mut tape = TextTape {
+            token_tape: Vec::new(),
+            original_length: data.len(),
+        };
+
         tape.parse(data)?;
         Ok(tape)
+    }
+
+    fn offset(&self, data: &[u8]) -> usize {
+        self.original_length - data.len()
     }
 
     pub fn clear(&mut self) {
@@ -88,7 +71,7 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
-    fn parse_quote_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], TextError> {
+    fn parse_quote_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], Error> {
         let sd = &d[1..];
         let mut offset = 0;
         let mut chunk_iter = sd.chunks_exact(8);
@@ -108,9 +91,7 @@ impl<'a> TextTape<'a> {
             .remainder()
             .iter()
             .position(|&x| x == b'"')
-            .ok_or_else(|| TextError {
-                kind: TextErrorKind::Eof,
-            })?;
+            .ok_or_else(|| Error::new(ErrorKind::Eof))?;
 
         let end_idx = pos + offset;
         self.token_tape
@@ -160,7 +141,7 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
-    pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), TextError> {
+    pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), Error> {
         self.token_tape.reserve(data.len() / 5);
         let mut state = ParseState::Key;
 
@@ -171,18 +152,16 @@ impl<'a> TextTape<'a> {
                 if parent_ind == 0 && state == ParseState::Key {
                     return Ok(());
                 } else {
-                    return Err(TextError {
-                        kind: TextErrorKind::Eof,
-                    });
+                    return Err(Error::new(ErrorKind::Eof));
                 }
             }
 
             match state {
                 ParseState::EmptyObject => {
                     if data[0] != b'}' {
-                        return Err(TextError {
-                            kind: TextErrorKind::Message(String::from("expected first non-whitespace character after an empty object starter to be a close group")),
-                        });
+                        return Err(Error::new(ErrorKind::InvalidEmptyObject {
+                            offset: self.offset(data),
+                        }));
                     }
                     data = &data[1..];
                     state = ParseState::Key;
@@ -204,9 +183,9 @@ impl<'a> TextTape<'a> {
 
                             let end_idx = self.token_tape.len();
                             if parent_ind == 0 && grand_ind == 0 {
-                                return Err(TextError {
-                                    kind: TextErrorKind::StackEmpty,
-                                });
+                                return Err(Error::new(ErrorKind::StackEmpty {
+                                    offset: self.offset(data),
+                                }));
                             }
 
                             if let Some(parent) = self.token_tape.get_mut(parent_ind) {
@@ -394,7 +373,7 @@ fn is_boundary(b: u8) -> bool {
 mod tests {
     use super::*;
 
-    fn parse<'a>(data: &'a [u8]) -> Result<TextTape<'a>, TextError> {
+    fn parse<'a>(data: &'a [u8]) -> Result<TextTape<'a>, Error> {
         TextTape::from_slice(data)
     }
 

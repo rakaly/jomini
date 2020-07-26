@@ -1,13 +1,13 @@
-use crate::{Scalar, TextError, TextErrorKind, TextTape, TextToken};
+use crate::{DeserializeError, DeserializeErrorKind, Error, Scalar, TextTape, TextToken};
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
 
-pub fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, TextError>
+pub fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
 where
     T: Deserialize<'a>,
 {
     let mut deserializer = TextDeserializer::from_slice(data)?;
-    T::deserialize(&mut deserializer)
+    Ok(T::deserialize(&mut deserializer)?)
 }
 
 #[derive(Debug)]
@@ -16,25 +16,25 @@ pub struct TextDeserializer<'a> {
 }
 
 impl<'a> TextDeserializer<'a> {
-    pub fn from_slice(data: &'a [u8]) -> Result<Self, TextError> {
+    pub fn from_slice(data: &'a [u8]) -> Result<Self, Error> {
         let tape = TextTape::from_slice(data)?;
-        TextDeserializer::from_tape(tape)
+        Ok(TextDeserializer::from_tape(tape)?)
     }
 
-    pub fn from_tape(tape: TextTape<'a>) -> Result<Self, TextError> {
+    pub fn from_tape(tape: TextTape<'a>) -> Result<Self, Error> {
         Ok(TextDeserializer { doc: tape })
     }
 }
 
 impl<'de, 'r> de::Deserializer<'de> for &'r mut TextDeserializer<'de> {
-    type Error = TextError;
+    type Error = DeserializeError;
 
     fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        Err(TextError {
-            kind: TextErrorKind::Message(String::from(
+        Err(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
                 "root deserializer can only work with key value pairs",
             )),
         })
@@ -85,7 +85,7 @@ impl<'a, 'de> BinaryMap<'a, 'de> {
 }
 
 impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
-    type Error = TextError;
+    type Error = DeserializeError;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
     where
@@ -124,11 +124,11 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
     }
 }
 
-fn ensure_scalar<'a>(s: &TextToken<'a>) -> Result<Scalar<'a>, TextError> {
+fn ensure_scalar<'a>(s: &TextToken<'a>) -> Result<Scalar<'a>, DeserializeError> {
     match s {
         TextToken::Scalar(s) => Ok(*s),
-        x => Err(TextError {
-            kind: TextErrorKind::Message(format!("{:?} is not a scalar", x)),
+        x => Err(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(format!("{:?} is not a scalar", x)),
         }),
     }
 }
@@ -145,7 +145,7 @@ impl<'b, 'de> KeyDeserializer<'b, 'de> {
 }
 
 impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
-    type Error = TextError;
+    type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -158,8 +158,8 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        Err(TextError {
-            kind: TextErrorKind::Message(String::from("can't deserialize map as key")),
+        Err(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from("can't deserialize map as key")),
         })
     }
 
@@ -167,8 +167,8 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        Err(TextError {
-            kind: TextErrorKind::Message(String::from("can't deserialize seq as key")),
+        Err(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from("can't deserialize seq as key")),
         })
     }
 
@@ -181,8 +181,10 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        Err(TextError {
-            kind: TextErrorKind::Message(String::from("can't deserialize struct as key")),
+        Err(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "can't deserialize struct as key",
+            )),
         })
     }
 
@@ -413,7 +415,7 @@ struct ValueDeserializer<'b, 'de: 'b> {
 }
 
 impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
-    type Error = TextError;
+    type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -428,8 +430,8 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
                 end_idx: *x,
             }),
             TextToken::Object(x) => visitor.visit_map(BinaryMap::new(self.doc, idx + 1, *x)),
-            TextToken::End(_x) => Err(TextError {
-                kind: TextErrorKind::Message(String::from(
+            TextToken::End(_x) => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered end when trying to deserialize",
                 )),
             }),
@@ -449,13 +451,13 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
                 idx: idx + 1,
                 end_idx: *x,
             }),
-            TextToken::End(_x) => Err(TextError {
-                kind: TextErrorKind::Message(String::from(
+            TextToken::End(_x) => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered end when trying to deserialize",
                 )),
             }),
-            _ => Err(TextError {
-                kind: TextErrorKind::Message(String::from(
+            _ => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered non-seq when trying to deserialize seq",
                 )),
             }),
@@ -619,8 +621,8 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
 
             // An array is supported if it is empty
             TextToken::Array(x) => visitor.visit_map(BinaryMap::new(self.doc, idx + 1, *x)),
-            _ => Err(TextError {
-                kind: TextErrorKind::Message(String::from(
+            _ => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered unexpected token when trying to deserialize map",
                 )),
             }),
@@ -643,7 +645,7 @@ struct BinarySequence<'b, 'de: 'b> {
 }
 
 impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
-    type Error = TextError;
+    type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -660,8 +662,8 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
                 end_idx: *x,
             }),
             TextToken::Scalar(_x) => self.deserialize_str(visitor),
-            TextToken::End(_x) => Err(TextError {
-                kind: TextErrorKind::Message(String::from(
+            TextToken::End(_x) => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered end when trying to deserialize",
                 )),
             }),
@@ -767,7 +769,7 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
 }
 
 impl<'b, 'de> SeqAccess<'de> for BinarySequence<'b, 'de> {
-    type Error = TextError;
+    type Error = DeserializeError;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
     where
