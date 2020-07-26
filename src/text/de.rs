@@ -2,6 +2,7 @@ use crate::{DeserializeError, DeserializeErrorKind, Error, Scalar, TextTape, Tex
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
 
+/// A structure the deserializes plaintext into Rust values
 pub struct TextDeserializer;
 
 impl TextDeserializer {

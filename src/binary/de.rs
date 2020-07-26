@@ -5,6 +5,7 @@ use crate::{
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
 
+/// A structure the deserializes binary data into Rust values
 pub struct BinaryDeserializer;
 
 impl BinaryDeserializer {

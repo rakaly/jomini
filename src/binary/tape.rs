@@ -1,19 +1,43 @@
 use crate::util::{le_i32, le_u16, le_u32, le_u64};
 use crate::{Error, ErrorKind, Scalar};
 
+/// Represents any valid binary value
 #[derive(Debug, PartialEq)]
 pub enum BinaryToken {
+    /// Index of the `BinaryToken::End` that signifies this array's termination
     Array(usize),
+
+    /// Index of the `BinaryToken::End` that signifies this object's termination
     Object(usize),
+
+    /// Index of the start of this object
     End(usize),
+
+    /// Represents a binary boolean.
     Bool(bool),
+
+    /// Represents a binary unsigned 32bit integer
     U32(u32),
+
+    /// Represents a binary unsigned 64bit integer
     U64(u64),
+
+    /// Represents a binary signed 32bit integer
     I32(i32),
+
+    /// Index of the `data_tape` that contains the extracted scalar value
     Text(usize),
+
+    /// Represents a binary 32bit floating point number
     F32(f32),
+
+    /// Represents a binary Q16.16 floating point number
     Q16(f32),
+
+    /// Represents a 16bit token key that can be resolved to an equivalent textual representation.
     Token(u16),
+
+    /// Index of the `rgb_tape` that contains the extracted rgb value
     Rgb(usize),
 }
 
@@ -30,13 +54,20 @@ const F32: u16 = 0x000d;
 const Q16: u16 = 0x0167;
 const RGB: u16 = 0x0243;
 
+/// Extracted color info
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb {
+    /// Red channel
     pub r: u32,
+
+    /// Green channel
     pub g: u32,
+
+    /// Blue channel
     pub b: u32,
 }
 
+/// Houses the tape of tokens that is extracted from binary data
 #[derive(Debug, Default)]
 pub struct BinaryTape<'a> {
     pub token_tape: Vec<BinaryToken>,

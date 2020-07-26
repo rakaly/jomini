@@ -2,14 +2,23 @@ use crate::data::{BOUNDARY, CHARACTER_CLASS, WHITESPACE};
 use crate::util::le_u64;
 use crate::{Error, ErrorKind, Scalar};
 
+/// Represents a valid text value
 #[derive(Debug, PartialEq)]
 pub enum TextToken<'a> {
+    /// Index of the `TextToken::End` that signifies this array's termination
     Array(usize),
+
+    /// Index of the `TextToken::End` that signifies this array's termination
     Object(usize),
+
+    /// Extracted scalar value
     Scalar(Scalar<'a>),
+
+    /// Index of the start of this object
     End(usize),
 }
 
+/// Houses the tape of tokens that is extracted from plaintext data
 #[derive(Debug, Default)]
 pub struct TextTape<'a> {
     pub token_tape: Vec<TextToken<'a>>,
