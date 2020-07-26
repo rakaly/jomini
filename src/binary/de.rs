@@ -1,4 +1,7 @@
-use crate::{BinTape, BinaryDeError, BinaryToken, FailedResolveStrategy, Scalar, TokenResolver};
+use crate::{
+    BinTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error, FailedResolveStrategy,
+    Scalar, TokenResolver,
+};
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
 
@@ -30,7 +33,7 @@ impl BinaryDeserializerBuilder {
         &'b self,
         tape: &BinTape<'a>,
         resolver: RES,
-    ) -> Result<T, BinaryDeError>
+    ) -> Result<T, Error>
     where
         T: Deserialize<'a>,
         RES: TokenResolver,
@@ -44,24 +47,20 @@ impl BinaryDeserializerBuilder {
             doc: &tape,
             config: &config,
         };
-        T::deserialize(&mut deserializer)
+        Ok(T::deserialize(&mut deserializer)?)
     }
 
-    pub fn from_slice<'a, 'b, RES, T>(
-        &'b self,
-        data: &'a [u8],
-        resolver: RES,
-    ) -> Result<T, BinaryDeError>
+    pub fn from_slice<'a, 'b, RES, T>(&'b self, data: &'a [u8], resolver: RES) -> Result<T, Error>
     where
         T: Deserialize<'a>,
         RES: TokenResolver,
     {
         let tape = BinTape::from_slice(data)?;
-        self.from_tape(&tape, resolver)
+        Ok(self.from_tape(&tape, resolver)?)
     }
 }
 
-pub fn from_slice<'a, RES, T>(data: &'a [u8], resolver: RES) -> Result<T, BinaryDeError>
+pub fn from_slice<'a, RES, T>(data: &'a [u8], resolver: RES) -> Result<T, Error>
 where
     T: Deserialize<'a>,
     RES: TokenResolver,
@@ -84,15 +83,17 @@ struct RootDeserializer<'b, 'a: 'b, RES> {
 impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
     for &'r mut RootDeserializer<'b, 'de, RES>
 {
-    type Error = BinaryDeError;
+    type Error = DeserializeError;
 
     fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        Err(BinaryDeError::Message(String::from(
-            "root deserializer can only work with key value pairs",
-        )))
+        Err(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "root deserializer can only work with key value pairs",
+            )),
+        })
     }
 
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -152,7 +153,7 @@ impl<'c, 'a, 'de, RES> BinaryMap<'c, 'a, 'de, RES> {
 }
 
 impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, RES> {
-    type Error = BinaryDeError;
+    type Error = DeserializeError;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
     where
@@ -203,14 +204,14 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, RES: TokenResolver, V: Visitor<'de>>(
     doc: &'b BinTape<'de>,
     config: &'b BinaryConfig<RES>,
     visitor: V,
-) -> Result<V::Value, BinaryDeError> {
+) -> Result<V::Value, DeserializeError> {
     match doc.token_tape[tape_idx] {
         BinaryToken::Object(_)
         | BinaryToken::Array(_)
         | BinaryToken::End(_)
-        | BinaryToken::Rgb(_) => Err(BinaryDeError::Message(String::from(
-            "unable to deserialize key type",
-        ))),
+        | BinaryToken::Rgb(_) => Err(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from("unable to deserialize key type")),
+        }),
         BinaryToken::Bool(x) => visitor.visit_bool(x),
         BinaryToken::U32(x) => visitor.visit_u32(x),
         BinaryToken::U64(x) => visitor.visit_u64(x),
@@ -224,7 +225,9 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, RES: TokenResolver, V: Visitor<'de>>(
         BinaryToken::Token(s) => match config.resolver.resolve(s) {
             Some(id) => visitor.visit_str(id),
             None => match config.failed_resolve_strategy {
-                FailedResolveStrategy::Error => Err(BinaryDeError::UnresolvedToken(s)),
+                FailedResolveStrategy::Error => Err(DeserializeError {
+                    kind: DeserializeErrorKind::UnknownToken { token_id: s },
+                }),
                 FailedResolveStrategy::Stringify => visitor.visit_string(format!("0x{:x}", s)),
                 FailedResolveStrategy::Ignore => visitor.visit_str("__internal_identifier_ignore"),
             },
@@ -233,7 +236,7 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, RES: TokenResolver, V: Visitor<'de>>(
 }
 
 impl<'b, 'de, RES: TokenResolver> de::Deserializer<'de> for KeyDeserializer<'b, 'de, RES> {
-    type Error = BinaryDeError;
+    type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -258,7 +261,7 @@ struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, RES> {
 impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
     for ValueDeserializer<'c, 'b, 'de, RES>
 {
-    type Error = BinaryDeError;
+    type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -276,9 +279,11 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
             BinaryToken::Object(x) => {
                 visitor.visit_map(BinaryMap::new(&self.config, self.doc, idx + 1, *x))
             }
-            BinaryToken::End(_x) => Err(BinaryDeError::Message(String::from(
-                "encountered end when trying to deserialize",
-            ))),
+            BinaryToken::End(_x) => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "encountered end when trying to deserialize",
+                )),
+            }),
             _ => visit_key(idx, self.doc, self.config, visitor),
         }
     }
@@ -296,12 +301,11 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
                 idx: idx + 1,
                 end_idx: *x,
             }),
-            BinaryToken::End(_x) => Err(BinaryDeError::Message(String::from(
-                "encountered end when trying to deserialize",
-            ))),
-            _ => Err(BinaryDeError::Message(String::from(
-                "encountered non-array when trying to deserialize array",
-            ))),
+            _ => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "encountered non-array when trying to deserialize array",
+                )),
+            }),
         }
     }
 
@@ -375,9 +379,11 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
             BinaryToken::Array(x) => {
                 visitor.visit_map(BinaryMap::new(&self.config, self.doc, idx + 1, *x))
             }
-            _ => Err(BinaryDeError::Message(String::from(
-                "encountered unexpected token when trying to deserialize map",
-            ))),
+            _ => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "encountered unexpected token when trying to deserialize map",
+                )),
+            }),
         }
     }
 
@@ -399,7 +405,7 @@ struct BinarySequence<'b, 'de: 'b, RES> {
 impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
     for &'r mut BinarySequence<'b, 'de, RES>
 {
-    type Error = BinaryDeError;
+    type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -416,9 +422,11 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
                 idx: self.de_idx + 1,
                 end_idx: *x,
             }),
-            BinaryToken::End(_x) => Err(BinaryDeError::Message(String::from(
-                "encountered end when trying to deserialize",
-            ))),
+            BinaryToken::End(_x) => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "encountered unexpected token when trying to deserialize map",
+                )),
+            }),
             _ => visit_key(self.de_idx, self.doc, self.config, visitor),
         }
     }
@@ -431,7 +439,7 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
 }
 
 impl<'b, 'de, RES: TokenResolver> SeqAccess<'de> for BinarySequence<'b, 'de, RES> {
-    type Error = BinaryDeError;
+    type Error = DeserializeError;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
     where

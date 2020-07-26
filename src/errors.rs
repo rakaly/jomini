@@ -10,6 +10,10 @@ impl Error {
         Error(Box::new(kind))
     }
 
+    pub(crate) fn eof() -> Error {
+        Self::new(ErrorKind::Eof)
+    }
+
     /// Return the specific type of error
     pub fn kind(&self) -> &ErrorKind {
         &self.0
@@ -27,14 +31,14 @@ pub enum ErrorKind {
     /// Unexpected end of input
     Eof,
 
-    /// An unknown binary token was encountered
-    UnknownToken { token_id: u16, offset: usize },
-
     /// Too many close delimiters were encountered
     StackEmpty { offset: usize },
 
     /// Expected a close delimiter after encountering an empty opener
     InvalidEmptyObject { offset: usize },
+
+    /// Invalid syntax encountered
+    InvalidSyntax { msg: String, offset: usize },
 
     /// An error occurred when deserializing the data
     Deserialize(DeserializeError),
@@ -43,9 +47,9 @@ pub enum ErrorKind {
 impl ErrorKind {
     pub fn offset(&self) -> Option<usize> {
         match *self {
-            ErrorKind::UnknownToken { offset, .. } => Some(offset),
             ErrorKind::StackEmpty { offset, .. } => Some(offset),
             ErrorKind::InvalidEmptyObject { offset, .. } => Some(offset),
+            ErrorKind::InvalidSyntax { offset, .. } => Some(offset),
             _ => None,
         }
     }
@@ -64,16 +68,14 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self.0 {
             ErrorKind::Eof => write!(f, "unexpected end of file"),
-            ErrorKind::UnknownToken { token_id, offset } => write!(f,
-                "unknown binary token encountered (id: {}, offset: {})",
-                token_id,
-                offset
-            ),
             ErrorKind::StackEmpty { offset } => write!(f,
                 "stack empty, too many close tokens encountered (offset: {})", offset
             ),
             ErrorKind::InvalidEmptyObject { offset } => write!(f,
                 "expected first token after an empty object started to be a close group (offset: {})", offset
+            ),
+            ErrorKind::InvalidSyntax { ref msg, offset } => write!(f,
+                "invalid syntax encountered: {} (offset: {})", msg, offset
             ),
             ErrorKind::Deserialize(ref err) => write!(f, "deserialize error: {}", err),
         }
@@ -110,6 +112,9 @@ pub enum DeserializeErrorKind {
 
     /// Error converting underlying data to desired format
     Scalar(ScalarError),
+
+    /// An unknown binary token was encountered
+    UnknownToken { token_id: u16 },
 }
 
 impl std::error::Error for DeserializeError {
@@ -129,6 +134,9 @@ impl std::fmt::Display for DeserializeError {
                 write!(f, "unsupported deserializer method: {}", msg)
             }
             DeserializeErrorKind::Scalar(ref e) => e.fmt(f),
+            DeserializeErrorKind::UnknownToken { token_id } => {
+                write!(f, "unknown binary token encountered (id: {})", token_id)
+            }
         }
     }
 }

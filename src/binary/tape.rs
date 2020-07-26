@@ -1,5 +1,5 @@
 use crate::util::{le_i32, le_u16, le_u32, le_u64};
-use crate::BinaryDeError;
+use crate::{Error, ErrorKind};
 
 #[derive(Debug, PartialEq)]
 pub enum BinaryToken {
@@ -42,6 +42,7 @@ pub struct BinTape<'a> {
     pub token_tape: Vec<BinaryToken>,
     pub data_tape: Vec<&'a [u8]>,
     pub rgb_tape: Vec<Rgb>,
+    original_length: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -53,8 +54,12 @@ enum ParseState {
 }
 
 impl<'a> BinTape<'a> {
-    pub fn from_slice(data: &[u8]) -> Result<BinTape<'_>, BinaryDeError> {
-        let mut parser = BinTape::default();
+    pub fn from_slice(data: &[u8]) -> Result<BinTape<'_>, Error> {
+        let mut parser = BinTape {
+            original_length: data.len(),
+            ..Default::default()
+        };
+
         parser.parse(data)?;
         Ok(parser)
     }
@@ -65,46 +70,50 @@ impl<'a> BinTape<'a> {
         self.rgb_tape.clear();
     }
 
+    fn offset(&self, data: &[u8]) -> usize {
+        self.original_length - data.len()
+    }
+
     #[inline]
-    fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], u16), BinaryDeError> {
-        let val = data.get(..2).map(le_u16).ok_or(BinaryDeError::EarlyEof)?;
+    fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], u16), Error> {
+        let val = data.get(..2).map(le_u16).ok_or_else(Error::eof)?;
         Ok((&data[2..], val))
     }
 
     #[inline]
-    fn parse_u32(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
-        let val = data.get(..4).map(le_u32).ok_or(BinaryDeError::EarlyEof)?;
+    fn parse_u32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
+        let val = data.get(..4).map(le_u32).ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::U32(val));
         Ok(&data[4..])
     }
 
     #[inline]
-    fn parse_u64(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
-        let val = data.get(..8).map(le_u64).ok_or(BinaryDeError::EarlyEof)?;
+    fn parse_u64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
+        let val = data.get(..8).map(le_u64).ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::U64(val));
         Ok(&data[8..])
     }
 
     #[inline]
-    fn parse_i32(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
-        let val = data.get(..4).map(le_i32).ok_or(BinaryDeError::EarlyEof)?;
+    fn parse_i32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
+        let val = data.get(..4).map(le_i32).ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::I32(val));
         Ok(&data[4..])
     }
 
     #[inline]
-    fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
+    fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let val = data
             .get(..4)
             .map(le_i32)
             .map(|x| (x as f32) / 1000.0)
-            .ok_or(BinaryDeError::EarlyEof)?;
+            .ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::F32(val));
         Ok(&data[4..])
     }
 
     #[inline]
-    fn parse_q16(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
+    fn parse_q16(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let val = data
             .get(..8)
             .map(le_i32)
@@ -113,23 +122,20 @@ impl<'a> BinTape<'a> {
                 val = val * 2.0 / 65536.0 * 100_000.0;
                 val.floor() / 100_000.0
             })
-            .ok_or(BinaryDeError::EarlyEof)?;
+            .ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::Q16(val));
         Ok(&data[8..])
     }
 
     #[inline]
-    fn parse_bool(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
-        let val = data
-            .get(0)
-            .map(|&x| x != 0)
-            .ok_or(BinaryDeError::EarlyEof)?;
+    fn parse_bool(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
+        let val = data.get(0).map(|&x| x != 0).ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::Bool(val));
         Ok(&data[1..])
     }
 
     #[inline]
-    fn parse_rgb(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
+    fn parse_rgb(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let val = data
             .get(..22) // u16 `{` + (u16 + u32) * 3 + u16 `}`
             .map(|x| Rgb {
@@ -137,7 +143,7 @@ impl<'a> BinTape<'a> {
                 g: le_u32(&x[10..]),
                 b: le_u32(&x[16..]),
             })
-            .ok_or(BinaryDeError::EarlyEof)?;
+            .ok_or_else(Error::eof)?;
         let rgb_index = self.rgb_tape.len();
         self.token_tape.push(BinaryToken::Rgb(rgb_index));
         self.rgb_tape.push(val);
@@ -145,18 +151,18 @@ impl<'a> BinTape<'a> {
     }
 
     #[inline]
-    fn parse_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], BinaryDeError> {
+    fn parse_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let text = data
             .get(..2)
             .and_then(|size| data.get(2..2 + usize::from(le_u16(size))).map(|data| data))
-            .ok_or(BinaryDeError::EarlyEof)?;
+            .ok_or_else(Error::eof)?;
         self.token_tape
             .push(BinaryToken::Text(self.data_tape.len()));
         self.data_tape.push(text);
         Ok(&data[text.len() + 2..])
     }
 
-    pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), BinaryDeError> {
+    pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), Error> {
         self.token_tape.reserve(data.len() / 100 * 15);
         self.data_tape.reserve(data.len() / 10);
         let mut state = ParseState::Key;
@@ -208,9 +214,9 @@ impl<'a> BinTape<'a> {
                         OPEN => {
                             let (d, token_id) = self.parse_next_id(d)?;
                             if token_id != END {
-                                return Err(BinaryDeError::Message(String::from(
-                                    "expected to skip empty object",
-                                )));
+                                return Err(Error::new(ErrorKind::InvalidEmptyObject {
+                                    offset: self.offset(data),
+                                }));
                             }
                             d
                         }
@@ -229,7 +235,9 @@ impl<'a> BinTape<'a> {
 
                             let end_idx = self.token_tape.len();
                             if parent_ind == 0 && grand_ind == 0 {
-                                return Err(BinaryDeError::StackEmpty);
+                                return Err(Error::new(ErrorKind::StackEmpty {
+                                    offset: self.offset(data),
+                                }));
                             }
 
                             if let Some(parent) = self.token_tape.get_mut(parent_ind) {
@@ -240,14 +248,16 @@ impl<'a> BinTape<'a> {
                             data
                         }
                         RGB => {
-                            return Err(BinaryDeError::Message(String::from(
-                                "RGB not valid for a key",
-                            )));
+                            return Err(Error::new(ErrorKind::InvalidSyntax {
+                                msg: String::from("RGB not valid for a key"),
+                                offset: self.offset(data),
+                            }));
                         }
                         EQUAL => {
-                            return Err(BinaryDeError::Message(String::from(
-                                "EQUAL not valid for a key",
-                            )));
+                            return Err(Error::new(ErrorKind::InvalidSyntax {
+                                msg: String::from("EQUAL not valid for a key"),
+                                offset: self.offset(data),
+                            }));
                         }
                         x => {
                             self.token_tape.push(BinaryToken::Token(x));
@@ -261,9 +271,10 @@ impl<'a> BinTape<'a> {
                     data = match token_id {
                         EQUAL => Ok(&d),
                         OPEN => Ok(&data),
-                        _ => Err(BinaryDeError::Message(String::from(
-                            "expected an equal to separate key values",
-                        ))),
+                        _ => Err(Error::new(ErrorKind::InvalidSyntax {
+                            msg: String::from("expected an equal to separate key values"),
+                            offset: self.offset(data),
+                        })),
                     }?;
                     state = ParseState::ObjectValue;
                 }
@@ -392,9 +403,10 @@ impl<'a> BinTape<'a> {
                             }
                         }
                         END => {
-                            return Err(BinaryDeError::Message(String::from(
-                                "END not valid for an object value",
-                            )));
+                            return Err(Error::new(ErrorKind::InvalidSyntax {
+                                msg: String::from("END not valid for an object value"),
+                                offset: self.offset(data),
+                            }));
                         }
                         RGB => {
                             let res = self.parse_rgb(data)?;
@@ -402,9 +414,10 @@ impl<'a> BinTape<'a> {
                             res
                         }
                         EQUAL => {
-                            return Err(BinaryDeError::Message(String::from(
-                                "EQUAL not valid for an object value",
-                            )));
+                            return Err(Error::new(ErrorKind::InvalidSyntax {
+                                msg: String::from("EQUAL not valid for an object value"),
+                                offset: self.offset(data),
+                            }));
                         }
                         x => {
                             self.token_tape.push(BinaryToken::Token(x));
@@ -551,9 +564,10 @@ impl<'a> BinTape<'a> {
                         }
                         RGB => self.parse_rgb(data)?,
                         EQUAL => {
-                            return Err(BinaryDeError::Message(String::from(
-                                "EQUAL not valid for an array value",
-                            )));
+                            return Err(Error::new(ErrorKind::InvalidSyntax {
+                                msg: String::from("EQUAL not valid for an array value"),
+                                offset: self.offset(data),
+                            }));
                         }
                         x => {
                             self.token_tape.push(BinaryToken::Token(x));
@@ -568,7 +582,7 @@ impl<'a> BinTape<'a> {
         if parent_ind == 0 && state == ParseState::Key {
             Ok(())
         } else {
-            Err(BinaryDeError::EarlyEof)
+            Err(Error::eof())
         }
     }
 }
@@ -577,7 +591,7 @@ impl<'a> BinTape<'a> {
 mod tests {
     use super::*;
 
-    fn parse<'a>(data: &'a [u8]) -> Result<BinTape<'a>, BinaryDeError> {
+    fn parse<'a>(data: &'a [u8]) -> Result<BinTape<'a>, Error> {
         BinTape::from_slice(data)
     }
 

@@ -91,7 +91,7 @@ impl<'a> TextTape<'a> {
             .remainder()
             .iter()
             .position(|&x| x == b'"')
-            .ok_or_else(|| Error::new(ErrorKind::Eof))?;
+            .ok_or_else(Error::eof)?;
 
         let end_idx = pos + offset;
         self.token_tape
@@ -152,7 +152,7 @@ impl<'a> TextTape<'a> {
                 if parent_ind == 0 && state == ParseState::Key {
                     return Ok(());
                 } else {
-                    return Err(Error::new(ErrorKind::Eof));
+                    return Err(Error::eof());
                 }
             }
 
