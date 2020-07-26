@@ -6,27 +6,35 @@ pub fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
 where
     T: Deserialize<'a>,
 {
-    let mut deserializer = TextDeserializer::from_slice(data)?;
-    Ok(T::deserialize(&mut deserializer)?)
+    Ok(TextDeserializer::from_slice(data)?)
+}
+
+pub struct TextDeserializer;
+
+impl TextDeserializer {
+    pub fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
+    where
+        T: Deserialize<'a>,
+    {
+        let tape = TextTape::from_slice(data)?;
+        Ok(TextDeserializer::from_tape(&tape)?)
+    }
+
+    pub fn from_tape<'b, 'a: 'b, T>(tape: &'b TextTape<'a>) -> Result<T, Error>
+    where
+        T: Deserialize<'a>,
+    {
+        let mut root = RootDeserializer { doc: tape };
+        Ok(T::deserialize(&mut root)?)
+    }
 }
 
 #[derive(Debug)]
-pub struct TextDeserializer<'a> {
-    doc: TextTape<'a>,
+pub struct RootDeserializer<'b, 'a: 'b> {
+    doc: &'b TextTape<'a>,
 }
 
-impl<'a> TextDeserializer<'a> {
-    pub fn from_slice(data: &'a [u8]) -> Result<Self, Error> {
-        let tape = TextTape::from_slice(data)?;
-        Ok(TextDeserializer::from_tape(tape)?)
-    }
-
-    pub fn from_tape(tape: TextTape<'a>) -> Result<Self, Error> {
-        Ok(TextDeserializer { doc: tape })
-    }
-}
-
-impl<'de, 'r> de::Deserializer<'de> for &'r mut TextDeserializer<'de> {
+impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut RootDeserializer<'b, 'de> {
     type Error = DeserializeError;
 
     fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
