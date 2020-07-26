@@ -242,6 +242,8 @@ fn to_i64(d: &[u8]) -> Result<i64, ScalarError> {
 
 #[inline]
 fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
+    const POWER10: [u64; 8] = [10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10, 1];
+
     let mut chunks = d.chunks_exact(8);
     let all_digits = chunks.all(is_digits_wide);
     let remainder = chunks.remainder();
@@ -268,14 +270,12 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
             .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
     }
 
-    let mut local_buf: [u8; 8] = [b'0'; 8];
-    let dst = &mut local_buf[8 - remainder.len()..];
-    dst.copy_from_slice(remainder);
-
-    let val = u64::from_le_bytes(local_buf);
-    let result = result
-        .checked_add(ascii_u64_to_digits(val))
-        .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
+    let maxxed = 8 - remainder.len();
+    for (i, &x) in remainder.iter().enumerate() {
+        result = result
+            .checked_add(u64::from(x - b'0') * POWER10[maxxed + i])
+            .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
+    }
 
     Ok(result)
 }
@@ -378,6 +378,7 @@ mod tests {
     fn scalar_to_u64() {
         assert_eq!((Scalar::new(b"0").to_u64()), Ok(0));
         assert_eq!((Scalar::new(b"1").to_u64()), Ok(1));
+        assert_eq!((Scalar::new(b"45").to_u64()), Ok(45));
         assert_eq!((Scalar::new(b"10000").to_u64()), Ok(10000));
         assert_eq!((Scalar::new(b"20405029").to_u64()), Ok(20405029));
         assert_eq!(
