@@ -49,8 +49,7 @@ fn can_default(f: &Field) -> DefaultFallback {
             NestedMeta::Meta(m) => Some(m),
             _ => None,
         })
-        .filter(|m| m.path().is_ident("default"))
-        .next();
+        .find(|m| m.path().is_ident("default"));
 
     defattr
         .map(|meta| match meta {
@@ -81,8 +80,7 @@ fn can_deserialize_with(f: &Field) -> Option<Ident> {
             NestedMeta::Meta(m) => Some(m),
             _ => None,
         })
-        .filter(|m| m.path().is_ident("deserialize_with"))
-        .next();
+        .find(|m| m.path().is_ident("deserialize_with"));
 
     defattr.map(|meta| match meta {
         Meta::NameValue(mnv) => {
@@ -116,7 +114,7 @@ fn alias(f: &Field) -> Option<String> {
             _ => None,
         })
         .filter_map(|mnv| match mnv.lit {
-            Lit::Str(s) => Some(s.value().clone()),
+            Lit::Str(s) => Some(s.value()),
             _ => None,
         })
         .next()
