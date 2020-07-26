@@ -2,13 +2,6 @@ use crate::{DeserializeError, DeserializeErrorKind, Error, Scalar, TextTape, Tex
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
 
-pub fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
-where
-    T: Deserialize<'a>,
-{
-    Ok(TextDeserializer::from_slice(data)?)
-}
-
 pub struct TextDeserializer;
 
 impl TextDeserializer {
@@ -805,6 +798,13 @@ mod tests {
     use jomini_derive::JominiDeserialize;
     use serde::Deserialize;
     use std::collections::HashMap;
+
+    fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
+    where
+        T: Deserialize<'a>,
+    {
+        Ok(TextDeserializer::from_slice(data)?)
+    }
 
     #[test]
     fn test_single_field() {

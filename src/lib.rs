@@ -1,9 +1,9 @@
 pub(crate) mod ascii;
-pub mod binary;
+mod binary;
 mod data;
 mod errors;
 mod scalar;
-pub mod text;
+mod text;
 pub(crate) mod util;
 
 pub use self::binary::*;

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 ///
 /// ```
 /// use std::collections::HashMap;
-/// use jomini::binary::TokenResolver;
+/// use jomini::TokenResolver;
 ///
 /// let mut map = HashMap::new();
 /// map.insert(0x2d82, String::from("field1"));
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 ///
 /// ```
 /// use std::collections::HashMap;
-/// use jomini::binary::TokenResolver;
+/// use jomini::TokenResolver;
 ///
 /// let mut map = HashMap::new();
 /// map.insert(0x2d82, "field1");

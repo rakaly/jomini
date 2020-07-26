@@ -5,6 +5,20 @@ use crate::{
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
 
+pub struct BinaryDeserializer;
+
+impl BinaryDeserializer {
+    pub fn from_slice<'a, RES, T>(data: &'a [u8], resolver: RES) -> Result<T, Error>
+    where
+        T: Deserialize<'a>,
+        RES: TokenResolver,
+    {
+        BinaryDeserializerBuilder::new()
+            .on_failed_resolve(FailedResolveStrategy::Ignore)
+            .from_slice(data, resolver)
+    }
+}
+
 /// Builds a tweaked binary deserializer
 #[derive(Debug)]
 pub struct BinaryDeserializerBuilder {
@@ -58,16 +72,6 @@ impl BinaryDeserializerBuilder {
         let tape = BinTape::from_slice(data)?;
         Ok(self.from_tape(&tape, resolver)?)
     }
-}
-
-pub fn from_slice<'a, RES, T>(data: &'a [u8], resolver: RES) -> Result<T, Error>
-where
-    T: Deserialize<'a>,
-    RES: TokenResolver,
-{
-    BinaryDeserializerBuilder::new()
-        .on_failed_resolve(FailedResolveStrategy::Ignore)
-        .from_slice(data, resolver)
 }
 
 struct BinaryConfig<RES> {
@@ -467,6 +471,14 @@ mod tests {
     use jomini_derive::JominiDeserialize;
     use serde::Deserialize;
     use std::collections::HashMap;
+
+    fn from_slice<'a, RES, T>(data: &'a [u8], resolver: RES) -> Result<T, Error>
+    where
+        T: Deserialize<'a>,
+        RES: TokenResolver,
+    {
+        BinaryDeserializer::from_slice(data, resolver)
+    }
 
     #[test]
     fn test_single_field() {

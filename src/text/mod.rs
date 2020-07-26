@@ -1,5 +1,5 @@
 #[cfg(feature = "derive")]
-pub mod de;
+mod de;
 mod tape;
 
 #[cfg(feature = "derive")]

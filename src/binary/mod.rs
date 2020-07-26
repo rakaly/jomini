@@ -1,7 +1,9 @@
 #[cfg(feature = "derive")]
-pub mod de;
+mod de;
 mod resolver;
 mod tape;
 
+#[cfg(feature = "derive")]
+pub use self::de::{BinaryDeserializer, BinaryDeserializerBuilder};
 pub use self::resolver::{FailedResolveStrategy, TokenResolver};
 pub use self::tape::{BinTape, BinaryToken};
