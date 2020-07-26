@@ -50,7 +50,15 @@ pub fn from_windows_string_benchmark(c: &mut Criterion) {
 }
 
 pub fn to_u64_benchmark(c: &mut Criterion) {
-    c.bench_function("to_u64", |b| b.iter(|| Scalar::new(b"20405029").to_u64()));
+    let mut group = c.benchmark_group("to_u64");
+    for input in [&b"1444"[..], &b"20405029"[..]].iter() {
+        let data = Scalar::new(input);
+        let ins = std::str::from_utf8(input).unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(ins), &data, |b, &data| {
+            b.iter(|| black_box(data.to_u64().unwrap()))
+        });
+    }
+    group.finish();
 }
 
 pub fn to_f64_benchmark(c: &mut Criterion) {
