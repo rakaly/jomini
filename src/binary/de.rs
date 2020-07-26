@@ -1,6 +1,6 @@
 use crate::{
     BinaryTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error, FailedResolveStrategy,
-    Scalar, TokenResolver,
+    TokenResolver,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
@@ -220,7 +220,7 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, RES: TokenResolver, V: Visitor<'de>>(
         BinaryToken::U32(x) => visitor.visit_u32(x),
         BinaryToken::U64(x) => visitor.visit_u64(x),
         BinaryToken::I32(x) => visitor.visit_i32(x),
-        BinaryToken::Text(x) => match Scalar::new(doc.data_tape[x]).to_utf8() {
+        BinaryToken::Text(x) => match doc.data_tape[x].to_utf8() {
             Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
             Cow::Owned(s) => visitor.visit_string(s),
         },

@@ -1,5 +1,5 @@
 use crate::util::{le_i32, le_u16, le_u32, le_u64};
-use crate::{Error, ErrorKind};
+use crate::{Error, ErrorKind, Scalar};
 
 #[derive(Debug, PartialEq)]
 pub enum BinaryToken {
@@ -40,7 +40,7 @@ pub struct Rgb {
 #[derive(Debug, Default)]
 pub struct BinaryTape<'a> {
     pub token_tape: Vec<BinaryToken>,
-    pub data_tape: Vec<&'a [u8]>,
+    pub data_tape: Vec<Scalar<'a>>,
     pub rgb_tape: Vec<Rgb>,
     original_length: usize,
 }
@@ -158,7 +158,7 @@ impl<'a> BinaryTape<'a> {
             .ok_or_else(Error::eof)?;
         self.token_tape
             .push(BinaryToken::Text(self.data_tape.len()));
-        self.data_tape.push(text);
+        self.data_tape.push(Scalar::new(text));
         Ok(&data[text.len() + 2..])
     }
 
@@ -673,7 +673,7 @@ mod tests {
             vec![BinaryToken::Token(0x2d82), BinaryToken::Text(0),]
         );
 
-        assert_eq!(tape.data_tape, vec![b"ENG"]);
+        assert_eq!(tape.data_tape, vec![Scalar::new(b"ENG")]);
     }
 
     #[test]
@@ -688,7 +688,7 @@ mod tests {
             vec![BinaryToken::Token(0x2d82), BinaryToken::Text(0),]
         );
 
-        assert_eq!(tape.data_tape, vec![b"ENG"]);
+        assert_eq!(tape.data_tape, vec![Scalar::new(b"ENG")]);
     }
 
     #[test]
@@ -733,11 +733,11 @@ mod tests {
             ]
         );
 
-        let data: Vec<&'static [u8]> = vec![
-            b"Art of War",
-            b"Conquest of Paradise",
-            b"Res Publica",
-            b"Wealth of Nations",
+        let data: Vec<Scalar<'static>> = vec![
+            Scalar::new(b"Art of War"),
+            Scalar::new(b"Conquest of Paradise"),
+            Scalar::new(b"Res Publica"),
+            Scalar::new(b"Wealth of Nations"),
         ];
 
         assert_eq!(tape.data_tape, data);
@@ -810,7 +810,10 @@ mod tests {
             ]
         );
 
-        let data: Vec<&'static [u8]> = vec![b"schools_initiated", b"1444.11.11\n"];
+        let data: Vec<Scalar<'static>> = vec![
+            Scalar::new(b"schools_initiated"),
+            Scalar::new(b"1444.11.11\n"),
+        ];
 
         assert_eq!(tape.data_tape, data);
     }
@@ -895,7 +898,7 @@ mod tests {
             ]
         );
 
-        let data: Vec<&'static [u8]> = vec![b"western", b"1446.5.31"];
+        let data: Vec<Scalar<'static>> = vec![Scalar::new(b"western"), Scalar::new(b"1446.5.31")];
 
         assert_eq!(tape.data_tape, data);
     }
