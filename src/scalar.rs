@@ -186,20 +186,20 @@ fn to_bool(d: &[u8]) -> Result<bool, ScalarError> {
     }
 }
 
-fn is_digits(d: &[u8]) -> bool {
+fn is_digits_wide(d: &[u8]) -> bool {
     // Taken from simdjson: https://youtu.be/wlvKAT7SZIQ?t=2377
     const SIZE: usize = std::mem::size_of::<u64>();
-    debug_assert!(d.len() <= SIZE);
+    debug_assert!(d.len() == SIZE);
 
-    let mut local_buf: [u8; SIZE] = [b'0'; SIZE];
-    let dst = &mut local_buf[..d.len()];
-    dst.copy_from_slice(d);
-
-    let val = u64::from_le_bytes(local_buf);
+    let val = le_u64(d);
     val.checked_add(0x0606_0606_0606_0606).map_or(false, |x| {
         ((val & 0xF0F0_F0F0_F0F0_F0F0) | ((x & 0xF0F0_F0F0_F0F0_F0F0) >> 4))
             == 0x3333_3333_3333_3333
     })
+}
+
+fn is_digits(d: &[u8]) -> bool {
+    !d.iter().any(|&x| x < b'0' || x > b'9')
 }
 
 #[inline]
@@ -243,8 +243,9 @@ fn to_i64(d: &[u8]) -> Result<i64, ScalarError> {
 #[inline]
 fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
     let mut chunks = d.chunks_exact(8);
-    let all_digits = chunks.all(is_digits);
-    if !(all_digits & is_digits(chunks.remainder())) {
+    let all_digits = chunks.all(is_digits_wide);
+    let remainder = chunks.remainder();
+    if !(all_digits & is_digits(&remainder)) {
         return Err(ScalarError::AllDigits(to_utf8_owned(d)));
     }
 
@@ -260,12 +261,12 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
             .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
     }
 
-    let left_over = d.len() % 8;
-    let remainder = &d[d.len() - left_over..];
-    result = 10_u64
-        .checked_pow(remainder.len() as u32)
-        .and_then(|x| result.checked_mul(x))
-        .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
+    if result != 0 {
+        result = 10_u64
+            .checked_pow(remainder.len() as u32)
+            .and_then(|x| result.checked_mul(x))
+            .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
+    }
 
     let mut local_buf: [u8; 8] = [b'0'; 8];
     let dst = &mut local_buf[8 - remainder.len()..];
