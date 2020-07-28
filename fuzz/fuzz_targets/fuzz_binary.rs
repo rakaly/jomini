@@ -42,7 +42,7 @@ fuzz_target!(|data: &[u8]| {
     hash.insert(0x354eu16, "selector");
     hash.insert(0x209u16, "localization");
 
-    let _: Result<Meta, _> = jomini::BinTape::from_slice(&data).and_then(|tape| {
-        jomini::binary::de::BinaryDeserializerBuilder::new().from_tape(&tape, &hash)
+    let _: Result<Meta, _> = jomini::BinaryTape::from_slice(&data).and_then(|tape| {
+        jomini::BinaryDeserializerBuilder::new().from_tape(&tape, &hash)
     });
 });
