@@ -1,9 +1,9 @@
-name: Rust
-
+name: ci
 on:
   pull_request:
   push:
-    branches: [ master ]
+    branches:
+    - master
   schedule:
   - cron: '00 01 * * *'
 
@@ -19,7 +19,6 @@ jobs:
         - nightly
         - macos
         - win-msvc
-        - win-gnu
         include:
         - build: stable
           os: ubuntu-latest
