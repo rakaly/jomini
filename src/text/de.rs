@@ -1034,7 +1034,7 @@ mod tests {
 
     #[test]
     fn test_string_array() {
-        let data = include_bytes!("../../../../assets/fixtures/partials/string-array.txt");
+        let data = include_bytes!("../../tests/fixtures/string-array.txt");
         #[derive(Deserialize, PartialEq, Debug)]
         struct MyStruct {
             dlc_enabled: Vec<String>,
@@ -1057,7 +1057,7 @@ mod tests {
 
     #[test]
     fn test_nested_object() {
-        let data = include_bytes!("../../../../assets/fixtures/partials/savegame.txt");
+        let data = include_bytes!("../../tests/fixtures/savegame.txt");
 
         #[derive(Deserialize, PartialEq, Debug)]
         struct MyStruct {
@@ -1108,7 +1108,7 @@ mod tests {
 
     #[test]
     fn test_array_of_objects() {
-        let data = include_bytes!("../../../../assets/fixtures/partials/campaign_stats.txt");
+        let data = include_bytes!("../../tests/fixtures/campaign_stats.txt");
 
         #[derive(Deserialize, PartialEq, Debug)]
         struct MyStruct {

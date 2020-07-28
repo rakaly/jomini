@@ -1278,7 +1278,7 @@ mod tests {
 
     #[test]
     fn test_meta() {
-        let data = &include_bytes!("../../../../assets/fixtures/meta.bin")["EU4bin".len()..];
+        let data = &include_bytes!("../../tests/fixtures/meta.bin")["EU4bin".len()..];
 
         #[derive(Deserialize, PartialEq, Eq, Debug)]
         struct Meta {

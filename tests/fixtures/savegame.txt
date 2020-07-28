@@ -1,0 +1,7 @@
+savegame_version={
+	first=1
+	second=29
+	third=5
+	forth=0
+	name="Manchu"
+}

@@ -1,0 +1,8 @@
+campaign_stats={
+{
+		id=0
+	}
+{
+		id=1
+	}
+}

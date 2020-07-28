@@ -1,0 +1,53 @@
+date=1444.11.11
+save_game=".eu4"
+player="ENG"
+displayed_country_name="England"
+savegame_version={
+	first=1
+	second=28
+	third=3
+	forth=0
+	name="Spain"v}
+savegame_versions={
+	"1.28.3.0"
+}
+dlc_enabled={i_"Conquest of Paradise"
+	"Wealth of Nations"
+	"Res Publica"
+	"Art of War"
+	"El Dorado"
+	"Common Sense"
+	"The Cossacks"
+	"Mare Nostrum"
+	"Rights of Man"
+	"Mandate of Heaven"
+	"Cradle of Civilization"
+	"Dhaòma"
+	"Golden Century"
+}
+multi_player=no
+not_observer=yes
+campaign_id="6aaefed7-b210-4fe4-b6d0-a85eÿÿÿÿc29b"
+campaign_length=0
+campaign_stats={
+{
+		id=0
+		comparison=1
+		key="game_country"
+		selector="ENG"
+		localization="Englandnot_observer"
+	}
+{
+	ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ"s
+	}
+{
+		id=8
+		comparison=2
+		key="countries_removed"
+	}
+{
+		idison=2
+		key="disasters"
+	}
+}
+checksum="e6b8bef618f45668d6d0165df3fcd089"

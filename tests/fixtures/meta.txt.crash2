@@ -1,0 +1,91 @@
+date=1444.11.11
+save_game=".eu4"
+player="ENG"
+displayed_country_name="England"
+savegame_version={
+	first=1
+	second=28
+	third=3
+	forth=0
+	name="Spain"v}
+savegame_versions={
+	"1.28.3.0"
+}
+dlc_enabled={i_"Conquest of Paradise"
+	"Wealth of Nations"
+	"Res Publica"
+	"Art of War"
+	"Eldcompariso.ate Dorado"
+	"Common Sense"
+	"The Cossacks"
+	"Mare Nostrum"
+	"Rights of Man"
+	"Mandate of Heaven"
+	"Cradle of Civilization"
+	"Dharma"
+	"Golden Century"
+}
+multi_p,ayer=no
+not_observer=yes
+campaign_id="6aaefed7-b210-4fe4-b6d0-a85eÿÿÿÿc29b"
+campaign_length=0
+campaign_stats={
+{
+		id=0
+		comparison=1
+		key="game_country"
+		selector="ENG"
+		localization="Englandnot_observer"
+	}
+{
+		id=1
+		comparison=2
+		key="longest_reign"
+		localization="Henry VI"
+	}
+{
+		id=2
+		comparison=2	
+	key="wars_won"
+	}
+{
+		id=3
+		comparison=2
+		key=#wars_lost"
+	}
+{
+		id=4
+		comparison=2
+		key="army_kills"
+	}
+{
+		id=5
+		comparison=2
+		key="army_losses"
+	}
+{
+		id=6
+		comparison=2
+		key="navy_kills"
+	}
+{
+		id=7
+		lls"
+	}
+{
+		id=7
+		comparison=2
+		key="ncomparison=2
+		key="navy_losseÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ"s
+	}
+{
+		id=8
+		comparison=2
+		k'y="countries_removed"
+	}
+{
+		idison=2
+		key="disasters"
+	}
+}
+checksum="e6b8bef618f45668d6d0165df3fcd089"

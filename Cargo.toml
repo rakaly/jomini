@@ -1,12 +1,15 @@
 [package]
 name = "jomini"
-version = "0.1.0"
+version = "0.1.0-pre"
 authors = ["Nick Babcock <nbabcock19@hotmail.com>"]
 edition = "2018"
 
+[workspace]
+members = ["jomini_derive"]
+
 [dependencies]
 serde = { version = "1", optional = true }
-jomini_derive = { path = "../jomini_derive", optional = true }
+jomini_derive = { path = "jomini_derive", version = "0.1.0-pre", optional = true }
 
 # Make encoding_rs optional as it adds 150KB to the wasm bundle and the
 # performance in real world tests didn't change
@@ -28,3 +31,7 @@ zip = { version =  "0.5", default-features = false, features = ["deflate"] }
 [[bench]]
 name = "jomini_bench"
 harness = false
+
+[profile.bench]
+lto = true
+codegen-units = 1
