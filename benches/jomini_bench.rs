@@ -5,8 +5,8 @@ use std::collections::HashMap;
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-const METADATA_BIN: &'static [u8] = include_bytes!("../../../assets/fixtures/meta.bin");
-const METADATA_TXT: &'static [u8] = include_bytes!("../../../assets/fixtures/meta.txt");
+const METADATA_BIN: &'static [u8] = include_bytes!("../tests/fixtures/meta.bin");
+const METADATA_TXT: &'static [u8] = include_bytes!("../tests/fixtures/meta.txt");
 
 pub fn is_ascii_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("is_ascii");
