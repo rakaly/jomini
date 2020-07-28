@@ -9,8 +9,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  test:
+    name: test
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
