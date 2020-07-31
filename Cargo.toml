@@ -21,7 +21,6 @@ derive = ["serde", "jomini_derive"]
 
 [dev-dependencies]
 encoding_rs = "0.8"
-jemallocator = "0.3"
 criterion = "0.3"
 quickcheck = "0.9"
 quickcheck_macros = "0.9"
