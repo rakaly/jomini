@@ -71,41 +71,13 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
     }
 
     let data = &METADATA_BIN["EU4bin".len()..];
-    let mut group = c.benchmark_group("binary_deserialize");
+    let mut group = c.benchmark_group("deserialize");
     let mut map = HashMap::new();
     map.insert(0x337f, "campaign_id");
     group.throughput(Throughput::Bytes(data.len() as u64));
-    group.bench_function("meta-tape", |b| {
+    group.bench_function("binary", |b| {
         b.iter(|| {
             let _res: Meta = BinaryDeserializer::from_slice(&data[..], &map).unwrap();
-        })
-    });
-    group.finish();
-}
-
-pub fn binary_parse_benchmark(c: &mut Criterion) {
-    let data = &METADATA_BIN["EU4bin".len()..];
-    let mut group = c.benchmark_group("binary_parse");
-    group.throughput(Throughput::Bytes(data.len() as u64));
-    group.bench_function("meta-tape", |b| {
-        let mut tape = BinaryTape::default();
-        b.iter(|| {
-            tape.parse(&data[..]).unwrap();
-            tape.clear();
-        })
-    });
-    group.finish();
-}
-
-pub fn text_parse_benchmark(c: &mut Criterion) {
-    let data = &METADATA_TXT["EU4txt".len()..];
-    let mut group = c.benchmark_group("text_parse");
-    group.throughput(Throughput::Bytes(data.len() as u64));
-    group.bench_function("meta-tape", |b| {
-        let mut tape = TextTape::default();
-        b.iter(|| {
-            tape.parse(&data[..]).unwrap();
-            tape.clear();
         })
     });
     group.finish();
@@ -118,11 +90,39 @@ pub fn text_deserialize_benchmark(c: &mut Criterion) {
     }
 
     let data = &METADATA_TXT["EU4txt".len()..];
-    let mut group = c.benchmark_group("text_deserialize");
+    let mut group = c.benchmark_group("deserialize");
     group.throughput(Throughput::Bytes(data.len() as u64));
-    group.bench_function("meta-tape", |b| {
+    group.bench_function("text", |b| {
         b.iter(|| {
             let _res: Meta = TextDeserializer::from_slice(&data[..]).unwrap();
+        })
+    });
+    group.finish();
+}
+
+pub fn binary_parse_benchmark(c: &mut Criterion) {
+    let data = &METADATA_BIN["EU4bin".len()..];
+    let mut group = c.benchmark_group("parse");
+    group.throughput(Throughput::Bytes(data.len() as u64));
+    group.bench_function("binary", |b| {
+        let mut tape = BinaryTape::default();
+        b.iter(|| {
+            tape.parse(&data[..]).unwrap();
+            tape.clear();
+        })
+    });
+    group.finish();
+}
+
+pub fn text_parse_benchmark(c: &mut Criterion) {
+    let data = &METADATA_TXT["EU4txt".len()..];
+    let mut group = c.benchmark_group("parse");
+    group.throughput(Throughput::Bytes(data.len() as u64));
+    group.bench_function("text", |b| {
+        let mut tape = TextTape::default();
+        b.iter(|| {
+            tape.parse(&data[..]).unwrap();
+            tape.clear();
         })
     });
     group.finish();
