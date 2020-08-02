@@ -183,14 +183,19 @@ impl<'a> BinaryTape<'a> {
 
     #[inline]
     fn parse_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let text = data
-            .get(..2)
-            .and_then(|size| data.get(2..2 + usize::from(le_u16(size))).map(|data| data))
-            .ok_or_else(Error::eof)?;
-        self.token_tape
-            .push(BinaryToken::Text(self.data_tape.len()));
-        self.data_tape.push(Scalar::new(text));
-        Ok(&data[text.len() + 2..])
+        if data.len() >= 2 {
+            let (text_len_data, rest) = data.split_at(2);
+            let text_len = usize::from(le_u16(text_len_data));
+            if rest.len() >= text_len {
+                let (text, rest) = rest.split_at(text_len);
+                self.token_tape
+                    .push(BinaryToken::Text(self.data_tape.len()));
+                self.data_tape.push(Scalar::new(text));
+                return Ok(rest);
+            }
+        }
+
+        Err(Error::eof())
     }
 
     pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), Error> {
