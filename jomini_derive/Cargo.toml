@@ -1,7 +1,12 @@
 [package]
 name = "jomini_derive"
 version = "0.1.0-pre"
+authors = ["Nick Babcock <nbabcock19@hotmail.com>"]
+license = "MIT"
 edition = "2018"
+repository = "https://github.com/rakaly/jomini"
+description = "Serde macros implementation of `#[derive(JominiDeserialize)]`"
+keywords = ["serde", "deserialization"]
 
 [lib]
 proc-macro = true

@@ -2,7 +2,12 @@
 name = "jomini"
 version = "0.1.0-pre"
 authors = ["Nick Babcock <nbabcock19@hotmail.com>"]
+license = "MIT"
 edition = "2018"
+repository = "https://github.com/rakaly/jomini"
+categories = ["parsing"]
+description = "Low level, performance orientated parser for EU4 save files and other formats"
+keywords = ["eu4", "ironman", "clausewitz"]
 
 [workspace]
 members = ["jomini_derive"]
