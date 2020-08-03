@@ -23,6 +23,7 @@ project](https://github.com/ParadoxGameConverters/EU4toVic2) to parse ironman EU
 Below is a demonstration on parsing plaintext data using jomini tools.
 
 ```rust
+# #[cfg(feature = "derive")] {
 use jomini::{JominiDeserialize, TextDeserializer};
 
 #[derive(JominiDeserialize, PartialEq, Debug)]
@@ -54,6 +55,7 @@ let expected = Model {
 
 let actual: Model = TextDeserializer::from_slice(data).unwrap();
 assert_eq!(actual, expected);
+# }
 ```
 
 ## Binary Parsing
@@ -63,6 +65,7 @@ Tokens can be encoded into 16 integers, and so one must provide a map from these
 textual representations
 
 ```rust
+# #[cfg(feature = "derive")] {
 use jomini::{JominiDeserialize, BinaryDeserializer};
 use std::collections::HashMap;
 
@@ -78,6 +81,7 @@ map.insert(0x2d82, "field1");
 
 let actual: MyStruct = BinaryDeserializer::from_slice(&data[..], &map).unwrap();
 assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
+# }
 ```
 
 When done correctly, one can use the same structure to represent both the plaintext and binary data
