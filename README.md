@@ -1,4 +1,4 @@
-![ci](https://github.com/rakaly/jomini/workflows/ci/badge.svg)[![](https://docs.rs/jomini/badge.svg)](https://docs.rs/jomini) [![Version](https://img.shields.io/crates/v/jomini.svg?style=flat-square)](https://crates.io/crates/jomini)
+![ci](https://github.com/rakaly/jomini/workflows/ci/badge.svg) [![](https://docs.rs/jomini/badge.svg)](https://docs.rs/jomini) [![Version](https://img.shields.io/crates/v/jomini.svg?style=flat-square)](https://crates.io/crates/jomini)
 
 # Jomini
 
