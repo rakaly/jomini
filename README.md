@@ -117,3 +117,19 @@ assert_eq!(
     ]
 );
 ```
+
+## Benchmarks
+
+Benchmarks are ran with the following command:
+
+```
+cargo clean
+cargo bench -- 'parse|deserialize'
+find ./target -wholename "*/new/raw.csv" -print0 | xargs -0 xsv cat rows > assets/jomini-benchmarks.csv
+```
+
+And can be analyzed with the R script found in the assets directory.
+
+Below is a graph generated from benchmarking on an arbitrary computer.
+
+![jomini-bench-throughput.png](assets/jomini-bench-throughput.png)
