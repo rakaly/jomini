@@ -1,6 +1,6 @@
 /*!
 
-A low level, performance orientated parser for
+A low level, performance oriented parser for
 [EU4](https://en.wikipedia.org/wiki/Europa_Universalis_IV) save files and other
 [PDS](https://www.paradoxplaza.com/) developed titles.
 
