@@ -244,6 +244,10 @@ fn to_i64(d: &[u8]) -> Result<i64, ScalarError> {
 fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
     const POWER10: [u64; 8] = [10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10, 1];
 
+    if d.is_empty() {
+        return Err(ScalarError::AllDigits(to_utf8_owned(d)));
+    }
+
     let mut chunks = d.chunks_exact(8);
     let all_digits = chunks.all(is_digits_wide);
     let remainder = chunks.remainder();
@@ -418,6 +422,15 @@ mod tests {
         let scalar = Scalar::new(data);
         let (cow, _) = encoding_rs::WINDOWS_1252.decode_without_bom_handling(data);
         assert_eq!(scalar.to_utf8(), cow);
+    }
+
+    #[test]
+    fn scalar_empty_string() {
+        let s = Scalar::new(b"");
+        assert!(s.to_bool().is_err());
+        assert!(s.to_f64().is_err());
+        assert!(s.to_i64().is_err());
+        assert!(s.to_u64().is_err());
     }
 
     #[quickcheck]
