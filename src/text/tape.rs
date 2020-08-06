@@ -71,7 +71,7 @@ impl<'a> TextTape<'a> {
                 if let Some(idx) = data.iter().position(|&x| x == b'\n') {
                     data = &data[idx..];
                 } else {
-                    return data;
+                    return &[];
                 }
             } else {
                 return data;
@@ -750,6 +750,18 @@ mod tests {
                 TextToken::Scalar(Scalar::new(b"1.000")),
                 TextToken::Scalar(Scalar::new(b"foo")),
                 TextToken::Scalar(Scalar::new(b"2.000")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_terminating_comment() {
+        let data = b"# boo\r\n# baa\r\nfoo=a\r\n# bee";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Scalar(Scalar::new(b"a")),
             ]
         );
     }
