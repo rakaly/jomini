@@ -9,6 +9,14 @@ use std::borrow::Cow;
 pub struct BinaryDeserializer;
 
 impl BinaryDeserializer {
+    /// Create a builder to custom binary deserialization
+    pub fn builder() -> BinaryDeserializerBuilder {
+        BinaryDeserializerBuilder::new()
+    }
+
+    /// Deserialize a structure from the given binary data. If a token is unable
+    /// to be resolved then it will be ignored by the default. Construct a custom
+    /// instance to tweak this behavior.
     pub fn from_slice<'a, RES, T>(data: &'a [u8], resolver: RES) -> Result<T, Error>
     where
         T: Deserialize<'a>,
