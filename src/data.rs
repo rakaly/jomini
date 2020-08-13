@@ -261,6 +261,16 @@ pub(crate) const BOUNDARY: u8 = 1;
 pub(crate) const WHITESPACE: u8 = 2;
 pub(crate) const OPERATOR: u8 = 4;
 
+#[inline]
+pub(crate) fn is_whitespace(b: u8) -> bool {
+    CHARACTER_CLASS[usize::from(b)] & WHITESPACE == WHITESPACE
+}
+
+#[inline]
+pub(crate) fn is_boundary(b: u8) -> bool {
+    CHARACTER_CLASS[usize::from(b)] & BOUNDARY == BOUNDARY
+}
+
 /// This table probably looks pretty weird but it serves as a way to encode multiple attributes of
 /// a character in a single place. This way we increase the likelihood that the table is in the
 /// cache as it is used in multiple call sites. The reason why the table has (0 - 0) is so that I
@@ -280,8 +290,8 @@ pub(crate) static CHARACTER_CLASS: [u8; 256] = [
     (8 - 8),
     (9 - 9) + BOUNDARY + WHITESPACE,   // \t
     (10 - 10) + BOUNDARY + WHITESPACE, // \n
-    (11 - 11),
-    (12 - 12),
+    (11 - 11) + BOUNDARY + WHITESPACE, // \v
+    (12 - 12) + BOUNDARY + WHITESPACE, // \f
     (13 - 13) + BOUNDARY + WHITESPACE, // \r
     (14 - 14),
     (15 - 15),

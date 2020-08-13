@@ -1,4 +1,4 @@
-use crate::data::{BOUNDARY, CHARACTER_CLASS, WHITESPACE};
+use crate::data::{is_boundary, is_whitespace};
 use crate::util::le_u64;
 use crate::{Error, ErrorKind, Scalar};
 
@@ -368,16 +368,6 @@ fn contains_zero_byte(x: u64) -> bool {
 #[inline(always)]
 const fn repeat_byte(b: u8) -> u64 {
     (b as u64) * (u64::MAX / 255)
-}
-
-#[inline]
-fn is_whitespace(b: u8) -> bool {
-    CHARACTER_CLASS[usize::from(b)] & WHITESPACE == WHITESPACE
-}
-
-#[inline]
-fn is_boundary(b: u8) -> bool {
-    CHARACTER_CLASS[usize::from(b)] & BOUNDARY == BOUNDARY
 }
 
 #[cfg(test)]
