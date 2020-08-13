@@ -3,7 +3,7 @@ use crate::{Error, ErrorKind, Scalar};
 
 /// Represents any valid binary value
 #[derive(Debug, PartialEq)]
-pub enum BinaryToken {
+pub enum BinaryToken<'a> {
     /// Index of the `BinaryToken::End` that signifies this array's termination
     Array(usize),
 
@@ -25,8 +25,8 @@ pub enum BinaryToken {
     /// Represents a binary signed 32bit integer
     I32(i32),
 
-    /// Index of the `data_tape` that contains the extracted scalar value
-    Text(usize),
+    /// Represents a binary encoded string
+    Text(Scalar<'a>),
 
     /// Represents a binary 32bit floating point number
     F32(f32),
@@ -37,8 +37,8 @@ pub enum BinaryToken {
     /// Represents a 16bit token key that can be resolved to an equivalent textual representation.
     Token(u16),
 
-    /// Index of the `rgb_tape` that contains the extracted rgb value
-    Rgb(usize),
+    /// Represents a binary encoded rgb value
+    Rgb(Box<Rgb>),
 }
 
 const END: u16 = 0x0004;
@@ -70,9 +70,7 @@ pub struct Rgb {
 /// Houses the tape of tokens that is extracted from binary data
 #[derive(Debug, Default)]
 pub struct BinaryTape<'a> {
-    pub token_tape: Vec<BinaryToken>,
-    pub data_tape: Vec<Scalar<'a>>,
-    pub rgb_tape: Vec<Rgb>,
+    pub token_tape: Vec<BinaryToken<'a>>,
     original_length: usize,
 }
 
@@ -97,8 +95,6 @@ impl<'a> BinaryTape<'a> {
 
     pub fn clear(&mut self) {
         self.token_tape.clear();
-        self.data_tape.clear();
-        self.rgb_tape.clear();
     }
 
     fn offset(&self, data: &[u8]) -> usize {
@@ -175,9 +171,7 @@ impl<'a> BinaryTape<'a> {
                 b: le_u32(&x[16..]),
             })
             .ok_or_else(Error::eof)?;
-        let rgb_index = self.rgb_tape.len();
-        self.token_tape.push(BinaryToken::Rgb(rgb_index));
-        self.rgb_tape.push(val);
+        self.token_tape.push(BinaryToken::Rgb(Box::new(val)));
         Ok(&data[22..])
     }
 
@@ -188,9 +182,8 @@ impl<'a> BinaryTape<'a> {
             let text_len = usize::from(le_u16(text_len_data));
             if rest.len() >= text_len {
                 let (text, rest) = rest.split_at(text_len);
-                self.token_tape
-                    .push(BinaryToken::Text(self.data_tape.len()));
-                self.data_tape.push(Scalar::new(text));
+                let scalar = Scalar::new(text);
+                self.token_tape.push(BinaryToken::Text(scalar));
                 return Ok(rest);
             }
         }
@@ -200,7 +193,6 @@ impl<'a> BinaryTape<'a> {
 
     pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), Error> {
         self.token_tape.reserve(data.len() / 100 * 15);
-        self.data_tape.reserve(data.len() / 10);
         let mut state = ParseState::Key;
 
         let mut parent_ind = 0;
@@ -632,6 +624,11 @@ mod tests {
     }
 
     #[test]
+    fn test_size_of_binary_token() {
+        assert_eq!(std::mem::size_of::<BinaryToken>(), 24);
+    }
+
+    #[test]
     fn test_false_event() {
         let data = [0x82, 0x2d, 0x01, 0x00, 0x4c, 0x28];
 
@@ -706,10 +703,11 @@ mod tests {
         let tape = parse(&data[..]).unwrap();
         assert_eq!(
             tape.token_tape,
-            vec![BinaryToken::Token(0x2d82), BinaryToken::Text(0),]
+            vec![
+                BinaryToken::Token(0x2d82),
+                BinaryToken::Text(Scalar::new(b"ENG")),
+            ]
         );
-
-        assert_eq!(tape.data_tape, vec![Scalar::new(b"ENG")]);
     }
 
     #[test]
@@ -721,10 +719,11 @@ mod tests {
         let tape = parse(&data[..]).unwrap();
         assert_eq!(
             tape.token_tape,
-            vec![BinaryToken::Token(0x2d82), BinaryToken::Text(0),]
+            vec![
+                BinaryToken::Token(0x2d82),
+                BinaryToken::Text(Scalar::new(b"ENG")),
+            ]
         );
-
-        assert_eq!(tape.data_tape, vec![Scalar::new(b"ENG")]);
     }
 
     #[test]
@@ -761,22 +760,13 @@ mod tests {
             vec![
                 BinaryToken::Token(0x2ee1),
                 BinaryToken::Array(6),
-                BinaryToken::Text(0),
-                BinaryToken::Text(1),
-                BinaryToken::Text(2),
-                BinaryToken::Text(3),
+                BinaryToken::Text(Scalar::new(b"Art of War")),
+                BinaryToken::Text(Scalar::new(b"Conquest of Paradise")),
+                BinaryToken::Text(Scalar::new(b"Res Publica")),
+                BinaryToken::Text(Scalar::new(b"Wealth of Nations")),
                 BinaryToken::End(1),
             ]
         );
-
-        let data: Vec<Scalar<'static>> = vec![
-            Scalar::new(b"Art of War"),
-            Scalar::new(b"Conquest of Paradise"),
-            Scalar::new(b"Res Publica"),
-            Scalar::new(b"Wealth of Nations"),
-        ];
-
-        assert_eq!(tape.data_tape, data);
     }
 
     #[test]
@@ -840,18 +830,11 @@ mod tests {
             vec![
                 BinaryToken::Token(0x29cc),
                 BinaryToken::Object(4),
-                BinaryToken::Text(0),
-                BinaryToken::Text(1),
+                BinaryToken::Text(Scalar::new(b"schools_initiated")),
+                BinaryToken::Text(Scalar::new(b"1444.11.11\n")),
                 BinaryToken::End(1),
             ]
         );
-
-        let data: Vec<Scalar<'static>> = vec![
-            Scalar::new(b"schools_initiated"),
-            Scalar::new(b"1444.11.11\n"),
-        ];
-
-        assert_eq!(tape.data_tape, data);
     }
 
     #[test]
@@ -927,16 +910,12 @@ mod tests {
                 BinaryToken::Token(0x2838),
                 BinaryToken::Object(6),
                 BinaryToken::Token(0x2863),
-                BinaryToken::Text(0),
-                BinaryToken::Text(1),
+                BinaryToken::Text(Scalar::new(b"western")),
+                BinaryToken::Text(Scalar::new(b"1446.5.31")),
                 BinaryToken::Token(0x2838),
                 BinaryToken::End(1),
             ]
         );
-
-        let data: Vec<Scalar<'static>> = vec![Scalar::new(b"western"), Scalar::new(b"1446.5.31")];
-
-        assert_eq!(tape.data_tape, data);
     }
 
     #[test]
@@ -949,14 +928,15 @@ mod tests {
         let tape = parse(&data[..]).unwrap();
         assert_eq!(
             tape.token_tape,
-            vec![BinaryToken::Token(0x053a), BinaryToken::Rgb(0),]
+            vec![
+                BinaryToken::Token(0x053a),
+                BinaryToken::Rgb(Box::new(Rgb {
+                    r: 110,
+                    g: 27,
+                    b: 27,
+                })),
+            ]
         );
-        let rgb_tape = vec![Rgb {
-            r: 110,
-            g: 27,
-            b: 27,
-        }];
-        assert_eq!(tape.rgb_tape, rgb_tape);
     }
 
     #[test]
