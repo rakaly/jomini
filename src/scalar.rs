@@ -1,5 +1,5 @@
 use crate::ascii::is_ascii;
-use crate::util::le_u64;
+use crate::{data::is_whitespace, util::le_u64};
 use std::borrow::Cow;
 use std::error;
 use std::fmt;
@@ -143,7 +143,16 @@ fn to_utf8_owned(d: &[u8]) -> String {
 }
 
 #[inline]
-fn to_utf8(d: &[u8]) -> Cow<str> {
+fn to_utf8(mut d: &[u8]) -> Cow<str> {
+    if !d.is_empty() && is_whitespace(d[d.len() - 1]) {
+        let ind = d
+            .iter()
+            .rev()
+            .position(|x| !is_whitespace(*x))
+            .unwrap_or_else(|| d.len());
+        d = &d[0..d.len() - ind];
+    }
+
     if is_ascii(d) {
         // This is safe as we just checked that the data is ascii and ascii is a subset of utf8
         debug_assert!(std::str::from_utf8(d).is_ok());
@@ -318,6 +327,12 @@ mod tests {
     }
 
     #[test]
+    fn scalar_string_trim_end_newlines() {
+        assert_eq!(Scalar::new(b"new\n").to_utf8().as_ref(), "new");
+        assert_eq!(Scalar::new(b"\t").to_utf8().as_ref(), "");
+    }
+
+    #[test]
     fn scalar_to_bool() {
         assert_eq!((Scalar::new(b"yes").to_bool()), Ok(true));
         assert_eq!((Scalar::new(b"no").to_bool()), Ok(false));
@@ -436,8 +451,8 @@ mod tests {
     #[quickcheck]
     fn to_string_equality(data: Vec<u8>) -> bool {
         use encoding_rs::*;
-        let (cow, _, _) = WINDOWS_1252.decode(&data);
+        let (cow, _) = WINDOWS_1252.decode_without_bom_handling(&data);
         let scalar = Scalar::new(&data);
-        cow.into_owned() == scalar.to_utf8()
+        cow.into_owned().trim_end() == scalar.to_utf8()
     }
 }

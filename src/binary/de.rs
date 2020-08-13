@@ -843,7 +843,7 @@ mod tests {
         let mut expected_map = HashMap::new();
         expected_map.insert(
             String::from("schools_initiated"),
-            String::from("1444.11.11\n"),
+            String::from("1444.11.11"),
         );
 
         let actual: MyStruct = from_slice(&data[..], &map).unwrap();
