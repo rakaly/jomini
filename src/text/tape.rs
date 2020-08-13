@@ -21,7 +21,7 @@ pub enum TextToken<'a> {
 /// Houses the tape of tokens that is extracted from plaintext data
 #[derive(Debug, Default)]
 pub struct TextTape<'a> {
-    pub token_tape: Vec<TextToken<'a>>,
+    token_tape: Vec<TextToken<'a>>,
     original_length: usize,
 }
 
@@ -45,6 +45,10 @@ impl<'a> TextTape<'a> {
         let mut tape = TextTape::new();
         tape.parse(data)?;
         Ok(tape)
+    }
+
+    pub fn tokens(&self) -> &[TextToken<'a>] {
+        self.token_tape.as_slice()
     }
 
     fn offset(&self, data: &[u8]) -> usize {
@@ -406,7 +410,7 @@ mod tests {
             ErrorKind::StackEmpty { offset, .. } => {
                 assert_eq!(*offset, 6);
             }
-            _ => assert!(false)
+            _ => assert!(false),
         }
     }
 

@@ -67,7 +67,7 @@ impl BinaryDeserializerBuilder {
         };
 
         let mut deserializer = RootDeserializer {
-            doc: &tape,
+            tokens: tape.tokens(),
             config: &config,
         };
         Ok(T::deserialize(&mut deserializer)?)
@@ -89,7 +89,7 @@ struct BinaryConfig<RES> {
 }
 
 struct RootDeserializer<'b, 'a: 'b, RES> {
-    doc: &'b BinaryTape<'a>,
+    tokens: &'b [BinaryToken<'a>],
     config: &'b BinaryConfig<RES>,
 }
 
@@ -115,9 +115,9 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
     {
         visitor.visit_map(BinaryMap::new(
             self.config,
-            self.doc,
+            self.tokens,
             0,
-            self.doc.token_tape.len(),
+            self.tokens.len(),
         ))
     }
 
@@ -142,7 +142,7 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
 
 struct BinaryMap<'c, 'a: 'c, 'de: 'a, RES: 'a> {
     config: &'a BinaryConfig<RES>,
-    doc: &'c BinaryTape<'de>,
+    tokens: &'c [BinaryToken<'de>],
     tape_idx: usize,
     end_idx: usize,
     value_ind: usize,
@@ -151,13 +151,13 @@ struct BinaryMap<'c, 'a: 'c, 'de: 'a, RES: 'a> {
 impl<'c, 'a, 'de, RES> BinaryMap<'c, 'a, 'de, RES> {
     fn new(
         config: &'a BinaryConfig<RES>,
-        doc: &'c BinaryTape<'de>,
+        tokens: &'c [BinaryToken<'de>],
         tape_idx: usize,
         end_idx: usize,
     ) -> Self {
         BinaryMap {
             config,
-            doc,
+            tokens,
             tape_idx,
             end_idx,
             value_ind: 0,
@@ -176,7 +176,7 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
             let current_idx = self.tape_idx;
 
             self.value_ind = self.tape_idx + 1;
-            let next_key = match self.doc.token_tape[self.value_ind] {
+            let next_key = match self.tokens[self.value_ind] {
                 BinaryToken::Array(x) => x,
                 BinaryToken::Object(x) => x,
                 _ => self.value_ind,
@@ -185,7 +185,7 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
             self.tape_idx = next_key + 1;
             seed.deserialize(KeyDeserializer {
                 tape_idx: current_idx,
-                doc: self.doc,
+                tokens: self.tokens,
                 config: self.config,
             })
             .map(Some)
@@ -200,7 +200,7 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
     {
         seed.deserialize(ValueDeserializer {
             value_ind: self.value_ind,
-            doc: &self.doc,
+            tokens: &self.tokens,
             config: self.config,
         })
     }
@@ -208,17 +208,17 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
 
 struct KeyDeserializer<'b, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
-    doc: &'b BinaryTape<'de>,
+    tokens: &'b [BinaryToken<'de>],
     tape_idx: usize,
 }
 
 fn visit_key<'c, 'b: 'c, 'de: 'b, RES: TokenResolver, V: Visitor<'de>>(
     tape_idx: usize,
-    doc: &'b BinaryTape<'de>,
+    tokens: &'b [BinaryToken<'de>],
     config: &'b BinaryConfig<RES>,
     visitor: V,
 ) -> Result<V::Value, DeserializeError> {
-    match doc.token_tape[tape_idx] {
+    match tokens[tape_idx] {
         BinaryToken::Object(_)
         | BinaryToken::Array(_)
         | BinaryToken::End(_)
@@ -255,7 +255,7 @@ impl<'b, 'de, RES: TokenResolver> de::Deserializer<'de> for KeyDeserializer<'b, 
     where
         V: Visitor<'de>,
     {
-        visit_key(self.tape_idx, self.doc, self.config, visitor)
+        visit_key(self.tape_idx, self.tokens, self.config, visitor)
     }
 
     serde::forward_to_deserialize_any! {
@@ -268,7 +268,7 @@ impl<'b, 'de, RES: TokenResolver> de::Deserializer<'de> for KeyDeserializer<'b, 
 struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
     value_ind: usize,
-    doc: &'c BinaryTape<'de>,
+    tokens: &'c [BinaryToken<'de>],
 }
 
 impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
@@ -281,23 +281,23 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
         V: Visitor<'de>,
     {
         let idx = self.value_ind;
-        match &self.doc.token_tape[idx] {
+        match &self.tokens[idx] {
             BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
                 config: self.config,
-                doc: self.doc,
+                tokens: self.tokens,
                 de_idx: 0,
                 idx: idx + 1,
                 end_idx: *x,
             }),
             BinaryToken::Object(x) => {
-                visitor.visit_map(BinaryMap::new(&self.config, self.doc, idx + 1, *x))
+                visitor.visit_map(BinaryMap::new(&self.config, self.tokens, idx + 1, *x))
             }
             BinaryToken::End(_x) => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered end when trying to deserialize",
                 )),
             }),
-            _ => visit_key(idx, self.doc, self.config, visitor),
+            _ => visit_key(idx, self.tokens, self.config, visitor),
         }
     }
 
@@ -306,10 +306,10 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
         V: Visitor<'de>,
     {
         let idx = self.value_ind;
-        match &self.doc.token_tape[idx] {
+        match &self.tokens[idx] {
             BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
                 config: self.config,
-                doc: self.doc,
+                tokens: self.tokens,
                 de_idx: 0,
                 idx: idx + 1,
                 end_idx: *x,
@@ -383,14 +383,14 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
         V: Visitor<'de>,
     {
         let idx = self.value_ind;
-        match &self.doc.token_tape[idx] {
+        match &self.tokens[idx] {
             BinaryToken::Object(x) => {
-                visitor.visit_map(BinaryMap::new(&self.config, self.doc, idx + 1, *x))
+                visitor.visit_map(BinaryMap::new(&self.config, self.tokens, idx + 1, *x))
             }
 
             // An array is supported if it is empty
             BinaryToken::Array(x) => {
-                visitor.visit_map(BinaryMap::new(&self.config, self.doc, idx + 1, *x))
+                visitor.visit_map(BinaryMap::new(&self.config, self.tokens, idx + 1, *x))
             }
             _ => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
@@ -409,7 +409,7 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
 
 struct BinarySequence<'b, 'de: 'b, RES> {
     config: &'b BinaryConfig<RES>,
-    doc: &'b BinaryTape<'de>,
+    tokens: &'b [BinaryToken<'de>],
     idx: usize,
     de_idx: usize,
     end_idx: usize,
@@ -424,13 +424,16 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        match &self.doc.token_tape[self.de_idx] {
-            BinaryToken::Object(x) => {
-                visitor.visit_map(BinaryMap::new(self.config, self.doc, self.de_idx + 1, *x))
-            }
+        match &self.tokens[self.de_idx] {
+            BinaryToken::Object(x) => visitor.visit_map(BinaryMap::new(
+                self.config,
+                self.tokens,
+                self.de_idx + 1,
+                *x,
+            )),
             BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
                 config: self.config,
-                doc: self.doc,
+                tokens: self.tokens,
                 de_idx: 0,
                 idx: self.de_idx + 1,
                 end_idx: *x,
@@ -440,7 +443,7 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
                     "encountered unexpected token when trying to deserialize map",
                 )),
             }),
-            _ => visit_key(self.de_idx, self.doc, self.config, visitor),
+            _ => visit_key(self.de_idx, self.tokens, self.config, visitor),
         }
     }
 
@@ -461,7 +464,7 @@ impl<'b, 'de, RES: TokenResolver> SeqAccess<'de> for BinarySequence<'b, 'de, RES
         if self.idx >= self.end_idx {
             Ok(None)
         } else {
-            let next_key = match self.doc.token_tape[self.idx] {
+            let next_key = match self.tokens[self.idx] {
                 BinaryToken::Array(x) => x,
                 BinaryToken::Object(x) => x,
                 _ => self.idx,
