@@ -163,27 +163,11 @@ fn to_utf8(mut d: &[u8]) -> Cow<str> {
     }
 }
 
-#[cfg(not(feature = "encoding_rs"))]
 #[inline]
 fn to_windows_1252(d: &[u8]) -> String {
     d.iter()
         .map(|&x| crate::data::WINDOWS_1252[x as usize])
         .collect()
-}
-
-#[cfg(feature = "encoding_rs")]
-#[inline]
-fn to_windows_1252(d: &[u8]) -> String {
-    // For short strings, creating the string a byte at a time is 50% faster than encoding_rs.
-    // Since we deal with a lot of short strings, this optimization is worth it for when
-    // encountering non-ascii text
-    if d.len() < 10 {
-        use crate::data::WINDOWS_1252;
-        d.iter().map(|&x| WINDOWS_1252[x as usize]).collect()
-    } else {
-        let (cow, _) = encoding_rs::WINDOWS_1252.decode_without_bom_handling(d);
-        cow.into_owned()
-    }
 }
 
 #[inline]
