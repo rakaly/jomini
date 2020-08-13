@@ -18,14 +18,16 @@ impl TextDeserializer {
     where
         T: Deserialize<'a>,
     {
-        let mut root = RootDeserializer { doc: tape };
+        let mut root = RootDeserializer {
+            tokens: tape.tokens(),
+        };
         Ok(T::deserialize(&mut root)?)
     }
 }
 
 #[derive(Debug)]
 pub struct RootDeserializer<'b, 'a: 'b> {
-    doc: &'b TextTape<'a>,
+    tokens: &'b [TextToken<'a>],
 }
 
 impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut RootDeserializer<'b, 'de> {
@@ -46,7 +48,7 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut RootDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_map(BinaryMap::new(&self.doc, 0, self.doc.token_tape.len()))
+        visitor.visit_map(BinaryMap::new(&self.tokens, 0, self.tokens.len()))
     }
 
     fn deserialize_struct<V>(
@@ -69,16 +71,16 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut RootDeserializer<'b, 'de> {
 }
 
 struct BinaryMap<'a, 'de: 'a> {
-    doc: &'a TextTape<'de>,
+    tokens: &'a [TextToken<'de>],
     tape_idx: usize,
     end_idx: usize,
     value_ind: usize,
 }
 
 impl<'a, 'de> BinaryMap<'a, 'de> {
-    fn new(doc: &'a TextTape<'de>, tape_idx: usize, end_idx: usize) -> Self {
+    fn new(tokens: &'a [TextToken<'de>], tape_idx: usize, end_idx: usize) -> Self {
         BinaryMap {
-            doc,
+            tokens,
             tape_idx,
             end_idx,
             value_ind: 0,
@@ -97,7 +99,7 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
             let current_idx = self.tape_idx;
 
             self.value_ind = self.tape_idx + 1;
-            let next_key = match self.doc.token_tape[self.value_ind] {
+            let next_key = match self.tokens[self.value_ind] {
                 TextToken::Array(x) => x,
                 TextToken::Object(x) => x,
                 _ => self.value_ind,
@@ -107,7 +109,7 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
 
             seed.deserialize(KeyDeserializer {
                 tape_idx: current_idx,
-                doc: self.doc,
+                tokens: self.tokens,
             })
             .map(Some)
         } else {
@@ -121,7 +123,7 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
     {
         seed.deserialize(ValueDeserializer {
             value_ind: self.value_ind,
-            doc: &self.doc,
+            tokens: &self.tokens,
         })
     }
 }
@@ -136,13 +138,13 @@ fn ensure_scalar<'a>(s: &TextToken<'a>) -> Result<Scalar<'a>, DeserializeError> 
 }
 
 struct KeyDeserializer<'b, 'de: 'b> {
-    doc: &'b TextTape<'de>,
+    tokens: &'b [TextToken<'de>],
     tape_idx: usize,
 }
 
 impl<'b, 'de> KeyDeserializer<'b, 'de> {
-    fn new(doc: &'b TextTape<'de>, tape_idx: usize) -> Self {
-        KeyDeserializer { doc, tape_idx }
+    fn new(tokens: &'b [TextToken<'de>], tape_idx: usize) -> Self {
+        KeyDeserializer { tokens, tape_idx }
     }
 }
 
@@ -245,7 +247,7 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        ensure_scalar(&self.doc.token_tape[self.tape_idx])
+        ensure_scalar(&self.tokens[self.tape_idx])
             .and_then(|s| visitor.visit_string(s.to_utf8_owned()))
     }
 
@@ -253,7 +255,7 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        ensure_scalar(&self.doc.token_tape[self.tape_idx]).and_then(|s| match s.to_utf8() {
+        ensure_scalar(&self.tokens[self.tape_idx]).and_then(|s| match s.to_utf8() {
             Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
             Cow::Owned(s) => visitor.visit_string(s),
         })
@@ -263,7 +265,7 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        ensure_scalar(&self.doc.token_tape[self.tape_idx])
+        ensure_scalar(&self.tokens[self.tape_idx])
             .and_then(|x| Ok(x.to_bool()?))
             .and_then(|x| visitor.visit_bool(x))
     }
@@ -272,7 +274,7 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        ensure_scalar(&self.doc.token_tape[self.tape_idx])
+        ensure_scalar(&self.tokens[self.tape_idx])
             .and_then(|x| Ok(x.to_u64()?))
             .and_then(|x| visitor.visit_u64(x))
     }
@@ -302,7 +304,7 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        ensure_scalar(&self.doc.token_tape[self.tape_idx])
+        ensure_scalar(&self.tokens[self.tape_idx])
             .and_then(|x| Ok(x.to_i64()?))
             .and_then(|x| visitor.visit_i64(x))
     }
@@ -332,7 +334,7 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        ensure_scalar(&self.doc.token_tape[self.tape_idx])
+        ensure_scalar(&self.tokens[self.tape_idx])
             .and_then(|x| Ok(x.to_f64()?))
             .and_then(|x| visitor.visit_f64(x))
     }
@@ -413,7 +415,7 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
 #[derive(Debug)]
 struct ValueDeserializer<'b, 'de: 'b> {
     value_ind: usize,
-    doc: &'b TextTape<'de>,
+    tokens: &'b [TextToken<'de>],
 }
 
 impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
@@ -424,14 +426,14 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
         V: Visitor<'de>,
     {
         let idx = self.value_ind;
-        match &self.doc.token_tape[idx] {
+        match &self.tokens[idx] {
             TextToken::Array(x) => visitor.visit_seq(BinarySequence {
-                doc: self.doc,
+                tokens: self.tokens,
                 de_idx: 0,
                 idx: idx + 1,
                 end_idx: *x,
             }),
-            TextToken::Object(x) => visitor.visit_map(BinaryMap::new(self.doc, idx + 1, *x)),
+            TextToken::Object(x) => visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x)),
             TextToken::End(_x) => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered end when trying to deserialize",
@@ -446,9 +448,9 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
         V: Visitor<'de>,
     {
         let idx = self.value_ind;
-        match &self.doc.token_tape[idx] {
+        match &self.tokens[idx] {
             TextToken::Array(x) => visitor.visit_seq(BinarySequence {
-                doc: self.doc,
+                tokens: self.tokens,
                 de_idx: 0,
                 idx: idx + 1,
                 end_idx: *x,
@@ -514,91 +516,91 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_string(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_string(visitor)
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_str(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_str(visitor)
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_bool(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_bool(visitor)
     }
 
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_u64(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_u64(visitor)
     }
 
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_u32(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_u32(visitor)
     }
 
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_u16(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_u16(visitor)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_u8(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_u8(visitor)
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_i64(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_i64(visitor)
     }
 
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_i32(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_i32(visitor)
     }
 
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_i16(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_i16(visitor)
     }
 
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_i8(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_i8(visitor)
     }
 
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_f64(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_f64(visitor)
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.value_ind).deserialize_f32(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_f32(visitor)
     }
 
     fn deserialize_struct<V>(
@@ -618,11 +620,11 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
         V: Visitor<'de>,
     {
         let idx = self.value_ind;
-        match &self.doc.token_tape[idx] {
-            TextToken::Object(x) => visitor.visit_map(BinaryMap::new(self.doc, idx + 1, *x)),
+        match &self.tokens[idx] {
+            TextToken::Object(x) => visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x)),
 
             // An array is supported if it is empty
-            TextToken::Array(x) => visitor.visit_map(BinaryMap::new(self.doc, idx + 1, *x)),
+            TextToken::Array(x) => visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x)),
             _ => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered unexpected token when trying to deserialize map",
@@ -640,7 +642,7 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
 
 #[derive(Debug)]
 struct BinarySequence<'b, 'de: 'b> {
-    doc: &'b TextTape<'de>,
+    tokens: &'b [TextToken<'de>],
     idx: usize,
     de_idx: usize,
     end_idx: usize,
@@ -653,12 +655,12 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        match &self.doc.token_tape[self.de_idx] {
+        match &self.tokens[self.de_idx] {
             TextToken::Object(x) => {
-                visitor.visit_map(BinaryMap::new(self.doc, self.de_idx + 1, *x))
+                visitor.visit_map(BinaryMap::new(self.tokens, self.de_idx + 1, *x))
             }
             TextToken::Array(x) => visitor.visit_seq(BinarySequence {
-                doc: self.doc,
+                tokens: self.tokens,
                 de_idx: 0,
                 idx: self.de_idx + 1,
                 end_idx: *x,
@@ -676,91 +678,91 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_string(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_string(visitor)
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_str(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_str(visitor)
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_bool(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_bool(visitor)
     }
 
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_u64(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_u64(visitor)
     }
 
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_u32(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_u32(visitor)
     }
 
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_u16(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_u16(visitor)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_u8(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_u8(visitor)
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_i64(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_i64(visitor)
     }
 
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_i32(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_i32(visitor)
     }
 
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_i16(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_i16(visitor)
     }
 
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_i8(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_i8(visitor)
     }
 
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_f64(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_f64(visitor)
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.doc, self.de_idx).deserialize_f32(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_f32(visitor)
     }
 
     serde::forward_to_deserialize_any! {
@@ -780,7 +782,7 @@ impl<'b, 'de> SeqAccess<'de> for BinarySequence<'b, 'de> {
         if self.idx >= self.end_idx {
             Ok(None)
         } else {
-            let next_key = match self.doc.token_tape[self.idx] {
+            let next_key = match self.tokens[self.idx] {
                 TextToken::Array(x) => x,
                 TextToken::Object(x) => x,
                 _ => self.idx,

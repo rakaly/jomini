@@ -70,7 +70,7 @@ pub struct Rgb {
 /// Houses the tape of tokens that is extracted from binary data
 #[derive(Debug, Default)]
 pub struct BinaryTape<'a> {
-    pub token_tape: Vec<BinaryToken<'a>>,
+    token_tape: Vec<BinaryToken<'a>>,
     original_length: usize,
 }
 
@@ -91,6 +91,10 @@ impl<'a> BinaryTape<'a> {
         let mut parser = BinaryTape::new();
         parser.parse(data)?;
         Ok(parser)
+    }
+
+    pub fn tokens(&self) -> &[BinaryToken<'a>] {
+        self.token_tape.as_slice()
     }
 
     fn offset(&self, data: &[u8]) -> usize {
@@ -635,7 +639,7 @@ mod tests {
             ErrorKind::InvalidSyntax { offset, .. } => {
                 assert_eq!(*offset, 6);
             }
-            _ => assert!(false)
+            _ => assert!(false),
         }
 
         let data2 = [0x82, 0x2d, 0x01, 0x00, 0x01, 0x00];
@@ -645,7 +649,7 @@ mod tests {
             ErrorKind::InvalidSyntax { offset, .. } => {
                 assert_eq!(*offset, 4);
             }
-            _ => assert!(false)
+            _ => assert!(false),
         }
     }
 

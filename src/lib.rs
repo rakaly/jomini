@@ -115,12 +115,13 @@ use jomini::{TextTape, TextToken, Scalar};
 let data = b"foo=bar";
 
 assert_eq!(
-    TextTape::from_slice(&data[..]).unwrap().token_tape,
-    vec![
+    TextTape::from_slice(&data[..])?.tokens(),
+    &[
         TextToken::Scalar(Scalar::new(b"foo")),
         TextToken::Scalar(Scalar::new(b"bar")),
     ]
 );
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 */
