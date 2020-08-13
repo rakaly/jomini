@@ -859,6 +859,24 @@ mod tests {
     }
 
     #[test]
+    fn test_escaped_field() {
+        let data = br#"name = "Joe \"Captain\" Rogers""#;
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            name: String,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                name: r#"Joe "Captain" Rogers"#.to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn test_false_field() {
         let data = b"field1=no";
 

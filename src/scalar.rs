@@ -1,5 +1,6 @@
 use crate::ascii::is_ascii;
-use crate::{data::is_whitespace, util::le_u64};
+use crate::data::{is_whitespace, WINDOWS_1252};
+use crate::util::{contains_zero_byte, le_u64, repeat_byte};
 use std::borrow::Cow;
 use std::error;
 use std::fmt;
@@ -144,6 +145,8 @@ fn to_utf8_owned(d: &[u8]) -> String {
 
 #[inline]
 fn to_utf8(mut d: &[u8]) -> Cow<str> {
+    // First we check if there is trailing whitespace and if there is, we trim it down.
+    // This branch won't normally be taken, so it should be considered cheap
     if !d.is_empty() && is_whitespace(d[d.len() - 1]) {
         let ind = d
             .iter()
@@ -153,21 +156,49 @@ fn to_utf8(mut d: &[u8]) -> Cow<str> {
         d = &d[0..d.len() - ind];
     }
 
-    if is_ascii(d) {
-        // This is safe as we just checked that the data is ascii and ascii is a subset of utf8
-        debug_assert!(std::str::from_utf8(d).is_ok());
-        let s = unsafe { std::str::from_utf8_unchecked(d) };
-        Cow::Borrowed(s)
-    } else {
-        Cow::Owned(to_windows_1252(d))
-    }
-}
+    // Then we iterate through the data in 8 byte chunks and ensure that each chunk
+    // is contained of ascii characters with no escape characters
+    let mut chunk_iter = d.chunks_exact(8);
+    let mut offset = 0;
+    while let Some(n) = chunk_iter.next() {
+        let wide = le_u64(n);
+        if wide & 0x80808080_80808080 != 0 || contains_zero_byte(wide ^ repeat_byte(b'\\')) {
+            let (upto, rest) = d.split_at(offset);
+            let mut result = String::with_capacity(d.len());
+            let head = unsafe { std::str::from_utf8_unchecked(upto) };
+            result.push_str(head);
+            for &c in rest.iter().filter(|&x| *x != b'\\') {
+                result.push(WINDOWS_1252[c as usize]);
+            }
 
-#[inline]
-fn to_windows_1252(d: &[u8]) -> String {
-    d.iter()
-        .map(|&x| crate::data::WINDOWS_1252[x as usize])
-        .collect()
+            return Cow::Owned(result);
+        }
+
+        offset += 8;
+    }
+
+    // Same logic as before but instead of operating on 8 bytes at a time, work bytewise
+    let remainder = chunk_iter.remainder();
+    for &byte in remainder {
+        if !byte.is_ascii() || byte == b'\\' {
+            let (upto, rest) = d.split_at(offset);
+            let mut result = String::with_capacity(d.len());
+            let head = unsafe { std::str::from_utf8_unchecked(upto) };
+            result.push_str(head);
+            for &c in rest.iter().filter(|&x| *x != b'\\') {
+                result.push(WINDOWS_1252[c as usize]);
+            }
+
+            return Cow::Owned(result);
+        }
+
+        offset += 1;
+    }
+
+    // This is safe as we just checked that the data is ascii and ascii is a subset of utf8
+    debug_assert!(std::str::from_utf8(d).is_ok());
+    let s = unsafe { std::str::from_utf8_unchecked(d) };
+    Cow::Borrowed(s)
 }
 
 #[inline]
@@ -411,6 +442,12 @@ mod tests {
     }
 
     #[test]
+    fn scalar_string_escapes() {
+        let s = Scalar::new(br#"Joe \"Captain\" Rogers"#);
+        assert_eq!(s.to_utf8().as_ref(), r#"Joe "Captain" Rogers"#);
+    }
+
+    #[test]
     fn scalar_to_string_undefined_characters() {
         // According to the information on Microsoft's and the Unicode Consortium's websites,
         // positions 81, 8D, 8F, 90, and 9D are unused; however, the Windows API
@@ -436,7 +473,11 @@ mod tests {
     fn to_string_equality(data: Vec<u8>) -> bool {
         use encoding_rs::*;
         let (cow, _) = WINDOWS_1252.decode_without_bom_handling(&data);
-        let scalar = Scalar::new(&data);
-        cow.into_owned().trim_end() == scalar.to_utf8()
+        let actual: String = data
+            .iter()
+            .map(|&x| crate::data::WINDOWS_1252[x as usize])
+            .collect();
+
+        cow.into_owned() == actual
     }
 }

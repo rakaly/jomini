@@ -1,5 +1,5 @@
 use crate::data::{is_boundary, is_whitespace};
-use crate::util::le_u64;
+use crate::util::{contains_zero_byte, le_u64, repeat_byte};
 use crate::{Error, ErrorKind, Scalar};
 
 /// Represents a valid text value
@@ -91,7 +91,7 @@ impl<'a> TextTape<'a> {
             } else if d[pos] == b'"' {
                 let scalar = Scalar::new(&d[1..pos]);
                 self.token_tape.push(TextToken::Scalar(scalar));
-                return Ok(&d[pos + 1..])
+                return Ok(&d[pos + 1..]);
             } else {
                 pos += 1;
             }
@@ -128,7 +128,7 @@ impl<'a> TextTape<'a> {
                 let end_idx = pos + offset;
                 let scalar = Scalar::new(&sd[..end_idx]);
                 self.token_tape.push(TextToken::Scalar(scalar));
-                return Ok(&d[end_idx + 2..])
+                return Ok(&d[end_idx + 2..]);
             } else {
                 pos += 1;
             }
@@ -384,19 +384,6 @@ unsafe fn forward_search<F: Fn(u8) -> bool>(
     }
 
     None
-}
-
-/// From the memchr crate which bases its implementation on several others
-#[inline(always)]
-fn contains_zero_byte(x: u64) -> bool {
-    const LO_U64: u64 = 0x0101010101010101;
-    const HI_U64: u64 = 0x8080808080808080;
-    x.wrapping_sub(LO_U64) & !x & HI_U64 != 0
-}
-
-#[inline(always)]
-const fn repeat_byte(b: u8) -> u64 {
-    (b as u64) * (u64::MAX / 255)
 }
 
 #[cfg(test)]
