@@ -108,7 +108,6 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
         let mut tape = BinaryTape::default();
         b.iter(|| {
             tape.parse(&data[..]).unwrap();
-            tape.clear();
         })
     });
     group.finish();
@@ -122,7 +121,6 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
         let mut tape = TextTape::default();
         b.iter(|| {
             tape.parse(&data[..]).unwrap();
-            tape.clear();
         })
     });
     group.finish();

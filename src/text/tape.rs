@@ -37,22 +37,18 @@ enum ParseState {
 }
 
 impl<'a> TextTape<'a> {
-    pub fn from_slice(data: &'a [u8]) -> Result<TextTape<'a>, Error> {
-        let mut tape = TextTape {
-            token_tape: Vec::new(),
-            original_length: data.len(),
-        };
+    pub fn new() -> Self {
+        Default::default()
+    }
 
+    pub fn from_slice(data: &'a [u8]) -> Result<TextTape<'a>, Error> {
+        let mut tape = TextTape::new();
         tape.parse(data)?;
         Ok(tape)
     }
 
     fn offset(&self, data: &[u8]) -> usize {
         self.original_length - data.len()
-    }
-
-    pub fn clear(&mut self) {
-        self.token_tape.clear();
     }
 
     /// Skips whitespace that may terminate the file
@@ -151,6 +147,8 @@ impl<'a> TextTape<'a> {
 
     #[inline]
     pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), Error> {
+        self.original_length = data.len();
+        self.token_tape.clear();
         self.token_tape.reserve(data.len() / 5);
         let mut state = ParseState::Key;
 
@@ -397,6 +395,19 @@ mod tests {
                 TextToken::Scalar(Scalar::new(b"bar")),
             ]
         );
+    }
+
+    #[test]
+    fn test_error_offset() {
+        let data = b"foo={}} a=c";
+        let mut tape = TextTape::new();
+        let err = tape.parse(&data[..]).unwrap_err();
+        match err.kind() {
+            ErrorKind::StackEmpty { offset, .. } => {
+                assert_eq!(*offset, 6);
+            }
+            _ => assert!(false)
+        }
     }
 
     #[test]
