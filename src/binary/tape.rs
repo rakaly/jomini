@@ -83,18 +83,14 @@ enum ParseState {
 }
 
 impl<'a> BinaryTape<'a> {
-    pub fn from_slice(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
-        let mut parser = BinaryTape {
-            original_length: data.len(),
-            ..Default::default()
-        };
-
-        parser.parse(data)?;
-        Ok(parser)
+    pub fn new() -> Self {
+        Default::default()
     }
 
-    pub fn clear(&mut self) {
-        self.token_tape.clear();
+    pub fn from_slice(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
+        let mut parser = BinaryTape::new();
+        parser.parse(data)?;
+        Ok(parser)
     }
 
     fn offset(&self, data: &[u8]) -> usize {
@@ -192,6 +188,8 @@ impl<'a> BinaryTape<'a> {
     }
 
     pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), Error> {
+        self.original_length = data.len();
+        self.token_tape.clear();
         self.token_tape.reserve(data.len() / 100 * 15);
         let mut state = ParseState::Key;
 
@@ -243,7 +241,7 @@ impl<'a> BinaryTape<'a> {
                             let (d, token_id) = self.parse_next_id(d)?;
                             if token_id != END {
                                 return Err(Error::new(ErrorKind::InvalidEmptyObject {
-                                    offset: self.offset(data),
+                                    offset: self.offset(data) - 2,
                                 }));
                             }
                             d
@@ -278,13 +276,13 @@ impl<'a> BinaryTape<'a> {
                         RGB => {
                             return Err(Error::new(ErrorKind::InvalidSyntax {
                                 msg: String::from("RGB not valid for a key"),
-                                offset: self.offset(data),
+                                offset: self.offset(data) - 2,
                             }));
                         }
                         EQUAL => {
                             return Err(Error::new(ErrorKind::InvalidSyntax {
                                 msg: String::from("EQUAL not valid for a key"),
-                                offset: self.offset(data),
+                                offset: self.offset(data) - 2,
                             }));
                         }
                         x => {
@@ -433,7 +431,7 @@ impl<'a> BinaryTape<'a> {
                         END => {
                             return Err(Error::new(ErrorKind::InvalidSyntax {
                                 msg: String::from("END not valid for an object value"),
-                                offset: self.offset(data),
+                                offset: self.offset(data) - 2,
                             }));
                         }
                         RGB => {
@@ -444,7 +442,7 @@ impl<'a> BinaryTape<'a> {
                         EQUAL => {
                             return Err(Error::new(ErrorKind::InvalidSyntax {
                                 msg: String::from("EQUAL not valid for an object value"),
-                                offset: self.offset(data),
+                                offset: self.offset(data) - 2,
                             }));
                         }
                         x => {
@@ -594,7 +592,7 @@ impl<'a> BinaryTape<'a> {
                         EQUAL => {
                             return Err(Error::new(ErrorKind::InvalidSyntax {
                                 msg: String::from("EQUAL not valid for an array value"),
-                                offset: self.offset(data),
+                                offset: self.offset(data) - 2,
                             }));
                         }
                         x => {
@@ -626,6 +624,29 @@ mod tests {
     #[test]
     fn test_size_of_binary_token() {
         assert_eq!(std::mem::size_of::<BinaryToken>(), 24);
+    }
+
+    #[test]
+    fn test_parse_offset() {
+        let data = [0x82, 0x2d, 0x01, 0x00, 0x4c, 0x28, 0x01, 0x00, 0x4c, 0x28];
+        let mut tape = BinaryTape::new();
+        let err = tape.parse(&data[..]).unwrap_err();
+        match err.kind() {
+            ErrorKind::InvalidSyntax { offset, .. } => {
+                assert_eq!(*offset, 6);
+            }
+            _ => assert!(false)
+        }
+
+        let data2 = [0x82, 0x2d, 0x01, 0x00, 0x01, 0x00];
+        let err = tape.parse(&data2[..]).unwrap_err();
+        println!("{}", &err);
+        match err.kind() {
+            ErrorKind::InvalidSyntax { offset, .. } => {
+                assert_eq!(*offset, 4);
+            }
+            _ => assert!(false)
+        }
     }
 
     #[test]
