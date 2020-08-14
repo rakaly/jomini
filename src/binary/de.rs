@@ -856,6 +856,37 @@ mod tests {
     }
 
     #[test]
+    fn test_escaped_string_keys() {
+        let mut data = vec![0xcc, 0x29, 0x01, 0x00, 0x03, 0x00, 0x0f, 0x00, 0x11, 0x00];
+        data.extend_from_slice(b"schools_initiated");
+        data.extend_from_slice(&[0x01, 0x00, 0x0f, 0x00, 0x16, 0x00]);
+        data.extend_from_slice(br#"Joe \"Captain\" Rogers"#);
+        data.extend_from_slice(&0x0004u16.to_le_bytes());
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            flags: HashMap<String, String>,
+        }
+
+        let mut map = HashMap::new();
+        map.insert(0x29cc, String::from("flags"));
+
+        let mut expected_map = HashMap::new();
+        expected_map.insert(
+            String::from("schools_initiated"),
+            String::from(r#"Joe "Captain" Rogers"#),
+        );
+
+        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                flags: expected_map
+            }
+        )
+    }
+
+    #[test]
     fn test_no_equal_object() {
         let data = [
             0xf1, 0x36, 0x03, 0x00, 0xe1, 0x00, 0x01, 0x00, 0xbe, 0x28, 0x04, 0x00,

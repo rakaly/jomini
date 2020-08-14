@@ -1,5 +1,5 @@
 use crate::data::{is_boundary, is_whitespace};
-use crate::util::le_u64;
+use crate::util::{contains_zero_byte, le_u64, repeat_byte};
 use crate::{Error, ErrorKind, Scalar};
 
 /// Represents a valid text value
@@ -79,6 +79,27 @@ impl<'a> TextTape<'a> {
         }
     }
 
+    /// I'm not smart enough to figure out the behavior of handling escape sequences when
+    /// when scanning multi-bytes, so this fallback is for when I was to reset and
+    /// process bytewise. It is much slower, but escaped strings should be rare enough
+    /// that this shouldn't be an issue
+    fn parse_quote_scalar_fallback(&mut self, d: &'a [u8]) -> Result<&'a [u8], Error> {
+        let mut pos = 1;
+        while pos < d.len() {
+            if d[pos] == b'\\' {
+                pos += 2;
+            } else if d[pos] == b'"' {
+                let scalar = Scalar::new(&d[1..pos]);
+                self.token_tape.push(TextToken::Scalar(scalar));
+                return Ok(&d[pos + 1..]);
+            } else {
+                pos += 1;
+            }
+        }
+
+        Err(Error::eof())
+    }
+
     #[inline]
     fn parse_quote_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], Error> {
         let sd = &d[1..];
@@ -86,26 +107,34 @@ impl<'a> TextTape<'a> {
         let mut chunk_iter = sd.chunks_exact(8);
         while let Some(n) = chunk_iter.next() {
             let acc = le_u64(n);
-            if contains_zero_byte(acc ^ repeat_byte(b'"')) {
+            if contains_zero_byte(acc ^ repeat_byte(b'\\')) {
+                return self.parse_quote_scalar_fallback(d);
+            } else if contains_zero_byte(acc ^ repeat_byte(b'"')) {
                 let end_idx = n.iter().position(|&x| x == b'"').unwrap_or(0) + offset;
-                self.token_tape
-                    .push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
+                let scalar = Scalar::new(&sd[..end_idx]);
+                self.token_tape.push(TextToken::Scalar(scalar));
                 return Ok(&d[end_idx + 2..]);
             }
 
             offset += 8;
         }
 
-        let pos = chunk_iter
-            .remainder()
-            .iter()
-            .position(|&x| x == b'"')
-            .ok_or_else(Error::eof)?;
+        let remainder = chunk_iter.remainder();
+        let mut pos = 0;
+        while pos < remainder.len() {
+            if remainder[pos] == b'\\' {
+                pos += 2;
+            } else if remainder[pos] == b'"' {
+                let end_idx = pos + offset;
+                let scalar = Scalar::new(&sd[..end_idx]);
+                self.token_tape.push(TextToken::Scalar(scalar));
+                return Ok(&d[end_idx + 2..]);
+            } else {
+                pos += 1;
+            }
+        }
 
-        let end_idx = pos + offset;
-        self.token_tape
-            .push(TextToken::Scalar(Scalar::new(&sd[..end_idx])));
-        Ok(&d[end_idx + 2..])
+        Err(Error::eof())
     }
 
     #[inline]
@@ -357,19 +386,6 @@ unsafe fn forward_search<F: Fn(u8) -> bool>(
     None
 }
 
-/// From the memchr crate which bases its implementation on several others
-#[inline(always)]
-fn contains_zero_byte(x: u64) -> bool {
-    const LO_U64: u64 = 0x0101010101010101;
-    const HI_U64: u64 = 0x8080808080808080;
-    x.wrapping_sub(LO_U64) & !x & HI_U64 != 0
-}
-
-#[inline(always)]
-const fn repeat_byte(b: u8) -> u64 {
-    (b as u64) * (u64::MAX / 255)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,6 +445,45 @@ mod tests {
                 TextToken::Scalar(Scalar::new(b"bar")),
                 TextToken::Scalar(Scalar::new(b"3")),
                 TextToken::Scalar(Scalar::new(b"1444.11.11")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_escaped_quotes() {
+        let data = br#"name = "Joe \"Captain\" Rogers""#;
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"name")),
+                TextToken::Scalar(Scalar::new(br#"Joe \"Captain\" Rogers"#)),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_escaped_quotes_short() {
+        let data = br#"name = "J Rogers \"a""#;
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"name")),
+                TextToken::Scalar(Scalar::new(br#"J Rogers \"a"#)),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_escaped_quotes_crazy() {
+        let data = br#"custom_name="THE !@#$%^&*( '\"LEGION\"')""#;
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"custom_name")),
+                TextToken::Scalar(Scalar::new(br#"THE !@#$%^&*( '\"LEGION\"')"#)),
             ]
         );
     }
