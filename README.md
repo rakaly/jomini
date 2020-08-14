@@ -102,10 +102,8 @@ files that embed operators other than equals.
 
 ## One Level Lower
 
-It can be the case that either that having the data automatically deserialized into a data
-structure is inappropriate. Maybe there's a requirement to accomplish everything without pulling in
-additional dependencies. Whatever the case, one can opt into using `TextTape` and `BinaryTape`
-directly.
+If the automatic deserialization via `JominiDeserialize` is too high level, one can
+interact with the raw data directly via `TextTape` and `BinaryTape`.
 
 ```rust
 use jomini::{TextTape, TextToken, Scalar};
@@ -120,6 +118,9 @@ assert_eq!(
     ]
 );
 ```
+
+If one will only use `TextTape` and `BinaryTape` then `jomini` can be compiled without default
+features, resulting in a build without dependencies.
 
 ## Benchmarks
 

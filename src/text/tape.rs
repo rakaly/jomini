@@ -45,16 +45,19 @@ enum ParseState {
 }
 
 impl<'a> TextTape<'a> {
+    /// Creates a new text tape
     pub fn new() -> Self {
         Default::default()
     }
 
+    /// Convenience method for creating a text tape and parsing the given input
     pub fn from_slice(data: &'a [u8]) -> Result<TextTape<'a>, Error> {
         let mut tape = TextTape::new();
         tape.parse(data)?;
         Ok(tape)
     }
 
+    /// Return the parsed tokens
     pub fn tokens(&self) -> &[TextToken<'a>] {
         self.token_tape.as_slice()
     }
@@ -192,6 +195,7 @@ impl<'a> TextTape<'a> {
         }
     }
 
+    /// Clear previously parsed data and parse the given data
     #[inline]
     pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), Error> {
         self.original_length = data.len();

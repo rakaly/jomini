@@ -70,16 +70,19 @@ enum ParseState {
 }
 
 impl<'a> BinaryTape<'a> {
+    /// Creates a new binary tape
     pub fn new() -> Self {
         Default::default()
     }
 
+    /// Convenience method for creating a text tape and parsing the given input
     pub fn from_slice(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
         let mut parser = BinaryTape::new();
         parser.parse(data)?;
         Ok(parser)
     }
 
+    /// Return the parsed tokens
     pub fn tokens(&self) -> &[BinaryToken<'a>] {
         self.token_tape.as_slice()
     }
@@ -178,6 +181,7 @@ impl<'a> BinaryTape<'a> {
         Err(Error::eof())
     }
 
+    /// Clear previously parsed data and parse the given data
     pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), Error> {
         self.original_length = data.len();
         self.token_tape.clear();

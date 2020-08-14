@@ -32,19 +32,32 @@ pub enum ErrorKind {
     Eof,
 
     /// Too many close delimiters were encountered
-    StackEmpty { offset: usize },
+    StackEmpty {
+        /// The byte offset where the stack became empty
+        offset: usize,
+    },
 
     /// Expected a close delimiter after encountering an empty opener
-    InvalidEmptyObject { offset: usize },
+    InvalidEmptyObject {
+        /// The byte offset where the invalid empty object was encountered
+        offset: usize,
+    },
 
     /// Invalid syntax encountered
-    InvalidSyntax { msg: String, offset: usize },
+    InvalidSyntax {
+        /// An error message describing the invalid syntax
+        msg: String,
+
+        /// The byte offset where the invalid syntax was encountered
+        offset: usize,
+    },
 
     /// An error occurred when deserializing the data
     Deserialize(DeserializeError),
 }
 
 impl ErrorKind {
+    /// The byte offset where the invalid syntax was encountered
     pub fn offset(&self) -> Option<usize> {
         match *self {
             ErrorKind::StackEmpty { offset, .. } => Some(offset),
@@ -114,7 +127,10 @@ pub enum DeserializeErrorKind {
     Scalar(ScalarError),
 
     /// An unknown binary token was encountered
-    UnknownToken { token_id: u16 },
+    UnknownToken {
+        /// The unknown 16bit token
+        token_id: u16,
+    },
 }
 
 impl std::error::Error for DeserializeError {

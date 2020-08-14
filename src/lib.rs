@@ -53,9 +53,10 @@ let expected = Model {
     names: vec!["Johan".to_string(), "Frederick".to_string()],
 };
 
-let actual: Model = TextDeserializer::from_slice(data).unwrap();
+let actual: Model = TextDeserializer::from_slice(data)?;
 assert_eq!(actual, expected);
 # }
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ## Binary Parsing
@@ -79,9 +80,10 @@ let data = [ 0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47 ];
 let mut map = HashMap::new();
 map.insert(0x2d82, "field1");
 
-let actual: MyStruct = BinaryDeserializer::from_slice(&data[..], &map).unwrap();
+let actual: MyStruct = BinaryDeserializer::from_slice(&data[..], &map)?;
 assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
 # }
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 When done correctly, one can use the same structure to represent both the plaintext and binary data
@@ -104,10 +106,8 @@ files that embed operators other than equals.
 
 ## One Level Lower
 
-It can be the case that either that having the data automatically deserialized into a data
-structure is inappropriate. Maybe there's a requirement to accomplish everything without pulling in
-additional dependencies. Whatever the case, one can opt into using `TextTape` and `BinaryTape`
-directly.
+If the automatic deserialization via `JominiDeserialize` is too high level, one can
+interact with the raw data directly via `TextTape` and `BinaryTape`.
 
 ```rust
 use jomini::{TextTape, TextToken, Scalar};
@@ -124,6 +124,8 @@ assert_eq!(
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+If one will only use `TextTape` and `BinaryTape` then `jomini` can be compiled without default
+features, resulting in a build without dependencies.
 */
 
 pub(crate) mod ascii;
