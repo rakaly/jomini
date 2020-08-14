@@ -1,6 +1,6 @@
 use crate::data::{is_boundary, is_whitespace};
 use crate::util::{contains_zero_byte, le_u64, repeat_byte};
-use crate::{Error, ErrorKind, Scalar};
+use crate::{Error, ErrorKind, Rgb, Scalar};
 
 /// Represents a valid text value
 #[derive(Debug, PartialEq)]
@@ -16,6 +16,9 @@ pub enum TextToken<'a> {
 
     /// Index of the start of this object
     End(usize),
+
+    /// Represents a binary encoded rgb value
+    Rgb(Box<Rgb>),
 }
 
 /// Houses the tape of tokens that is extracted from plaintext data
@@ -34,6 +37,11 @@ enum ParseState {
     ParseOpen,
     FirstValue,
     EmptyObject,
+    RgbOpen,
+    RgbR,
+    RgbG,
+    RgbB,
+    RgbClose,
 }
 
 impl<'a> TextTape<'a> {
@@ -138,7 +146,7 @@ impl<'a> TextTape<'a> {
     }
 
     #[inline]
-    fn parse_scalar(&mut self, d: &'a [u8]) -> &'a [u8] {
+    fn split_at_scalar(d: &[u8]) -> (Scalar, &[u8]) {
         let start_ptr = d.as_ptr();
         let end_ptr = unsafe { start_ptr.add(d.len()) };
 
@@ -148,7 +156,13 @@ impl<'a> TextTape<'a> {
         // To work with cases where we have "==bar" we ensure that found index is at least one
         ind = std::cmp::max(ind, 1);
         let (scalar, rest) = d.split_at(ind);
-        self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
+        (Scalar::new(scalar), rest)
+    }
+
+    #[inline]
+    fn parse_scalar(&mut self, d: &'a [u8]) -> &'a [u8] {
+        let (scalar, rest) = TextTape::split_at_scalar(d);
+        self.token_tape.push(TextToken::Scalar(scalar));
         rest
     }
 
@@ -184,11 +198,20 @@ impl<'a> TextTape<'a> {
         self.token_tape.clear();
         self.token_tape.reserve(data.len() / 5);
         let mut state = ParseState::Key;
+        let mut red = 0;
+        let mut green = 0;
+        let mut blue = 0;
 
         let mut parent_ind = 0;
         loop {
             data = self.skip_ws_t(data);
             if data.is_empty() {
+                if state == ParseState::RgbOpen {
+                    state = ParseState::Key;
+                    let scalar = Scalar::new(b"rgb");
+                    self.token_tape.push(TextToken::Scalar(scalar));
+                }
+
                 if parent_ind == 0 && state == ParseState::Key {
                     return Ok(());
                 } else {
@@ -272,6 +295,18 @@ impl<'a> TextTape<'a> {
                         b'"' => {
                             data = self.parse_quote_scalar(data)?;
                             state = ParseState::Key;
+                        }
+                        b'r' => {
+                            let rgb_detected = data.get(1).map_or(false, |&x| x == b'g')
+                                && data.get(2).map_or(false, |&x| x == b'b')
+                                && data.get(3).map_or(false, |&x| is_boundary(x));
+                            if rgb_detected {
+                                data = &data[3..];
+                                state = ParseState::RgbOpen
+                            } else {
+                                data = self.parse_scalar(data);
+                                state = ParseState::Key;
+                            }
                         }
                         _ => {
                             data = self.parse_scalar(data);
@@ -357,6 +392,76 @@ impl<'a> TextTape<'a> {
                     _ => {
                         data = self.parse_scalar(data);
                         state = ParseState::ArrayValue;
+                    }
+                },
+                ParseState::RgbOpen => match data[0] {
+                    b'{' => {
+                        data = &data[1..];
+                        state = ParseState::RgbR;
+                    }
+                    _ => {
+                        state = ParseState::Key;
+                        let scalar = Scalar::new(b"rgb");
+                        self.token_tape.push(TextToken::Scalar(scalar));
+                    }
+                },
+                ParseState::RgbR => {
+                    let (r, rest) = TextTape::split_at_scalar(data);
+                    if let Ok(x) = r.to_u64() {
+                        red = x as u32;
+                    } else {
+                        return Err(Error::new(ErrorKind::InvalidSyntax {
+                            offset: self.offset(data),
+                            msg: format!("unable to decode color channel: {}", r.to_utf8()),
+                        }));
+                    }
+
+                    state = ParseState::RgbG;
+                    data = rest;
+                }
+                ParseState::RgbG => {
+                    let (r, rest) = TextTape::split_at_scalar(data);
+                    if let Ok(x) = r.to_u64() {
+                        green = x as u32;
+                    } else {
+                        return Err(Error::new(ErrorKind::InvalidSyntax {
+                            offset: self.offset(data),
+                            msg: format!("unable to decode color channel: {}", r.to_utf8()),
+                        }));
+                    }
+
+                    state = ParseState::RgbB;
+                    data = rest;
+                }
+                ParseState::RgbB => {
+                    let (r, rest) = TextTape::split_at_scalar(data);
+                    if let Ok(x) = r.to_u64() {
+                        blue = x as u32;
+                    } else {
+                        return Err(Error::new(ErrorKind::InvalidSyntax {
+                            offset: self.offset(data),
+                            msg: format!("unable to decode color channel: {}", r.to_utf8()),
+                        }));
+                    }
+
+                    state = ParseState::RgbClose;
+                    data = rest;
+                }
+                ParseState::RgbClose => match data[0] {
+                    b'}' => {
+                        self.token_tape.push(TextToken::Rgb(Box::new(Rgb {
+                            r: red,
+                            b: blue,
+                            g: green,
+                        })));
+                        data = &data[1..];
+                        state = ParseState::Key;
+                    }
+                    _ => {
+                        return Err(Error::new(ErrorKind::InvalidSyntax {
+                            offset: self.offset(data),
+                            msg: "unable to detect rgb close".to_string(),
+                        }));
                     }
                 },
             }
@@ -822,6 +927,64 @@ mod tests {
             vec![
                 TextToken::Scalar(Scalar::new(b"foo")),
                 TextToken::Scalar(Scalar::new(b"a")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_rgb_trick() {
+        let data = b"name = rgb ";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"name")),
+                TextToken::Scalar(Scalar::new(b"rgb")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_rgb_trick2() {
+        let data = b"name = rgb type = 4713";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"name")),
+                TextToken::Scalar(Scalar::new(b"rgb")),
+                TextToken::Scalar(Scalar::new(b"type")),
+                TextToken::Scalar(Scalar::new(b"4713")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_rgb_trick3() {
+        let data = b"name = rgbeffect";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"name")),
+                TextToken::Scalar(Scalar::new(b"rgbeffect")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_rgb() {
+        let data = b"color = rgb { 100 200 150 } ";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"color")),
+                TextToken::Rgb(Box::new(Rgb {
+                    r: 100,
+                    g: 200,
+                    b: 150,
+                })),
             ]
         );
     }

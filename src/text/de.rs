@@ -665,6 +665,9 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
                 idx: self.de_idx + 1,
                 end_idx: *x,
             }),
+            TextToken::Rgb(_) => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from("unable to deserialize rgb")),
+            }),
             TextToken::Scalar(_x) => self.deserialize_str(visitor),
             TextToken::End(_x) => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(

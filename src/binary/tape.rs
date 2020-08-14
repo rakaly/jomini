@@ -1,5 +1,5 @@
 use crate::util::{le_i32, le_u16, le_u32, le_u64};
-use crate::{Error, ErrorKind, Scalar};
+use crate::{Error, ErrorKind, Rgb, Scalar};
 
 /// Represents any valid binary value
 #[derive(Debug, PartialEq)]
@@ -53,19 +53,6 @@ const STRING_2: u16 = 0x0017;
 const F32: u16 = 0x000d;
 const Q16: u16 = 0x0167;
 const RGB: u16 = 0x0243;
-
-/// Extracted color info
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Rgb {
-    /// Red channel
-    pub r: u32,
-
-    /// Green channel
-    pub g: u32,
-
-    /// Blue channel
-    pub b: u32,
-}
 
 /// Houses the tape of tokens that is extracted from binary data
 #[derive(Debug, Default)]
