@@ -1,6 +1,6 @@
 [package]
 name = "jomini"
-version = "0.2.1-pre"
+version = "0.2.1"
 authors = ["Nick Babcock <nbabcock19@hotmail.com>"]
 license = "MIT"
 readme = "README.md"
@@ -15,7 +15,7 @@ members = ["jomini_derive"]
 
 [dependencies]
 serde = { version = "1", optional = true }
-jomini_derive = { path = "jomini_derive", version = "^0.2.1-pre", optional = true }
+jomini_derive = { path = "jomini_derive", version = "^0.2.1", optional = true }
 
 [features]
 default = ["derive"]
