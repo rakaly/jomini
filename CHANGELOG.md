@@ -1,3 +1,7 @@
+## v0.2.1 - 2020-08-15
+
+- Fix releasing issue crate
+
 ## v0.2.0 - 2020-08-14
 
 Lots of little breaking changes:
