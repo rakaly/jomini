@@ -5,7 +5,61 @@ use crate::{
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
 
-/// A structure the deserializes binary data into Rust values
+/// A structure to deserialize binary data into Rust values.
+///
+/// By default, if a token is unable to be resolved then it will be ignored by the default.
+/// Construct a custom instance through the `builder` method to tweak this behavior.
+///
+/// The example below demonstrates multiple ways to deserialize data
+///
+/// ```
+/// use jomini::{BinaryDeserializer, BinaryTape};
+/// use serde::Deserialize;
+/// use std::collections::HashMap;
+///
+/// #[derive(Debug, Clone, Deserialize, PartialEq)]
+/// pub struct StructA {
+///   #[serde(flatten)]
+///   b: StructB,
+///
+///   #[serde(flatten)]
+///   c: StructC,
+/// }
+///
+/// #[derive(Debug, Clone, Deserialize, PartialEq)]
+/// pub struct StructB {
+///   field1: String,
+/// }
+///
+/// #[derive(Debug, Clone, Deserialize, PartialEq)]
+/// pub struct StructC {
+///   field2: String,
+/// }
+///
+/// let data = [
+///    0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47,
+///    0x83, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x48,
+/// ];
+///
+/// let mut map = HashMap::new();
+/// map.insert(0x2d82, String::from("field1"));
+/// map.insert(0x2d83, String::from("field2"));
+///
+/// // the data can be parsed and deserialized in one step
+/// let a: StructA = BinaryDeserializer::from_slice(&data[..], &map)?;
+/// assert_eq!(a, StructA {
+///   b: StructB { field1: "ENG".to_string() },
+///   c: StructC { field2: "ENH".to_string() },
+/// });
+///
+/// // or split into two steps, whatever is appropriate.
+/// let tape = BinaryTape::from_slice(&data[..])?;
+/// let b: StructB = BinaryDeserializer::from_tape(&tape, &map)?;
+/// let c: StructC = BinaryDeserializer::from_tape(&tape, &map)?;
+/// assert_eq!(b, StructB { field1: "ENG".to_string() });
+/// assert_eq!(c, StructC { field2: "ENH".to_string() });
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct BinaryDeserializer;
 
 impl BinaryDeserializer {
@@ -14,9 +68,8 @@ impl BinaryDeserializer {
         BinaryDeserializerBuilder::new()
     }
 
-    /// Deserialize a structure from the given binary data. If a token is unable
-    /// to be resolved then it will be ignored by the default. Construct a custom
-    /// instance to tweak this behavior.
+    /// Deserialize a structure from the given binary data. Convenience method
+    /// that combines parsing and deserialization in one step
     pub fn from_slice<'a, RES, T>(data: &'a [u8], resolver: RES) -> Result<T, Error>
     where
         T: Deserialize<'a>,
@@ -26,9 +79,56 @@ impl BinaryDeserializer {
             .on_failed_resolve(FailedResolveStrategy::Ignore)
             .from_slice(data, resolver)
     }
+
+    /// Deserialize a structure from the already parsed binary data. Useful for when
+    /// one needs to deserialize a single set of data into more than one structure.
+    pub fn from_tape<'a, RES, T>(tape: &BinaryTape<'a>, resolver: RES) -> Result<T, Error>
+    where
+        T: Deserialize<'a>,
+        RES: TokenResolver,
+    {
+        BinaryDeserializerBuilder::new()
+            .on_failed_resolve(FailedResolveStrategy::Ignore)
+            .from_tape(tape, resolver)
+    }
 }
 
-/// Builds a tweaked binary deserializer
+/// Build a tweaked binary deserializer
+///
+/// ```
+/// use jomini::{BinaryDeserializer, BinaryTape, FailedResolveStrategy};
+/// use serde::Deserialize;
+/// use std::collections::HashMap;
+///
+/// #[derive(Debug, Clone, Deserialize, PartialEq)]
+/// pub struct StructB {
+///   field1: String,
+/// }
+///
+/// #[derive(Debug, Clone, Deserialize, PartialEq)]
+/// pub struct StructC {
+///   field2: String,
+/// }
+///
+/// let data = [
+///    0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47,
+///    0x83, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x48,
+/// ];
+///
+/// let mut map = HashMap::new();
+/// map.insert(0x2d82, String::from("field1"));
+/// map.insert(0x2d83, String::from("field2"));
+///
+/// let mut deserializer = BinaryDeserializer::builder();
+/// deserializer.on_failed_resolve(FailedResolveStrategy::Error);
+///
+/// let tape = BinaryTape::from_slice(&data[..])?;
+/// let b: StructB = deserializer.from_tape(&tape, &map)?;
+/// let c: StructC = deserializer.from_tape(&tape, &map)?;
+/// assert_eq!(b, StructB { field1: "ENG".to_string() });
+/// assert_eq!(c, StructC { field2: "ENH".to_string() });
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug)]
 pub struct BinaryDeserializerBuilder {
     failed_resolve_strategy: FailedResolveStrategy,
@@ -41,17 +141,20 @@ impl Default for BinaryDeserializerBuilder {
 }
 
 impl BinaryDeserializerBuilder {
+    /// Create a new builder instance
     pub fn new() -> Self {
         BinaryDeserializerBuilder {
             failed_resolve_strategy: FailedResolveStrategy::Ignore,
         }
     }
 
+    /// Set the behavior when a unknown token is encountered
     pub fn on_failed_resolve(&mut self, strategy: FailedResolveStrategy) -> &mut Self {
         self.failed_resolve_strategy = strategy;
         self
     }
 
+    /// Deserialize the given binary tape
     pub fn from_tape<'a, 'b, RES, T>(
         &'b self,
         tape: &BinaryTape<'a>,
@@ -73,6 +176,7 @@ impl BinaryDeserializerBuilder {
         Ok(T::deserialize(&mut deserializer)?)
     }
 
+    /// Convenience method for parsing and deserializing binary data in a single step
     pub fn from_slice<'a, 'b, RES, T>(&'b self, data: &'a [u8], resolver: RES) -> Result<T, Error>
     where
         T: Deserialize<'a>,

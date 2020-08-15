@@ -41,8 +41,12 @@ impl error::Error for ScalarError {
 /// ```
 /// use jomini::Scalar;
 ///
-/// let v1 = Scalar::new(b"a");
-/// assert_eq!(v1.to_utf8(), "a");
+/// let v1 = Scalar::new(b"10");
+/// assert_eq!(v1.to_utf8(), "10");
+/// assert_eq!(v1.to_u64(), Ok(10));
+/// assert_eq!(v1.to_i64(), Ok(10));
+/// assert_eq!(v1.to_f64(), Ok(10.0));
+/// assert!(v1.to_bool().is_err());
 /// ```
 #[derive(PartialEq, Copy, Clone)]
 pub struct Scalar<'a> {
@@ -61,35 +65,90 @@ impl<'a> Scalar<'a> {
     }
 
     /// Try converting the scalar to f64
+    ///
+    /// ```
+    /// use jomini::Scalar;
+    ///
+    /// let v1 = Scalar::new(b"1.000");
+    /// assert_eq!(v1.to_f64(), Ok(1.0));
+    ///
+    /// let v2 = Scalar::new(b"-5.67821");
+    /// assert_eq!(v2.to_f64(), Ok(-5.67821));
+    /// ```
     pub fn to_f64(&self) -> Result<f64, ScalarError> {
         to_f64(self.data)
     }
 
-    /// Try converting the scalar to f64
+    /// Try converting the scalar to boolean, only "yes" and "no" can be mapped:
+    ///
+    /// ```
+    /// use jomini::Scalar;
+    ///
+    /// let v1 = Scalar::new(b"yes");
+    /// assert_eq!(v1.to_bool(), Ok(true));
+    ///
+    /// let v2 = Scalar::new(b"no");
+    /// assert_eq!(v2.to_bool(), Ok(false));
+    /// ```
     pub fn to_bool(&self) -> Result<bool, ScalarError> {
         to_bool(self.data)
     }
 
     /// Try converting the scalar to i64
+    ///
+    /// ```
+    /// use jomini::Scalar;
+    ///
+    /// let v1 = Scalar::new(b"-50");
+    /// assert_eq!(v1.to_i64(), Ok(-50));
+    ///
+    /// let v2 = Scalar::new(b"120");
+    /// assert_eq!(v2.to_i64(), Ok(120));
+    /// ```
     pub fn to_i64(&self) -> Result<i64, ScalarError> {
         to_i64(self.data)
     }
 
     /// Try converting the scalar to u64
-    pub fn to_u64(&self) -> Result<u64, ScalarError> {
-        to_u64(self.data)
-    }
-
-    /// Convert scalar data into utf8. Will allocate if the string is not utf8.
     ///
     /// ```
     /// use jomini::Scalar;
     ///
-    /// let v1 = Scalar::new(b"a");
-    /// assert_eq!(v1.to_utf8(), "a");
+    /// let v1 = Scalar::new(b"50");
+    /// assert_eq!(v1.to_i64(), Ok(50));
     ///
-    /// let v2 = Scalar::new(&[255][..]);
-    /// assert_eq!(v2.to_utf8(), "ÿ");
+    /// let v2 = Scalar::new(b"120");
+    /// assert_eq!(v2.to_i64(), Ok(120));
+    /// ```
+    pub fn to_u64(&self) -> Result<u64, ScalarError> {
+        to_u64(self.data)
+    }
+
+    /// Convert scalar data into utf8. Several transformations take place:
+    ///
+    /// - trailing whitespace is removed
+    /// - escape sequences are unescaped
+    /// - windows-1252 specific characters encoded as their utf-8 equivalent.
+    ///
+    /// This function is optimized for the typical scenario, where the utf-8
+    /// string can be calculated without allocation. If escape sequences or
+    /// windows-1252 specific characters are encountered, then allocation is
+    /// necessary.
+    ///
+    /// ```
+    /// use jomini::Scalar;
+    ///
+    /// let v1 = Scalar::new(b"Common Sense");
+    /// assert_eq!(v1.to_utf8(), "Common Sense");
+    ///
+    /// let v2 = Scalar::new(b"\xa7GRichard Plantagenet\xa7 ( 2 / 4 / 3 / 0 )");
+    /// assert_eq!(v2.to_utf8(), "§GRichard Plantagenet§ ( 2 / 4 / 3 / 0 )");
+    ///
+    /// let v3 = Scalar::new(br#"Captain \"Joe\" Rogers"#);
+    /// assert_eq!(v3.to_utf8(), r#"Captain "Joe" Rogers"#);
+    ///
+    /// let v4 = Scalar::new(b"1444.11.11\n");
+    /// assert_eq!(v4.to_utf8(), "1444.11.11");
     /// ```
     pub fn to_utf8(&self) -> Cow<'a, str> {
         to_utf8(self.data)

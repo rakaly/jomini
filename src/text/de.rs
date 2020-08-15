@@ -2,10 +2,57 @@ use crate::{DeserializeError, DeserializeErrorKind, Error, Scalar, TextTape, Tex
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
 
-/// A structure the deserializes plaintext into Rust values
+/// A structure to deserialize text data into Rust values.
+///
+/// By default, if a token is unable to be resolved then it will be ignored by the default.
+/// Construct a custom instance through the `builder` method to tweak this behavior.
+///
+/// The example below demonstrates multiple ways to deserialize data
+///
+/// ```
+/// use jomini::{TextDeserializer, TextTape};
+/// use serde::Deserialize;
+///
+/// #[derive(Debug, Clone, Deserialize, PartialEq)]
+/// pub struct StructA {
+///   #[serde(flatten)]
+///   b: StructB,
+///
+///   #[serde(flatten)]
+///   c: StructC,
+/// }
+///
+/// #[derive(Debug, Clone, Deserialize, PartialEq)]
+/// pub struct StructB {
+///   field1: String,
+/// }
+///
+/// #[derive(Debug, Clone, Deserialize, PartialEq)]
+/// pub struct StructC {
+///   field2: String,
+/// }
+///
+/// let data = b"field1=ENG field2=ENH";
+///
+/// // the data can be parsed and deserialized in one step
+/// let a: StructA = TextDeserializer::from_slice(&data[..])?;
+/// assert_eq!(a, StructA {
+///   b: StructB { field1: "ENG".to_string() },
+///   c: StructC { field2: "ENH".to_string() },
+/// });
+///
+/// // or split into two steps, whatever is appropriate.
+/// let tape = TextTape::from_slice(&data[..])?;
+/// let b: StructB = TextDeserializer::from_tape(&tape)?;
+/// let c: StructC = TextDeserializer::from_tape(&tape)?;
+/// assert_eq!(b, StructB { field1: "ENG".to_string() });
+/// assert_eq!(c, StructC { field2: "ENH".to_string() });
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct TextDeserializer;
 
 impl TextDeserializer {
+    /// Convenience method for parsing the given text data and deserializing
     pub fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
     where
         T: Deserialize<'a>,
@@ -14,6 +61,7 @@ impl TextDeserializer {
         Ok(TextDeserializer::from_tape(&tape)?)
     }
 
+    /// Deserialize the given text tape
     pub fn from_tape<'b, 'a: 'b, T>(tape: &'b TextTape<'a>) -> Result<T, Error>
     where
         T: Deserialize<'a>,
