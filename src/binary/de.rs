@@ -70,9 +70,12 @@ impl BinaryDeserializer {
 
     /// Deserialize a structure from the given binary data. Convenience method
     /// that combines parsing and deserialization in one step
-    pub fn from_slice<'a, RES, T>(data: &'a [u8], resolver: RES) -> Result<T, Error>
+    pub fn from_slice<'de, 'res: 'de, RES, T>(
+        data: &'de [u8],
+        resolver: &'res RES,
+    ) -> Result<T, Error>
     where
-        T: Deserialize<'a>,
+        T: Deserialize<'de>,
         RES: TokenResolver,
     {
         BinaryDeserializerBuilder::new()
@@ -82,9 +85,12 @@ impl BinaryDeserializer {
 
     /// Deserialize a structure from the already parsed binary data. Useful for when
     /// one needs to deserialize a single set of data into more than one structure.
-    pub fn from_tape<'a, RES, T>(tape: &BinaryTape<'a>, resolver: RES) -> Result<T, Error>
+    pub fn from_tape<'de, 'res: 'de, RES, T>(
+        tape: &BinaryTape<'de>,
+        resolver: &'res RES,
+    ) -> Result<T, Error>
     where
-        T: Deserialize<'a>,
+        T: Deserialize<'de>,
         RES: TokenResolver,
     {
         BinaryDeserializerBuilder::new()
@@ -155,10 +161,10 @@ impl BinaryDeserializerBuilder {
     }
 
     /// Deserialize the given binary tape
-    pub fn from_tape<'a, 'b, RES, T>(
+    pub fn from_tape<'a, 'b, 'c, 'res: 'a, RES, T>(
         &'b self,
-        tape: &BinaryTape<'a>,
-        resolver: RES,
+        tape: &'c BinaryTape<'a>,
+        resolver: &'res RES,
     ) -> Result<T, Error>
     where
         T: Deserialize<'a>,
@@ -177,7 +183,11 @@ impl BinaryDeserializerBuilder {
     }
 
     /// Convenience method for parsing and deserializing binary data in a single step
-    pub fn from_slice<'a, 'b, RES, T>(&'b self, data: &'a [u8], resolver: RES) -> Result<T, Error>
+    pub fn from_slice<'a, 'b, 'res: 'a, RES, T>(
+        &'b self,
+        data: &'a [u8],
+        resolver: &'res RES,
+    ) -> Result<T, Error>
     where
         T: Deserialize<'a>,
         RES: TokenResolver,
@@ -187,18 +197,18 @@ impl BinaryDeserializerBuilder {
     }
 }
 
-struct BinaryConfig<RES> {
-    resolver: RES,
+struct BinaryConfig<'res, RES> {
+    resolver: &'res RES,
     failed_resolve_strategy: FailedResolveStrategy,
 }
 
-struct RootDeserializer<'b, 'a: 'b, RES> {
+struct RootDeserializer<'b, 'a: 'b, 'res: 'a, RES> {
     tokens: &'b [BinaryToken<'a>],
-    config: &'b BinaryConfig<RES>,
+    config: &'b BinaryConfig<'res, RES>,
 }
 
-impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
-    for &'r mut RootDeserializer<'b, 'de, RES>
+impl<'b, 'de, 'r, 'res, RES: TokenResolver> de::Deserializer<'de>
+    for &'r mut RootDeserializer<'b, 'de, 'res, RES>
 {
     type Error = DeserializeError;
 
@@ -244,17 +254,17 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
     }
 }
 
-struct BinaryMap<'c, 'a: 'c, 'de: 'a, RES: 'a> {
-    config: &'a BinaryConfig<RES>,
+struct BinaryMap<'c, 'a: 'c, 'de: 'a, 'res: 'de, RES: 'a> {
+    config: &'a BinaryConfig<'res, RES>,
     tokens: &'c [BinaryToken<'de>],
     tape_idx: usize,
     end_idx: usize,
     value_ind: usize,
 }
 
-impl<'c, 'a, 'de, RES> BinaryMap<'c, 'a, 'de, RES> {
+impl<'c, 'a, 'de, 'res: 'de, RES> BinaryMap<'c, 'a, 'de, 'res, RES> {
     fn new(
-        config: &'a BinaryConfig<RES>,
+        config: &'a BinaryConfig<'res, RES>,
         tokens: &'c [BinaryToken<'de>],
         tape_idx: usize,
         end_idx: usize,
@@ -269,7 +279,9 @@ impl<'c, 'a, 'de, RES> BinaryMap<'c, 'a, 'de, RES> {
     }
 }
 
-impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, RES> {
+impl<'c, 'de, 'a, 'res: 'de, RES: TokenResolver> MapAccess<'de>
+    for BinaryMap<'c, 'a, 'de, 'res, RES>
+{
     type Error = DeserializeError;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
@@ -310,16 +322,16 @@ impl<'c, 'de, 'a, RES: TokenResolver> MapAccess<'de> for BinaryMap<'c, 'a, 'de, 
     }
 }
 
-struct KeyDeserializer<'b, 'de: 'b, RES> {
-    config: &'b BinaryConfig<RES>,
+struct KeyDeserializer<'b, 'de: 'b, 'res: 'de, RES> {
+    config: &'b BinaryConfig<'res, RES>,
     tokens: &'b [BinaryToken<'de>],
     tape_idx: usize,
 }
 
-fn visit_key<'c, 'b: 'c, 'de: 'b, RES: TokenResolver, V: Visitor<'de>>(
+fn visit_key<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES: TokenResolver, V: Visitor<'de>>(
     tape_idx: usize,
     tokens: &'b [BinaryToken<'de>],
-    config: &'b BinaryConfig<RES>,
+    config: &'b BinaryConfig<'res, RES>,
     visitor: V,
 ) -> Result<V::Value, DeserializeError> {
     match tokens[tape_idx] {
@@ -340,19 +352,23 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, RES: TokenResolver, V: Visitor<'de>>(
         BinaryToken::F32(x) => visitor.visit_f32(x),
         BinaryToken::Q16(x) => visitor.visit_f32(x),
         BinaryToken::Token(s) => match config.resolver.resolve(s) {
-            Some(id) => visitor.visit_str(id),
+            Some(id) => visitor.visit_borrowed_str(id),
             None => match config.failed_resolve_strategy {
                 FailedResolveStrategy::Error => Err(DeserializeError {
                     kind: DeserializeErrorKind::UnknownToken { token_id: s },
                 }),
                 FailedResolveStrategy::Stringify => visitor.visit_string(format!("0x{:x}", s)),
-                FailedResolveStrategy::Ignore => visitor.visit_str("__internal_identifier_ignore"),
+                FailedResolveStrategy::Ignore => {
+                    visitor.visit_borrowed_str("__internal_identifier_ignore")
+                }
             },
         },
     }
 }
 
-impl<'b, 'de, RES: TokenResolver> de::Deserializer<'de> for KeyDeserializer<'b, 'de, RES> {
+impl<'b, 'de, 'res: 'de, RES: TokenResolver> de::Deserializer<'de>
+    for KeyDeserializer<'b, 'de, 'res, RES>
+{
     type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -369,14 +385,14 @@ impl<'b, 'de, RES: TokenResolver> de::Deserializer<'de> for KeyDeserializer<'b, 
     }
 }
 
-struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, RES> {
-    config: &'b BinaryConfig<RES>,
+struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES> {
+    config: &'b BinaryConfig<'res, RES>,
     value_ind: usize,
     tokens: &'c [BinaryToken<'de>],
 }
 
-impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
-    for ValueDeserializer<'c, 'b, 'de, RES>
+impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver> de::Deserializer<'de>
+    for ValueDeserializer<'c, 'b, 'de, 'res, RES>
 {
     type Error = DeserializeError;
 
@@ -511,16 +527,16 @@ impl<'c, 'b, 'de, RES: TokenResolver> de::Deserializer<'de>
     }
 }
 
-struct BinarySequence<'b, 'de: 'b, RES> {
-    config: &'b BinaryConfig<RES>,
+struct BinarySequence<'b, 'de: 'b, 'res: 'de, RES> {
+    config: &'b BinaryConfig<'res, RES>,
     tokens: &'b [BinaryToken<'de>],
     idx: usize,
     de_idx: usize,
     end_idx: usize,
 }
 
-impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
-    for &'r mut BinarySequence<'b, 'de, RES>
+impl<'b, 'de, 'r, 'res: 'de, RES: TokenResolver> de::Deserializer<'de>
+    for &'r mut BinarySequence<'b, 'de, 'res, RES>
 {
     type Error = DeserializeError;
 
@@ -558,7 +574,7 @@ impl<'b, 'de, 'r, RES: TokenResolver> de::Deserializer<'de>
     }
 }
 
-impl<'b, 'de, RES: TokenResolver> SeqAccess<'de> for BinarySequence<'b, 'de, RES> {
+impl<'b, 'de, 'res: 'de, RES: TokenResolver> SeqAccess<'de> for BinarySequence<'b, 'de, 'res, RES> {
     type Error = DeserializeError;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
@@ -588,7 +604,7 @@ mod tests {
     use serde::Deserialize;
     use std::collections::HashMap;
 
-    fn from_slice<'a, RES, T>(data: &'a [u8], resolver: RES) -> Result<T, Error>
+    fn from_slice<'a, 'res: 'a, RES, T>(data: &'a [u8], resolver: &'res RES) -> Result<T, Error>
     where
         T: Deserialize<'a>,
         RES: TokenResolver,
