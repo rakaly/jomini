@@ -1,3 +1,8 @@
+## v0.3.0 - 2020-08-28
+
+- `BinaryDeserializer` now takes `TokenResolver` by reference so that resolved tokens can outlive
+   the data to be parsed allowing for more zero-copy deserialization scenarios
+
 ## v0.2.1 - 2020-08-15
 
 - Fix releasing issue crate
