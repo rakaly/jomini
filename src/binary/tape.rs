@@ -75,7 +75,7 @@ impl<'a> BinaryTape<'a> {
         Default::default()
     }
 
-    /// Convenience method for creating a text tape and parsing the given input
+    /// Convenience method for creating a binary tape and parsing the given input
     pub fn from_slice(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
         let mut parser = BinaryTape::new();
         parser.parse(data)?;
