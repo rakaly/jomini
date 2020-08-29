@@ -27,7 +27,7 @@ criterion = "0.3"
 quickcheck = "0.9"
 quickcheck_macros = "0.9"
 serde = { version = "1", features = ["derive"] }
-eu4save = "0.1"
+eu4save = "0.2"
 
 [[bench]]
 name = "jomini_bench"
