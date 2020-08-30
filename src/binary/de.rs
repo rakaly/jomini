@@ -1,6 +1,6 @@
 use crate::{
-    BinaryTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error, FailedResolveStrategy,
-    TokenResolver,
+    de::ColorSequence, BinaryTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error,
+    FailedResolveStrategy, TokenResolver,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
@@ -409,6 +409,7 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver> de::Deserializer<'de>
                 idx: idx + 1,
                 end_idx: *x,
             }),
+            BinaryToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(**x)),
             BinaryToken::Object(x) => {
                 visitor.visit_map(BinaryMap::new(&self.config, self.tokens, idx + 1, *x))
             }
@@ -434,6 +435,7 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver> de::Deserializer<'de>
                 idx: idx + 1,
                 end_idx: *x,
             }),
+            BinaryToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(**x)),
             _ => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered non-array when trying to deserialize array",
@@ -601,8 +603,9 @@ impl<'b, 'de, 'res: 'de, RES: TokenResolver> SeqAccess<'de> for BinarySequence<'
 mod tests {
     use super::*;
     use jomini_derive::JominiDeserialize;
-    use serde::Deserialize;
+    use serde::{de::Deserializer, Deserialize};
     use std::collections::HashMap;
+    use std::fmt;
 
     fn from_slice<'a, 'res: 'a, RES, T>(data: &'a [u8], resolver: &'res RES) -> Result<T, Error>
     where
@@ -1457,5 +1460,78 @@ mod tests {
                 campaign_id: String::from("72ce90e3-eff3-4be4-9395-f1c3d33fd1c7"),
             }
         );
+    }
+
+    #[test]
+    fn test_deserialize_rgb() {
+        let data = [
+            0x3a, 0x05, 0x01, 0x00, 0x43, 0x02, 0x03, 0x00, 0x14, 0x00, 0x6e, 0x00, 0x00, 0x00,
+            0x14, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x14, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x04, 0x00,
+        ];
+
+        let mut map = HashMap::new();
+        map.insert(0x053a, "color");
+
+        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                color: Color {
+                    red: 110,
+                    blue: 27,
+                    green: 27
+                }
+            }
+        );
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            color: Color,
+        }
+
+        #[derive(Debug, PartialEq)]
+        struct Color {
+            red: i32,
+            blue: i32,
+            green: i32,
+        }
+
+        impl<'de> Deserialize<'de> for Color {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                struct ColorVisitor;
+
+                impl<'de> Visitor<'de> for ColorVisitor {
+                    type Value = Color;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                        formatter.write_str("a color")
+                    }
+
+                    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: de::SeqAccess<'de>,
+                    {
+                        let r = seq.next_element::<i32>()?.expect("red to be present");
+                        let g = seq.next_element::<i32>()?.expect("green to be present");
+                        let b = seq.next_element::<i32>()?.expect("blue to be present");
+
+                        if seq.next_element::<de::IgnoredAny>()?.is_some() {
+                            Err(de::Error::custom("unexpected extra rgb value"))
+                        } else {
+                            Ok(Color {
+                                red: r,
+                                blue: b,
+                                green: g,
+                            })
+                        }
+                    }
+                }
+
+                deserializer.deserialize_seq(ColorVisitor)
+            }
+        }
     }
 }

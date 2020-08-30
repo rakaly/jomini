@@ -131,6 +131,8 @@ features, resulting in a build without dependencies.
 pub(crate) mod ascii;
 mod binary;
 mod data;
+#[cfg(feature = "derive")]
+pub(crate) mod de;
 mod errors;
 mod scalar;
 mod text;
