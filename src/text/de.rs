@@ -1,4 +1,6 @@
-use crate::{DeserializeError, DeserializeErrorKind, Error, Scalar, TextTape, TextToken};
+use crate::{
+    de::ColorSequence, DeserializeError, DeserializeErrorKind, Error, Scalar, TextTape, TextToken,
+};
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
 
@@ -481,6 +483,7 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
                 idx: idx + 1,
                 end_idx: *x,
             }),
+            TextToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(**x)),
             TextToken::Object(x) => visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x)),
             TextToken::End(_x) => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
@@ -503,6 +506,7 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
                 idx: idx + 1,
                 end_idx: *x,
             }),
+            TextToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(**x)),
             TextToken::End(_x) => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered end when trying to deserialize",
@@ -850,8 +854,12 @@ impl<'b, 'de> SeqAccess<'de> for BinarySequence<'b, 'de> {
 mod tests {
     use super::*;
     use jomini_derive::JominiDeserialize;
-    use serde::Deserialize;
+    use serde::{
+        de::{self, Deserializer},
+        Deserialize,
+    };
     use std::collections::HashMap;
+    use std::fmt;
 
     fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
     where
@@ -1437,5 +1445,72 @@ mod tests {
                 ]
             }
         );
+    }
+
+    #[test]
+    fn test_deserialize_rgb() {
+        let data = b"color = rgb { 100 200 150 } ";
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                color: Color {
+                    red: 100,
+                    green: 200,
+                    blue: 150
+                }
+            }
+        );
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            color: Color,
+        }
+
+        #[derive(Debug, PartialEq)]
+        struct Color {
+            red: i32,
+            blue: i32,
+            green: i32,
+        }
+
+        impl<'de> Deserialize<'de> for Color {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                struct ColorVisitor;
+
+                impl<'de> Visitor<'de> for ColorVisitor {
+                    type Value = Color;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                        formatter.write_str("a color")
+                    }
+
+                    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: de::SeqAccess<'de>,
+                    {
+                        let r = seq.next_element::<i32>()?.expect("red to be present");
+                        let g = seq.next_element::<i32>()?.expect("green to be present");
+                        let b = seq.next_element::<i32>()?.expect("blue to be present");
+
+                        if seq.next_element::<de::IgnoredAny>()?.is_some() {
+                            Err(de::Error::custom("unexpected extra rgb value"))
+                        } else {
+                            Ok(Color {
+                                red: r,
+                                blue: b,
+                                green: g,
+                            })
+                        }
+                    }
+                }
+
+                deserializer.deserialize_seq(ColorVisitor)
+            }
+        }
     }
 }
