@@ -7,8 +7,8 @@ readme = "README.md"
 edition = "2018"
 repository = "https://github.com/rakaly/jomini"
 categories = ["parsing"]
-description = "Low level, performance oriented parser for EU4 save files and other formats"
-keywords = ["eu4", "ironman", "clausewitz"]
+description = "Low level, performance oriented parser for EU4, CK3, HOI4 save files and other formats"
+keywords = ["eu4", "ck3", "ironman", "clausewitz"]
 
 [workspace]
 members = ["jomini_derive"]

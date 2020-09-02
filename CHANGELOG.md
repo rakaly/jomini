@@ -1,3 +1,19 @@
+## v0.3.1 - 2020-08-02
+
+The binary parser can now handle the equivalent text format:
+
+```
+levels={ 10 0=2 1=2 }
+```
+
+It is represented in the BinaryTape as an object like so:
+
+```
+levels={ 10 { 0=2 1=2 } }
+```
+
+This format is found in Crusader Kings 3 (CK3) saves and so now both tapes are CK3 save compatible.
+
 ## v0.3.0 - 2020-08-28
 
 - `BinaryDeserializer` now takes `TokenResolver` by reference so that resolved tokens can outlive
