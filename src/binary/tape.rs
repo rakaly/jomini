@@ -188,6 +188,15 @@ impl<'a> BinaryTape<'a> {
         self.token_tape.reserve(data.len() / 100 * 15);
         let mut state = ParseState::Key;
 
+        // This variable keeps track of outer array when we're parsing a hidden object.
+        // A hidden object textually looks like:
+        //     levels={ 10 0=2 1=2 }
+        // which we will translate into
+        //     levels={ 10 { 0=2 1=2 } }
+        // with the help of this variable. As when we'll only see one END token to signify
+        // both the end of the array and object, but we'll produce two BinaryToken::End.
+        let mut array_ind_of_hidden_obj = None;
+
         let mut parent_ind = 0;
         while !data.is_empty() {
             match state {
@@ -264,8 +273,40 @@ impl<'a> BinaryTape<'a> {
                             if let Some(parent) = self.token_tape.get_mut(parent_ind) {
                                 *parent = BinaryToken::Object(end_idx);
                             }
+
                             self.token_tape.push(BinaryToken::End(parent_ind));
-                            parent_ind = grand_ind;
+
+                            if let Some(array_ind) = array_ind_of_hidden_obj.take() {
+                                let end_idx = self.token_tape.len();
+                                self.token_tape.push(BinaryToken::End(array_ind));
+
+                                // Grab the grand parent from the outer array. Even though the logic should
+                                // be more strict (ie: throwing an error when if the parent array index doesn't exist,
+                                // or if the parent doesn't exist), but since hidden objects are such a rather rare
+                                // occurrence, it's better to be flexible
+                                let grand_ind =
+                                    if let Some(parent) = self.token_tape.get_mut(array_ind) {
+                                        let grand_ind = match parent {
+                                            BinaryToken::Array(x) => *x,
+                                            _ => 0,
+                                        };
+                                        *parent = BinaryToken::Array(end_idx);
+                                        grand_ind
+                                    } else {
+                                        0
+                                    };
+
+                                state = match self.token_tape.get(grand_ind) {
+                                    Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
+                                    Some(BinaryToken::Object(_x)) => ParseState::Key,
+                                    _ => ParseState::Key,
+                                };
+
+                                parent_ind = grand_ind;
+                            } else {
+                                parent_ind = grand_ind;
+                            }
+
                             data
                         }
                         RGB => {
@@ -585,10 +626,15 @@ impl<'a> BinaryTape<'a> {
                         }
                         RGB => self.parse_rgb(data)?,
                         EQUAL => {
-                            return Err(Error::new(ErrorKind::InvalidSyntax {
-                                msg: String::from("EQUAL not valid for an array value"),
-                                offset: self.offset(data) - 2,
-                            }));
+                            // CK3 introduced hidden object inside lists so we work around it by trying to
+                            // make the object explicit
+                            let hidden_object = BinaryToken::Object(parent_ind);
+                            array_ind_of_hidden_obj = Some(parent_ind);
+                            parent_ind = self.token_tape.len() - 1;
+                            self.token_tape
+                                .insert(self.token_tape.len() - 1, hidden_object);
+                            state = ParseState::ObjectValue;
+                            data
                         }
                         x => {
                             self.token_tape.push(BinaryToken::Token(x));
@@ -984,6 +1030,37 @@ mod tests {
                 BinaryToken::U64(128),
                 BinaryToken::End(4),
                 BinaryToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_heterogenous_list() {
+        let data = [
+            0x6f, 0x34, 0x01, 0x00, 0x03, 0x00, 0x0c, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x0c, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x14, 0x00, 0x02, 0x00, 0x00, 0x00, 0x0c, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x14, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00,
+            0xaa, 0xaa, 0x01, 0x00, 0x03, 0x00, 0xbb, 0xbb, 0x01, 0x00, 0xcc, 0xcc, 0x04, 0x00,
+        ];
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                BinaryToken::Token(0x346f),
+                BinaryToken::Array(9),
+                BinaryToken::I32(10),
+                BinaryToken::Object(8),
+                BinaryToken::I32(0),
+                BinaryToken::U32(2),
+                BinaryToken::I32(1),
+                BinaryToken::U32(2),
+                BinaryToken::End(3),
+                BinaryToken::End(1),
+                BinaryToken::Token(0xaaaa),
+                BinaryToken::Object(14),
+                BinaryToken::Token(0xbbbb),
+                BinaryToken::Token(0xcccc),
+                BinaryToken::End(11),
             ]
         );
     }
