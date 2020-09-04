@@ -1,6 +1,6 @@
 use crate::{
     de::ColorSequence, BinaryTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error,
-    FailedResolveStrategy, TokenResolver,
+    FailedResolveStrategy, TokenResolver, BinaryFlavor, DefaultFlavor
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
@@ -64,8 +64,13 @@ pub struct BinaryDeserializer;
 
 impl BinaryDeserializer {
     /// Create a builder to custom binary deserialization
-    pub fn builder() -> BinaryDeserializerBuilder {
-        BinaryDeserializerBuilder::new()
+    pub fn builder() -> BinaryDeserializerBuilder<DefaultFlavor> {
+        BinaryDeserializerBuilder::with_flavor(DefaultFlavor)
+    }
+
+    /// Create a builder to custom binary deserialization
+    pub fn builder_flavor<F>(flavor: F) -> BinaryDeserializerBuilder<F> where F: BinaryFlavor {
+        BinaryDeserializerBuilder::with_flavor(flavor)
     }
 
     /// Deserialize a structure from the given binary data. Convenience method
@@ -78,7 +83,7 @@ impl BinaryDeserializer {
         T: Deserialize<'de>,
         RES: TokenResolver,
     {
-        BinaryDeserializerBuilder::new()
+        BinaryDeserializer::builder()
             .on_failed_resolve(FailedResolveStrategy::Ignore)
             .from_slice(data, resolver)
     }
@@ -93,7 +98,7 @@ impl BinaryDeserializer {
         T: Deserialize<'de>,
         RES: TokenResolver,
     {
-        BinaryDeserializerBuilder::new()
+        BinaryDeserializer::builder()
             .on_failed_resolve(FailedResolveStrategy::Ignore)
             .from_tape(tape, resolver)
     }
@@ -136,23 +141,19 @@ impl BinaryDeserializer {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug)]
-pub struct BinaryDeserializerBuilder {
+pub struct BinaryDeserializerBuilder<F> {
     failed_resolve_strategy: FailedResolveStrategy,
+    flavor: F,
 }
 
-impl Default for BinaryDeserializerBuilder {
-    fn default() -> Self {
-        BinaryDeserializerBuilder::new()
-    }
-}
-
-impl BinaryDeserializerBuilder {
+impl<F> BinaryDeserializerBuilder<F> where F: BinaryFlavor {
     /// Create a new builder instance
-    pub fn new() -> Self {
+    pub fn with_flavor(flavor: F) -> Self {
         BinaryDeserializerBuilder {
             failed_resolve_strategy: FailedResolveStrategy::Ignore,
+            flavor,
         }
-    }
+    } 
 
     /// Set the behavior when a unknown token is encountered
     pub fn on_failed_resolve(&mut self, strategy: FailedResolveStrategy) -> &mut Self {
@@ -1163,7 +1164,7 @@ mod tests {
         }
 
         let map: HashMap<u16, String> = HashMap::new();
-        let actual: Result<MyStruct, _> = BinaryDeserializerBuilder::new()
+        let actual: Result<MyStruct, _> = BinaryDeserializer::builder()
             .on_failed_resolve(FailedResolveStrategy::Error)
             .from_slice(&data[..], &map);
         assert!(actual.is_err());
@@ -1176,7 +1177,7 @@ mod tests {
         ];
 
         let map: HashMap<u16, String> = HashMap::new();
-        let actual: HashMap<String, &str> = BinaryDeserializerBuilder::new()
+        let actual: HashMap<String, &str> = BinaryDeserializer::builder()
             .on_failed_resolve(FailedResolveStrategy::Stringify)
             .from_slice(&data[..], &map)
             .unwrap();

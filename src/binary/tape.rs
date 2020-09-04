@@ -1,5 +1,5 @@
 use crate::util::{le_i32, le_u16, le_u32, le_u64};
-use crate::{Error, ErrorKind, Rgb, Scalar};
+use crate::{Error, ErrorKind, Rgb, Scalar, BinaryFlavor, DefaultFlavor};
 
 /// Represents any valid binary value
 #[derive(Debug, PartialEq)]
@@ -54,39 +54,56 @@ const F32: u16 = 0x000d;
 const Q16: u16 = 0x0167;
 const RGB: u16 = 0x0243;
 
-/// Houses the tape of tokens that is extracted from binary data
-#[derive(Debug, Default)]
-pub struct BinaryTape<'a> {
-    token_tape: Vec<BinaryToken<'a>>,
+#[derive(Debug)]
+pub struct BinaryTapeParser<F> {
+    flavor: F,
+}
+
+impl<F> BinaryTapeParser<F> where F: BinaryFlavor {
+    pub fn with_flavor(flavor: F) -> Self {
+        BinaryTapeParser {
+            flavor
+        }
+    }
+
+    pub fn parse_slice<'a>(self, data: &'a [u8]) -> Result<BinaryTape<'a>, Error> {
+        let mut state = ParserState {
+            data,
+            flavor: self.flavor,
+            original_length: data.len(),
+            token_tape: Vec::with_capacity(data.len() / 100 * 15),
+        };
+
+        state.parse()?;
+        Ok(BinaryTape {
+            token_tape: state.token_tape,
+        })
+    }
+
+    // pub fn parse_slice_with_tape<'a>(self, data: &'a [u8], tape: TextTape<'a>) -> Result<BinaryTape<'a>, Error> {
+    //     let token_tape = tape.token_tape;
+    //     let mut state = ParserState {
+    //         data,
+    //         flavor: self.flavor,
+    //         original_length: data.len(),
+    //         token_tape: Vec::with_capacity(data.len() / 100 * 15),
+    //     };
+
+    //     state.parse()?;
+    //     Ok(BinaryTape {
+    //         token_tape: state.token_tape,
+    //     })
+    // }
+}
+
+struct ParserState<'a, F> {
+    data: &'a [u8],
+    flavor: F,
     original_length: usize,
+    token_tape: Vec<BinaryToken<'a>>,
 }
 
-#[derive(Debug, PartialEq)]
-enum ParseState {
-    Key,
-    KeyValueSeparator,
-    ObjectValue,
-    ArrayValue,
-}
-
-impl<'a> BinaryTape<'a> {
-    /// Creates a new binary tape
-    pub fn new() -> Self {
-        Default::default()
-    }
-
-    /// Convenience method for creating a binary tape and parsing the given input
-    pub fn from_slice(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
-        let mut parser = BinaryTape::new();
-        parser.parse(data)?;
-        Ok(parser)
-    }
-
-    /// Return the parsed tokens
-    pub fn tokens(&self) -> &[BinaryToken<'a>] {
-        self.token_tape.as_slice()
-    }
-
+impl<'a, F> ParserState<'a, F> where F: BinaryFlavor {
     fn offset(&self, data: &[u8]) -> usize {
         self.original_length - data.len()
     }
@@ -122,8 +139,7 @@ impl<'a> BinaryTape<'a> {
     fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let val = data
             .get(..4)
-            .map(le_i32)
-            .map(|x| (x as f32) / 1000.0)
+            .map(|x| self.flavor.visit_f32(x))
             .ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::F32(val));
         Ok(&data[4..])
@@ -182,10 +198,8 @@ impl<'a> BinaryTape<'a> {
     }
 
     /// Clear previously parsed data and parse the given data
-    pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), Error> {
-        self.original_length = data.len();
-        self.token_tape.clear();
-        self.token_tape.reserve(data.len() / 100 * 15);
+    pub fn parse(&mut self) -> Result<(), Error> {
+        let mut data = self.data;
         let mut state = ParseState::Key;
 
         // This variable keeps track of outer array when we're parsing a hidden object.
@@ -654,6 +668,33 @@ impl<'a> BinaryTape<'a> {
     }
 }
 
+/// Houses the tape of tokens that is extracted from binary data
+#[derive(Debug, Default)]
+pub struct BinaryTape<'a> {
+    token_tape: Vec<BinaryToken<'a>>,
+}
+
+#[derive(Debug, PartialEq)]
+enum ParseState {
+    Key,
+    KeyValueSeparator,
+    ObjectValue,
+    ArrayValue,
+}
+
+impl<'a> BinaryTape<'a> {
+    /// Convenience method for creating a binary tape and parsing the given input
+    pub fn from_slice(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
+        BinaryTapeParser::with_flavor(DefaultFlavor).parse_slice(data)
+    }
+
+    /// Return the parsed tokens
+    pub fn tokens(&self) -> &[BinaryToken<'a>] {
+        self.token_tape.as_slice()
+    }
+
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,8 +711,7 @@ mod tests {
     #[test]
     fn test_parse_offset() {
         let data = [0x82, 0x2d, 0x01, 0x00, 0x4c, 0x28, 0x01, 0x00, 0x4c, 0x28];
-        let mut tape = BinaryTape::new();
-        let err = tape.parse(&data[..]).unwrap_err();
+        let err = BinaryTape::from_slice(&data[..]).unwrap_err();
         match err.kind() {
             ErrorKind::InvalidSyntax { offset, .. } => {
                 assert_eq!(*offset, 6);
@@ -680,8 +720,7 @@ mod tests {
         }
 
         let data2 = [0x82, 0x2d, 0x01, 0x00, 0x01, 0x00];
-        let err = tape.parse(&data2[..]).unwrap_err();
-        println!("{}", &err);
+        let err = BinaryTape::from_slice(&data2[..]).unwrap_err();
         match err.kind() {
             ErrorKind::InvalidSyntax { offset, .. } => {
                 assert_eq!(*offset, 4);
@@ -739,6 +778,32 @@ mod tests {
 
             assert_eq!(
                 parse(&full_data[..]).unwrap().token_tape,
+                vec![BinaryToken::Token(0x2d82), BinaryToken::F32(*result),]
+            );
+        }
+    }
+
+    #[test]
+    fn test_custom_f32_event() {
+        struct Ck3Flavor;
+        impl BinaryFlavor for Ck3Flavor {
+            fn visit_f32(&self, data: &[u8]) -> f32 {
+                f32::from_le_bytes([data[0], data[1], data[2], data[3]])
+            }
+        }
+
+        let base_data = vec![0x82, 0x2d, 0x01, 0x00, 0x0d, 0x00];
+        let f32_data = [
+            [0x8f, 0xc2, 0x75, 0x3e],
+        ];
+
+        let f32_results = [0.24];
+
+        for (bin, result) in f32_data.iter().zip(f32_results.iter()) {
+            let full_data = [base_data.clone(), bin.to_vec()].concat();
+
+            assert_eq!(
+                BinaryTapeParser::with_flavor(Ck3Flavor).parse_slice(&full_data[..]).unwrap().token_tape,
                 vec![BinaryToken::Token(0x2d82), BinaryToken::F32(*result),]
             );
         }
