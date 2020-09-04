@@ -80,20 +80,22 @@ impl<F> BinaryTapeParser<F> where F: BinaryFlavor {
         })
     }
 
-    // pub fn parse_slice_with_tape<'a>(self, data: &'a [u8], tape: TextTape<'a>) -> Result<BinaryTape<'a>, Error> {
-    //     let token_tape = tape.token_tape;
-    //     let mut state = ParserState {
-    //         data,
-    //         flavor: self.flavor,
-    //         original_length: data.len(),
-    //         token_tape: Vec::with_capacity(data.len() / 100 * 15),
-    //     };
+    pub fn parse_slice_with_tape<'a>(self, data: &'a [u8], tape: BinaryTape<'a>) -> Result<BinaryTape<'a>, Error> {
+        let mut token_tape = tape.token_tape;
+        token_tape.clear();
+        token_tape.reserve(data.len() / 100 * 15);
+        let mut state = ParserState {
+            data,
+            flavor: self.flavor,
+            original_length: data.len(),
+            token_tape,
+        };
 
-    //     state.parse()?;
-    //     Ok(BinaryTape {
-    //         token_tape: state.token_tape,
-    //     })
-    // }
+        state.parse()?;
+        Ok(BinaryTape {
+            token_tape: state.token_tape,
+        })
+    }
 }
 
 struct ParserState<'a, F> {
@@ -686,6 +688,14 @@ impl<'a> BinaryTape<'a> {
     /// Convenience method for creating a binary tape and parsing the given input
     pub fn from_slice(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
         BinaryTapeParser::with_flavor(DefaultFlavor).parse_slice(data)
+    }
+
+    pub fn parser() -> BinaryTapeParser<DefaultFlavor> {
+        BinaryTape::parser_flavor(DefaultFlavor)
+    }
+
+    pub fn parser_flavor<F>(flavor: F) -> BinaryTapeParser<F> where F: BinaryFlavor {
+        BinaryTapeParser::with_flavor(flavor)
     }
 
     /// Return the parsed tokens

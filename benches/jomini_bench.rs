@@ -1,6 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use jomini::{BinaryDeserializer, BinaryTape, Scalar, TextDeserializer, TextTape};
 use std::collections::HashMap;
+use std::cell::Cell;
 
 const METADATA_BIN: &'static [u8] = include_bytes!("../tests/fixtures/meta.bin");
 const METADATA_TXT: &'static [u8] = include_bytes!("../tests/fixtures/meta.txt");
@@ -105,8 +106,11 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse");
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("binary", |b| {
-        b.iter(|| {
-            BinaryTape::from_slice(&data[..]).unwrap()
+        let tape = Cell::new(BinaryTape::default());
+        b.iter(move || {
+            let t = tape.take();
+            let nt = BinaryTape::parser().parse_slice_with_tape(&data[..], t).unwrap();
+            tape.set(nt);
         })
     });
     group.finish();
