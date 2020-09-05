@@ -151,12 +151,7 @@ impl<'a, F> ParserState<'a, F> where F: BinaryFlavor {
     fn parse_q16(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let val = data
             .get(..8)
-            .map(le_i32)
-            .map(|x| {
-                let mut val = x as f32;
-                val = val * 2.0 / 65536.0 * 100_000.0;
-                val.floor() / 100_000.0
-            })
+            .map(|x| self.flavor.visit_q16(x))
             .ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::Q16(val));
         Ok(&data[8..])
@@ -794,11 +789,16 @@ mod tests {
     }
 
     #[test]
-    fn test_custom_f32_event() {
+    fn test_custom_float_event() {
         struct Ck3Flavor;
         impl BinaryFlavor for Ck3Flavor {
             fn visit_f32(&self, data: &[u8]) -> f32 {
                 f32::from_le_bytes([data[0], data[1], data[2], data[3]])
+            }
+
+            fn visit_q16(&self, data: &[u8]) -> f32 {
+                let val = le_i32(data);
+                (val as f32) / 1000.0
             }
         }
 
@@ -815,6 +815,23 @@ mod tests {
             assert_eq!(
                 BinaryTapeParser::with_flavor(Ck3Flavor).parse_slice(&full_data[..]).unwrap().token_tape,
                 vec![BinaryToken::Token(0x2d82), BinaryToken::F32(*result),]
+            );
+        }
+
+        let base_data = vec![0x82, 0x2d, 0x01, 0x00, 0x67, 0x01];
+        let q16_data = [
+            [0xe2, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [0x5f, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        ];
+
+        let f32_results = [1.25, 1.375];
+
+        for (bin, result) in q16_data.iter().zip(f32_results.iter()) {
+            let full_data = [base_data.clone(), bin.to_vec()].concat();
+
+            assert_eq!(
+                BinaryTapeParser::with_flavor(Ck3Flavor).parse_slice(&full_data[..]).unwrap().token_tape,
+                vec![BinaryToken::Token(0x2d82), BinaryToken::Q16(*result),]
             );
         }
     }
