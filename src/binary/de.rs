@@ -1,6 +1,6 @@
 use crate::{
-    de::ColorSequence, BinaryTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error,
-    FailedResolveStrategy, TokenResolver, BinaryFlavor, DefaultFlavor
+    de::ColorSequence, BinaryFlavor, BinaryTape, BinaryToken, DefaultFlavor, DeserializeError,
+    DeserializeErrorKind, Error, FailedResolveStrategy, TokenResolver,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
@@ -68,8 +68,11 @@ impl BinaryDeserializer {
         BinaryDeserializerBuilder::with_flavor(DefaultFlavor)
     }
 
-    /// Create a builder to custom binary deserialization
-    pub fn builder_flavor<F>(flavor: F) -> BinaryDeserializerBuilder<F> where F: BinaryFlavor {
+    /// A customized builder for a certain flavor of binary data
+    pub fn builder_flavor<F>(flavor: F) -> BinaryDeserializerBuilder<F>
+    where
+        F: BinaryFlavor,
+    {
         BinaryDeserializerBuilder::with_flavor(flavor)
     }
 
@@ -146,14 +149,17 @@ pub struct BinaryDeserializerBuilder<F> {
     flavor: F,
 }
 
-impl<F> BinaryDeserializerBuilder<F> where F: BinaryFlavor {
+impl<F> BinaryDeserializerBuilder<F>
+where
+    F: BinaryFlavor,
+{
     /// Create a new builder instance
     pub fn with_flavor(flavor: F) -> Self {
         BinaryDeserializerBuilder {
             failed_resolve_strategy: FailedResolveStrategy::Ignore,
             flavor,
         }
-    } 
+    }
 
     /// Set the behavior when a unknown token is encountered
     pub fn on_failed_resolve(&mut self, strategy: FailedResolveStrategy) -> &mut Self {
@@ -350,8 +356,8 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES: TokenResolver, V: Visitor<'de>
             Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
             Cow::Owned(s) => visitor.visit_string(s),
         },
-        BinaryToken::F32(x) => visitor.visit_f32(x),
-        BinaryToken::Q16(x) => visitor.visit_f32(x),
+        BinaryToken::F32_1(x) => visitor.visit_f32(x),
+        BinaryToken::F32_2(x) => visitor.visit_f32(x),
         BinaryToken::Token(s) => match config.resolver.resolve(s) {
             Some(id) => visitor.visit_borrowed_str(id),
             None => match config.failed_resolve_strategy {
