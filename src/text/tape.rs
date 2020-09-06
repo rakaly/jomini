@@ -340,7 +340,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                     Some(TextToken::Object(_x)) => ParseState::Key,
                                     _ => ParseState::Key,
                                 };
-
                                 parent_ind = grand_ind;
                             } else {
                                 parent_ind = grand_ind;
@@ -405,11 +404,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     }
                 }
                 ParseState::ParseOpen => {
-                    let ind = self.token_tape.len() - 1;
-
                     match data[0] {
                         // Empty array
                         b'}' => {
+                            let ind = self.token_tape.len() - 1;
                             state = match self.token_tape.get(parent_ind) {
                                 Some(TextToken::Array(_x)) => ParseState::ArrayValue,
                                 Some(TextToken::Object(_x)) => ParseState::Key,
@@ -423,19 +421,16 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
                         // Array of objects
                         b'{' => {
+                            let ind = self.token_tape.len() - 1;
                             self.token_tape[ind] = TextToken::Array(parent_ind);
                             parent_ind = ind;
                             state = ParseState::ArrayValue;
                         }
                         b'"' => {
-                            self.token_tape[ind] = TextToken::Object(parent_ind);
-                            parent_ind = ind;
                             data = self.parse_quote_scalar(data)?;
                             state = ParseState::FirstValue;
                         }
                         _ => {
-                            self.token_tape[ind] = TextToken::Object(parent_ind);
-                            parent_ind = ind;
                             data = self.parse_scalar(data);
                             state = ParseState::FirstValue;
                         }
@@ -443,10 +438,16 @@ impl<'a, 'b> ParserState<'a, 'b> {
                 }
                 ParseState::FirstValue => match data[0] {
                     b'=' => {
+                        let ind = self.token_tape.len() - 2;
+                        self.token_tape[ind] = TextToken::Object(parent_ind);
                         data = &data[1..];
+                        parent_ind = ind;
                         state = ParseState::ObjectValue;
                     }
                     _ => {
+                        let ind = self.token_tape.len() - 2;
+                        self.token_tape[ind] = TextToken::Array(parent_ind);
+                        parent_ind = ind;
                         state = ParseState::ArrayValue;
                     }
                 },
@@ -480,15 +481,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         state = ParseState::ArrayValue;
                     }
                     b'=' => {
-                            // CK3 introduced hidden object inside lists so we work around it by trying to
-                            // make the object explicit
-                            let hidden_object = TextToken::Object(parent_ind);
-                            array_ind_of_hidden_obj = Some(parent_ind);
-                            parent_ind = self.token_tape.len() - 1;
-                            self.token_tape
-                                .insert(self.token_tape.len() - 1, hidden_object);
-                            state = ParseState::ObjectValue;
-                            data = &data[1..];                 
+                        // CK3 introduced hidden object inside lists so we work around it by trying to
+                        // make the object explicit
+                        let hidden_object = TextToken::Object(parent_ind);
+                        array_ind_of_hidden_obj = Some(parent_ind);
+                        parent_ind = self.token_tape.len() - 1;
+                        self.token_tape
+                            .insert(self.token_tape.len() - 1, hidden_object);
+                        state = ParseState::ObjectValue;
+                        data = &data[1..];
                     }
                     _ => {
                         data = self.parse_scalar(data);
@@ -1151,6 +1152,30 @@ mod tests {
                 TextToken::Scalar(Scalar::new(b"bar")),
                 TextToken::Scalar(Scalar::new(b"qux")),
                 TextToken::End(11),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hidden_object() {
+        let data = b"16778374={ levels={ 10 0=2 1=2 } }";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"16778374")),
+                TextToken::Object(12),
+                TextToken::Scalar(Scalar::new(b"levels")),
+                TextToken::Array(11),
+                TextToken::Scalar(Scalar::new(b"10")),
+                TextToken::Object(10),
+                TextToken::Scalar(Scalar::new(b"0")),
+                TextToken::Scalar(Scalar::new(b"2")),
+                TextToken::Scalar(Scalar::new(b"1")),
+                TextToken::Scalar(Scalar::new(b"2")),
+                TextToken::End(5),
+                TextToken::End(3),
+                TextToken::End(1),
             ]
         );
     }
