@@ -17,8 +17,51 @@ pub enum TextToken<'a> {
     /// Index of the start of this object
     End(usize),
 
-    /// Represents a binary encoded rgb value
+    /// Represents a text encoded rgb value
     Rgb(Box<Rgb>),
+}
+
+/// Creates a parser that a writes to a text tape
+#[derive(Debug, Default)]
+pub struct TextTapeParser;
+
+impl TextTapeParser {
+    /// Create a text parser
+    pub fn new() -> Self {
+        TextTapeParser::default()
+    }
+
+    /// Parse the text format and return the data tape
+    pub fn parse_slice(self, data: &[u8]) -> Result<TextTape, Error> {
+        let mut res = TextTape::default();
+        self.parse_slice_into_tape(data, &mut res)?;
+        Ok(res)
+    }
+
+    /// Parse the text format into the given tape.
+    pub fn parse_slice_into_tape<'a>(
+        self,
+        data: &'a [u8],
+        tape: &mut TextTape<'a>,
+    ) -> Result<(), Error> {
+        let token_tape = &mut tape.token_tape;
+        token_tape.clear();
+        token_tape.reserve(data.len() / 100 * 15);
+        let mut state = ParserState {
+            data,
+            original_length: data.len(),
+            token_tape,
+        };
+
+        state.parse()?;
+        Ok(())
+    }
+}
+
+struct ParserState<'a, 'b> {
+    data: &'a [u8],
+    original_length: usize,
+    token_tape: &'b mut Vec<TextToken<'a>>,
 }
 
 /// Houses the tape of tokens that is extracted from plaintext data
@@ -50,18 +93,23 @@ impl<'a> TextTape<'a> {
         Default::default()
     }
 
-    /// Convenience method for creating a text tape and parsing the given input
-    pub fn from_slice(data: &'a [u8]) -> Result<TextTape<'a>, Error> {
-        let mut tape = TextTape::new();
-        tape.parse(data)?;
-        Ok(tape)
+    /// Convenience method for creating a text parser and parsing the given input
+    pub fn from_slice(data: &[u8]) -> Result<TextTape<'_>, Error> {
+        TextTapeParser.parse_slice(data)
+    }
+
+    /// Returns a parser for text data
+    pub fn parser() -> TextTapeParser {
+        TextTapeParser
     }
 
     /// Return the parsed tokens
     pub fn tokens(&self) -> &[TextToken<'a>] {
         self.token_tape.as_slice()
     }
+}
 
+impl<'a, 'b> ParserState<'a, 'b> {
     fn offset(&self, data: &[u8]) -> usize {
         self.original_length - data.len()
     }
@@ -164,7 +212,7 @@ impl<'a> TextTape<'a> {
 
     #[inline]
     fn parse_scalar(&mut self, d: &'a [u8]) -> &'a [u8] {
-        let (scalar, rest) = TextTape::split_at_scalar(d);
+        let (scalar, rest) = ParserState::split_at_scalar(d);
         self.token_tape.push(TextToken::Scalar(scalar));
         rest
     }
@@ -197,10 +245,8 @@ impl<'a> TextTape<'a> {
 
     /// Clear previously parsed data and parse the given data
     #[inline]
-    pub fn parse(&mut self, mut data: &'a [u8]) -> Result<(), Error> {
-        self.original_length = data.len();
-        self.token_tape.clear();
-        self.token_tape.reserve(data.len() / 5);
+    pub fn parse(&mut self) -> Result<(), Error> {
+        let mut data = self.data;
         let mut state = ParseState::Key;
         let mut red = 0;
         let mut green = 0;
@@ -410,7 +456,7 @@ impl<'a> TextTape<'a> {
                     }
                 },
                 ParseState::RgbR => {
-                    let (r, rest) = TextTape::split_at_scalar(data);
+                    let (r, rest) = ParserState::split_at_scalar(data);
                     if let Ok(x) = r.to_u64() {
                         red = x as u32;
                     } else {
@@ -424,7 +470,7 @@ impl<'a> TextTape<'a> {
                     data = rest;
                 }
                 ParseState::RgbG => {
-                    let (r, rest) = TextTape::split_at_scalar(data);
+                    let (r, rest) = ParserState::split_at_scalar(data);
                     if let Ok(x) = r.to_u64() {
                         green = x as u32;
                     } else {
@@ -438,7 +484,7 @@ impl<'a> TextTape<'a> {
                     data = rest;
                 }
                 ParseState::RgbB => {
-                    let (r, rest) = TextTape::split_at_scalar(data);
+                    let (r, rest) = ParserState::split_at_scalar(data);
                     if let Ok(x) = r.to_u64() {
                         blue = x as u32;
                     } else {
@@ -519,8 +565,7 @@ mod tests {
     #[test]
     fn test_error_offset() {
         let data = b"foo={}} a=c";
-        let mut tape = TextTape::new();
-        let err = tape.parse(&data[..]).unwrap_err();
+        let err = TextTape::from_slice(&data[..]).unwrap_err();
         match err.kind() {
             ErrorKind::StackEmpty { offset, .. } => {
                 assert_eq!(*offset, 6);
@@ -639,6 +684,47 @@ mod tests {
                 TextToken::Scalar(Scalar::new(b"1")),
                 TextToken::Scalar(Scalar::new(b"qux")),
                 TextToken::Scalar(Scalar::new(b"28")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_text_parser_tape() {
+        let mut tape = TextTape::new();
+
+        let data = b"foo={bar=1 qux=28}";
+        TextTape::parser()
+            .parse_slice_into_tape(data, &mut tape)
+            .unwrap();
+
+        assert_eq!(
+            tape.tokens(),
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Object(6),
+                TextToken::Scalar(Scalar::new(b"bar")),
+                TextToken::Scalar(Scalar::new(b"1")),
+                TextToken::Scalar(Scalar::new(b"qux")),
+                TextToken::Scalar(Scalar::new(b"28")),
+                TextToken::End(1),
+            ]
+        );
+
+        let data2 = b"foo2={bar2=3 qux2=29}";
+        TextTape::parser()
+            .parse_slice_into_tape(data2, &mut tape)
+            .unwrap();
+
+        assert_eq!(
+            tape.tokens(),
+            vec![
+                TextToken::Scalar(Scalar::new(b"foo2")),
+                TextToken::Object(6),
+                TextToken::Scalar(Scalar::new(b"bar2")),
+                TextToken::Scalar(Scalar::new(b"3")),
+                TextToken::Scalar(Scalar::new(b"qux2")),
+                TextToken::Scalar(Scalar::new(b"29")),
                 TextToken::End(1),
             ]
         );
