@@ -252,6 +252,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
         let mut green = 0;
         let mut blue = 0;
 
+        // This variable keeps track of outer array when we're parsing a hidden object.
+        // A hidden object textually looks like:
+        //     levels={ 10 0=2 1=2 }
+        // which we will translate into
+        //     levels={ 10 { 0=2 1=2 } }
+        // with the help of this variable. As when we'll only see one END token to signify
+        // both the end of the array and object, but we'll produce two TextToken::End.
+        let mut array_ind_of_hidden_obj = None;
+
         let mut parent_ind = 0;
         loop {
             data = self.skip_ws_t(data);
@@ -305,7 +314,38 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                 *parent = TextToken::Object(end_idx);
                             }
                             self.token_tape.push(TextToken::End(parent_ind));
-                            parent_ind = grand_ind;
+
+                            if let Some(array_ind) = array_ind_of_hidden_obj.take() {
+                                let end_idx = self.token_tape.len();
+                                self.token_tape.push(TextToken::End(array_ind));
+
+                                // Grab the grand parent from the outer array. Even though the logic should
+                                // be more strict (ie: throwing an error when if the parent array index doesn't exist,
+                                // or if the parent doesn't exist), but since hidden objects are such a rather rare
+                                // occurrence, it's better to be flexible
+                                let grand_ind =
+                                    if let Some(parent) = self.token_tape.get_mut(array_ind) {
+                                        let grand_ind = match parent {
+                                            TextToken::Array(x) => *x,
+                                            _ => 0,
+                                        };
+                                        *parent = TextToken::Array(end_idx);
+                                        grand_ind
+                                    } else {
+                                        0
+                                    };
+
+                                state = match self.token_tape.get(grand_ind) {
+                                    Some(TextToken::Array(_x)) => ParseState::ArrayValue,
+                                    Some(TextToken::Object(_x)) => ParseState::Key,
+                                    _ => ParseState::Key,
+                                };
+
+                                parent_ind = grand_ind;
+                            } else {
+                                parent_ind = grand_ind;
+                            }
+
                             data = &data[1..];
                         }
 
@@ -438,6 +478,17 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     b'"' => {
                         data = self.parse_quote_scalar(data)?;
                         state = ParseState::ArrayValue;
+                    }
+                    b'=' => {
+                            // CK3 introduced hidden object inside lists so we work around it by trying to
+                            // make the object explicit
+                            let hidden_object = TextToken::Object(parent_ind);
+                            array_ind_of_hidden_obj = Some(parent_ind);
+                            parent_ind = self.token_tape.len() - 1;
+                            self.token_tape
+                                .insert(self.token_tape.len() - 1, hidden_object);
+                            state = ParseState::ObjectValue;
+                            data = &data[1..];                 
                     }
                     _ => {
                         data = self.parse_scalar(data);
@@ -1075,6 +1126,31 @@ mod tests {
                     g: 200,
                     b: 150,
                 })),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_heterogenous_list() {
+        let data = b"levels={ 10 0=2 1=2 } foo={bar=qux}";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"levels")),
+                TextToken::Array(9),
+                TextToken::Scalar(Scalar::new(b"10")),
+                TextToken::Object(8),
+                TextToken::Scalar(Scalar::new(b"0")),
+                TextToken::Scalar(Scalar::new(b"2")),
+                TextToken::Scalar(Scalar::new(b"1")),
+                TextToken::Scalar(Scalar::new(b"2")),
+                TextToken::End(3),
+                TextToken::End(1),
+                TextToken::Scalar(Scalar::new(b"foo")),
+                TextToken::Object(14),
+                TextToken::Scalar(Scalar::new(b"bar")),
+                TextToken::Scalar(Scalar::new(b"qux")),
+                TextToken::End(11),
             ]
         );
     }
