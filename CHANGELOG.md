@@ -1,4 +1,15 @@
-## v0.3.1 - 2020-08-02
+## v0.4.0 - 2020-09-06
+
+While this update brings with it breaking changes, hopefully most are unaffected. A change was necessitated as
+CK3 uses a different encoding for rational values, so now one can parse a given `BinaryFlavor` to a tape.
+
+Other changes:
+
+- `BinaryToken::F32` renamed to `BinaryToken::F32_1`
+- `BinaryToken::Q16` renamed to `BinaryToken::F32_2`
+- The text tape parser represents the hidden object in `levels={ 10 0=2 1=2 }` the same way a binary tape does
+
+## v0.3.1 - 2020-09-02
 
 The binary parser can now handle the equivalent text format:
 
