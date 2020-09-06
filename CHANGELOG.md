@@ -1,3 +1,8 @@
+## v0.4.1 - 2020-09-07
+
+Bugfix for parsing the hidden object in `levels={ 10 0=2 1=2 }` for the text tape. Only files
+that contain hidden objects would have seen the bug
+
 ## v0.4.0 - 2020-09-06
 
 While this update brings with it breaking changes, hopefully most are unaffected. A change was necessitated as
