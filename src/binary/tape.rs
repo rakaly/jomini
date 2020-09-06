@@ -71,19 +71,18 @@ where
 
     /// Parse the binary format according to the parser's flavor and return the data tape
     pub fn parse_slice(self, data: &[u8]) -> Result<BinaryTape, Error> {
-        self.parse_slice_with_tape(data, BinaryTape::default())
+        let mut res = BinaryTape::default();
+        self.parse_slice_into_tape(data, &mut res)?;
+        Ok(res)
     }
 
-    /// Parse the binary format according to the parser's flavor and return the data tape.
-    ///
-    /// This function consumes a tape so that the data that was allocated for the given
-    /// tape can be reused for the return tape.
-    pub fn parse_slice_with_tape<'a>(
+    /// Parse the binary format into the given tape according to the parser's flavor.
+    pub fn parse_slice_into_tape<'a>(
         self,
         data: &'a [u8],
-        tape: BinaryTape<'a>,
-    ) -> Result<BinaryTape<'a>, Error> {
-        let mut token_tape = tape.token_tape;
+        tape: &mut BinaryTape<'a>,
+    ) -> Result<(), Error> {
+        let token_tape = &mut tape.token_tape;
         token_tape.clear();
         token_tape.reserve(data.len() / 100 * 15);
         let mut state = ParserState {
@@ -94,17 +93,15 @@ where
         };
 
         state.parse()?;
-        Ok(BinaryTape {
-            token_tape: state.token_tape,
-        })
+        Ok(())
     }
 }
 
-struct ParserState<'a, F> {
+struct ParserState<'a, 'b, F> {
     data: &'a [u8],
     flavor: F,
     original_length: usize,
-    token_tape: Vec<BinaryToken<'a>>,
+    token_tape: &'b mut Vec<BinaryToken<'a>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -115,7 +112,7 @@ enum ParseState {
     ArrayValue,
 }
 
-impl<'a, F> ParserState<'a, F>
+impl<'a, 'b, F> ParserState<'a, 'b, F>
 where
     F: BinaryFlavor,
 {
@@ -684,6 +681,11 @@ pub struct BinaryTape<'a> {
 }
 
 impl<'a> BinaryTape<'a> {
+    /// Creates an empty tape
+    pub fn new() -> Self {
+        BinaryTape::default()
+    }
+
     /// Convenience method for creating a binary parser and parsing the given input
     pub fn from_slice(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
         BinaryTapeParser::with_flavor(DefaultFlavor).parse_slice(data)
@@ -1165,6 +1167,47 @@ mod tests {
                 BinaryToken::Token(0xbbbb),
                 BinaryToken::Token(0xcccc),
                 BinaryToken::End(11),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_binary_tape_parser() {
+        let mut tape = BinaryTape::new();
+
+        let data = [
+            0x82, 0x2d, 0x01, 0x00, 0x4b, 0x28, 0x4d, 0x28, 0x01, 0x00, 0x4c, 0x28,
+        ];
+
+        BinaryTape::parser()
+            .parse_slice_into_tape(&data[..], &mut tape)
+            .unwrap();
+
+        assert_eq!(
+            tape.token_tape,
+            vec![
+                BinaryToken::Token(0x2d82),
+                BinaryToken::Token(0x284b),
+                BinaryToken::Token(0x284d),
+                BinaryToken::Token(0x284c),
+            ]
+        );
+
+        let data2 = [
+            0x83, 0x2d, 0x01, 0x00, 0x4c, 0x28, 0x4e, 0x28, 0x01, 0x00, 0x4d, 0x28,
+        ];
+
+        BinaryTape::parser()
+            .parse_slice_into_tape(&data2[..], &mut tape)
+            .unwrap();
+
+        assert_eq!(
+            tape.token_tape,
+            vec![
+                BinaryToken::Token(0x2d83),
+                BinaryToken::Token(0x284c),
+                BinaryToken::Token(0x284e),
+                BinaryToken::Token(0x284d),
             ]
         );
     }
