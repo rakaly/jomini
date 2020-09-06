@@ -106,8 +106,10 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("binary", |b| {
         let mut tape = BinaryTape::default();
-        b.iter(|| {
-            tape.parse(&data[..]).unwrap();
+        b.iter(move || {
+            BinaryTape::parser()
+                .parse_slice_into_tape(&data[..], &mut tape)
+                .unwrap();
         })
     });
     group.finish();
