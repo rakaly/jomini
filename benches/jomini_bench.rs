@@ -122,7 +122,9 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
     group.bench_function("text", |b| {
         let mut tape = TextTape::default();
         b.iter(|| {
-            tape.parse(&data[..]).unwrap();
+            TextTape::parser()
+                .parse_slice_into_tape(&data[..], &mut tape)
+                .unwrap();
         })
     });
     group.finish();
