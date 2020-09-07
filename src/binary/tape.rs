@@ -400,6 +400,15 @@ where
                             res
                         }
                         OPEN => {
+                            if array_ind_of_hidden_obj.is_some() {
+                                return Err(Error::new(ErrorKind::InvalidSyntax {
+                                    offset: self.offset(data) - 2,
+                                    msg: String::from(
+                                        "nested values inside a hidden object are unsupported",
+                                    ),
+                                }));
+                            }
+
                             let ind = self.token_tape.len();
                             self.token_tape.push(BinaryToken::Array(0));
 
