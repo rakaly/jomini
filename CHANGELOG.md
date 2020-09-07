@@ -1,3 +1,13 @@
+## v0.4.2 - 2020-09-07
+
+Disallow container values in hidden objects. For example:
+
+```
+levels={10 0=1 2={3 4}}
+```
+
+The above doesn't occur naturally (yet?) so to keep things simple, we'll disallow it for now.
+
 ## v0.4.1 - 2020-09-07
 
 Bugfix for parsing the hidden object in `levels={ 10 0=2 1=2 }` for the text tape. Only files
