@@ -8,22 +8,22 @@ use std::fmt;
 /// An error that can occur when converting a scalar into the requested type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarError {
-    /// The given string did not contain only numbers
-    AllDigits(String),
+    /// The scalar did not contain only numbers
+    AllDigits,
 
-    /// The given string caused an overflow when calculating its numerical value
-    Overflow(String),
+    /// The scalar caused an overflow when calculating its numerical value
+    Overflow,
 
-    /// The given string was not a recognized boolean value
-    InvalidBool(String),
+    /// The scalar was not a recognized boolean value
+    InvalidBool,
 }
 
 impl fmt::Display for ScalarError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ScalarError::AllDigits(x) => write!(f, "did not contain all digits: {}", x),
-            ScalarError::InvalidBool(x) => write!(f, "is not a valid bool: {}", x),
-            ScalarError::Overflow(x) => write!(f, "caused an overflow: {}", x),
+            ScalarError::AllDigits => write!(f, "did not contain all digits"),
+            ScalarError::InvalidBool => write!(f, "is not a valid bool"),
+            ScalarError::Overflow => write!(f, "caused an overflow"),
         }
     }
 }
@@ -265,7 +265,7 @@ fn to_bool(d: &[u8]) -> Result<bool, ScalarError> {
     match d {
         [b'y', b'e', b's'] => Ok(true),
         [b'n', b'o'] => Ok(false),
-        x => Err(ScalarError::InvalidBool(to_utf8_owned(x))),
+        _ => Err(ScalarError::InvalidBool),
     }
 }
 
@@ -306,7 +306,7 @@ fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
             let frac = to_i64(&trail)? as f64;
             let digits = 10u32
                 .checked_pow(trail.len() as u32)
-                .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?
+                .ok_or_else(|| ScalarError::Overflow)?
                 as f64;
             Ok((sign as f64).mul_add(frac / digits, leadf))
         }
@@ -328,14 +328,14 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
     const POWER10: [u64; 8] = [10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10, 1];
 
     if d.is_empty() {
-        return Err(ScalarError::AllDigits(to_utf8_owned(d)));
+        return Err(ScalarError::AllDigits);
     }
 
     let mut chunks = d.chunks_exact(8);
     let all_digits = chunks.all(is_digits_wide);
     let remainder = chunks.remainder();
     if !(all_digits & is_digits(&remainder)) {
-        return Err(ScalarError::AllDigits(to_utf8_owned(d)));
+        return Err(ScalarError::AllDigits);
     }
 
     let mut result: u64 = 0;
@@ -347,21 +347,21 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
             .checked_mul(100_000_000)
             .and_then(|x| x.checked_add(ascii_u64_to_digits(val)))
             .and_then(|x| x.checked_add(result))
-            .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
+            .ok_or_else(|| ScalarError::Overflow)?;
     }
 
     if result != 0 {
         result = 10_u64
             .checked_pow(remainder.len() as u32)
             .and_then(|x| result.checked_mul(x))
-            .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
+            .ok_or_else(|| ScalarError::Overflow)?;
     }
 
     let maxxed = 8 - remainder.len();
     for (i, &x) in remainder.iter().enumerate() {
         result = result
             .checked_add(u64::from(x - b'0') * POWER10[maxxed + i])
-            .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
+            .ok_or_else(|| ScalarError::Overflow)?;
     }
 
     Ok(result)
