@@ -54,7 +54,7 @@ let expected = Model {
     names: vec!["Johan".to_string(), "Frederick".to_string()],
 };
 
-let actual: Model = TextDeserializer::from_slice(data).unwrap();
+let actual: Model = TextDeserializer::from_windows1252_slice(data)?;
 assert_eq!(actual, expected);
 ```
 
@@ -78,7 +78,7 @@ let data = [ 0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47 ];
 let mut map = HashMap::new();
 map.insert(0x2d82, "field1");
 
-let actual: MyStruct = BinaryDeserializer::from_slice(&data[..], &map).unwrap();
+let actual: MyStruct = BinaryDeserializer::from_eu4(&data[..], &map)?;
 assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
 ```
 
