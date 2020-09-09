@@ -514,7 +514,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     } else {
                         return Err(Error::new(ErrorKind::InvalidSyntax {
                             offset: self.offset(data),
-                            msg: format!("unable to decode color channel: {}", r.to_utf8()),
+                            msg: String::from("unable to decode color channel"),
                         }));
                     }
 
@@ -528,7 +528,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     } else {
                         return Err(Error::new(ErrorKind::InvalidSyntax {
                             offset: self.offset(data),
-                            msg: format!("unable to decode color channel: {}", r.to_utf8()),
+                            msg: String::from("unable to decode color channel"),
                         }));
                     }
 
@@ -542,7 +542,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     } else {
                         return Err(Error::new(ErrorKind::InvalidSyntax {
                             offset: self.offset(data),
-                            msg: format!("unable to decode color channel: {}", r.to_utf8()),
+                            msg: String::from("unable to decode color channel"),
                         }));
                     }
 

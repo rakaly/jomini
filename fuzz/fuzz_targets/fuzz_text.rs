@@ -26,5 +26,5 @@ struct Stat {
 
 fuzz_target!(|data: &[u8]| {
     let _: Result<Meta, _> = jomini::TextTape::from_slice(&data)
-        .and_then(|tape| jomini::TextDeserializer::from_tape(&tape));
+        .and_then(|tape| jomini::TextDeserializer::from_windows1252_tape(&tape));
 });

@@ -1,5 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use jomini::{BinaryDeserializer, BinaryTape, Scalar, TextDeserializer, TextTape};
+use jomini::{
+    BinaryDeserializer, BinaryTape, Scalar, TextDeserializer, TextTape, Utf8Encoding,
+    Windows1252Encoding,
+};
 use std::collections::HashMap;
 
 const METADATA_BIN: &'static [u8] = include_bytes!("../tests/fixtures/meta.bin");
@@ -17,30 +20,46 @@ pub fn is_ascii_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-pub fn from_ascii_string_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("from_ascii_string");
-    for size in [1, 4, 8, 16, 32, 64, 128, 256, 512].iter() {
+pub fn windows1252_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("windows1252");
+    for size in [2, 4, 8, 16, 32, 64, 128, 256, 512].iter() {
         let data = vec![b'a'; *size as usize];
+        let data2 = vec![0xfe; *size as usize];
         group.throughput(Throughput::Bytes(*size as u64));
-        group.bench_with_input(BenchmarkId::new("to-utf8", size), size, |b, &_size| {
-            b.iter(|| Scalar::new(black_box(&data)).to_utf8())
-        });
         group.bench_with_input(
-            BenchmarkId::new("to-utf8-owned", size),
+            BenchmarkId::new("ascii-to-utf8", size),
             size,
-            |b, &_size| b.iter(|| Scalar::new(black_box(&data)).to_utf8_owned()),
+            |b, &_size| b.iter(|| Windows1252Encoding::decode(&data)),
         );
+        group.bench_with_input(BenchmarkId::new("1252-to-utf8", size), size, |b, &_size| {
+            b.iter(|| Windows1252Encoding::decode(&data2))
+        });
     }
     group.finish();
 }
 
-pub fn from_windows_string_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("from_windows1252_string");
-    for size in [1, 4, 8, 16, 32, 64, 128, 256, 512].iter() {
-        let data = vec![0xfe; *size as usize];
+pub fn utf8_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("utf8");
+    for size in [2, 4, 8, 16, 32, 64, 128, 256, 512].iter() {
+        let mut ascii_str = String::with_capacity(*size as usize);
+        let mut utf8_str = String::with_capacity(*size / 2 as usize);
+        for _ in 0..*size {
+            ascii_str.push('a');
+        }
+
+        for _ in 0..size / 2 {
+            utf8_str.push('å');
+        }
+        let data = ascii_str.as_bytes();
+        let data2 = utf8_str.as_bytes();
         group.throughput(Throughput::Bytes(*size as u64));
-        group.bench_with_input(BenchmarkId::new("to-utf8", size), size, |b, &_size| {
-            b.iter(|| Scalar::new(black_box(&data)).to_utf8())
+        group.bench_with_input(
+            BenchmarkId::new("ascii-to-utf8", size),
+            size,
+            |b, &_size| b.iter(|| Utf8Encoding::decode(&data)),
+        );
+        group.bench_with_input(BenchmarkId::new("utf8-to-utf8", size), size, |b, &_size| {
+            b.iter(|| Utf8Encoding::decode(&data2))
         });
     }
     group.finish();
@@ -77,7 +96,9 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("binary", |b| {
         b.iter(|| {
-            let _res: Meta = BinaryDeserializer::from_slice(&data[..], &map).unwrap();
+            let _res: Meta = BinaryDeserializer::eu4_builder()
+                .from_slice(&data[..], &map)
+                .unwrap();
         })
     });
     group.finish();
@@ -94,7 +115,7 @@ pub fn text_deserialize_benchmark(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("text", |b| {
         b.iter(|| {
-            let _res: Meta = TextDeserializer::from_slice(&data[..]).unwrap();
+            let _res: Meta = TextDeserializer::from_windows1252_slice(&data[..]).unwrap();
         })
     });
     group.finish();
@@ -107,7 +128,7 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     group.bench_function("binary", |b| {
         let mut tape = BinaryTape::default();
         b.iter(move || {
-            BinaryTape::parser()
+            BinaryTape::eu4_parser()
                 .parse_slice_into_tape(&data[..], &mut tape)
                 .unwrap();
         })
@@ -133,8 +154,8 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
 criterion_group!(
     benches,
     is_ascii_benchmark,
-    from_ascii_string_benchmark,
-    from_windows_string_benchmark,
+    utf8_benchmark,
+    windows1252_benchmark,
     binary_parse_benchmark,
     text_parse_benchmark,
     binary_deserialize_benchmark,

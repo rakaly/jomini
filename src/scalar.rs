@@ -1,29 +1,27 @@
-use crate::ascii::is_ascii;
-use crate::data::{is_whitespace, WINDOWS_1252};
-use crate::util::{contains_zero_byte, le_u64, repeat_byte};
-use std::borrow::Cow;
+use crate::util::le_u64;
+use crate::{ascii::is_ascii, decode_windows1252};
 use std::error;
 use std::fmt;
 
 /// An error that can occur when converting a scalar into the requested type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarError {
-    /// The given string did not contain only numbers
-    AllDigits(String),
+    /// The scalar did not contain only numbers
+    AllDigits,
 
-    /// The given string caused an overflow when calculating its numerical value
-    Overflow(String),
+    /// The scalar caused an overflow when calculating its numerical value
+    Overflow,
 
-    /// The given string was not a recognized boolean value
-    InvalidBool(String),
+    /// The scalar was not a recognized boolean value
+    InvalidBool,
 }
 
 impl fmt::Display for ScalarError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ScalarError::AllDigits(x) => write!(f, "did not contain all digits: {}", x),
-            ScalarError::InvalidBool(x) => write!(f, "is not a valid bool: {}", x),
-            ScalarError::Overflow(x) => write!(f, "caused an overflow: {}", x),
+            ScalarError::AllDigits => write!(f, "did not contain all digits"),
+            ScalarError::InvalidBool => write!(f, "is not a valid bool"),
+            ScalarError::Overflow => write!(f, "caused an overflow"),
         }
     }
 }
@@ -34,15 +32,15 @@ impl error::Error for ScalarError {
     }
 }
 
-/// Single value encapsulating windows-1252 data.
+/// A byte slice that represents a single value.
 ///
-/// Since windows-1252 is a single byte character encoding, a scalar will never fail to be created.
+/// A scalars does not carry with it an encoding, so an appropriate encoder must be used
+/// if text is wished to be extracted from a scalar
 ///
 /// ```
 /// use jomini::Scalar;
 ///
 /// let v1 = Scalar::new(b"10");
-/// assert_eq!(v1.to_utf8(), "10");
 /// assert_eq!(v1.to_u64(), Ok(10));
 /// assert_eq!(v1.to_i64(), Ok(10));
 /// assert_eq!(v1.to_f64(), Ok(10.0));
@@ -54,13 +52,13 @@ pub struct Scalar<'a> {
 }
 
 impl<'a> Scalar<'a> {
-    /// Create a new scalar backed by windows-1252 encoded byte slice
+    /// Create a new scalar backed by a byte slice
     pub fn new(data: &'a [u8]) -> Scalar<'a> {
         Scalar { data }
     }
 
-    /// View the underlying windows-1252 encoded data
-    pub fn view_data(&self) -> &[u8] {
+    /// View the raw data
+    pub fn view_data(&self) -> &'a [u8] {
         self.data
     }
 
@@ -124,51 +122,6 @@ impl<'a> Scalar<'a> {
         to_u64(self.data)
     }
 
-    /// Convert scalar data into utf8. Several transformations take place:
-    ///
-    /// - trailing whitespace is removed
-    /// - escape sequences are unescaped
-    /// - windows-1252 specific characters encoded as their utf-8 equivalent.
-    ///
-    /// This function is optimized for the typical scenario, where the utf-8
-    /// string can be calculated without allocation. If escape sequences or
-    /// windows-1252 specific characters are encountered, then allocation is
-    /// necessary.
-    ///
-    /// ```
-    /// use jomini::Scalar;
-    ///
-    /// let v1 = Scalar::new(b"Common Sense");
-    /// assert_eq!(v1.to_utf8(), "Common Sense");
-    ///
-    /// let v2 = Scalar::new(b"\xa7GRichard Plantagenet\xa7 ( 2 / 4 / 3 / 0 )");
-    /// assert_eq!(v2.to_utf8(), "§GRichard Plantagenet§ ( 2 / 4 / 3 / 0 )");
-    ///
-    /// let v3 = Scalar::new(br#"Captain \"Joe\" Rogers"#);
-    /// assert_eq!(v3.to_utf8(), r#"Captain "Joe" Rogers"#);
-    ///
-    /// let v4 = Scalar::new(b"1444.11.11\n");
-    /// assert_eq!(v4.to_utf8(), "1444.11.11");
-    /// ```
-    pub fn to_utf8(&self) -> Cow<'a, str> {
-        to_utf8(self.data)
-    }
-
-    /// Convert scalar data into an owned string
-    ///
-    /// ```
-    /// use jomini::Scalar;
-    ///
-    /// let v1 = Scalar::new(b"a");
-    /// assert_eq!(v1.to_utf8(), String::from("a"));
-    ///
-    /// let v2 = Scalar::new(&[255][..]);
-    /// assert_eq!(v2.to_utf8(), String::from("ÿ"));
-    /// ```
-    pub fn to_utf8_owned(&self) -> String {
-        to_utf8_owned(self.data)
-    }
-
     /// Returns if the scalar contains only ascii values
     ///
     /// ```
@@ -193,71 +146,12 @@ impl<'a> fmt::Debug for Scalar<'a> {
 
 impl<'a> fmt::Display for Scalar<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_utf8())
-    }
-}
-
-#[inline]
-fn to_utf8_owned(d: &[u8]) -> String {
-    to_utf8(d).to_string()
-}
-
-#[inline]
-fn to_utf8(mut d: &[u8]) -> Cow<str> {
-    // First we check if there is trailing whitespace and if there is, we trim it down.
-    // This branch won't normally be taken, so it should be considered cheap
-    if !d.is_empty() && is_whitespace(d[d.len() - 1]) {
-        let ind = d
-            .iter()
-            .rev()
-            .position(|x| !is_whitespace(*x))
-            .unwrap_or_else(|| d.len());
-        d = &d[0..d.len() - ind];
-    }
-
-    // Then we iterate through the data in 8 byte chunks and ensure that each chunk
-    // is contained of ascii characters with no escape characters
-    let mut chunk_iter = d.chunks_exact(8);
-    let mut offset = 0;
-    while let Some(n) = chunk_iter.next() {
-        let wide = le_u64(n);
-        if wide & 0x80808080_80808080 != 0 || contains_zero_byte(wide ^ repeat_byte(b'\\')) {
-            let (upto, rest) = d.split_at(offset);
-            let mut result = String::with_capacity(d.len());
-            let head = unsafe { std::str::from_utf8_unchecked(upto) };
-            result.push_str(head);
-            for &c in rest.iter().filter(|&x| *x != b'\\') {
-                result.push(WINDOWS_1252[c as usize]);
-            }
-
-            return Cow::Owned(result);
+        if is_ascii(self.data) {
+            write!(f, "{}", decode_windows1252(self.data))
+        } else {
+            write!(f, "non-ascii string of {} length", self.data.len())
         }
-
-        offset += 8;
     }
-
-    // Same logic as before but instead of operating on 8 bytes at a time, work bytewise
-    let remainder = chunk_iter.remainder();
-    for &byte in remainder {
-        if !byte.is_ascii() || byte == b'\\' {
-            let (upto, rest) = d.split_at(offset);
-            let mut result = String::with_capacity(d.len());
-            let head = unsafe { std::str::from_utf8_unchecked(upto) };
-            result.push_str(head);
-            for &c in rest.iter().filter(|&x| *x != b'\\') {
-                result.push(WINDOWS_1252[c as usize]);
-            }
-
-            return Cow::Owned(result);
-        }
-
-        offset += 1;
-    }
-
-    // This is safe as we just checked that the data is ascii and ascii is a subset of utf8
-    debug_assert!(std::str::from_utf8(d).is_ok());
-    let s = unsafe { std::str::from_utf8_unchecked(d) };
-    Cow::Borrowed(s)
 }
 
 #[inline]
@@ -265,7 +159,7 @@ fn to_bool(d: &[u8]) -> Result<bool, ScalarError> {
     match d {
         [b'y', b'e', b's'] => Ok(true),
         [b'n', b'o'] => Ok(false),
-        x => Err(ScalarError::InvalidBool(to_utf8_owned(x))),
+        _ => Err(ScalarError::InvalidBool),
     }
 }
 
@@ -306,8 +200,7 @@ fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
             let frac = to_i64(&trail)? as f64;
             let digits = 10u32
                 .checked_pow(trail.len() as u32)
-                .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?
-                as f64;
+                .ok_or_else(|| ScalarError::Overflow)? as f64;
             Ok((sign as f64).mul_add(frac / digits, leadf))
         }
         None => to_i64(d).map(|x| x as f64),
@@ -328,14 +221,14 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
     const POWER10: [u64; 8] = [10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10, 1];
 
     if d.is_empty() {
-        return Err(ScalarError::AllDigits(to_utf8_owned(d)));
+        return Err(ScalarError::AllDigits);
     }
 
     let mut chunks = d.chunks_exact(8);
     let all_digits = chunks.all(is_digits_wide);
     let remainder = chunks.remainder();
     if !(all_digits & is_digits(&remainder)) {
-        return Err(ScalarError::AllDigits(to_utf8_owned(d)));
+        return Err(ScalarError::AllDigits);
     }
 
     let mut result: u64 = 0;
@@ -347,21 +240,21 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
             .checked_mul(100_000_000)
             .and_then(|x| x.checked_add(ascii_u64_to_digits(val)))
             .and_then(|x| x.checked_add(result))
-            .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
+            .ok_or_else(|| ScalarError::Overflow)?;
     }
 
     if result != 0 {
         result = 10_u64
             .checked_pow(remainder.len() as u32)
             .and_then(|x| result.checked_mul(x))
-            .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
+            .ok_or_else(|| ScalarError::Overflow)?;
     }
 
     let maxxed = 8 - remainder.len();
     for (i, &x) in remainder.iter().enumerate() {
         result = result
             .checked_add(u64::from(x - b'0') * POWER10[maxxed + i])
-            .ok_or_else(|| ScalarError::Overflow(to_utf8_owned(d)))?;
+            .ok_or_else(|| ScalarError::Overflow)?;
     }
 
     Ok(result)
@@ -371,40 +264,6 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
 mod tests {
     use super::*;
     use quickcheck_macros::quickcheck;
-
-    #[test]
-    fn scalar_to_string() {
-        assert_eq!((Scalar { data: &[255][..] }).to_string(), "ÿ".to_string());
-        assert_eq!((Scalar { data: &[138][..] }).to_string(), "Š".to_string());
-        assert_eq!(
-            (Scalar {
-                data: b"hello world"
-            })
-            .to_string(),
-            "hello world".to_string()
-        );
-        assert_eq!(
-            (Scalar {
-                data: &[104, 105, 129, 138][..]
-            })
-            .to_string(),
-            "hi\u{81}Š".to_string()
-        );
-
-        assert_eq!(
-            (Scalar {
-                data: &[0xfe, 0xff, 0xfe, 0xff, 0xfe, 0xff, 0xfe, 0xff, 0xfe, 0xff]
-            })
-            .to_string(),
-            "þÿþÿþÿþÿþÿ".to_string()
-        );
-    }
-
-    #[test]
-    fn scalar_string_trim_end_newlines() {
-        assert_eq!(Scalar::new(b"new\n").to_utf8().as_ref(), "new");
-        assert_eq!(Scalar::new(b"\t").to_utf8().as_ref(), "");
-    }
 
     #[test]
     fn scalar_to_bool() {
@@ -498,25 +357,6 @@ mod tests {
             .is_err());
         assert!(Scalar::new(b"10.99999990999999999999999").to_f64().is_err());
         assert!(Scalar::new(b"10.99999999999999").to_f64().is_err());
-    }
-
-    #[test]
-    fn scalar_string_escapes() {
-        let s = Scalar::new(br#"Joe \"Captain\" Rogers"#);
-        assert_eq!(s.to_utf8().as_ref(), r#"Joe "Captain" Rogers"#);
-    }
-
-    #[test]
-    fn scalar_to_string_undefined_characters() {
-        // According to the information on Microsoft's and the Unicode Consortium's websites,
-        // positions 81, 8D, 8F, 90, and 9D are unused; however, the Windows API
-        // MultiByteToWideChar maps these to the corresponding C1 control codes. The "best fit"
-        // mapping documents this behavior, too
-
-        let data = &[0x81, 0x8d, 0x8f, 0x90, 0x9d];
-        let scalar = Scalar::new(data);
-        let (cow, _) = encoding_rs::WINDOWS_1252.decode_without_bom_handling(data);
-        assert_eq!(scalar.to_utf8(), cow);
     }
 
     #[test]

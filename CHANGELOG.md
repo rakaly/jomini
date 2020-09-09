@@ -1,3 +1,36 @@
+## v0.5.0 - TBD
+
+The big change here is that deserializers need to know what encoding strings are in: UTF-8 or Windows-1252. Previously the deserializer assumed strings were encoded as Windows-1252. This falls down when UTF-8 input is encountered like in CK3 saves. So now functions like `TextDeserializer::from_slice` have been split into two with the text api surface looking like:
+
+- `TextDeserializer::from_utf8_slice`
+- `TextDeserializer::from_windows1252_slice`
+- `TextDeserializer::from_utf8_tape`
+- `TextDeserializer::from_windows1252_tape`
+- `TextDeserializer::from_encoded_tape`
+
+The binary deserializer has undergone more intrusive changes. Now a `BinaryFlavor` embeds the string encoding. And since the `TextDeserializer` has been split such that there isn't a default parsing method, so too has the `DefaultFlavor` been renamed to `Eu4Flavor`.
+
+Now there are a few main entry points for binary deserialization:
+
+- `BinaryDeserializer::from_eu4`
+- `BinaryDeserializer::from_ck3`
+- `BinaryDeserializer::eu4_builder`
+- `BinaryDeserializer::ck3_builder`
+- `BinaryDeserializer::builder_flavor`
+
+While these are breaking changes, hopefully the correct path forward is clear. Since I'm unsure how ubiquitous each binary format is across multiple games, I've named the format after the game titles. Each format may apply to multiple titles. Do note that other titles like imperator and HOI4 can be parsed with any flavored of binary parser but their floating point and string encoding will need to be double checked to ensure accuracy. 
+
+The good news here is that I've incorporated `Ck3Flavor` directly instead of pushing that to `ck3save` crate.
+
+While UTF-8 and Windows-1252 are the only encodings that are explicitly supported, one can derive their own encoding format via the `Encoding` trait. The `Encoding` trait only affects the deserialization, the parser still expects the input to be a subset of ascii and self synchronizing (I think I'm using that term correct, basically quotes `0x22` can't be part of a larger character point).
+
+Having a user supplied `Encoding` allows for additional use case like deserializing all strings as upper case or performing ascii transliteration (eg: `ÿ` => `y`)
+
+Other changes:
+
+ - Removed `Scalar::to_utf8` as a scalar does not know the encoding
+ - `ScalarError` no longer owns the faulty string as the encoding is not known when performing scalar functions 
+
 ## v0.4.2 - 2020-09-07
 
 Disallow container values in hidden objects. For example:

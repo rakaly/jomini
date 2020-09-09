@@ -118,7 +118,8 @@ impl<'de> Deserialize<'de> for SaveVersion {
 #[test]
 fn test_text_deserialization() {
     let data = include_bytes!("./fixtures/meta.txt");
-    let actual: Meta = jomini::TextDeserializer::from_slice(&data["EU4txt".len()..]).unwrap();
+    let actual: Meta =
+        jomini::TextDeserializer::from_windows1252_slice(&data["EU4txt".len()..]).unwrap();
     assert_eq!(actual.date.eu4_fmt(), String::from("1444.11.11"));
     assert_eq!(actual.savegame_version.0, String::from("1.28.3.0"));
 }
@@ -126,14 +127,14 @@ fn test_text_deserialization() {
 #[test]
 fn test_scalar_u64_overflow_crash() {
     let data = include_bytes!("./fixtures/meta.txt.crash");
-    let actual: Result<Meta, _> = jomini::TextDeserializer::from_slice(&data[..]);
+    let actual: Result<Meta, _> = jomini::TextDeserializer::from_windows1252_slice(&data[..]);
     assert!(actual.is_err());
 }
 
 #[test]
 fn test_text_de_non_scalar_crash() {
     let data = include_bytes!("./fixtures/meta.txt.crash2");
-    let actual: Result<Meta, _> = jomini::TextDeserializer::from_slice(&data[..]);
+    let actual: Result<Meta, _> = jomini::TextDeserializer::from_windows1252_slice(&data[..]);
     assert!(actual.is_err());
 }
 
@@ -166,7 +167,7 @@ fn test_binary_meta_deserialization() {
     let data = include_bytes!("./fixtures/meta.bin");
     let data = &data["EU4bin".len()..];
     let hash = create_bin_lookup();
-    let actual: Meta = jomini::BinaryDeserializer::from_slice(&data, &hash).unwrap();
+    let actual: Meta = jomini::BinaryDeserializer::from_eu4(&data, &hash).unwrap();
     assert_eq!(actual.date.eu4_fmt(), String::from("1597.1.15"));
     assert_eq!(actual.savegame_version.0, String::from("1.29.4.0"));
 }
@@ -175,33 +176,33 @@ fn test_binary_meta_deserialization() {
 fn test_binary_slice_index_crash() {
     let data = include_bytes!("./fixtures/meta.bin.crash");
     let hash = create_bin_lookup();
-    assert!(jomini::BinaryDeserializer::from_slice::<_, Meta>(&data[..], &hash).is_err());
+    assert!(jomini::BinaryDeserializer::from_eu4::<_, Meta>(&data[..], &hash).is_err());
 }
 
 #[test]
 fn test_binary_incomplete_array() {
     let data = include_bytes!("./fixtures/meta.bin.crash2");
     let hash = create_bin_lookup();
-    assert!(jomini::BinaryDeserializer::from_slice::<_, Meta>(&data[..], &hash).is_err());
+    assert!(jomini::BinaryDeserializer::from_eu4::<_, Meta>(&data[..], &hash).is_err());
 }
 
 #[test]
 fn test_binary_heterogenous_object_crash() {
     let data = include_bytes!("./fixtures/meta.bin.crash3");
     let hash = create_bin_lookup();
-    assert!(jomini::BinaryDeserializer::from_slice::<_, Meta>(&data[..], &hash).is_err());
+    assert!(jomini::BinaryDeserializer::from_eu4::<_, Meta>(&data[..], &hash).is_err());
 }
 
 #[test]
 fn test_binary_unknown_key_object() {
     let data = include_bytes!("./fixtures/meta.bin.crash4");
     let hash = create_bin_lookup();
-    assert!(jomini::BinaryDeserializer::from_slice::<_, Meta>(&data[..], &hash).is_err());
+    assert!(jomini::BinaryDeserializer::from_eu4::<_, Meta>(&data[..], &hash).is_err());
 }
 
 #[test]
 fn test_binary_timeout() {
     let data = include_bytes!("./fixtures/bin-timeout");
     let hash = create_bin_lookup();
-    assert!(jomini::BinaryDeserializer::from_slice::<_, Meta>(&data[..], &hash).is_err());
+    assert!(jomini::BinaryDeserializer::from_eu4::<_, Meta>(&data[..], &hash).is_err());
 }

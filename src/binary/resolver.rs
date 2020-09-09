@@ -40,13 +40,9 @@ where
     }
 }
 
-impl<'a, S, V> TokenResolver for &'a HashMap<u16, V, S>
-where
-    S: ::std::hash::BuildHasher,
-    V: AsRef<str>,
-{
+impl<T: TokenResolver> TokenResolver for &'_ T {
     fn resolve(&self, token: u16) -> Option<&str> {
-        self.get(&token).map(|x| x.as_ref())
+        (**self).resolve(token)
     }
 }
 
