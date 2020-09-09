@@ -68,7 +68,6 @@ struct ParserState<'a, 'b> {
 #[derive(Debug, Default)]
 pub struct TextTape<'a> {
     token_tape: Vec<TextToken<'a>>,
-    original_length: usize,
 }
 
 #[derive(Debug, PartialEq)]
