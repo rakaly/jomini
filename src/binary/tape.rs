@@ -581,7 +581,9 @@ where
 
                                 // array of objects or another array
                                 OPEN => {
-                                    self.token_tape.push(BinaryToken::Array(0));
+                                    self.token_tape[ind] = BinaryToken::Array(parent_ind);
+                                    parent_ind = self.token_tape.len();
+                                    self.token_tape.push(BinaryToken::Array(ind));
                                     state = ParseState::ArrayValue;
                                     continue;
                                 }
@@ -659,7 +661,15 @@ where
                         RGB => self.parse_rgb(data)?,
                         EQUAL => {
                             // CK3 introduced hidden object inside lists so we work around it by trying to
-                            // make the object explicit
+                            // make the object explicit, but we first check to see if we have any prior
+                            // array values
+                            if self.token_tape.len() - parent_ind <= 1 {
+                                return Err(Error::new(ErrorKind::InvalidSyntax {
+                                    msg: String::from("hidden object must start with a key"),
+                                    offset: self.offset(data) - 2,
+                                }));
+                            }
+
                             let hidden_object = BinaryToken::Object(parent_ind);
                             array_ind_of_hidden_obj = Some(parent_ind);
                             parent_ind = self.token_tape.len() - 1;
@@ -1261,6 +1271,27 @@ mod tests {
                 BinaryToken::End(1)
             ]
         );
+    }
+
+    #[test]
+    fn test_should_not_parse_on_eof() {
+        let data = [65, 1, 3, 0, 3, 0, 3, 0, 4, 0];
+        let res = parse(&data[..]);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_should_not_parse_on_eof2() {
+        let data = [65, 1, 3, 0, 3, 0, 3, 0, 4, 0, 4, 0];
+        let res = parse(&data[..]);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_should_not_parse_on_eof3() {
+        let data = [12, 2, 3, 0, 3, 0, 3, 0, 1, 0, 0, 0, 4, 0];
+        let res = parse(&data[..]);
+        assert!(res.is_err());
     }
 
     #[test]
