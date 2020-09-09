@@ -1,7 +1,7 @@
 #[test]
 fn reject_bin_obj_in_hidden_obj() {
     let data = include_bytes!("./fixtures/nested-hidden-obj.bin");
-    assert!(jomini::BinaryTape::from_slice(&data[..]).is_err());
+    assert!(jomini::BinaryTape::from_eu4(&data[..]).is_err());
 }
 
 #[test]

@@ -1,5 +1,8 @@
-use crate::util::{le_i32, le_u16, le_u32, le_u64};
-use crate::{BinaryFlavor, DefaultFlavor, Error, ErrorKind, Rgb, Scalar};
+use crate::{
+    util::{le_i32, le_u16, le_u32, le_u64},
+    Ck3Flavor,
+};
+use crate::{BinaryFlavor, Error, ErrorKind, Eu4Flavor, Rgb, Scalar};
 
 /// Represents any valid binary value
 #[derive(Debug, PartialEq)]
@@ -695,14 +698,24 @@ impl<'a> BinaryTape<'a> {
         BinaryTape::default()
     }
 
-    /// Convenience method for creating a binary parser and parsing the given input
-    pub fn from_slice(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
-        BinaryTapeParser::with_flavor(DefaultFlavor).parse_slice(data)
+    /// Convenience method for creating a binary parser and parsing the given input in eu4 format
+    pub fn from_eu4(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
+        Self::eu4_parser().parse_slice(data)
     }
 
-    /// Returns a parser for the default flavor of binary data
-    pub fn parser() -> BinaryTapeParser<DefaultFlavor> {
-        BinaryTape::parser_flavor(DefaultFlavor)
+    /// Returns a parser for the eu4 flavor of binary data
+    pub fn eu4_parser() -> BinaryTapeParser<Eu4Flavor> {
+        BinaryTape::parser_flavor(Eu4Flavor::new())
+    }
+
+    /// Convenience method for creating a binary parser and parsing the given input in ck3 format
+    pub fn from_ck3(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
+        Self::ck3_parser().parse_slice(data)
+    }
+
+    /// Returns a parser for the ck3 flavor of binary data
+    pub fn ck3_parser() -> BinaryTapeParser<Ck3Flavor> {
+        BinaryTape::parser_flavor(Ck3Flavor::new())
     }
 
     /// Returns a parser for a given flavor of binary data
@@ -722,9 +735,10 @@ impl<'a> BinaryTape<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Ck3Flavor;
 
     fn parse<'a>(data: &'a [u8]) -> Result<BinaryTape<'a>, Error> {
-        BinaryTape::from_slice(data)
+        BinaryTape::from_eu4(data)
     }
 
     #[test]
@@ -735,7 +749,7 @@ mod tests {
     #[test]
     fn test_parse_offset() {
         let data = [0x82, 0x2d, 0x01, 0x00, 0x4c, 0x28, 0x01, 0x00, 0x4c, 0x28];
-        let err = BinaryTape::from_slice(&data[..]).unwrap_err();
+        let err = BinaryTape::from_eu4(&data[..]).unwrap_err();
         match err.kind() {
             ErrorKind::InvalidSyntax { offset, .. } => {
                 assert_eq!(*offset, 6);
@@ -744,7 +758,7 @@ mod tests {
         }
 
         let data2 = [0x82, 0x2d, 0x01, 0x00, 0x01, 0x00];
-        let err = BinaryTape::from_slice(&data2[..]).unwrap_err();
+        let err = BinaryTape::from_eu4(&data2[..]).unwrap_err();
         match err.kind() {
             ErrorKind::InvalidSyntax { offset, .. } => {
                 assert_eq!(*offset, 4);
@@ -809,18 +823,6 @@ mod tests {
 
     #[test]
     fn test_custom_float_event() {
-        struct Ck3Flavor;
-        impl BinaryFlavor for Ck3Flavor {
-            fn visit_f32_1(&self, data: &[u8]) -> f32 {
-                f32::from_le_bytes([data[0], data[1], data[2], data[3]])
-            }
-
-            fn visit_f32_2(&self, data: &[u8]) -> f32 {
-                let val = le_i32(data);
-                (val as f32) / 1000.0
-            }
-        }
-
         let base_data = vec![0x82, 0x2d, 0x01, 0x00, 0x0d, 0x00];
         let f32_data = [[0x8f, 0xc2, 0x75, 0x3e]];
 
@@ -830,7 +832,7 @@ mod tests {
             let full_data = [base_data.clone(), bin.to_vec()].concat();
 
             assert_eq!(
-                BinaryTapeParser::with_flavor(Ck3Flavor)
+                BinaryTapeParser::with_flavor(Ck3Flavor::new())
                     .parse_slice(&full_data[..])
                     .unwrap()
                     .token_tape,
@@ -850,7 +852,7 @@ mod tests {
             let full_data = [base_data.clone(), bin.to_vec()].concat();
 
             assert_eq!(
-                BinaryTapeParser::with_flavor(Ck3Flavor)
+                BinaryTapeParser::with_flavor(Ck3Flavor::new())
                     .parse_slice(&full_data[..])
                     .unwrap()
                     .token_tape,
@@ -1188,7 +1190,7 @@ mod tests {
             0x82, 0x2d, 0x01, 0x00, 0x4b, 0x28, 0x4d, 0x28, 0x01, 0x00, 0x4c, 0x28,
         ];
 
-        BinaryTape::parser()
+        BinaryTape::eu4_parser()
             .parse_slice_into_tape(&data[..], &mut tape)
             .unwrap();
 
@@ -1206,7 +1208,7 @@ mod tests {
             0x83, 0x2d, 0x01, 0x00, 0x4c, 0x28, 0x4e, 0x28, 0x01, 0x00, 0x4d, 0x28,
         ];
 
-        BinaryTape::parser()
+        BinaryTape::eu4_parser()
             .parse_slice_into_tape(&data2[..], &mut tape)
             .unwrap();
 

@@ -1,5 +1,6 @@
 use crate::{
-    de::ColorSequence, DeserializeError, DeserializeErrorKind, Error, Scalar, TextTape, TextToken,
+    de::ColorSequence, DeserializeError, DeserializeErrorKind, Encoding, Error, Scalar, TextTape,
+    TextToken, Utf8Encoding, Windows1252Encoding,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
@@ -37,7 +38,7 @@ use std::borrow::Cow;
 /// let data = b"field1=ENG field2=ENH";
 ///
 /// // the data can be parsed and deserialized in one step
-/// let a: StructA = TextDeserializer::from_slice(&data[..])?;
+/// let a: StructA = TextDeserializer::from_windows1252_slice(&data[..])?;
 /// assert_eq!(a, StructA {
 ///   b: StructB { field1: "ENG".to_string() },
 ///   c: StructC { field2: "ENH".to_string() },
@@ -45,8 +46,8 @@ use std::borrow::Cow;
 ///
 /// // or split into two steps, whatever is appropriate.
 /// let tape = TextTape::from_slice(&data[..])?;
-/// let b: StructB = TextDeserializer::from_tape(&tape)?;
-/// let c: StructC = TextDeserializer::from_tape(&tape)?;
+/// let b: StructB = TextDeserializer::from_windows1252_tape(&tape)?;
+/// let c: StructC = TextDeserializer::from_windows1252_tape(&tape)?;
 /// assert_eq!(b, StructB { field1: "ENG".to_string() });
 /// assert_eq!(c, StructC { field2: "ENH".to_string() });
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -54,33 +55,68 @@ use std::borrow::Cow;
 pub struct TextDeserializer;
 
 impl TextDeserializer {
-    /// Convenience method for parsing the given text data and deserializing
-    pub fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
+    /// Convenience method for parsing the given text data and deserializing as windows1252 encoded.
+    pub fn from_windows1252_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
     where
         T: Deserialize<'a>,
     {
         let tape = TextTape::from_slice(data)?;
-        Ok(TextDeserializer::from_tape(&tape)?)
+        Ok(TextDeserializer::from_windows1252_tape(&tape)?)
     }
 
-    /// Deserialize the given text tape
-    pub fn from_tape<'b, 'a: 'b, T>(tape: &'b TextTape<'a>) -> Result<T, Error>
+    /// Deserialize the given text tape assuming quoted strings are windows1252 encoded.
+    pub fn from_windows1252_tape<'b, 'a: 'b, T>(tape: &'b TextTape<'a>) -> Result<T, Error>
     where
         T: Deserialize<'a>,
     {
+        Self::from_encoded_tape(tape, Windows1252Encoding::new())
+    }
+
+    /// Convenience method for parsing the given text data and deserializing as utf8 encoded.
+    pub fn from_utf8_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
+    where
+        T: Deserialize<'a>,
+    {
+        let tape = TextTape::from_slice(data)?;
+        Ok(TextDeserializer::from_utf8_tape(&tape)?)
+    }
+
+    /// Deserialize the given text tape assuming quoted strings are utf8 encoded.
+    pub fn from_utf8_tape<'b, 'a: 'b, T>(tape: &'b TextTape<'a>) -> Result<T, Error>
+    where
+        T: Deserialize<'a>,
+    {
+        Self::from_encoded_tape(tape, Utf8Encoding::new())
+    }
+
+    /// Deserialize the given text tape assuming quoted strings can be decoded
+    /// according to the given encoder
+    pub fn from_encoded_tape<'b, 'a: 'b, T, E>(
+        tape: &'b TextTape<'a>,
+        encoding: E,
+    ) -> Result<T, Error>
+    where
+        T: Deserialize<'a>,
+        E: Encoding,
+    {
         let mut root = RootDeserializer {
             tokens: tape.tokens(),
+            encoding: &encoding,
         };
         Ok(T::deserialize(&mut root)?)
     }
 }
 
 #[derive(Debug)]
-pub struct RootDeserializer<'b, 'a: 'b> {
+pub struct RootDeserializer<'b, 'a: 'b, E> {
     tokens: &'b [TextToken<'a>],
+    encoding: &'b E,
 }
 
-impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut RootDeserializer<'b, 'de> {
+impl<'b, 'de, 'r, E> de::Deserializer<'de> for &'r mut RootDeserializer<'b, 'de, E>
+where
+    E: Encoding,
+{
     type Error = DeserializeError;
 
     fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
@@ -98,7 +134,12 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut RootDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_map(BinaryMap::new(&self.tokens, 0, self.tokens.len()))
+        visitor.visit_map(BinaryMap::new(
+            &self.tokens,
+            0,
+            self.tokens.len(),
+            self.encoding,
+        ))
     }
 
     fn deserialize_struct<V>(
@@ -120,25 +161,33 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut RootDeserializer<'b, 'de> {
     }
 }
 
-struct BinaryMap<'a, 'de: 'a> {
+struct BinaryMap<'a, 'de: 'a, E> {
     tokens: &'a [TextToken<'de>],
     tape_idx: usize,
     end_idx: usize,
     value_ind: usize,
+    encoding: &'a E,
 }
 
-impl<'a, 'de> BinaryMap<'a, 'de> {
-    fn new(tokens: &'a [TextToken<'de>], tape_idx: usize, end_idx: usize) -> Self {
+impl<'a, 'de, E> BinaryMap<'a, 'de, E>
+where
+    E: Encoding,
+{
+    fn new(tokens: &'a [TextToken<'de>], tape_idx: usize, end_idx: usize, encoding: &'a E) -> Self {
         BinaryMap {
             tokens,
             tape_idx,
             end_idx,
             value_ind: 0,
+            encoding,
         }
     }
 }
 
-impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
+impl<'de, 'a, E> MapAccess<'de> for BinaryMap<'a, 'de, E>
+where
+    E: Encoding,
+{
     type Error = DeserializeError;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
@@ -160,6 +209,7 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
             seed.deserialize(KeyDeserializer {
                 tape_idx: current_idx,
                 tokens: self.tokens,
+                encoding: self.encoding,
             })
             .map(Some)
         } else {
@@ -174,6 +224,7 @@ impl<'de, 'a> MapAccess<'de> for BinaryMap<'a, 'de> {
         seed.deserialize(ValueDeserializer {
             value_ind: self.value_ind,
             tokens: &self.tokens,
+            encoding: self.encoding,
         })
     }
 }
@@ -187,18 +238,26 @@ fn ensure_scalar<'a>(s: &TextToken<'a>) -> Result<Scalar<'a>, DeserializeError> 
     }
 }
 
-struct KeyDeserializer<'b, 'de: 'b> {
+struct KeyDeserializer<'b, 'de: 'b, E> {
     tokens: &'b [TextToken<'de>],
     tape_idx: usize,
+    encoding: &'b E,
 }
 
-impl<'b, 'de> KeyDeserializer<'b, 'de> {
-    fn new(tokens: &'b [TextToken<'de>], tape_idx: usize) -> Self {
-        KeyDeserializer { tokens, tape_idx }
+impl<'b, 'de, E> KeyDeserializer<'b, 'de, E> {
+    fn new(tokens: &'b [TextToken<'de>], tape_idx: usize, encoding: &'b E) -> Self {
+        KeyDeserializer {
+            tokens,
+            tape_idx,
+            encoding,
+        }
     }
 }
 
-impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
+impl<'b, 'de: 'b, E> de::Deserializer<'de> for KeyDeserializer<'b, 'de, E>
+where
+    E: Encoding,
+{
     type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -298,16 +357,18 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
         V: Visitor<'de>,
     {
         ensure_scalar(&self.tokens[self.tape_idx])
-            .and_then(|s| visitor.visit_string(s.to_utf8_owned()))
+            .and_then(|s| visitor.visit_string(self.encoding.decode(s.view_data()).into_owned()))
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        ensure_scalar(&self.tokens[self.tape_idx]).and_then(|s| match s.to_utf8() {
-            Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
-            Cow::Owned(s) => visitor.visit_string(s),
+        ensure_scalar(&self.tokens[self.tape_idx]).and_then(|s| {
+            match self.encoding.decode(s.view_data()) {
+                Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
+                Cow::Owned(s) => visitor.visit_string(s),
+            }
         })
     }
 
@@ -463,12 +524,16 @@ impl<'b, 'de> de::Deserializer<'de> for KeyDeserializer<'b, 'de> {
 }
 
 #[derive(Debug)]
-struct ValueDeserializer<'b, 'de: 'b> {
+struct ValueDeserializer<'b, 'de: 'b, E> {
     value_ind: usize,
     tokens: &'b [TextToken<'de>],
+    encoding: &'b E,
 }
 
-impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
+impl<'b, 'de, E> de::Deserializer<'de> for ValueDeserializer<'b, 'de, E>
+where
+    E: Encoding,
+{
     type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -482,9 +547,12 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
                 de_idx: 0,
                 idx: idx + 1,
                 end_idx: *x,
+                encoding: self.encoding,
             }),
             TextToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(**x)),
-            TextToken::Object(x) => visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x)),
+            TextToken::Object(x) => {
+                visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x, self.encoding))
+            }
             TextToken::End(_x) => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered end when trying to deserialize",
@@ -505,6 +573,7 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
                 de_idx: 0,
                 idx: idx + 1,
                 end_idx: *x,
+                encoding: self.encoding,
             }),
             TextToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(**x)),
             TextToken::End(_x) => Err(DeserializeError {
@@ -568,91 +637,91 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_string(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_string(visitor)
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_str(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_str(visitor)
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_bool(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_bool(visitor)
     }
 
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_u64(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_u64(visitor)
     }
 
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_u32(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_u32(visitor)
     }
 
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_u16(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_u16(visitor)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_u8(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_u8(visitor)
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_i64(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_i64(visitor)
     }
 
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_i32(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_i32(visitor)
     }
 
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_i16(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_i16(visitor)
     }
 
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_i8(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_i8(visitor)
     }
 
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_f64(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_f64(visitor)
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.value_ind).deserialize_f32(visitor)
+        KeyDeserializer::new(self.tokens, self.value_ind, self.encoding).deserialize_f32(visitor)
     }
 
     fn deserialize_struct<V>(
@@ -673,10 +742,14 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
     {
         let idx = self.value_ind;
         match &self.tokens[idx] {
-            TextToken::Object(x) => visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x)),
+            TextToken::Object(x) => {
+                visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x, self.encoding))
+            }
 
             // An array is supported if it is empty
-            TextToken::Array(x) => visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x)),
+            TextToken::Array(x) => {
+                visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x, self.encoding))
+            }
             _ => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered unexpected token when trying to deserialize map",
@@ -693,14 +766,18 @@ impl<'b, 'de> de::Deserializer<'de> for ValueDeserializer<'b, 'de> {
 }
 
 #[derive(Debug)]
-struct BinarySequence<'b, 'de: 'b> {
+struct BinarySequence<'b, 'de: 'b, E> {
     tokens: &'b [TextToken<'de>],
     idx: usize,
     de_idx: usize,
     end_idx: usize,
+    encoding: &'b E,
 }
 
-impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
+impl<'b, 'de, 'r, E> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de, E>
+where
+    E: Encoding,
+{
     type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -708,14 +785,18 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
         V: Visitor<'de>,
     {
         match &self.tokens[self.de_idx] {
-            TextToken::Object(x) => {
-                visitor.visit_map(BinaryMap::new(self.tokens, self.de_idx + 1, *x))
-            }
+            TextToken::Object(x) => visitor.visit_map(BinaryMap::new(
+                self.tokens,
+                self.de_idx + 1,
+                *x,
+                self.encoding,
+            )),
             TextToken::Array(x) => visitor.visit_seq(BinarySequence {
                 tokens: self.tokens,
                 de_idx: 0,
                 idx: self.de_idx + 1,
                 end_idx: *x,
+                encoding: self.encoding,
             }),
             TextToken::Rgb(_) => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from("unable to deserialize rgb")),
@@ -733,91 +814,91 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_string(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_string(visitor)
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_str(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_str(visitor)
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_bool(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_bool(visitor)
     }
 
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_u64(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_u64(visitor)
     }
 
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_u32(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_u32(visitor)
     }
 
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_u16(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_u16(visitor)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_u8(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_u8(visitor)
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_i64(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_i64(visitor)
     }
 
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_i32(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_i32(visitor)
     }
 
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_i16(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_i16(visitor)
     }
 
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_i8(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_i8(visitor)
     }
 
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_f64(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_f64(visitor)
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        KeyDeserializer::new(self.tokens, self.de_idx).deserialize_f32(visitor)
+        KeyDeserializer::new(self.tokens, self.de_idx, self.encoding).deserialize_f32(visitor)
     }
 
     serde::forward_to_deserialize_any! {
@@ -827,7 +908,10 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut BinarySequence<'b, 'de> {
     }
 }
 
-impl<'b, 'de> SeqAccess<'de> for BinarySequence<'b, 'de> {
+impl<'b, 'de, E> SeqAccess<'de> for BinarySequence<'b, 'de, E>
+where
+    E: Encoding,
+{
     type Error = DeserializeError;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
@@ -865,7 +949,7 @@ mod tests {
     where
         T: Deserialize<'a>,
     {
-        Ok(TextDeserializer::from_slice(data)?)
+        Ok(TextDeserializer::from_windows1252_slice(data)?)
     }
 
     #[test]

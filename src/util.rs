@@ -26,6 +26,11 @@ pub(crate) fn le_i32(data: &[u8]) -> i32 {
     unsafe { ::std::ptr::read_unaligned(ptr).to_le() }
 }
 
+#[inline]
+pub(crate) fn le_f32(data: &[u8]) -> f32 {
+    f32::from_bits(le_u32(data))
+}
+
 #[inline(always)]
 pub(crate) const fn repeat_byte(b: u8) -> u64 {
     (b as u64) * (u64::MAX / 255)
