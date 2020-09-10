@@ -1,4 +1,4 @@
-## v0.5.0 - TBD
+## v0.5.0 - 2020-09-10
 
 The big change here is that deserializers need to know what encoding strings are in: UTF-8 or Windows-1252. Previously the deserializer assumed strings were encoded as Windows-1252. This falls down when UTF-8 input is encountered like in CK3 saves. So now functions like `TextDeserializer::from_slice` have been split into two with the text api surface looking like:
 
@@ -29,7 +29,8 @@ Having a user supplied `Encoding` allows for additional use case like deserializ
 Other changes:
 
  - Removed `Scalar::to_utf8` as a scalar does not know the encoding
- - `ScalarError` no longer owns the faulty string as the encoding is not known when performing scalar functions 
+ - `ScalarError` no longer owns the faulty string as the encoding is not known when performing scalar functions
+ - Made the tape parsers more robust against malformed inputs
 
 ## v0.4.2 - 2020-09-07
 
