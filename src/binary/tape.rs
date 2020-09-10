@@ -663,7 +663,12 @@ where
                             // CK3 introduced hidden object inside lists so we work around it by trying to
                             // make the object explicit, but we first check to see if we have any prior
                             // array values
-                            if self.token_tape.len() - parent_ind <= 1 {
+                            if self.token_tape.len() - parent_ind <= 1
+                                || matches!(
+                                    self.token_tape[self.token_tape.len() - 1],
+                                    BinaryToken::End(_)
+                                )
+                            {
                                 return Err(Error::new(ErrorKind::InvalidSyntax {
                                     msg: String::from("hidden object must start with a key"),
                                     offset: self.offset(data) - 2,
@@ -1290,6 +1295,13 @@ mod tests {
     #[test]
     fn test_should_not_parse_on_eof3() {
         let data = [12, 2, 3, 0, 3, 0, 3, 0, 1, 0, 0, 0, 4, 0];
+        let res = parse(&data[..]);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_hidden_object_needs_a_value() {
+        let data = [160, 0, 3, 0, 3, 0, 4, 0, 1, 0, 0, 0, 4, 0];
         let res = parse(&data[..]);
         assert!(res.is_err());
     }

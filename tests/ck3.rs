@@ -74,3 +74,10 @@ fn deserialize_ck3_binary() {
         }
     )
 }
+
+#[test]
+fn deserialize_ck3_plain_timeout_fix() {
+    let data = include_bytes!("./fixtures/txt-timeout");
+    let header: Result<Header, _> = jomini::TextDeserializer::from_utf8_slice(&data[..]);
+    assert!(header.is_err());
+}

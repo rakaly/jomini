@@ -194,26 +194,36 @@ where
     where
         K: DeserializeSeed<'de>,
     {
-        if self.tape_idx < self.end_idx {
-            let current_idx = self.tape_idx;
+        loop {
+            if self.tape_idx < self.end_idx {
+                let current_idx = self.tape_idx;
 
-            self.value_ind = self.tape_idx + 1;
-            let next_key = match self.tokens[self.value_ind] {
-                TextToken::Array(x) => x,
-                TextToken::Object(x) => x,
-                _ => self.value_ind,
-            };
+                self.value_ind = self.tape_idx + 1;
+                let next_key = match self.tokens[self.value_ind] {
+                    TextToken::Array(x) => x,
+                    TextToken::Object(x) => x,
+                    TextToken::End(_) => {
+                        // this really shouldn't happen but if it does we just
+                        // move our sights to the end token and continue on
+                        self.tape_idx = self.value_ind;
+                        continue;
+                    }
+                    _ => self.value_ind,
+                };
 
-            self.tape_idx = next_key + 1;
+                debug_assert!(next_key + 1 > self.tape_idx);
+                self.tape_idx = next_key + 1;
 
-            seed.deserialize(KeyDeserializer {
-                tape_idx: current_idx,
-                tokens: self.tokens,
-                encoding: self.encoding,
-            })
-            .map(Some)
-        } else {
-            Ok(None)
+                return seed
+                    .deserialize(KeyDeserializer {
+                        tape_idx: current_idx,
+                        tokens: self.tokens,
+                        encoding: self.encoding,
+                    })
+                    .map(Some);
+            } else {
+                return Ok(None);
+            }
         }
     }
 

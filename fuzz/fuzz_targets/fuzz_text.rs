@@ -28,12 +28,20 @@ fuzz_target!(|data: &[u8]| {
     let _: Result<Meta, _> = jomini::TextTape::from_slice(&data)
         .and_then(|tape| {
             let tokens = tape.tokens();
-            for token in tokens {
+            for (i, token) in tokens.iter().enumerate() {
                 match token {
                     jomini::TextToken::Array(ind) |
                     jomini::TextToken::Object(ind) |
                     jomini::TextToken::End(ind) if *ind == 0 => {
                         panic!("zero ind encountered");
+                    }
+                    jomini::TextToken::Array(ind) | jomini::TextToken::Object(ind) => {
+                        match tokens[*ind] {
+                            jomini::TextToken::End(ind2) => {
+                                assert_eq!(ind2, i)
+                            }
+                            _ => panic!("expected end")
+                        }
                     }
                     _ => {}
                 }
