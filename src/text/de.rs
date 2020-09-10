@@ -559,7 +559,7 @@ where
                 end_idx: *x,
                 encoding: self.encoding,
             }),
-            TextToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(**x)),
+            TextToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
             TextToken::Object(x) => {
                 visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x, self.encoding))
             }
@@ -585,7 +585,7 @@ where
                 end_idx: *x,
                 encoding: self.encoding,
             }),
-            TextToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(**x)),
+            TextToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
             TextToken::End(_x) => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered end when trying to deserialize",

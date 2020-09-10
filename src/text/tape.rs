@@ -18,7 +18,7 @@ pub enum TextToken<'a> {
     End(usize),
 
     /// Represents a text encoded rgb value
-    Rgb(Box<Rgb>),
+    Rgb(Rgb),
 }
 
 /// Creates a parser that a writes to a text tape
@@ -572,11 +572,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
                 }
                 ParseState::RgbClose => match data[0] {
                     b'}' => {
-                        self.token_tape.push(TextToken::Rgb(Box::new(Rgb {
+                        self.token_tape.push(TextToken::Rgb(Rgb {
                             r: red,
                             b: blue,
                             g: green,
-                        })));
+                        }));
                         data = &data[1..];
                         state = ParseState::Key;
                     }
@@ -620,6 +620,17 @@ mod tests {
 
     fn parse<'a>(data: &'a [u8]) -> Result<TextTape<'a>, Error> {
         TextTape::from_slice(data)
+    }
+
+    
+    #[test]
+    fn test_size_of_binary_token() {
+        assert_eq!(std::mem::size_of::<TextToken>(), 24);
+    }
+
+    #[test]
+    fn test_binary_tokens_dont_need_to_be_dropped() {
+        assert!(!std::mem::needs_drop::<TextToken>());
     }
 
     #[test]
@@ -1143,11 +1154,11 @@ mod tests {
             parse(&data[..]).unwrap().token_tape,
             vec![
                 TextToken::Scalar(Scalar::new(b"color")),
-                TextToken::Rgb(Box::new(Rgb {
+                TextToken::Rgb(Rgb {
                     r: 100,
                     g: 200,
                     b: 150,
-                })),
+                }),
             ]
         );
     }
