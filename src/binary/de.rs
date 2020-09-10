@@ -380,7 +380,7 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: Encoding> de::Deserializer<'
                 idx: idx + 1,
                 end_idx: *x,
             }),
-            BinaryToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(**x)),
+            BinaryToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
             BinaryToken::Object(x) => {
                 visitor.visit_map(BinaryMap::new(&self.config, self.tokens, idx + 1, *x))
             }
@@ -406,7 +406,7 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: Encoding> de::Deserializer<'
                 idx: idx + 1,
                 end_idx: *x,
             }),
-            BinaryToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(**x)),
+            BinaryToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
             _ => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered non-array when trying to deserialize array",
