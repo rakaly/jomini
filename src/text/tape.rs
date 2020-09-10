@@ -370,6 +370,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
                 ParseState::ObjectValue => {
                     match data[0] {
                         b'{' => {
+                            if array_ind_of_hidden_obj.is_some() {
+                                return Err(Error::new(ErrorKind::InvalidSyntax {
+                                    offset: self.offset(data) - 2,
+                                    msg: String::from(
+                                        "nested values inside a hidden object are unsupported",
+                                    ),
+                                }));
+                            }
+
                             self.token_tape.push(TextToken::Array(0));
                             state = ParseState::ParseOpen;
                             data = &data[1..];
@@ -418,7 +427,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             data = &data[1..];
                         }
 
-                        // Array of objects
+                        // array of objects or another array
                         b'{' => {
                             let ind = self.token_tape.len() - 1;
                             self.token_tape[ind] = TextToken::Array(parent_ind);
@@ -481,7 +490,20 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     }
                     b'=' => {
                         // CK3 introduced hidden object inside lists so we work around it by trying to
-                        // make the object explicit
+                        // make the object explicit, but we first check to see if we have any prior
+                        // array values
+                        if self.token_tape.len() - parent_ind <= 1
+                            || matches!(
+                                self.token_tape[self.token_tape.len() - 1],
+                                TextToken::End(_)
+                            )
+                        {
+                            return Err(Error::new(ErrorKind::InvalidSyntax {
+                                msg: String::from("hidden object must start with a key"),
+                                offset: self.offset(data) - 1,
+                            }));
+                        }
+
                         let hidden_object = TextToken::Object(parent_ind);
                         array_ind_of_hidden_obj = Some(parent_ind);
                         parent_ind = self.token_tape.len() - 1;
@@ -1177,6 +1199,18 @@ mod tests {
                 TextToken::End(1),
             ]
         );
+    }
+
+    #[test]
+    fn test_hidden_object_needs_key() {
+        let data = b"a{{}=}";
+        assert!(parse(&data[..]).is_err());
+    }
+
+    #[test]
+    fn test_objects_in_hidden_objects_not_supported() {
+        let data = b"u{{}a={0=1}";
+        assert!(parse(&data[..]).is_err());
     }
 
     #[test]

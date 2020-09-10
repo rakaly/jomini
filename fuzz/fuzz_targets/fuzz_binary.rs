@@ -44,12 +44,20 @@ fuzz_target!(|data: &[u8]| {
 
     let _: Result<Meta, _> = jomini::BinaryTape::from_eu4(&data).and_then(|tape| {
         let tokens = tape.tokens();
-        for token in tokens {
+        for (i, token) in tokens.iter().enumerate() {
             match token {
                 jomini::BinaryToken::Array(ind) |
                 jomini::BinaryToken::Object(ind) |
                 jomini::BinaryToken::End(ind) if *ind == 0 => {
                     panic!("zero ind encountered");
+                }
+                jomini::BinaryToken::Array(ind) | jomini::BinaryToken::Object(ind) => {
+                    match tokens[*ind] {
+                        jomini::BinaryToken::End(ind2) => {
+                            assert_eq!(ind2, i)
+                        }
+                        _ => panic!("expected end")
+                    }
                 }
                 _ => {}
             }
