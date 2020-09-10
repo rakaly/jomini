@@ -40,8 +40,8 @@ pub enum BinaryToken<'a> {
     /// Represents a 16bit token key that can be resolved to an equivalent textual representation.
     Token(u16),
 
-    /// Represents a binary encoded rgb value
-    Rgb(Box<Rgb>),
+    /// Represents the index of the encoded rgb value
+    Rgb(Rgb),
 }
 
 const END: u16 = 0x0004;
@@ -87,6 +87,7 @@ where
     ) -> Result<(), Error> {
         let token_tape = &mut tape.token_tape;
         token_tape.clear();
+
         token_tape.reserve(data.len() / 100 * 15);
         let mut state = ParserState {
             data,
@@ -107,12 +108,13 @@ struct ParserState<'a, 'b, F> {
     token_tape: &'b mut Vec<BinaryToken<'a>>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone, Eq)]
 enum ParseState {
-    Key,
-    KeyValueSeparator,
-    ObjectValue,
-    ArrayValue,
+    Error = 0,
+    Key = 1,
+    KeyValueSeparator = 2,
+    ObjectValue = 3,
+    ArrayValue = 4,
 }
 
 impl<'a, 'b, F> ParserState<'a, 'b, F>
@@ -124,9 +126,17 @@ where
     }
 
     #[inline]
+    fn parse_next_id_opt(&mut self, data: &'a [u8]) -> Option<(&'a [u8], u16)> {
+        if let Some(val) = data.get(..2).map(le_u16) {
+            Some((&data[2..], val))
+        } else {
+            None
+        }
+    }
+
+    #[inline]
     fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], u16), Error> {
-        let val = data.get(..2).map(le_u16).ok_or_else(Error::eof)?;
-        Ok((&data[2..], val))
+        self.parse_next_id_opt(data).ok_or_else(Error::eof)
     }
 
     #[inline]
@@ -177,7 +187,6 @@ where
         Ok(&data[1..])
     }
 
-    #[inline]
     fn parse_rgb(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let val = data
             .get(..22) // u16 `{` + (u16 + u32) * 3 + u16 `}`
@@ -187,7 +196,7 @@ where
                 b: le_u32(&x[16..]),
             })
             .ok_or_else(Error::eof)?;
-        self.token_tape.push(BinaryToken::Rgb(Box::new(val)));
+        self.token_tape.push(BinaryToken::Rgb(val));
         Ok(&data[22..])
     }
 
@@ -220,430 +229,292 @@ where
         // both the end of the array and object, but we'll produce two BinaryToken::End.
         let mut array_ind_of_hidden_obj = None;
 
+        const SCALAR_STATE_NEXT: [ParseState; 5] = [
+            ParseState::Error,
+            ParseState::KeyValueSeparator,
+            ParseState::Error,
+            ParseState::Key,
+            ParseState::ArrayValue,
+        ];
+
         let mut parent_ind = 0;
-        while !data.is_empty() {
-            match state {
-                ParseState::Key => {
-                    let (d, token_id) = self.parse_next_id(data)?;
-                    data = d;
-                    data = match token_id {
-                        U32 => {
-                            let res = self.parse_u32(data)?;
-                            state = ParseState::KeyValueSeparator;
-                            res
-                        }
-                        U64 => {
-                            let res = self.parse_u64(data)?;
-                            state = ParseState::KeyValueSeparator;
-                            res
-                        }
-                        I32 => {
-                            let res = self.parse_i32(data)?;
-                            state = ParseState::KeyValueSeparator;
-                            res
-                        }
-                        BOOL => {
-                            let res = self.parse_bool(data)?;
-                            state = ParseState::KeyValueSeparator;
-                            res
-                        }
-                        STRING_1 | STRING_2 => {
-                            let res = self.parse_string(data)?;
-                            state = ParseState::KeyValueSeparator;
-                            res
-                        }
-                        F32_1 => {
-                            let res = self.parse_f32_1(data)?;
-                            state = ParseState::KeyValueSeparator;
-                            res
-                        }
-                        F32_2 => {
-                            let res = self.parse_f32_2(data)?;
-                            state = ParseState::KeyValueSeparator;
-                            res
+        while state != ParseState::Error {
+            let (d, token_id) = match self.parse_next_id_opt(data) {
+                Some((d, token_id)) => (d, token_id),
+                None => {
+                    if parent_ind == 0 && state == ParseState::Key {
+                        return Ok(());
+                    } else {
+                        return Err(Error::eof());
+                    }
+                }
+            };
+
+            match token_id {
+                U32 => {
+                    data = self.parse_u32(d)?;
+                    state = SCALAR_STATE_NEXT[state as usize];
+                }
+                U64 => {
+                    data = self.parse_u64(d)?;
+                    state = SCALAR_STATE_NEXT[state as usize];
+                }
+                I32 => {
+                    data = self.parse_i32(d)?;
+                    state = SCALAR_STATE_NEXT[state as usize];
+                }
+                BOOL => {
+                    data = self.parse_bool(d)?;
+                    state = SCALAR_STATE_NEXT[state as usize];
+                }
+                STRING_1 | STRING_2 => {
+                    data = self.parse_string(d)?;
+                    state = SCALAR_STATE_NEXT[state as usize];
+                }
+                F32_1 => {
+                    data = self.parse_f32_1(d)?;
+                    state = SCALAR_STATE_NEXT[state as usize];
+                }
+                F32_2 => {
+                    data = self.parse_f32_2(d)?;
+                    state = SCALAR_STATE_NEXT[state as usize];
+                }
+
+                OPEN => {
+                    if state == ParseState::ObjectValue {
+                        if array_ind_of_hidden_obj.is_some() {
+                            return Err(Error::new(ErrorKind::InvalidSyntax {
+                                offset: self.offset(data) - 2,
+                                msg: String::from(
+                                    "nested values inside a hidden object are unsupported",
+                                ),
+                            }));
                         }
 
-                        // Skip empty object
-                        OPEN => {
-                            let (d, token_id) = self.parse_next_id(d)?;
-                            if token_id != END {
-                                return Err(Error::new(ErrorKind::InvalidEmptyObject {
-                                    offset: self.offset(data) - 2,
-                                }));
-                            }
-                            d
-                        }
-                        END => {
-                            let grand_ind = match self.token_tape.get(parent_ind) {
-                                Some(BinaryToken::Array(x)) => *x,
-                                Some(BinaryToken::Object(x)) => *x,
-                                _ => 0,
-                            };
+                        let ind = self.token_tape.len();
+                        self.token_tape.push(BinaryToken::Array(0));
 
-                            state = match self.token_tape.get(grand_ind) {
-                                Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
-                                Some(BinaryToken::Object(_x)) => ParseState::Key,
-                                _ => ParseState::Key,
-                            };
+                        data = d;
+                        let (d, token_id) = self.parse_next_id(data)?;
+                        let old_data = data;
+                        data = d;
 
-                            let end_idx = self.token_tape.len();
-                            if parent_ind == 0 && grand_ind == 0 {
-                                return Err(Error::new(ErrorKind::StackEmpty {
-                                    offset: self.offset(data),
-                                }));
-                            }
-
-                            if let Some(parent) = self.token_tape.get_mut(parent_ind) {
-                                *parent = BinaryToken::Object(end_idx);
-                            }
-
-                            self.token_tape.push(BinaryToken::End(parent_ind));
-
-                            if let Some(array_ind) = array_ind_of_hidden_obj.take() {
-                                let end_idx = self.token_tape.len();
-                                self.token_tape.push(BinaryToken::End(array_ind));
-
-                                // Grab the grand parent from the outer array. Even though the logic should
-                                // be more strict (ie: throwing an error when if the parent array index doesn't exist,
-                                // or if the parent doesn't exist), but since hidden objects are such a rather rare
-                                // occurrence, it's better to be flexible
-                                let grand_ind =
-                                    if let Some(parent) = self.token_tape.get_mut(array_ind) {
-                                        let grand_ind = match parent {
-                                            BinaryToken::Array(x) => *x,
-                                            _ => 0,
-                                        };
-                                        *parent = BinaryToken::Array(end_idx);
-                                        grand_ind
-                                    } else {
-                                        0
-                                    };
-
-                                state = match self.token_tape.get(grand_ind) {
+                        match token_id {
+                            // Empty array
+                            END => {
+                                state = match self.token_tape.get(parent_ind) {
                                     Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
                                     Some(BinaryToken::Object(_x)) => ParseState::Key,
                                     _ => ParseState::Key,
                                 };
 
-                                parent_ind = grand_ind;
-                            } else {
-                                parent_ind = grand_ind;
+                                self.token_tape[ind] = BinaryToken::Array(ind + 1);
+                                self.token_tape.push(BinaryToken::End(ind));
+                                continue;
                             }
 
-                            data
+                            // array of objects or another array
+                            OPEN => {
+                                self.token_tape[ind] = BinaryToken::Array(parent_ind);
+                                parent_ind = ind;
+
+                                state = ParseState::ArrayValue;
+
+                                // Rewind the data so that we can parse the nested open
+                                data = old_data;
+                                continue;
+                            }
+
+                            U32 => {
+                                data = self.parse_u32(data)?;
+                            }
+                            U64 => {
+                                data = self.parse_u64(data)?;
+                            }
+                            I32 => {
+                                data = self.parse_i32(data)?;
+                            }
+                            BOOL => {
+                                data = self.parse_bool(data)?;
+                            }
+                            STRING_1 | STRING_2 => {
+                                data = self.parse_string(data)?;
+                            }
+                            F32_1 => {
+                                data = self.parse_f32_1(data)?;
+                            }
+                            F32_2 => {
+                                data = self.parse_f32_2(data)?;
+                            }
+                            RGB => {
+                                data = self.parse_rgb(data)?;
+                            }
+                            x => {
+                                self.token_tape.push(BinaryToken::Token(x));
+                            }
                         }
-                        RGB => {
-                            return Err(Error::new(ErrorKind::InvalidSyntax {
-                                msg: String::from("RGB not valid for a key"),
-                                offset: self.offset(data) - 2,
+
+                        let (d, token_id) = self.parse_next_id(data)?;
+                        data = match token_id {
+                            OPEN => {
+                                self.token_tape[ind] = BinaryToken::Object(parent_ind);
+                                parent_ind = ind;
+                                state = ParseState::ObjectValue;
+                                data
+                            }
+                            EQUAL => {
+                                self.token_tape[ind] = BinaryToken::Object(parent_ind);
+                                parent_ind = ind;
+                                state = ParseState::ObjectValue;
+                                d
+                            }
+                            _ => {
+                                self.token_tape[ind] = BinaryToken::Array(parent_ind);
+                                parent_ind = ind;
+                                state = ParseState::ArrayValue;
+                                data
+                            }
+                        }
+                    } else if state == ParseState::ArrayValue {
+                        let ind = self.token_tape.len();
+                        self.token_tape.push(BinaryToken::Array(0));
+                        let (d, token_id) = self.parse_next_id(d)?;
+                        data = d;
+
+                        match token_id {
+                            // Empty array
+                            END => {
+                                state = match self.token_tape.get(parent_ind) {
+                                    Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
+                                    Some(BinaryToken::Object(_x)) => ParseState::Key,
+                                    _ => ParseState::Key,
+                                };
+
+                                self.token_tape[ind] = BinaryToken::Array(ind + 1);
+                                self.token_tape.push(BinaryToken::End(ind));
+                                continue;
+                            }
+
+                            // array of objects or another array
+                            OPEN => {
+                                self.token_tape[ind] = BinaryToken::Array(parent_ind);
+                                parent_ind = self.token_tape.len();
+                                self.token_tape.push(BinaryToken::Array(ind));
+                                state = ParseState::ArrayValue;
+                                continue;
+                            }
+
+                            U32 => {
+                                data = self.parse_u32(data)?;
+                            }
+                            U64 => {
+                                data = self.parse_u64(data)?;
+                            }
+                            I32 => {
+                                data = self.parse_i32(data)?;
+                            }
+                            BOOL => {
+                                data = self.parse_bool(data)?;
+                            }
+                            STRING_1 | STRING_2 => {
+                                data = self.parse_string(data)?;
+                            }
+                            F32_1 => {
+                                data = self.parse_f32_1(data)?;
+                            }
+                            F32_2 => {
+                                data = self.parse_f32_2(data)?;
+                            }
+                            RGB => {
+                                data = self.parse_rgb(data)?;
+                            }
+                            x => {
+                                self.token_tape.push(BinaryToken::Token(x));
+                            }
+                        }
+
+                        let (d, token_id) = self.parse_next_id(data)?;
+                        data = match token_id {
+                            OPEN => {
+                                self.token_tape[ind] = BinaryToken::Object(parent_ind);
+                                parent_ind = ind;
+                                state = ParseState::ObjectValue;
+                                data
+                            }
+                            EQUAL => {
+                                self.token_tape[ind] = BinaryToken::Object(parent_ind);
+                                parent_ind = ind;
+                                state = ParseState::ObjectValue;
+                                d
+                            }
+                            _ => {
+                                self.token_tape[ind] = BinaryToken::Array(parent_ind);
+                                parent_ind = ind;
+                                state = ParseState::ArrayValue;
+                                data
+                            }
+                        }
+                    } else if state == ParseState::Key {
+                        // Skip empty object
+                        let (d, token_id) = self.parse_next_id(d)?;
+                        if token_id != END {
+                            return Err(Error::new(ErrorKind::InvalidEmptyObject {
+                                offset: self.offset(data),
                             }));
                         }
-                        EQUAL => {
-                            return Err(Error::new(ErrorKind::InvalidSyntax {
-                                msg: String::from("EQUAL not valid for a key"),
-                                offset: self.offset(data) - 2,
-                            }));
-                        }
-                        x => {
-                            self.token_tape.push(BinaryToken::Token(x));
-                            state = ParseState::KeyValueSeparator;
-                            &data
-                        }
-                    }
-                }
-                ParseState::KeyValueSeparator => {
-                    let (d, token_id) = self.parse_next_id(data)?;
-                    data = match token_id {
-                        EQUAL => Ok(&d),
-                        OPEN => Ok(&data),
-                        _ => Err(Error::new(ErrorKind::InvalidSyntax {
-                            msg: String::from("expected an equal to separate key values"),
+                        data = d
+                    } else if state == ParseState::KeyValueSeparator {
+                        // For those lovely `a{b=c}` objects
+                        state = ParseState::ObjectValue
+                    } else {
+                        return Err(Error::new(ErrorKind::InvalidSyntax {
+                            msg: String::from("unexpected open token"),
                             offset: self.offset(data),
-                        })),
-                    }?;
-                    state = ParseState::ObjectValue;
-                }
-                ParseState::ObjectValue => {
-                    let (d, token_id) = self.parse_next_id(data)?;
-                    data = d;
-                    data = match token_id {
-                        U32 => {
-                            let res = self.parse_u32(data)?;
-                            state = ParseState::Key;
-                            res
-                        }
-                        U64 => {
-                            let res = self.parse_u64(data)?;
-                            state = ParseState::Key;
-                            res
-                        }
-                        I32 => {
-                            let res = self.parse_i32(data)?;
-                            state = ParseState::Key;
-                            res
-                        }
-                        BOOL => {
-                            let res = self.parse_bool(data)?;
-                            state = ParseState::Key;
-                            res
-                        }
-                        STRING_1 | STRING_2 => {
-                            let res = self.parse_string(data)?;
-                            state = ParseState::Key;
-                            res
-                        }
-                        F32_1 => {
-                            let res = self.parse_f32_1(data)?;
-                            state = ParseState::Key;
-                            res
-                        }
-                        F32_2 => {
-                            let res = self.parse_f32_2(data)?;
-                            state = ParseState::Key;
-                            res
-                        }
-                        OPEN => {
-                            if array_ind_of_hidden_obj.is_some() {
-                                return Err(Error::new(ErrorKind::InvalidSyntax {
-                                    offset: self.offset(data) - 2,
-                                    msg: String::from(
-                                        "nested values inside a hidden object are unsupported",
-                                    ),
-                                }));
-                            }
-
-                            let ind = self.token_tape.len();
-                            self.token_tape.push(BinaryToken::Array(0));
-
-                            let (d, token_id) = self.parse_next_id(data)?;
-                            let old_data = data;
-                            data = d;
-
-                            match token_id {
-                                // Empty array
-                                END => {
-                                    state = match self.token_tape.get(parent_ind) {
-                                        Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
-                                        Some(BinaryToken::Object(_x)) => ParseState::Key,
-                                        _ => ParseState::Key,
-                                    };
-
-                                    self.token_tape[ind] = BinaryToken::Array(ind + 1);
-                                    self.token_tape.push(BinaryToken::End(ind));
-                                    continue;
-                                }
-
-                                // array of objects or another array
-                                OPEN => {
-                                    self.token_tape[ind] = BinaryToken::Array(parent_ind);
-                                    parent_ind = ind;
-
-                                    state = ParseState::ArrayValue;
-
-                                    // Rewind the data so that we can parse the nested open
-                                    data = old_data;
-                                    continue;
-                                }
-
-                                U32 => {
-                                    data = self.parse_u32(data)?;
-                                }
-                                U64 => {
-                                    data = self.parse_u64(data)?;
-                                }
-                                I32 => {
-                                    data = self.parse_i32(data)?;
-                                }
-                                BOOL => {
-                                    data = self.parse_bool(data)?;
-                                }
-                                STRING_1 | STRING_2 => {
-                                    data = self.parse_string(data)?;
-                                }
-                                F32_1 => {
-                                    data = self.parse_f32_1(data)?;
-                                }
-                                F32_2 => {
-                                    data = self.parse_f32_2(data)?;
-                                }
-                                RGB => {
-                                    data = self.parse_rgb(data)?;
-                                }
-                                x => {
-                                    self.token_tape.push(BinaryToken::Token(x));
-                                }
-                            }
-
-                            let (d, token_id) = self.parse_next_id(data)?;
-                            match token_id {
-                                OPEN => {
-                                    self.token_tape[ind] = BinaryToken::Object(parent_ind);
-                                    parent_ind = ind;
-                                    state = ParseState::ObjectValue;
-                                    data
-                                }
-                                EQUAL => {
-                                    self.token_tape[ind] = BinaryToken::Object(parent_ind);
-                                    parent_ind = ind;
-                                    state = ParseState::ObjectValue;
-                                    d
-                                }
-                                _ => {
-                                    self.token_tape[ind] = BinaryToken::Array(parent_ind);
-                                    parent_ind = ind;
-                                    state = ParseState::ArrayValue;
-                                    data
-                                }
-                            }
-                        }
-                        END => {
-                            return Err(Error::new(ErrorKind::InvalidSyntax {
-                                msg: String::from("END not valid for an object value"),
-                                offset: self.offset(data) - 2,
-                            }));
-                        }
-                        RGB => {
-                            let res = self.parse_rgb(data)?;
-                            state = ParseState::Key;
-                            res
-                        }
-                        EQUAL => {
-                            return Err(Error::new(ErrorKind::InvalidSyntax {
-                                msg: String::from("EQUAL not valid for an object value"),
-                                offset: self.offset(data) - 2,
-                            }));
-                        }
-                        x => {
-                            self.token_tape.push(BinaryToken::Token(x));
-                            state = ParseState::Key;
-                            &data
-                        }
+                        }));
                     }
                 }
-                ParseState::ArrayValue => {
-                    let (d, token_id) = self.parse_next_id(data)?;
-                    data = d;
-                    data = match token_id {
-                        U32 => {
-                            let res = self.parse_u32(data)?;
-                            state = ParseState::ArrayValue;
-                            res
-                        }
-                        U64 => {
-                            let res = self.parse_u64(data)?;
-                            state = ParseState::ArrayValue;
-                            res
-                        }
-                        I32 => {
-                            let res = self.parse_i32(data)?;
-                            state = ParseState::ArrayValue;
-                            res
-                        }
-                        BOOL => {
-                            let res = self.parse_bool(data)?;
-                            state = ParseState::ArrayValue;
-                            res
-                        }
-                        STRING_1 | STRING_2 => {
-                            let res = self.parse_string(data)?;
-                            state = ParseState::ArrayValue;
-                            res
-                        }
-                        F32_1 => {
-                            let res = self.parse_f32_1(data)?;
-                            state = ParseState::ArrayValue;
-                            res
-                        }
-                        F32_2 => {
-                            let res = self.parse_f32_2(data)?;
-                            state = ParseState::ArrayValue;
-                            res
-                        }
-                        OPEN => {
-                            let ind = self.token_tape.len();
-                            self.token_tape.push(BinaryToken::Array(0));
-                            let (d, token_id) = self.parse_next_id(data)?;
-                            data = d;
+                END => {
+                    if state == ParseState::Key {
+                        let grand_ind = match self.token_tape.get(parent_ind) {
+                            Some(BinaryToken::Array(x)) => *x,
+                            Some(BinaryToken::Object(x)) => *x,
+                            _ => 0,
+                        };
 
-                            match token_id {
-                                // Empty array
-                                END => {
-                                    state = match self.token_tape.get(parent_ind) {
-                                        Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
-                                        Some(BinaryToken::Object(_x)) => ParseState::Key,
-                                        _ => ParseState::Key,
-                                    };
+                        state = match self.token_tape.get(grand_ind) {
+                            Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
+                            Some(BinaryToken::Object(_x)) => ParseState::Key,
+                            _ => ParseState::Key,
+                        };
 
-                                    self.token_tape[ind] = BinaryToken::Array(ind + 1);
-                                    self.token_tape.push(BinaryToken::End(ind));
-                                    continue;
-                                }
-
-                                // array of objects or another array
-                                OPEN => {
-                                    self.token_tape[ind] = BinaryToken::Array(parent_ind);
-                                    parent_ind = self.token_tape.len();
-                                    self.token_tape.push(BinaryToken::Array(ind));
-                                    state = ParseState::ArrayValue;
-                                    continue;
-                                }
-
-                                U32 => {
-                                    data = self.parse_u32(data)?;
-                                }
-                                U64 => {
-                                    data = self.parse_u64(data)?;
-                                }
-                                I32 => {
-                                    data = self.parse_i32(data)?;
-                                }
-                                BOOL => {
-                                    data = self.parse_bool(data)?;
-                                }
-                                STRING_1 | STRING_2 => {
-                                    data = self.parse_string(data)?;
-                                }
-                                F32_1 => {
-                                    data = self.parse_f32_1(data)?;
-                                }
-                                F32_2 => {
-                                    data = self.parse_f32_2(data)?;
-                                }
-                                RGB => {
-                                    data = self.parse_rgb(data)?;
-                                }
-                                x => {
-                                    self.token_tape.push(BinaryToken::Token(x));
-                                }
-                            }
-
-                            let (d, token_id) = self.parse_next_id(data)?;
-                            match token_id {
-                                OPEN => {
-                                    self.token_tape[ind] = BinaryToken::Object(parent_ind);
-                                    parent_ind = ind;
-                                    state = ParseState::ObjectValue;
-                                    data
-                                }
-                                EQUAL => {
-                                    self.token_tape[ind] = BinaryToken::Object(parent_ind);
-                                    parent_ind = ind;
-                                    state = ParseState::ObjectValue;
-                                    d
-                                }
-                                _ => {
-                                    self.token_tape[ind] = BinaryToken::Array(parent_ind);
-                                    parent_ind = ind;
-                                    state = ParseState::ArrayValue;
-                                    data
-                                }
-                            }
+                        let end_idx = self.token_tape.len();
+                        if parent_ind == 0 && grand_ind == 0 {
+                            return Err(Error::new(ErrorKind::StackEmpty {
+                                offset: self.offset(data),
+                            }));
                         }
-                        END => {
-                            let grand_ind = match self.token_tape.get(parent_ind) {
-                                Some(BinaryToken::Array(x)) => *x,
-                                Some(BinaryToken::Object(x)) => *x,
-                                _ => 0,
+
+                        self.token_tape[parent_ind] = BinaryToken::Object(end_idx);
+                        self.token_tape.push(BinaryToken::End(parent_ind));
+
+                        if let Some(array_ind) = array_ind_of_hidden_obj.take() {
+                            let end_idx = self.token_tape.len();
+                            self.token_tape.push(BinaryToken::End(array_ind));
+
+                            // Grab the grand parent from the outer array. Even though the logic should
+                            // be more strict (ie: throwing an error when if the parent array index doesn't exist,
+                            // or if the parent doesn't exist), but since hidden objects are such a rather rare
+                            // occurrence, it's better to be flexible
+                            let grand_ind = if let Some(parent) = self.token_tape.get_mut(array_ind)
+                            {
+                                let grand_ind = match parent {
+                                    BinaryToken::Array(x) => *x,
+                                    _ => 0,
+                                };
+                                *parent = BinaryToken::Array(end_idx);
+                                grand_ind
+                            } else {
+                                0
                             };
 
                             state = match self.token_tape.get(grand_ind) {
@@ -652,52 +523,86 @@ where
                                 _ => ParseState::Key,
                             };
 
-                            let end_idx = self.token_tape.len();
-                            self.token_tape[parent_ind] = BinaryToken::Array(end_idx);
-                            self.token_tape.push(BinaryToken::End(parent_ind));
                             parent_ind = grand_ind;
-                            data
+                        } else {
+                            parent_ind = grand_ind;
                         }
-                        RGB => self.parse_rgb(data)?,
-                        EQUAL => {
-                            // CK3 introduced hidden object inside lists so we work around it by trying to
-                            // make the object explicit, but we first check to see if we have any prior
-                            // array values
-                            if self.token_tape.len() - parent_ind <= 1
-                                || matches!(
-                                    self.token_tape[self.token_tape.len() - 1],
-                                    BinaryToken::End(_)
-                                )
-                            {
-                                return Err(Error::new(ErrorKind::InvalidSyntax {
-                                    msg: String::from("hidden object must start with a key"),
-                                    offset: self.offset(data) - 2,
-                                }));
-                            }
+                    } else if state == ParseState::ArrayValue {
+                        let grand_ind = match self.token_tape.get(parent_ind) {
+                            Some(BinaryToken::Array(x)) => *x,
+                            Some(BinaryToken::Object(x)) => *x,
+                            _ => 0,
+                        };
 
-                            let hidden_object = BinaryToken::Object(parent_ind);
-                            array_ind_of_hidden_obj = Some(parent_ind);
-                            parent_ind = self.token_tape.len() - 1;
-                            self.token_tape
-                                .insert(self.token_tape.len() - 1, hidden_object);
-                            state = ParseState::ObjectValue;
-                            data
-                        }
-                        x => {
-                            self.token_tape.push(BinaryToken::Token(x));
-                            state = ParseState::ArrayValue;
-                            &data
-                        }
+                        state = match self.token_tape.get(grand_ind) {
+                            Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
+                            Some(BinaryToken::Object(_x)) => ParseState::Key,
+                            _ => ParseState::Key,
+                        };
+
+                        let end_idx = self.token_tape.len();
+                        self.token_tape[parent_ind] = BinaryToken::Array(end_idx);
+                        self.token_tape.push(BinaryToken::End(parent_ind));
+                        parent_ind = grand_ind;
+                    } else if state == ParseState::ObjectValue {
+                        return Err(Error::new(ErrorKind::InvalidSyntax {
+                            msg: String::from("END not valid for an object value"),
+                            offset: self.offset(data),
+                        }));
                     }
+
+                    data = d;
+                }
+                RGB => {
+                    data = self.parse_rgb(d)?;
+                    state = SCALAR_STATE_NEXT[state as usize];
+                }
+                EQUAL => {
+                    if state == ParseState::KeyValueSeparator {
+                        data = d;
+                        state = ParseState::ObjectValue;
+                    } else if state == ParseState::ArrayValue {
+                        // CK3 introduced hidden object inside lists so we work around it by trying to
+                        // make the object explicit, but we first check to see if we have any prior
+                        // array values
+                        if self.token_tape.len() - parent_ind <= 1
+                            || matches!(
+                                self.token_tape[self.token_tape.len() - 1],
+                                BinaryToken::End(_)
+                            )
+                        {
+                            return Err(Error::new(ErrorKind::InvalidSyntax {
+                                msg: String::from("hidden object must start with a key"),
+                                offset: self.offset(data),
+                            }));
+                        }
+
+                        let hidden_object = BinaryToken::Object(parent_ind);
+                        array_ind_of_hidden_obj = Some(parent_ind);
+                        parent_ind = self.token_tape.len() - 1;
+                        self.token_tape
+                            .insert(self.token_tape.len() - 1, hidden_object);
+                        state = ParseState::ObjectValue;
+                        data = d;
+                    } else {
+                        return Err(Error::new(ErrorKind::InvalidSyntax {
+                            msg: String::from("EQUAL not valid for a key"),
+                            offset: self.offset(data),
+                        }));
+                    }
+                }
+                x => {
+                    data = d;
+                    self.token_tape.push(BinaryToken::Token(x));
+                    state = SCALAR_STATE_NEXT[state as usize];
                 }
             }
         }
 
-        if parent_ind == 0 && state == ParseState::Key {
-            Ok(())
-        } else {
-            Err(Error::eof())
-        }
+        Err(Error::new(ErrorKind::InvalidSyntax {
+            msg: String::from("unexpected scalar value"),
+            offset: self.offset(data),
+        }))
     }
 }
 
@@ -759,6 +664,11 @@ mod tests {
     #[test]
     fn test_size_of_binary_token() {
         assert_eq!(std::mem::size_of::<BinaryToken>(), 24);
+    }
+
+    #[test]
+    fn test_binary_tokens_dont_need_to_be_dropped() {
+        assert!(!std::mem::needs_drop::<BinaryToken>());
     }
 
     #[test]
@@ -1124,11 +1034,11 @@ mod tests {
             tape.token_tape,
             vec![
                 BinaryToken::Token(0x053a),
-                BinaryToken::Rgb(Box::new(Rgb {
+                BinaryToken::Rgb(Rgb {
                     r: 110,
                     g: 27,
                     b: 27,
-                })),
+                })
             ]
         );
     }
