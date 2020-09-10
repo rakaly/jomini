@@ -37,7 +37,9 @@ harness = false
 [profile.bench]
 lto = true
 codegen-units = 1
+debug = true
 
 [profile.release]
 lto = true
 codegen-units = 1
+debug = true

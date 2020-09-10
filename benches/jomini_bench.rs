@@ -7,6 +7,8 @@ use std::collections::HashMap;
 
 const METADATA_BIN: &'static [u8] = include_bytes!("../tests/fixtures/meta.bin");
 const METADATA_TXT: &'static [u8] = include_bytes!("../tests/fixtures/meta.txt");
+const CK3_BIN: &'static [u8] = include_bytes!("../tests/fixtures/ck3-header.bin");
+const CK3_TXT: &'static [u8] = include_bytes!("../tests/fixtures/ck3-header.txt");
 
 pub fn is_ascii_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("is_ascii");
@@ -125,7 +127,7 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     let data = &METADATA_BIN["EU4bin".len()..];
     let mut group = c.benchmark_group("parse");
     group.throughput(Throughput::Bytes(data.len() as u64));
-    group.bench_function("binary", |b| {
+    group.bench_function(BenchmarkId::new("binary", "eu4"), |b| {
         let mut tape = BinaryTape::default();
         b.iter(move || {
             BinaryTape::eu4_parser()
@@ -133,6 +135,18 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
                 .unwrap();
         })
     });
+
+    let data = &CK3_BIN[..];
+    group.throughput(Throughput::Bytes(data.len() as u64));
+    group.bench_function(BenchmarkId::new("binary", "ck3"), |b| {
+        let mut tape = BinaryTape::default();
+        b.iter(move || {
+            BinaryTape::eu4_parser()
+                .parse_slice_into_tape(&data[..], &mut tape)
+                .unwrap();
+        })
+    });
+
     group.finish();
 }
 
@@ -140,7 +154,7 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
     let data = &METADATA_TXT["EU4txt".len()..];
     let mut group = c.benchmark_group("parse");
     group.throughput(Throughput::Bytes(data.len() as u64));
-    group.bench_function("text", |b| {
+    group.bench_function(BenchmarkId::new("text", "eu4"), |b| {
         let mut tape = TextTape::default();
         b.iter(|| {
             TextTape::parser()
@@ -148,6 +162,18 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
                 .unwrap();
         })
     });
+
+    let data = &CK3_TXT[..];
+    group.throughput(Throughput::Bytes(data.len() as u64));
+    group.bench_function(BenchmarkId::new("text", "ck3"), |b| {
+        let mut tape = TextTape::default();
+        b.iter(|| {
+            TextTape::parser()
+                .parse_slice_into_tape(&data[..], &mut tape)
+                .unwrap();
+        })
+    });
+
     group.finish();
 }
 
