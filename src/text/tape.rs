@@ -1,5 +1,5 @@
 use crate::data::{is_boundary, is_whitespace};
-use crate::util::{contains_zero_byte, le_u64, repeat_byte};
+use crate::util::{contains_zero_byte, repeat_byte};
 use crate::{Error, ErrorKind, Rgb, Scalar};
 
 /// Represents a valid text value
@@ -18,7 +18,7 @@ pub enum TextToken<'a> {
     End(usize),
 
     /// Represents a text encoded rgb value
-    Rgb(Box<Rgb>),
+    Rgb(Rgb),
 }
 
 /// Creates a parser that a writes to a text tape
@@ -115,26 +115,29 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
     /// Skips whitespace that may terminate the file
     #[inline]
-    fn skip_ws_t(&mut self, mut data: &'a [u8]) -> &'a [u8] {
-        loop {
+    fn skip_ws_t(&mut self, data: &'a [u8]) -> Option<&'a [u8]> {
+        unsafe {
             let start_ptr = data.as_ptr();
-            let end_ptr = unsafe { start_ptr.add(data.len()) };
+            let end_ptr = start_ptr.add(data.len());
 
-            let nind = unsafe { forward_search(start_ptr, end_ptr, |x| !is_whitespace(x)) };
-            let ind = nind.unwrap_or_else(|| data.len());
-            let (_, rest) = data.split_at(ind);
-            data = rest;
-
-            if data.get(0).map_or(false, |x| *x == b'#') {
-                if let Some(idx) = data.iter().position(|&x| x == b'\n') {
-                    data = &data[idx..];
-                } else {
-                    return &[];
+            let mut ptr = start_ptr;
+            while ptr < end_ptr {
+                if !is_whitespace(*ptr) {
+                    if *ptr == b'#' {
+                        ptr = ptr.offset(1);
+                        while ptr < end_ptr && *ptr != b'\n' {
+                            ptr = ptr.offset(1);
+                        }
+                    } else {
+                        let rest = std::slice::from_raw_parts(ptr, sub(end_ptr, ptr));
+                        return Some(rest);
+                    }
                 }
-            } else {
-                return data;
+                ptr = ptr.offset(1);
             }
         }
+
+        None
     }
 
     /// I'm not smart enough to figure out the behavior of handling escape sequences when
@@ -161,38 +164,30 @@ impl<'a, 'b> ParserState<'a, 'b> {
     #[inline]
     fn parse_quote_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], Error> {
         let sd = &d[1..];
-        let mut offset = 0;
-        let mut chunk_iter = sd.chunks_exact(8);
-        while let Some(n) = chunk_iter.next() {
-            let acc = le_u64(n);
-            if contains_zero_byte(acc ^ repeat_byte(b'\\')) {
-                return self.parse_quote_scalar_fallback(d);
-            } else if contains_zero_byte(acc ^ repeat_byte(b'"')) {
-                let end_idx = n.iter().position(|&x| x == b'"').unwrap_or(0) + offset;
-                let scalar = Scalar::new(&sd[..end_idx]);
-                self.token_tape.push(TextToken::Scalar(scalar));
-                return Ok(&d[end_idx + 2..]);
-            }
+        unsafe {
+            let start_ptr = sd.as_ptr();
+            let end_ptr = start_ptr.add(sd.len() / 8 * 8);
 
-            offset += 8;
-        }
+            let mut ptr = start_ptr;
+            while ptr < end_ptr {
+                let acc = (ptr as *const u64).read_unaligned();
+                if contains_zero_byte(acc ^ repeat_byte(b'\\')) {
+                    return self.parse_quote_scalar_fallback(d);
+                } else if contains_zero_byte(acc ^ repeat_byte(b'"')) {
+                    while *ptr != b'"' {
+                        ptr = ptr.offset(1);
+                    }
 
-        let remainder = chunk_iter.remainder();
-        let mut pos = 0;
-        while pos < remainder.len() {
-            if remainder[pos] == b'\\' {
-                pos += 2;
-            } else if remainder[pos] == b'"' {
-                let end_idx = pos + offset;
-                let scalar = Scalar::new(&sd[..end_idx]);
-                self.token_tape.push(TextToken::Scalar(scalar));
-                return Ok(&d[end_idx + 2..]);
-            } else {
-                pos += 1;
+                    let offset = sub(ptr, start_ptr);
+                    let (scalar, rest) = sd.split_at(offset);
+                    self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
+                    return Ok(&rest[1..]);
+                }
+                ptr = ptr.offset(8);
             }
         }
 
-        Err(Error::eof())
+        self.parse_quote_scalar_fallback(d)
     }
 
     #[inline]
@@ -262,21 +257,24 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
         let mut parent_ind = 0;
         loop {
-            data = self.skip_ws_t(data);
-            if data.is_empty() {
-                if state == ParseState::RgbOpen {
-                    state = ParseState::Key;
-                    let scalar = Scalar::new(b"rgb");
-                    self.token_tape.push(TextToken::Scalar(scalar));
-                }
+            let d = match self.skip_ws_t(data) {
+                Some(d) => d,
+                None => {
+                    if state == ParseState::RgbOpen {
+                        state = ParseState::Key;
+                        let scalar = Scalar::new(b"rgb");
+                        self.token_tape.push(TextToken::Scalar(scalar));
+                    }
 
-                if parent_ind == 0 && state == ParseState::Key {
-                    return Ok(());
-                } else {
-                    return Err(Error::eof());
+                    if parent_ind == 0 && state == ParseState::Key {
+                        return Ok(());
+                    } else {
+                        return Err(Error::eof());
+                    }
                 }
-            }
+            };
 
+            data = d;
             match state {
                 ParseState::EmptyObject => {
                     if data[0] != b'}' {
@@ -572,11 +570,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
                 }
                 ParseState::RgbClose => match data[0] {
                     b'}' => {
-                        self.token_tape.push(TextToken::Rgb(Box::new(Rgb {
+                        self.token_tape.push(TextToken::Rgb(Rgb {
                             r: red,
                             b: blue,
                             g: green,
-                        })));
+                        }));
                         data = &data[1..];
                         state = ParseState::Key;
                     }
@@ -620,6 +618,16 @@ mod tests {
 
     fn parse<'a>(data: &'a [u8]) -> Result<TextTape<'a>, Error> {
         TextTape::from_slice(data)
+    }
+
+    #[test]
+    fn test_size_of_binary_token() {
+        assert_eq!(std::mem::size_of::<TextToken>(), 24);
+    }
+
+    #[test]
+    fn test_binary_tokens_dont_need_to_be_dropped() {
+        assert!(!std::mem::needs_drop::<TextToken>());
     }
 
     #[test]
@@ -1143,11 +1151,11 @@ mod tests {
             parse(&data[..]).unwrap().token_tape,
             vec![
                 TextToken::Scalar(Scalar::new(b"color")),
-                TextToken::Rgb(Box::new(Rgb {
+                TextToken::Rgb(Rgb {
                     r: 100,
                     g: 200,
                     b: 150,
-                })),
+                }),
             ]
         );
     }
