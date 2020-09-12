@@ -1,3 +1,9 @@
+## v0.6.0 - 2020-09-11
+
+The performance release. Parsing binary throughput increased 30-80% depending on the workload. The binary parser can now consistently reach up to 1.2 GB/s parsing. The text parsers also saw marked improvement from v0.5, on the order of 20-30% increase in throughput.
+
+This is a technically breaking change as the value inside `TextToken::Rgb` and `BinaryToken::Rgb` is no longer boxed.
+
 ## v0.5.0 - 2020-09-10
 
 The big change here is that deserializers need to know what encoding strings are in: UTF-8 or Windows-1252. Previously the deserializer assumed strings were encoded as Windows-1252. This falls down when UTF-8 input is encountered like in CK3 saves. So now functions like `TextDeserializer::from_slice` have been split into two with the text api surface looking like:
