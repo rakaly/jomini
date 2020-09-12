@@ -6,7 +6,7 @@ A low level, performance oriented parser for
 
 Jomini is the cornerstone of the [Rakaly](https://rakaly.com/eu4), an EU4 achievement leaderboard
 and save file analyzer. This library is also used in the [Paradox Game Converters
-project](https://github.com/ParadoxGameConverters/EU4toVic2) to parse ironman EU4 saves.
+project](https://github.com/ParadoxGameConverters/EU4toVic2) to parse ironman EU4 and CK3 saves.
 
 ## Features
 
