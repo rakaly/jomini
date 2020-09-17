@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use jomini::{
-    BinaryDeserializer, BinaryTape, Scalar, TextDeserializer, TextTape, Utf8Encoding,
+    common::Date, BinaryDeserializer, BinaryTape, Scalar, TextDeserializer, TextTape, Utf8Encoding,
     Windows1252Encoding,
 };
 use std::collections::HashMap;
@@ -177,6 +177,20 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+pub fn date_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("eu4date-parse");
+    group.bench_function("valid-date", |b| {
+        b.iter(|| Date::parse_from_str("1444.11.11").unwrap())
+    });
+    group.bench_function("invalid-date", |b| {
+        b.iter(|| Date::parse_from_str("marketplace").is_none())
+    });
+    group.bench_function("long-invalid-date", |b| {
+        b.iter(|| Date::parse_from_str("incidents_bur_inheritance.5").is_none())
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     is_ascii_benchmark,
@@ -188,5 +202,6 @@ criterion_group!(
     text_deserialize_benchmark,
     to_u64_benchmark,
     to_f64_benchmark,
+    date_benchmark,
 );
 criterion_main!(benches);

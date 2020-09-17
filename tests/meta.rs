@@ -9,7 +9,7 @@ struct SaveVersion(pub String);
 
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 struct Meta {
-    date: eu4save::Eu4Date,
+    date: jomini::common::Date,
     save_game: String,
     player: String,
     displayed_country_name: String,
@@ -120,7 +120,7 @@ fn test_text_deserialization() {
     let data = include_bytes!("./fixtures/meta.txt");
     let actual: Meta =
         jomini::TextDeserializer::from_windows1252_slice(&data["EU4txt".len()..]).unwrap();
-    assert_eq!(actual.date.eu4_fmt(), String::from("1444.11.11"));
+    assert_eq!(actual.date.game_fmt(), String::from("1444.11.11"));
     assert_eq!(actual.savegame_version.0, String::from("1.28.3.0"));
 }
 
@@ -168,7 +168,7 @@ fn test_binary_meta_deserialization() {
     let data = &data["EU4bin".len()..];
     let hash = create_bin_lookup();
     let actual: Meta = jomini::BinaryDeserializer::from_eu4(&data, &hash).unwrap();
-    assert_eq!(actual.date.eu4_fmt(), String::from("1597.1.15"));
+    assert_eq!(actual.date.game_fmt(), String::from("1597.1.15"));
     assert_eq!(actual.savegame_version.0, String::from("1.29.4.0"));
 }
 

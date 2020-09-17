@@ -30,3 +30,9 @@ path = "fuzz_targets/fuzz_scalar_text.rs"
 [[bin]]
 name = "fuzz_binary"
 path = "fuzz_targets/fuzz_binary.rs"
+
+[[bin]]
+name = "fuzz_date"
+path = "fuzz_targets/fuzz_date.rs"
+test = false
+doc = false
