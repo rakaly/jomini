@@ -204,8 +204,7 @@ where
                 };
 
                 let next_key = match self.tokens[self.value_ind] {
-                    TextToken::Array(x) => x,
-                    TextToken::Object(x) => x,
+                    TextToken::Array(x) | TextToken::Object(x) | TextToken::HiddenObject(x) => x,
                     TextToken::End(_) => {
                         // this really shouldn't happen but if it does we just
                         // move our sights to the end token and continue on
@@ -564,7 +563,7 @@ where
                 encoding: self.encoding,
             }),
             TextToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
-            TextToken::Object(x) => {
+            TextToken::Object(x) | TextToken::HiddenObject(x) => {
                 visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x, self.encoding))
             }
             TextToken::End(_x) => Err(DeserializeError {
@@ -756,7 +755,7 @@ where
     {
         let idx = self.value_ind;
         match &self.tokens[idx] {
-            TextToken::Object(x) => {
+            TextToken::Object(x) | TextToken::HiddenObject(x) => {
                 visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x, self.encoding))
             }
 
@@ -799,7 +798,7 @@ where
         V: Visitor<'de>,
     {
         match &self.tokens[self.de_idx] {
-            TextToken::Object(x) => visitor.visit_map(BinaryMap::new(
+            TextToken::Object(x) | TextToken::HiddenObject(x) => visitor.visit_map(BinaryMap::new(
                 self.tokens,
                 self.de_idx + 1,
                 *x,
@@ -941,8 +940,7 @@ where
             Ok(None)
         } else {
             let next_key = match self.tokens[self.idx] {
-                TextToken::Array(x) => x,
-                TextToken::Object(x) => x,
+                TextToken::Array(x) | TextToken::Object(x) | TextToken::HiddenObject(x) => x,
                 _ => self.idx,
             };
 

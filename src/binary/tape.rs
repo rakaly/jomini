@@ -16,6 +16,17 @@ pub enum BinaryToken<'a> {
     /// format is more strict
     Object(usize),
 
+    /// Index of the `TextToken::End` that signifies this objects's termination
+    ///
+    /// A hidden object occurs where the first element is part of an array:
+    ///
+    /// ```ignore
+    /// a = { 10 a=b c=d}
+    /// ```
+    ///
+    /// In the above example, a and c would be part of the hidden object
+    HiddenObject(usize),
+
     /// Index of the start of this object
     End(usize),
 
@@ -497,10 +508,9 @@ where
                             }));
                         }
 
-                        self.token_tape[parent_ind] = BinaryToken::Object(end_idx);
                         self.token_tape.push(BinaryToken::End(parent_ind));
-
                         if let Some(array_ind) = array_ind_of_hidden_obj.take() {
+                            self.token_tape[parent_ind] = BinaryToken::HiddenObject(end_idx);
                             let end_idx = self.token_tape.len();
                             self.token_tape.push(BinaryToken::End(array_ind));
 
@@ -528,6 +538,7 @@ where
 
                             parent_ind = grand_ind;
                         } else {
+                            self.token_tape[parent_ind] = BinaryToken::Object(end_idx);
                             parent_ind = grand_ind;
                         }
                     } else if state == ParseState::ArrayValue {
@@ -1094,7 +1105,7 @@ mod tests {
                 BinaryToken::Token(0x346f),
                 BinaryToken::Array(9),
                 BinaryToken::I32(10),
-                BinaryToken::Object(8),
+                BinaryToken::HiddenObject(8),
                 BinaryToken::I32(0),
                 BinaryToken::U32(2),
                 BinaryToken::I32(1),

@@ -32,10 +32,11 @@ fuzz_target!(|data: &[u8]| {
                 match token {
                     jomini::TextToken::Array(ind) |
                     jomini::TextToken::Object(ind) |
+                    jomini::TextToken::HiddenObject(ind) |
                     jomini::TextToken::End(ind) if *ind == 0 => {
                         panic!("zero ind encountered");
                     }
-                    jomini::TextToken::Array(ind) | jomini::TextToken::Object(ind) => {
+                    jomini::TextToken::Array(ind) | jomini::TextToken::Object(ind) | jomini::TextToken::HiddenObject(ind) => {
                         match tokens[*ind] {
                             jomini::TextToken::End(ind2) => {
                                 assert_eq!(ind2, i)
