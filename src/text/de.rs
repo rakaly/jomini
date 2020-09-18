@@ -198,7 +198,11 @@ where
             if self.tape_idx < self.end_idx {
                 let current_idx = self.tape_idx;
 
-                self.value_ind = self.tape_idx + 1;
+                self.value_ind = match self.tokens[self.tape_idx + 1] {
+                    TextToken::Operator(_) => self.tape_idx + 2,
+                    _ => self.tape_idx + 1,
+                };
+
                 let next_key = match self.tokens[self.value_ind] {
                     TextToken::Array(x) => x,
                     TextToken::Object(x) => x,
@@ -815,6 +819,11 @@ where
             TextToken::End(_x) => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered end when trying to deserialize",
+                )),
+            }),
+            TextToken::Operator(_x) => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "encountered operator when trying to deserialize",
                 )),
             }),
         }
@@ -1537,6 +1546,26 @@ mod tests {
                         name: String::from("def")
                     },
                 ]
+            }
+        );
+    }
+
+    #[test]
+    fn test_deserialize_ignore_operator() {
+        let data = b"val > 3 a = b";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            val: i32,
+            a: String,
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                val: 3,
+                a: String::from("b"),
             }
         );
     }

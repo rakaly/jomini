@@ -11,6 +11,9 @@ pub enum BinaryToken<'a> {
     Array(usize),
 
     /// Index of the `BinaryToken::End` that signifies this object's termination
+    ///
+    /// A key's value immediately follows the key. Unlike the text format, the binary
+    /// format is more strict
     Object(usize),
 
     /// Index of the start of this object

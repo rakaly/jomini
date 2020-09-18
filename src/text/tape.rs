@@ -2,6 +2,22 @@ use crate::data::{is_boundary, is_whitespace};
 use crate::util::{contains_zero_byte, repeat_byte};
 use crate::{Error, ErrorKind, Rgb, Scalar};
 
+/// An operator token
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum Operator {
+    /// A `<` token
+    LessThan,
+
+    /// A `<=` token
+    LessThanEqual,
+
+    /// A `>` token
+    GreaterThan,
+
+    /// A `>=` token
+    GreaterThanEqual,
+}
+
 /// Represents a valid text value
 #[derive(Debug, PartialEq)]
 pub enum TextToken<'a> {
@@ -9,10 +25,21 @@ pub enum TextToken<'a> {
     Array(usize),
 
     /// Index of the `TextToken::End` that signifies this array's termination
+    ///
+    /// Typically in the tape the value immediately follows a key token. However,
+    /// this is not guaranteed so always check if the end has been reached before
+    /// trying to decode a value. There are two main situations where this is not
+    /// guaranteed:
+    ///
+    /// - A non-equal operator (eg: `a > b` will be parsed to 3 instead of 2 tokens)
+    /// - Array trailers (eg: `a = {10} 0 1 2`)
     Object(usize),
 
     /// Extracted scalar value
     Scalar(Scalar<'a>),
+
+    /// A present, but non-equal operator token
+    Operator(Operator),
 
     /// Index of the start of this object
     End(usize),
@@ -232,6 +259,26 @@ impl<'a, 'b> ParserState<'a, 'b> {
         // token (the 99.9% typical case) if possible.
         if d[0] == b'=' {
             &d[1..]
+        } else if d[0] == b'<' {
+            if d.get(1).map_or(false, |c| *c == b'=') {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::LessThanEqual));
+                &d[2..]
+            } else {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::LessThan));
+                &d[1..]
+            }
+        } else if d[0] == b'>' {
+            if d.get(1).map_or(false, |c| *c == b'=') {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::GreaterThanEqual));
+                &d[2..]
+            } else {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::GreaterThan));
+                &d[1..]
+            }
         } else {
             d
         }
@@ -1219,6 +1266,58 @@ mod tests {
     fn test_objects_in_hidden_objects_not_supported() {
         let data = b"u{{}a={0=1}";
         assert!(parse(&data[..]).is_err());
+    }
+
+    #[test]
+    fn test_less_than_equal_operator() {
+        let data = b"scope:attacker.primary_title.tier <= tier_county";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"scope:attacker.primary_title.tier")),
+                TextToken::Operator(Operator::LessThanEqual),
+                TextToken::Scalar(Scalar::new(b"tier_county")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_less_than_operator() {
+        let data = b"count < 2";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"count")),
+                TextToken::Operator(Operator::LessThan),
+                TextToken::Scalar(Scalar::new(b"2")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_greater_than_operator() {
+        let data = b"age > 16";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"age")),
+                TextToken::Operator(Operator::GreaterThan),
+                TextToken::Scalar(Scalar::new(b"16")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_greater_than_equal_operator() {
+        let data = b"intrigue >= high_skill_rating";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"intrigue")),
+                TextToken::Operator(Operator::GreaterThanEqual),
+                TextToken::Scalar(Scalar::new(b"high_skill_rating")),
+            ]
+        );
     }
 
     #[test]
