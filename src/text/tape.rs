@@ -24,7 +24,7 @@ pub enum TextToken<'a> {
     /// Index of the `TextToken::End` that signifies this array's termination
     Array(usize),
 
-    /// Index of the `TextToken::End` that signifies this array's termination
+    /// Index of the `TextToken::End` that signifies this objects's termination
     ///
     /// Typically in the tape the value immediately follows a key token. However,
     /// this is not guaranteed so always check if the end has been reached before
@@ -34,6 +34,17 @@ pub enum TextToken<'a> {
     /// - A non-equal operator (eg: `a > b` will be parsed to 3 instead of 2 tokens)
     /// - Array trailers (eg: `a = {10} 0 1 2`)
     Object(usize),
+
+    /// Index of the `TextToken::End` that signifies this objects's termination
+    ///
+    /// A hidden object occurs where the first element is part of an array:
+    ///
+    /// ```ignore
+    /// a = { 10 a=b c=d}
+    /// ```
+    ///
+    /// In the above example, a and c would be part of the hidden object
+    HiddenObject(usize),
 
     /// Extracted scalar value
     Scalar(Scalar<'a>),
@@ -354,12 +365,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                 }));
                             }
 
-                            if let Some(parent) = self.token_tape.get_mut(parent_ind) {
-                                *parent = TextToken::Object(end_idx);
-                            }
                             self.token_tape.push(TextToken::End(parent_ind));
-
                             if let Some(array_ind) = array_ind_of_hidden_obj.take() {
+                                self.token_tape[parent_ind] = TextToken::HiddenObject(end_idx);
+
                                 let end_idx = self.token_tape.len();
                                 self.token_tape.push(TextToken::End(array_ind));
 
@@ -386,6 +395,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                 };
                                 parent_ind = grand_ind;
                             } else {
+                                self.token_tape[parent_ind] = TextToken::Object(end_idx);
                                 parent_ind = grand_ind;
                             }
 
@@ -1216,7 +1226,7 @@ mod tests {
                 TextToken::Scalar(Scalar::new(b"levels")),
                 TextToken::Array(9),
                 TextToken::Scalar(Scalar::new(b"10")),
-                TextToken::Object(8),
+                TextToken::HiddenObject(8),
                 TextToken::Scalar(Scalar::new(b"0")),
                 TextToken::Scalar(Scalar::new(b"2")),
                 TextToken::Scalar(Scalar::new(b"1")),
@@ -1244,7 +1254,7 @@ mod tests {
                 TextToken::Scalar(Scalar::new(b"levels")),
                 TextToken::Array(11),
                 TextToken::Scalar(Scalar::new(b"10")),
-                TextToken::Object(10),
+                TextToken::HiddenObject(10),
                 TextToken::Scalar(Scalar::new(b"0")),
                 TextToken::Scalar(Scalar::new(b"2")),
                 TextToken::Scalar(Scalar::new(b"1")),
