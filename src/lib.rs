@@ -127,7 +127,7 @@ assert_eq!(
 If one will only use `TextTape` and `BinaryTape` then `jomini` can be compiled without default
 features, resulting in a build without dependencies.
 */
-
+#![warn(missing_docs)]
 pub(crate) mod ascii;
 mod binary;
 pub mod common;

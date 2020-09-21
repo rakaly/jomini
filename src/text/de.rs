@@ -1,6 +1,6 @@
 use crate::{
-    de::ColorSequence, DeserializeError, DeserializeErrorKind, Encoding, Error, Scalar, TextTape,
-    TextToken, Utf8Encoding, Windows1252Encoding,
+    DeserializeError, DeserializeErrorKind, Encoding, Error, Scalar, TextTape, TextToken,
+    Utf8Encoding, Windows1252Encoding,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
@@ -211,6 +211,12 @@ where
                         self.tape_idx = self.value_ind;
                         continue;
                     }
+                    TextToken::Header(_) => match self.tokens[self.value_ind + 1] {
+                        TextToken::Array(x) | TextToken::Object(x) | TextToken::HiddenObject(x) => {
+                            x
+                        }
+                        _ => self.value_ind + 1,
+                    },
                     _ => self.value_ind,
                 };
 
@@ -245,6 +251,7 @@ where
 fn ensure_scalar<'a>(s: &TextToken<'a>) -> Result<Scalar<'a>, DeserializeError> {
     match s {
         TextToken::Scalar(s) => Ok(*s),
+        TextToken::Header(s) => Ok(*s),
         x => Err(DeserializeError {
             kind: DeserializeErrorKind::Unsupported(format!("{:?} is not a scalar", x)),
         }),
@@ -562,7 +569,12 @@ where
                 end_idx: *x,
                 encoding: self.encoding,
             }),
-            TextToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
+            TextToken::Header(_) => visitor.visit_seq(HeaderSequence {
+                tokens: self.tokens,
+                idx,
+                encoding: self.encoding,
+                state: 0,
+            }),
             TextToken::Object(x) | TextToken::HiddenObject(x) => {
                 visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x, self.encoding))
             }
@@ -588,7 +600,12 @@ where
                 end_idx: *x,
                 encoding: self.encoding,
             }),
-            TextToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
+            TextToken::Header(_) => visitor.visit_seq(HeaderSequence {
+                tokens: self.tokens,
+                idx,
+                encoding: self.encoding,
+                state: 0,
+            }),
             TextToken::End(_x) => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered end when trying to deserialize",
@@ -811,8 +828,10 @@ where
                 end_idx: *x,
                 encoding: self.encoding,
             }),
-            TextToken::Rgb(_) => Err(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from("unable to deserialize rgb")),
+            TextToken::Header(_) => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "unable to deserialize header",
+                )),
             }),
             TextToken::Scalar(_x) => self.deserialize_str(visitor),
             TextToken::End(_x) => Err(DeserializeError {
@@ -941,11 +960,297 @@ where
         } else {
             let next_key = match self.tokens[self.idx] {
                 TextToken::Array(x) | TextToken::Object(x) | TextToken::HiddenObject(x) => x,
+                TextToken::Header(_) => match self.tokens[self.idx + 1] {
+                    TextToken::Array(x) | TextToken::Object(x) | TextToken::HiddenObject(x) => x,
+                    _ => self.idx + 1,
+                },
                 _ => self.idx,
             };
 
             self.de_idx = self.idx;
             self.idx = next_key + 1;
+            seed.deserialize(self).map(Some)
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HeaderSequence<'b, 'de: 'b, E> {
+    tokens: &'b [TextToken<'de>],
+    idx: usize,
+    encoding: &'b E,
+    state: usize,
+}
+
+impl<'b, 'de: 'b, E> HeaderSequence<'b, 'de, E> {
+    fn val_ind(&self) -> usize {
+        if self.state == 1 {
+            self.idx
+        } else {
+            self.idx + 1
+        }
+    }
+}
+
+impl<'b, 'de, 'r, E> de::Deserializer<'de> for &'r mut HeaderSequence<'b, 'de, E>
+where
+    E: Encoding,
+{
+    type Error = DeserializeError;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.val_ind();
+        match &self.tokens[idx] {
+            TextToken::Array(x) => visitor.visit_seq(BinarySequence {
+                tokens: self.tokens,
+                de_idx: 0,
+                idx: idx + 1,
+                end_idx: *x,
+                encoding: self.encoding,
+            }),
+            TextToken::Header(_) => visitor.visit_seq(HeaderSequence {
+                tokens: self.tokens,
+                idx,
+                encoding: self.encoding,
+                state: 0,
+            }),
+            TextToken::Object(x) | TextToken::HiddenObject(x) => {
+                visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x, self.encoding))
+            }
+            TextToken::End(_x) => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "encountered end when trying to deserialize",
+                )),
+            }),
+            _ => self.deserialize_str(visitor),
+        }
+    }
+
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.val_ind();
+        match &self.tokens[idx] {
+            TextToken::Array(x) => visitor.visit_seq(BinarySequence {
+                tokens: self.tokens,
+                de_idx: 0,
+                idx: idx + 1,
+                end_idx: *x,
+                encoding: self.encoding,
+            }),
+            TextToken::Header(_) => visitor.visit_seq(HeaderSequence {
+                tokens: self.tokens,
+                idx,
+                encoding: self.encoding,
+                state: 0,
+            }),
+            TextToken::End(_x) => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "encountered end when trying to deserialize",
+                )),
+            }),
+            _ => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "encountered non-seq when trying to deserialize seq",
+                )),
+            }),
+        }
+    }
+
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_some(self)
+    }
+
+    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_tuple_struct<V>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_unit()
+    }
+
+    fn deserialize_newtype_struct<V>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_newtype_struct(self)
+    }
+
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_string(visitor)
+    }
+
+    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_str(visitor)
+    }
+
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_bool(visitor)
+    }
+
+    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_u64(visitor)
+    }
+
+    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_u32(visitor)
+    }
+
+    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_u16(visitor)
+    }
+
+    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_u8(visitor)
+    }
+
+    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_i64(visitor)
+    }
+
+    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_i32(visitor)
+    }
+
+    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_i16(visitor)
+    }
+
+    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_i8(visitor)
+    }
+
+    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_f64(visitor)
+    }
+
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        KeyDeserializer::new(self.tokens, self.val_ind(), self.encoding).deserialize_f32(visitor)
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_map(visitor)
+    }
+
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let idx = self.val_ind();
+        match &self.tokens[idx] {
+            TextToken::Object(x) | TextToken::HiddenObject(x) => {
+                visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x, self.encoding))
+            }
+
+            // An array is supported if it is empty
+            TextToken::Array(x) => {
+                visitor.visit_map(BinaryMap::new(self.tokens, idx + 1, *x, self.encoding))
+            }
+            _ => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "encountered unexpected token when trying to deserialize map",
+                )),
+            }),
+        }
+    }
+
+    serde::forward_to_deserialize_any! {
+        i128 u128 char
+        bytes byte_buf unit unit_struct identifier
+        enum
+    }
+}
+
+impl<'b, 'de, E> SeqAccess<'de> for HeaderSequence<'b, 'de, E>
+where
+    E: Encoding,
+{
+    type Error = DeserializeError;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        if self.state >= 2 {
+            Ok(None)
+        } else {
+            self.state += 1;
             seed.deserialize(self).map(Some)
         }
     }
@@ -1569,34 +1874,47 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialize_rgb() {
-        let data = b"color = rgb { 100 200 150 } ";
+    fn test_deserialize_colors() {
+        let data = b"color = rgb { 100 200 150 } color2 = hsv { 0.3 0.2 0.8 }";
+
+        #[derive(Debug, PartialEq)]
+        enum MyColor {
+            Rgb {
+                red: u8,
+                green: u8,
+                blue: u8,
+            },
+            Hsv {
+                hue: f32,
+                saturation: f32,
+                value: f32,
+            },
+        }
 
         let actual: MyStruct = from_slice(&data[..]).unwrap();
         assert_eq!(
             actual,
             MyStruct {
-                color: Color {
+                color: MyColor::Rgb {
                     red: 100,
                     green: 200,
                     blue: 150
+                },
+                color2: MyColor::Hsv {
+                    hue: 0.3,
+                    saturation: 0.2,
+                    value: 0.8,
                 }
             }
         );
 
         #[derive(Deserialize, Debug, PartialEq)]
         struct MyStruct {
-            color: Color,
+            color: MyColor,
+            color2: MyColor,
         }
 
-        #[derive(Debug, PartialEq)]
-        struct Color {
-            red: i32,
-            blue: i32,
-            green: i32,
-        }
-
-        impl<'de> Deserialize<'de> for Color {
+        impl<'de> Deserialize<'de> for MyColor {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
                 D: Deserializer<'de>,
@@ -1604,7 +1922,7 @@ mod tests {
                 struct ColorVisitor;
 
                 impl<'de> Visitor<'de> for ColorVisitor {
-                    type Value = Color;
+                    type Value = MyColor;
 
                     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                         formatter.write_str("a color")
@@ -1614,18 +1932,24 @@ mod tests {
                     where
                         A: de::SeqAccess<'de>,
                     {
-                        let r = seq.next_element::<i32>()?.expect("red to be present");
-                        let g = seq.next_element::<i32>()?.expect("green to be present");
-                        let b = seq.next_element::<i32>()?.expect("blue to be present");
-
-                        if seq.next_element::<de::IgnoredAny>()?.is_some() {
-                            Err(de::Error::custom("unexpected extra rgb value"))
-                        } else {
-                            Ok(Color {
-                                red: r,
-                                blue: b,
-                                green: g,
-                            })
+                        let ty = seq.next_element::<&str>()?.expect("value type");
+                        match ty {
+                            "rgb" => {
+                                let (red, green, blue) =
+                                    seq.next_element::<(u8, u8, u8)>()?.expect("rgb channels");
+                                Ok(MyColor::Rgb { red, green, blue })
+                            }
+                            "hsv" => {
+                                let (hue, saturation, value) = seq
+                                    .next_element::<(f32, f32, f32)>()?
+                                    .expect("hsv channels");
+                                Ok(MyColor::Hsv {
+                                    hue,
+                                    saturation,
+                                    value,
+                                })
+                            }
+                            _ => panic!("unexpected color type"),
                         }
                     }
                 }

@@ -1460,9 +1460,9 @@ mod tests {
 
         #[derive(Debug, PartialEq)]
         struct Color {
-            red: i32,
-            blue: i32,
-            green: i32,
+            red: u8,
+            blue: u8,
+            green: u8,
         }
 
         impl<'de> Deserialize<'de> for Color {
@@ -1483,18 +1483,14 @@ mod tests {
                     where
                         A: de::SeqAccess<'de>,
                     {
-                        let r = seq.next_element::<i32>()?.expect("red to be present");
-                        let g = seq.next_element::<i32>()?.expect("green to be present");
-                        let b = seq.next_element::<i32>()?.expect("blue to be present");
-
-                        if seq.next_element::<de::IgnoredAny>()?.is_some() {
-                            Err(de::Error::custom("unexpected extra rgb value"))
-                        } else {
-                            Ok(Color {
-                                red: r,
-                                blue: b,
-                                green: g,
-                            })
+                        let ty = seq.next_element::<&str>()?.expect("value type");
+                        match ty {
+                            "rgb" => {
+                                let (red, green, blue) =
+                                    seq.next_element::<(u8, u8, u8)>()?.expect("rgb channels");
+                                Ok(Color { red, green, blue })
+                            }
+                            _ => panic!("unexpected color type"),
                         }
                     }
                 }
