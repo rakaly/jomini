@@ -448,21 +448,16 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             data = self.parse_quote_scalar(data)?;
                             state = ParseState::Key;
                         }
-                        b'r' => {
-                            let rgb_detected = data.get(1).map_or(false, |&x| x == b'g')
-                                && data.get(2).map_or(false, |&x| x == b'b')
-                                && data.get(3).map_or(false, |&x| is_boundary(x));
-                            if rgb_detected {
-                                data = &data[3..];
-                                state = ParseState::RgbOpen
-                            } else {
-                                data = self.parse_scalar(data);
-                                state = ParseState::Key;
-                            }
-                        }
                         _ => {
-                            data = self.parse_scalar(data);
-                            state = ParseState::Key;
+                            let (scalar, rest) = ParserState::split_at_scalar(d);
+                            data = rest;
+
+                            if scalar.view_data() == b"rgb" {
+                                state = ParseState::RgbOpen;
+                            } else {
+                                self.token_tape.push(TextToken::Scalar(scalar));
+                                state = ParseState::Key
+                            }
                         }
                     }
                 }
