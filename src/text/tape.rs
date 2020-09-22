@@ -1,6 +1,6 @@
 use crate::data::{is_boundary, is_whitespace};
 use crate::util::{contains_zero_byte, repeat_byte};
-use crate::{Error, ErrorKind, Rgb, Scalar};
+use crate::{Error, ErrorKind, Scalar};
 
 /// An operator token
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -55,8 +55,14 @@ pub enum TextToken<'a> {
     /// Index of the start of this object
     End(usize),
 
-    /// Represents a text encoded rgb value
-    Rgb(Rgb),
+    /// The header token of the subsequent scalar. For instance, given
+    ///
+    /// ```ignore
+    /// color = rgb { 100 200 50 }
+    /// ```
+    ///
+    /// `rgb` would be a the header followed by a 3 element array
+    Header(Scalar<'a>),
 }
 
 /// Creates a parser that a writes to a text tape
@@ -117,11 +123,6 @@ enum ParseState {
     ParseOpen,
     FirstValue,
     EmptyObject,
-    RgbOpen,
-    RgbR,
-    RgbG,
-    RgbB,
-    RgbClose,
 }
 
 impl<'a> TextTape<'a> {
@@ -300,9 +301,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
     pub fn parse(&mut self) -> Result<(), Error> {
         let mut data = self.data;
         let mut state = ParseState::Key;
-        let mut red = 0;
-        let mut green = 0;
-        let mut blue = 0;
 
         // This variable keeps track of outer array when we're parsing a hidden object.
         // A hidden object textually looks like:
@@ -318,12 +316,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
             let d = match self.skip_ws_t(data) {
                 Some(d) => d,
                 None => {
-                    if state == ParseState::RgbOpen {
-                        state = ParseState::Key;
-                        let scalar = Scalar::new(b"rgb");
-                        self.token_tape.push(TextToken::Scalar(scalar));
-                    }
-
                     if parent_ind == 0 && state == ParseState::Key {
                         return Ok(());
                     } else {
@@ -402,10 +394,20 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             data = &data[1..];
                         }
 
-                        // Empty object! Skip
+                        // Empty object or token header
                         b'{' => {
                             data = &data[1..];
-                            state = ParseState::EmptyObject;
+                            if let Some(last) = self.token_tape.last_mut() {
+                                if let TextToken::Scalar(x) = last {
+                                    *last = TextToken::Header(*x);
+                                    self.token_tape.push(TextToken::Array(0));
+                                    state = ParseState::ParseOpen;
+                                } else {
+                                    state = ParseState::EmptyObject;
+                                }
+                            } else {
+                                state = ParseState::EmptyObject;
+                            }
                         }
 
                         b'"' => {
@@ -449,15 +451,8 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             state = ParseState::Key;
                         }
                         _ => {
-                            let (scalar, rest) = ParserState::split_at_scalar(d);
-                            data = rest;
-
-                            if scalar.view_data() == b"rgb" {
-                                state = ParseState::RgbOpen;
-                            } else {
-                                self.token_tape.push(TextToken::Scalar(scalar));
-                                state = ParseState::Key
-                            }
+                            data = self.parse_scalar(data);
+                            state = ParseState::Key
                         }
                     }
                 }
@@ -565,76 +560,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     _ => {
                         data = self.parse_scalar(data);
                         state = ParseState::ArrayValue;
-                    }
-                },
-                ParseState::RgbOpen => match data[0] {
-                    b'{' => {
-                        data = &data[1..];
-                        state = ParseState::RgbR;
-                    }
-                    _ => {
-                        state = ParseState::Key;
-                        let scalar = Scalar::new(b"rgb");
-                        self.token_tape.push(TextToken::Scalar(scalar));
-                    }
-                },
-                ParseState::RgbR => {
-                    let (r, rest) = ParserState::split_at_scalar(data);
-                    if let Ok(x) = r.to_u64() {
-                        red = x as u32;
-                    } else {
-                        return Err(Error::new(ErrorKind::InvalidSyntax {
-                            offset: self.offset(data),
-                            msg: String::from("unable to decode color channel"),
-                        }));
-                    }
-
-                    state = ParseState::RgbG;
-                    data = rest;
-                }
-                ParseState::RgbG => {
-                    let (r, rest) = ParserState::split_at_scalar(data);
-                    if let Ok(x) = r.to_u64() {
-                        green = x as u32;
-                    } else {
-                        return Err(Error::new(ErrorKind::InvalidSyntax {
-                            offset: self.offset(data),
-                            msg: String::from("unable to decode color channel"),
-                        }));
-                    }
-
-                    state = ParseState::RgbB;
-                    data = rest;
-                }
-                ParseState::RgbB => {
-                    let (r, rest) = ParserState::split_at_scalar(data);
-                    if let Ok(x) = r.to_u64() {
-                        blue = x as u32;
-                    } else {
-                        return Err(Error::new(ErrorKind::InvalidSyntax {
-                            offset: self.offset(data),
-                            msg: String::from("unable to decode color channel"),
-                        }));
-                    }
-
-                    state = ParseState::RgbClose;
-                    data = rest;
-                }
-                ParseState::RgbClose => match data[0] {
-                    b'}' => {
-                        self.token_tape.push(TextToken::Rgb(Rgb {
-                            r: red,
-                            b: blue,
-                            g: green,
-                        }));
-                        data = &data[1..];
-                        state = ParseState::Key;
-                    }
-                    _ => {
-                        return Err(Error::new(ErrorKind::InvalidSyntax {
-                            offset: self.offset(data),
-                            msg: "unable to detect rgb close".to_string(),
-                        }));
                     }
                 },
             }
@@ -958,9 +883,11 @@ mod tests {
             parse(&data[..]).unwrap().token_tape,
             vec![
                 TextToken::Scalar(Scalar::new(b"foo")),
-                TextToken::Object(4),
+                TextToken::Object(6),
                 TextToken::Scalar(Scalar::new(b"bar")),
-                TextToken::Scalar(Scalar::new(b"val")),
+                TextToken::Header(Scalar::new(b"val")),
+                TextToken::Array(5),
+                TextToken::End(4),
                 TextToken::End(1),
                 TextToken::Scalar(Scalar::new(b"me")),
                 TextToken::Scalar(Scalar::new(b"you")),
@@ -1203,11 +1130,140 @@ mod tests {
             parse(&data[..]).unwrap().token_tape,
             vec![
                 TextToken::Scalar(Scalar::new(b"color")),
-                TextToken::Rgb(Rgb {
-                    r: 100,
-                    g: 200,
-                    b: 150,
-                }),
+                TextToken::Header(Scalar::new(b"rgb")),
+                TextToken::Array(6),
+                TextToken::Scalar(Scalar::new(b"100")),
+                TextToken::Scalar(Scalar::new(b"200")),
+                TextToken::Scalar(Scalar::new(b"150")),
+                TextToken::End(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hsv_trick() {
+        let data = b"name = hsv ";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"name")),
+                TextToken::Scalar(Scalar::new(b"hsv")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hsv_trick2() {
+        let data = b"name = hsv type = 4713";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"name")),
+                TextToken::Scalar(Scalar::new(b"hsv")),
+                TextToken::Scalar(Scalar::new(b"type")),
+                TextToken::Scalar(Scalar::new(b"4713")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hsv_trick3() {
+        let data = b"name = hsveffect";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"name")),
+                TextToken::Scalar(Scalar::new(b"hsveffect")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hsv() {
+        let data = b"color = hsv { 0.43 0.86 0.61 } ";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"color")),
+                TextToken::Header(Scalar::new(b"hsv")),
+                TextToken::Array(6),
+                TextToken::Scalar(Scalar::new(b"0.43")),
+                TextToken::Scalar(Scalar::new(b"0.86")),
+                TextToken::Scalar(Scalar::new(b"0.61")),
+                TextToken::End(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hsv360() {
+        let data = b"color = hsv360{ 25 75 63 }";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"color")),
+                TextToken::Header(Scalar::new(b"hsv360")),
+                TextToken::Array(6),
+                TextToken::Scalar(Scalar::new(b"25")),
+                TextToken::Scalar(Scalar::new(b"75")),
+                TextToken::Scalar(Scalar::new(b"63")),
+                TextToken::End(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_cylindrical() {
+        let data = b"color = cylindrical{ 150 3 0 }";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"color")),
+                TextToken::Header(Scalar::new(b"cylindrical")),
+                TextToken::Array(6),
+                TextToken::Scalar(Scalar::new(b"150")),
+                TextToken::Scalar(Scalar::new(b"3")),
+                TextToken::Scalar(Scalar::new(b"0")),
+                TextToken::End(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hex() {
+        let data = b"color = hex { aabbccdd }";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"color")),
+                TextToken::Header(Scalar::new(b"hex")),
+                TextToken::Array(4),
+                TextToken::Scalar(Scalar::new(b"aabbccdd")),
+                TextToken::End(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_list_header() {
+        let data = b"mild_winter = LIST { 3700 3701 }";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"mild_winter")),
+                TextToken::Header(Scalar::new(b"LIST")),
+                TextToken::Array(5),
+                TextToken::Scalar(Scalar::new(b"3700")),
+                TextToken::Scalar(Scalar::new(b"3701")),
+                TextToken::End(2),
             ]
         );
     }
