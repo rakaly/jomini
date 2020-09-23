@@ -399,6 +399,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             data = &data[1..];
                             if let Some(last) = self.token_tape.last_mut() {
                                 if let TextToken::Scalar(x) = last {
+                                    if array_ind_of_hidden_obj.is_some() {
+                                        return Err(Error::new(ErrorKind::InvalidSyntax {
+                                            offset: self.offset(data) - 2,
+                                            msg: String::from(
+                                                "header values inside a hidden object are unsupported",
+                                            ),
+                                        }));
+                                    }
+
                                     *last = TextToken::Header(*x);
                                     self.token_tape.push(TextToken::Array(0));
                                     state = ParseState::ParseOpen;
@@ -1327,6 +1336,12 @@ mod tests {
     fn test_objects_in_hidden_objects_not_supported() {
         let data = b"u{{}a={0=1}";
         assert!(parse(&data[..]).is_err());
+    }
+
+    #[test]
+    fn test_hidden_objects_with_headers_not_supported() {
+        let data = b"s{{c d=a{b=}}";
+        assert!(TextTape::from_slice(&data[..]).is_err());
     }
 
     #[test]
