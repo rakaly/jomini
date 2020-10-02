@@ -1,3 +1,21 @@
+## v0.7.0 - 2020-10-02
+
+* Add `jomini::common::Date` structure for representing a game date -- a date
+  that doesn't factor in leap years. This date structure had been copied
+  between eu4, ck3, and imperator implementations and has now been consolidated
+  here.
+* Adds supports for parsing non-equal operators from text data to parse a wider
+  range of game files. This is done by pushing a `TextToken::Operator` into the
+  tape. Note that this operator will only appear if an operator is present and
+  is non-equal.
+* Expose hidden objects as `BinaryToken::HiddenObject` and
+  `TextToken::HiddenObject`. They behave exactly like regular objects except
+  that they denote the object is hidden (eg: `a = { 10 0=1 1=2 }`).
+* Add support for generic token headers (eg: `color = hsv { 0.58 1.00 0.72 }`)
+  via the `TextToken::Header("hsv")` token. This means that `TextToken::Rgb`
+  has been removed in favor of `TextToken::Header("rgb")` followed by an array
+  of 3 elements. `BinaryToken::Rgb` is still present.
+
 ## v0.6.0 - 2020-09-11
 
 The performance release. Parsing binary throughput increased 30-80% depending on the workload. The binary parser can now consistently reach up to 1.2 GB/s parsing. The text parsers also saw marked improvement from v0.5, on the order of 20-30% increase in throughput.
