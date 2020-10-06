@@ -436,13 +436,42 @@ impl<'a, 'b> ParserState<'a, 'b> {
                 ParseState::ObjectValue => {
                     match data[0] {
                         b'{' => {
-                            if array_ind_of_hidden_obj.is_some() {
-                                return Err(Error::new(ErrorKind::InvalidSyntax {
-                                    offset: self.offset(data) - 2,
-                                    msg: String::from(
-                                        "nested values inside a hidden object are unsupported",
-                                    ),
-                                }));
+                            if let Some(array_ind) = array_ind_of_hidden_obj.take() {
+                                // before we error, we should check if we previously parsed an empty array
+                                // `history={{} 1444.11.11={core=AAA}}`
+                                // so we're going to go back up the stack until we see our parent object
+                                // and ensure that everything along the way is an empty array
+
+                                let mut start = self.token_tape.len() - 3;
+                                while start > array_ind {
+                                    match self.token_tape[start] {
+                                        TextToken::End(x) if x == start - 1 => {
+                                            start -= 2;
+                                        }
+                                        _ => {
+                                            return Err(Error::new(ErrorKind::InvalidSyntax {
+                                                offset: self.offset(data) - 2,
+                                                msg: String::from(
+                                                    "header values inside a hidden object are unsupported",
+                                                ),
+                                            }));
+                                        }
+                                    }
+                                }
+
+                                let empty_objects_to_remove = self.token_tape.len() - 2 - array_ind;
+
+                                let grand_ind = match self.token_tape[array_ind] {
+                                    TextToken::Array(x) => x,
+                                    _ => 0,
+                                };
+
+                                for _ in 0..empty_objects_to_remove {
+                                    self.token_tape.remove(self.token_tape.len() - 3);
+                                }
+
+                                parent_ind = array_ind;
+                                self.token_tape[parent_ind] = TextToken::Object(grand_ind);
                             }
 
                             self.token_tape.push(TextToken::Array(0));
@@ -879,6 +908,44 @@ mod tests {
                 TextToken::Scalar(Scalar::new(b"type")),
                 TextToken::Scalar(Scalar::new(b"admiral")),
                 TextToken::End(8),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_empty_objects() {
+        let data = b"history={{} 1629.11.10={core=AAA}}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"history")),
+                TextToken::Object(7),
+                TextToken::Scalar(Scalar::new(b"1629.11.10")),
+                TextToken::Object(6),
+                TextToken::Scalar(Scalar::new(b"core")),
+                TextToken::Scalar(Scalar::new(b"AAA")),
+                TextToken::End(3),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_empty_multi_objects() {
+        let data = b"history={{} {} 1629.11.10={core=AAA}}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Scalar(Scalar::new(b"history")),
+                TextToken::Object(7),
+                TextToken::Scalar(Scalar::new(b"1629.11.10")),
+                TextToken::Object(6),
+                TextToken::Scalar(Scalar::new(b"core")),
+                TextToken::Scalar(Scalar::new(b"AAA")),
+                TextToken::End(3),
                 TextToken::End(1),
             ]
         );
@@ -1334,7 +1401,7 @@ mod tests {
 
     #[test]
     fn test_objects_in_hidden_objects_not_supported() {
-        let data = b"u{{}a={0=1}";
+        let data = b"u{1 a={0=1}";
         assert!(parse(&data[..]).is_err());
     }
 

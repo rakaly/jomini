@@ -297,12 +297,45 @@ where
                 OPEN => {
                     if state == ParseState::ObjectValue {
                         if array_ind_of_hidden_obj.is_some() {
-                            return Err(Error::new(ErrorKind::InvalidSyntax {
-                                offset: self.offset(data) - 2,
-                                msg: String::from(
-                                    "nested values inside a hidden object are unsupported",
-                                ),
-                            }));
+                            // the `is_some` + `unwrap` approach is consistently 8-10% faster
+                            // on the eu4 benchmark and I'm not sure why
+                            let array_ind = array_ind_of_hidden_obj.take().unwrap();
+                            
+                            // before we error, we should check if we previously parsed an empty array
+                            // `history={{} 1444.11.11={core=AAA}}`
+                            // so we're going to go back up the stack until we see our parent object
+                            // and ensure that everything along the way is an empty array
+
+                            let mut start = self.token_tape.len() - 3;
+                            while start > array_ind {
+                                match self.token_tape[start] {
+                                    BinaryToken::End(x) if x == start - 1 => {
+                                        start -= 2;
+                                    }
+                                    _ => {
+                                        return Err(Error::new(ErrorKind::InvalidSyntax {
+                                            offset: self.offset(data) - 2,
+                                            msg: String::from(
+                                                "nested values inside a hidden object are unsupported",
+                                            ),
+                                        }));
+                                    }
+                                }
+                            }
+
+                            let empty_objects_to_remove = self.token_tape.len() - 2 - array_ind;
+
+                            let grand_ind = match self.token_tape[array_ind] {
+                                BinaryToken::Array(x) => x,
+                                _ => 0,
+                            };
+
+                            for _ in 0..empty_objects_to_remove {
+                                self.token_tape.remove(self.token_tape.len() - 3);
+                            }
+
+                            parent_ind = array_ind;
+                            self.token_tape[parent_ind] = BinaryToken::Object(grand_ind);
                         }
 
                         let ind = self.token_tape.len();
@@ -1031,6 +1064,50 @@ mod tests {
                 BinaryToken::Text(Scalar::new(b"western")),
                 BinaryToken::Text(Scalar::new(b"1446.5.31")),
                 BinaryToken::Token(0x2838),
+                BinaryToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_empty_objects_to_skip2() {
+        let data = [
+            0x38, 0x28, 0x01, 0x00, 0x03, 0x00, 0x03, 0x00, 0x04, 0x00, 0x38, 0x29, 0x01, 0x00,
+            0x03, 0x00, 0x38, 0x30, 0x04, 0x00, 0x04, 0x00,
+        ];
+
+        let tape = parse(&data[..]).unwrap();
+        assert_eq!(
+            tape.token_tape,
+            vec![
+                BinaryToken::Token(0x2838),
+                BinaryToken::Object(6),
+                BinaryToken::Token(0x2938),
+                BinaryToken::Array(5),
+                BinaryToken::Token(0x3038),
+                BinaryToken::End(3),
+                BinaryToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_empty_objects_to_skip3() {
+        let data = [
+            0x38, 0x28, 0x01, 0x00, 0x03, 0x00, 0x03, 0x00, 0x04, 0x00, 0x03, 0x00, 0x04, 0x00,
+            0x38, 0x29, 0x01, 0x00, 0x03, 0x00, 0x38, 0x30, 0x04, 0x00, 0x04, 0x00,
+        ];
+
+        let tape = parse(&data[..]).unwrap();
+        assert_eq!(
+            tape.token_tape,
+            vec![
+                BinaryToken::Token(0x2838),
+                BinaryToken::Object(6),
+                BinaryToken::Token(0x2938),
+                BinaryToken::Array(5),
+                BinaryToken::Token(0x3038),
+                BinaryToken::End(3),
                 BinaryToken::End(1),
             ]
         );
