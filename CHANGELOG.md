@@ -1,3 +1,18 @@
+## v0.7.1 - 2020-10-06
+
+The following data can now be parsed both in text and binary form.
+
+```
+history = {
+  {}
+  1689.10.2={
+    decision="abc123"
+  }
+}
+```
+
+This format can be seen in some EU4 saves. What causes this is unknown but now doesn't cause the parser to fail.
+
 ## v0.7.0 - 2020-10-02
 
 * Add `jomini::common::Date` structure for representing a game date -- a date
