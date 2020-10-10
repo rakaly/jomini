@@ -221,6 +221,93 @@ fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
     unsafe { inner(&d) }
 }
 
+#[inline]
+unsafe fn skip_ws_t_fallback<'a>(start_ptr: *const u8, end_ptr: *const u8) -> Option<&'a [u8]> {
+    let mut ptr = start_ptr;
+    while ptr < end_ptr {
+        if !is_whitespace(*ptr) {
+            if *ptr == b'#' {
+                ptr = ptr.offset(1);
+                while ptr < end_ptr && *ptr != b'\n' {
+                    ptr = ptr.offset(1);
+                }
+            } else {
+                let rest = std::slice::from_raw_parts(ptr, sub(end_ptr, ptr));
+                return Some(rest);
+            }
+        }
+        ptr = ptr.offset(1);
+    }
+
+    None
+}
+
+/// Skips whitespace that may terminate the file
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+fn skip_ws_t(data: &[u8]) -> Option<&[u8]> {
+    unsafe {
+        let start_ptr = data.as_ptr();
+        let end_ptr = start_ptr.add(data.len());
+        skip_ws_t_fallback(start_ptr, end_ptr)
+    }
+}
+
+/// Skips whitespace that may terminate the file
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn skip_ws_t(data: &[u8]) -> Option<&[u8]> {
+    #[target_feature(enable = "sse2")]
+    unsafe fn inner(data: &[u8]) -> Option<&[u8]> {
+        use core::arch::x86_64::*;
+        let start_ptr = data.as_ptr();
+        let mut ptr = start_ptr;
+        let loop_size = std::mem::size_of::<__m128i>();
+        let end_ptr = data[data.len()..].as_ptr().sub(loop_size);
+        let space = _mm_set1_epi8(b' ' as i8);
+        let tab = _mm_set1_epi8(b'\t' as i8);
+        let newline = _mm_set1_epi8(b'\n' as i8);
+        let carriage = _mm_set1_epi8(b'\r' as i8);
+
+        while ptr <= end_ptr {
+            let reg = _mm_loadu_si128(ptr as *const __m128i);
+            let space_found = _mm_cmpeq_epi8(space, reg);
+            let tab_found = _mm_cmpeq_epi8(tab, reg);
+            let newline_found = _mm_cmpeq_epi8(newline, reg);
+            let carriage_found = _mm_cmpeq_epi8(carriage, reg);
+
+            let mut anywhite = _mm_or_si128(reg, space_found);
+            anywhite = _mm_or_si128(anywhite, tab_found);
+            anywhite = _mm_or_si128(anywhite, newline_found);
+            anywhite = _mm_or_si128(anywhite, carriage_found);
+
+            let mask = _mm_movemask_epi8(anywhite);
+            let ones = mask.trailing_ones() as usize;
+            if ones != loop_size {
+                if *ptr.add(ones) == b'#' {
+                    ptr = ptr.add(ones + 1);
+                    let end_ptr = start_ptr.add(data.len());
+                    while ptr < end_ptr && *ptr != b'\n' {
+                        ptr = ptr.offset(1);
+                    }
+                } else {
+                    let at = sub(ptr, start_ptr);
+                    let end_idx = at + ones;
+                    return Some(&data[end_idx..]);
+                }
+            } else {
+                ptr = ptr.add(loop_size);
+            }
+        }
+
+        let end_ptr = start_ptr.add(data.len());
+        skip_ws_t_fallback(start_ptr, end_ptr)
+    }
+
+    // from memchr: "SSE2 is avalbale on all x86_64 targets, so no CPU feature detection is necessary"
+    unsafe { inner(data) }
+}
+
 impl<'a> TextTape<'a> {
     /// Creates a new text tape
     pub fn new() -> Self {
@@ -246,33 +333,6 @@ impl<'a> TextTape<'a> {
 impl<'a, 'b> ParserState<'a, 'b> {
     fn offset(&self, data: &[u8]) -> usize {
         self.original_length - data.len()
-    }
-
-    /// Skips whitespace that may terminate the file
-    #[inline]
-    fn skip_ws_t(&mut self, data: &'a [u8]) -> Option<&'a [u8]> {
-        unsafe {
-            let start_ptr = data.as_ptr();
-            let end_ptr = start_ptr.add(data.len());
-
-            let mut ptr = start_ptr;
-            while ptr < end_ptr {
-                if !is_whitespace(*ptr) {
-                    if *ptr == b'#' {
-                        ptr = ptr.offset(1);
-                        while ptr < end_ptr && *ptr != b'\n' {
-                            ptr = ptr.offset(1);
-                        }
-                    } else {
-                        let rest = std::slice::from_raw_parts(ptr, sub(end_ptr, ptr));
-                        return Some(rest);
-                    }
-                }
-                ptr = ptr.offset(1);
-            }
-        }
-
-        None
     }
 
     #[inline]
@@ -366,7 +426,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
         let mut parent_ind = 0;
         loop {
-            let d = match self.skip_ws_t(data) {
+            let d = match skip_ws_t(data) {
                 Some(d) => d,
                 None => {
                     if parent_ind == 0 && state == ParseState::Key {
