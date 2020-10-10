@@ -11,6 +11,9 @@ jobs:
   test:
     name: test
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO: cargo
+      TARGET:
     strategy:
       matrix:
         build:
@@ -19,6 +22,7 @@ jobs:
         - nightly
         - macos
         - win-msvc
+        - stable-mips
         include:
         - build: stable
           os: ubuntu-latest
@@ -35,6 +39,10 @@ jobs:
         - build: win-msvc
           os: windows-latest
           rust: stable
+        - build: stable-mips
+          os: ubuntu-latest
+          rust: stable
+          target: mips64-unknown-linux-gnuabi64
     steps:
     - uses: actions/checkout@v2
       
@@ -45,12 +53,15 @@ jobs:
         profile: minimal
         override: true
 
+    - name: Use Cross
+      if: matrix.target != ''
+      run: cargo install cross
     - name: Build
-      run: cargo build --all --verbose
+      run: ${{ env.CARGO }} build --all --verbose $TARGET
     - name: Run tests
-      run: cargo test --all --verbose
+      run: ${{ env.CARGO }} test --all --verbose $TARGET
     - name: Run no-default-feature tests
-      run: cargo test --no-default-features --all --verbose
+      run: ${{ env.CARGO }} test --no-default-features --all --verbose $TARGET
       
     - name: Compile benchmarks
       if: matrix.build == 'stable'

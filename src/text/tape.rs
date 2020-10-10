@@ -1,5 +1,4 @@
 use crate::data::{is_boundary, is_whitespace};
-use crate::util::{contains_zero_byte, repeat_byte};
 use crate::{Error, ErrorKind, Scalar};
 
 /// An operator token
@@ -125,6 +124,103 @@ enum ParseState {
     EmptyObject,
 }
 
+/// I'm not smart enough to figure out the behavior of handling escape sequences when
+/// when scanning multi-bytes, so this fallback is for when I was to reset and
+/// process bytewise. It is much slower, but escaped strings should be rare enough
+/// that this shouldn't be an issue
+fn parse_quote_scalar_fallback(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
+    let mut pos = 1;
+    while pos < d.len() {
+        if d[pos] == b'\\' {
+            pos += 2;
+        } else if d[pos] == b'"' {
+            let scalar = Scalar::new(&d[1..pos]);
+            return Ok((scalar, &d[pos + 1..]));
+        } else {
+            pos += 1;
+        }
+    }
+
+    Err(Error::eof())
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
+    use crate::util::{contains_zero_byte, repeat_byte};
+    let sd = &d[1..];
+    unsafe {
+        let start_ptr = sd.as_ptr();
+        let end_ptr = start_ptr.add(sd.len() / 8 * 8);
+
+        let mut ptr = start_ptr;
+        while ptr < end_ptr {
+            let acc = (ptr as *const u64).read_unaligned();
+            if contains_zero_byte(acc ^ repeat_byte(b'\\')) {
+                break;
+            } else if contains_zero_byte(acc ^ repeat_byte(b'"')) {
+                while *ptr != b'"' {
+                    ptr = ptr.offset(1);
+                }
+
+                let offset = sub(ptr, start_ptr);
+                let (scalar, rest) = sd.split_at(offset);
+                let s = Scalar::new(scalar);
+                return Ok((s, &rest[1..]));
+            }
+            ptr = ptr.offset(8);
+        }
+    }
+
+    parse_quote_scalar_fallback(d)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
+    #[target_feature(enable = "sse2")]
+    unsafe fn inner(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
+        // This is a re-implementation of memchr for a few reasons:
+        //   - We maintain zero dependencies
+        //   - memchr is optimized for finding a needle in a large haystack so we don't need the
+        //   following performance improvements from memchr:
+        //     - avx2 (there's no perf difference between sse2 and avx2 for our input)
+        //     - aligned loads (we use unaligned)
+        //     - loop unrolling
+        use core::arch::x86_64::*;
+        let haystack = &d[1..];
+        let start_ptr = haystack.as_ptr();
+        let mut ptr = start_ptr;
+        let loop_size = std::mem::size_of::<__m128i>();
+        let end_ptr = haystack[haystack.len()..].as_ptr().sub(loop_size);
+        let quote = _mm_set1_epi8(b'"' as i8);
+        let slash = _mm_set1_epi8(b'\\' as i8);
+
+        while ptr <= end_ptr {
+            let reg = _mm_loadu_si128(ptr as *const __m128i);
+            let slash_found = _mm_cmpeq_epi8(slash, reg);
+            if _mm_movemask_epi8(slash_found) != 0 {
+                break;
+            }
+
+            let quote_found = _mm_cmpeq_epi8(quote, reg);
+            let mask = _mm_movemask_epi8(quote_found);
+            if mask != 0 {
+                let at = sub(ptr, start_ptr);
+                let end_idx = at + (mask.trailing_zeros() as usize);
+                let scalar = std::slice::from_raw_parts(start_ptr, end_idx);
+                let scalar = Scalar::new(scalar);
+                return Ok((scalar, &haystack[end_idx + 1..]));
+            }
+
+            ptr = ptr.add(loop_size);
+        }
+
+        parse_quote_scalar_fallback(d)
+    }
+
+    // from memchr: "SSE2 is avalbale on all x86_64 targets, so no CPU feature detection is necessary"
+    unsafe { inner(&d) }
+}
+
 impl<'a> TextTape<'a> {
     /// Creates a new text tape
     pub fn new() -> Self {
@@ -179,54 +275,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
         None
     }
 
-    /// I'm not smart enough to figure out the behavior of handling escape sequences when
-    /// when scanning multi-bytes, so this fallback is for when I was to reset and
-    /// process bytewise. It is much slower, but escaped strings should be rare enough
-    /// that this shouldn't be an issue
-    fn parse_quote_scalar_fallback(&mut self, d: &'a [u8]) -> Result<&'a [u8], Error> {
-        let mut pos = 1;
-        while pos < d.len() {
-            if d[pos] == b'\\' {
-                pos += 2;
-            } else if d[pos] == b'"' {
-                let scalar = Scalar::new(&d[1..pos]);
-                self.token_tape.push(TextToken::Scalar(scalar));
-                return Ok(&d[pos + 1..]);
-            } else {
-                pos += 1;
-            }
-        }
-
-        Err(Error::eof())
-    }
-
     #[inline]
     fn parse_quote_scalar(&mut self, d: &'a [u8]) -> Result<&'a [u8], Error> {
-        let sd = &d[1..];
-        unsafe {
-            let start_ptr = sd.as_ptr();
-            let end_ptr = start_ptr.add(sd.len() / 8 * 8);
-
-            let mut ptr = start_ptr;
-            while ptr < end_ptr {
-                let acc = (ptr as *const u64).read_unaligned();
-                if contains_zero_byte(acc ^ repeat_byte(b'\\')) {
-                    return self.parse_quote_scalar_fallback(d);
-                } else if contains_zero_byte(acc ^ repeat_byte(b'"')) {
-                    while *ptr != b'"' {
-                        ptr = ptr.offset(1);
-                    }
-
-                    let offset = sub(ptr, start_ptr);
-                    let (scalar, rest) = sd.split_at(offset);
-                    self.token_tape.push(TextToken::Scalar(Scalar::new(scalar)));
-                    return Ok(&rest[1..]);
-                }
-                ptr = ptr.offset(8);
-            }
-        }
-
-        self.parse_quote_scalar_fallback(d)
+        let (scalar, rest) = parse_quote_scalar(d)?;
+        self.token_tape.push(TextToken::Scalar(scalar));
+        Ok(rest)
     }
 
     #[inline]
