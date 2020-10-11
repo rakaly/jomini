@@ -300,7 +300,7 @@ where
                             // the `is_some` + `unwrap` approach is consistently 8-10% faster
                             // on the eu4 benchmark and I'm not sure why
                             let array_ind = array_ind_of_hidden_obj.take().unwrap();
-                            
+
                             // before we error, we should check if we previously parsed an empty array
                             // `history={{} 1444.11.11={core=AAA}}`
                             // so we're going to go back up the stack until we see our parent object

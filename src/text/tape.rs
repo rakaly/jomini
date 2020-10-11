@@ -1,4 +1,4 @@
-use crate::data::{is_boundary, is_whitespace};
+use crate::data::is_boundary;
 use crate::{Error, ErrorKind, Scalar};
 
 /// An operator token
@@ -257,13 +257,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
             let mut ptr = start_ptr;
             while ptr < end_ptr {
-                if !is_whitespace(*ptr) {
-                    if *ptr == b'#' {
+                match *ptr {
+                    b' ' | b'\t' | b'\n' | b'\r' => {}
+                    b'#' => {
                         ptr = ptr.offset(1);
                         while ptr < end_ptr && *ptr != b'\n' {
                             ptr = ptr.offset(1);
                         }
-                    } else {
+                    }
+                    _ => {
                         let rest = std::slice::from_raw_parts(ptr, sub(end_ptr, ptr));
                         return Some(rest);
                     }

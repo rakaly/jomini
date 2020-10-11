@@ -273,15 +273,16 @@ pub(crate) static WINDOWS_1252: [char; 256] = [
 pub(crate) const BOUNDARY: u8 = 1;
 pub(crate) const WHITESPACE: u8 = 2;
 pub(crate) const OPERATOR: u8 = 4;
+pub(crate) const COMMENT: u8 = 8;
 
 #[inline]
 pub(crate) fn is_whitespace(b: u8) -> bool {
-    CHARACTER_CLASS[usize::from(b)] & WHITESPACE == WHITESPACE
+    CHARACTER_CLASS[usize::from(b)] == WHITESPACE
 }
 
 #[inline]
 pub(crate) fn is_boundary(b: u8) -> bool {
-    CHARACTER_CLASS[usize::from(b)] & BOUNDARY == BOUNDARY
+    CHARACTER_CLASS[usize::from(b)] != 0
 }
 
 /// This table probably looks pretty weird but it serves as a way to encode multiple attributes of
@@ -301,11 +302,11 @@ pub(crate) static CHARACTER_CLASS: [u8; 256] = [
     (6 - 6),
     (7 - 7),
     (8 - 8),
-    (9 - 9) + BOUNDARY + WHITESPACE,   // \t
-    (10 - 10) + BOUNDARY + WHITESPACE, // \n
-    (11 - 11) + BOUNDARY + WHITESPACE, // \v
-    (12 - 12) + BOUNDARY + WHITESPACE, // \f
-    (13 - 13) + BOUNDARY + WHITESPACE, // \r
+    (9 - 9) + WHITESPACE,   // \t
+    (10 - 10) + WHITESPACE, // \n
+    (11 - 11) + WHITESPACE, // \v
+    (12 - 12) + WHITESPACE, // \f
+    (13 - 13) + WHITESPACE, // \r
     (14 - 14),
     (15 - 15),
     (16 - 16),
@@ -324,10 +325,10 @@ pub(crate) static CHARACTER_CLASS: [u8; 256] = [
     (29 - 29),
     (30 - 30),
     (31 - 31),
-    (32 - 32) + BOUNDARY + WHITESPACE, // SPACE
-    (33 - 33) + BOUNDARY + OPERATOR,   // !
+    (32 - 32) + WHITESPACE, // SPACE
+    (33 - 33) + OPERATOR,   // !
     (34 - 34),
-    (35 - 35) + BOUNDARY, // #
+    (35 - 35) + COMMENT, // #
     (36 - 36),
     (37 - 37),
     (38 - 38),
@@ -352,9 +353,9 @@ pub(crate) static CHARACTER_CLASS: [u8; 256] = [
     (57 - 57),
     (58 - 58),
     (59 - 59),
-    (60 - 60) + BOUNDARY + OPERATOR, // <
-    (61 - 61) + BOUNDARY + OPERATOR, // =
-    (62 - 62) + BOUNDARY + OPERATOR, // >
+    (60 - 60) + OPERATOR, // <
+    (61 - 61) + OPERATOR, // =
+    (62 - 62) + OPERATOR, // >
     (63 - 63),
     (64 - 64),
     (65 - 65),
