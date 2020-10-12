@@ -89,7 +89,7 @@ impl TextTapeParser {
     ) -> Result<(), Error> {
         let token_tape = &mut tape.token_tape;
         token_tape.clear();
-        token_tape.reserve(data.len() / 100 * 15);
+        token_tape.reserve(data.len() / 5);
         let mut state = ParserState {
             data,
             original_length: data.len(),
