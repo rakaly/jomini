@@ -14,7 +14,7 @@ byte_rate <- function(l) {
 }
 
 ggplot(df) +
-  stat_summary(aes(fn, throughput, fill = as.factor(group)),
+  stat_summary(aes(fn, throughput, fill = as.factor(fn)),
               position="dodge2",
               geom = "bar",
               fun = median) +
@@ -22,7 +22,7 @@ ggplot(df) +
   expand_limits(y = 0) +
   xlab("File Format") +
   ylab("Throughput") +
-  ggtitle("Throughput of Parsing Files with Jomini",
-          subtitle = "Across text and binary formats in parsing and deserialization") +
+  ggtitle("Parsing Throughput with Jomini",
+          subtitle = "Across text and binary formats") +
   guides(fill=guide_legend(title="Function"))
 ggsave('jomini-bench-throughput.png', width = 5, height = 4, dpi = 180)
