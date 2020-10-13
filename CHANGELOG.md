@@ -1,3 +1,12 @@
+## v0.7.2 - 2020-10-12
+
+This release is all about performance:
+
+- Increase tape pre-allocation by 33% for both binary and text parsers. This makes it so that underlying vector doesn't need to grow.
+- Simplify text parser character classifications for 10% throughput improvement
+- On x86 platforms, use SIMD instructions greatly speedup parsing scalars (quoted and non-quoted). Up to 60% improvement in throughput.
+
+
 ## v0.7.1 - 2020-10-06
 
 The following data can now be parsed both in text and binary form.
