@@ -101,7 +101,7 @@ impl TextDeserializer {
     {
         let reader = Reader::Object(ObjectReader::new(tape, encoding));
         let mut root = InternalDeserializer {
-            readers: vec![reader],
+            readers: reader,
         };
         Ok(T::deserialize(&mut root)?)
     }
@@ -109,7 +109,7 @@ impl TextDeserializer {
 
 #[derive(Debug)]
 struct InternalDeserializer<'de, 'tokens, E> {
-    readers: Vec<Reader<'de, 'tokens, E>>,
+    readers: Reader<'de, 'tokens, E>,
 }
 
 impl<'de, 'tokens, E> InternalDeserializer<'de, 'tokens, E>
@@ -117,12 +117,11 @@ where
     E: Clone,
 {
     fn reader(&self) -> Reader<'de, 'tokens, E> {
-        let last = self.readers.last().unwrap();
-        (*last).clone()
+        self.readers.clone()
     }
 
     fn reader_ref(&self) -> &Reader<'de, 'tokens, E> {
-        self.readers.last().as_ref().unwrap()
+        &self.readers
     }
 }
 
@@ -145,7 +144,7 @@ where
     where
         V: Visitor<'de>,
     {
-        match self.reader() {
+        match &self.readers {
             Reader::Scalar(x) => visit_str!(x.read_str(), visitor),
             Reader::Value(x) => match x.token() {
                 TextToken::Scalar(s) => visit_str!(x.decode(s.view_data()), visitor),
@@ -449,9 +448,9 @@ where
     {
         if let Some((key, _op, value)) = self.reader.next_field() {
             self.value = Some(value);
-            self.de.readers.push(Reader::Scalar(key));
+            let old = std::mem::replace(&mut self.de.readers, Reader::Scalar(key));
             let res = seed.deserialize(&mut *self.de).map(Some);
-            self.de.readers.pop();
+            let _ = std::mem::replace(&mut self.de.readers, old);
             res
         } else {
             Ok(None)
@@ -463,9 +462,9 @@ where
         V: DeserializeSeed<'de>,
     {
         let r = self.value.take().unwrap();
-        self.de.readers.push(Reader::Value(r));
+        let old = std::mem::replace(&mut self.de.readers, Reader::Value(r));
         let res = seed.deserialize(&mut *self.de);
-        self.de.readers.pop();
+        let _ = std::mem::replace(&mut self.de.readers, old);
         res
     }
 }
@@ -486,9 +485,9 @@ where
         T: DeserializeSeed<'de>,
     {
         if let Some(x) = self.reader.next_value() {
-            self.de.readers.push(Reader::Value(x));
+            let old = std::mem::replace(&mut self.de.readers, Reader::Value(x));
             let res = seed.deserialize(&mut *self.de).map(Some);
-            self.de.readers.pop();
+            let _ = std::mem::replace(&mut self.de.readers, old);
             res
         } else {
             Ok(None)

@@ -9,6 +9,7 @@ pub type KeyValue<'data, 'tokens, E> = (
     ValueReader<'data, 'tokens, E>,
 );
 
+#[inline]
 fn next_idx_header(tokens: &[TextToken], idx: usize) -> usize {
     match tokens[idx] {
         TextToken::Array(x) | TextToken::Object(x) | TextToken::HiddenObject(x) => x + 1,
@@ -17,6 +18,7 @@ fn next_idx_header(tokens: &[TextToken], idx: usize) -> usize {
     }
 }
 
+#[inline]
 fn next_idx(tokens: &[TextToken], idx: usize) -> usize {
     match tokens[idx] {
         TextToken::Array(x) | TextToken::Object(x) | TextToken::HiddenObject(x) => x + 1,
@@ -38,6 +40,7 @@ impl<'data, 'tokens, E> Reader<'data, 'tokens, E>
 where
     E: Encoding + Clone,
 {
+    #[inline]
     pub fn read_str(&self) -> Result<Cow<'data, str>, DeserializeError> {
         match &self {
             Reader::Scalar(x) => Ok(x.read_str()),
@@ -48,6 +51,7 @@ where
         }
     }
 
+    #[inline]
     pub fn read_string(&self) -> Result<String, DeserializeError> {
         match &self {
             Reader::Scalar(x) => Ok(x.read_string()),
@@ -58,6 +62,7 @@ where
         }
     }
 
+    #[inline]
     pub fn read_scalar(&self) -> Result<Scalar<'data>, DeserializeError> {
         match &self {
             Reader::Scalar(x) => Ok(x.read_scalar()),
@@ -91,13 +96,19 @@ where
         }
     }
 
+    #[inline]
     pub fn next_field(&mut self) -> Option<KeyValue<'data, 'tokens, E>> {
         if self.token_ind < self.end_ind {
             let key_ind = self.token_ind;
-            let key_scalar = match self.tokens[key_ind] {
-                TextToken::Scalar(x) => x,
-                _ => panic!("AAAA"),
+            let key_scalar = if let TextToken::Scalar(x) = self.tokens[key_ind] {
+                x
+            } else {
+                // this is a broken invariant, so we safely recover by saying the object
+                // has no more fields
+                debug_assert!(false, "All keys should be scalars");
+                return None;
             };
+
             let key_reader = self.new_scalar_reader(key_scalar);
 
             let (op, value_ind) = match self.tokens[key_ind + 1] {
@@ -112,6 +123,7 @@ where
         }
     }
 
+    #[inline]
     fn new_scalar_reader(&self, scalar: Scalar<'data>) -> ScalarReader<'data, E> {
         ScalarReader {
             scalar,
@@ -119,6 +131,7 @@ where
         }
     }
 
+    #[inline]
     fn new_value_reader(&self, value_ind: usize) -> ValueReader<'data, 'tokens, E> {
         ValueReader {
             value_ind,
@@ -138,14 +151,17 @@ impl<'data, E> ScalarReader<'data, E>
 where
     E: Encoding,
 {
+    #[inline]
     pub fn read_str(&self) -> Cow<'data, str> {
         self.encoding.decode(self.scalar.view_data())
     }
 
+    #[inline]
     pub fn read_string(&self) -> String {
         self.encoding.decode(self.scalar.view_data()).into_owned()
     }
 
+    #[inline]
     pub fn read_scalar(&self) -> Scalar<'data> {
         self.scalar
     }
@@ -159,6 +175,7 @@ pub struct ValueReader<'data, 'tokens, E> {
 }
 
 impl<'data, 'tokens, E> ValueReader<'data, 'tokens, E> {
+    #[inline]
     pub fn token(&self) -> &TextToken<'data> {
         &self.tokens[self.value_ind]
     }
@@ -168,6 +185,7 @@ impl<'data, 'tokens, E> Encoding for ValueReader<'data, 'tokens, E>
 where
     E: Encoding,
 {
+    #[inline]
     fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
         self.encoding.decode(data)
     }
@@ -177,6 +195,7 @@ impl<'data, 'tokens, E> ValueReader<'data, 'tokens, E>
 where
     E: Encoding + Clone,
 {
+    #[inline]
     pub fn read_str(&self) -> Result<Cow<'data, str>, DeserializeError> {
         self.tokens[self.value_ind]
             .as_scalar()
@@ -186,6 +205,7 @@ where
             })
     }
 
+    #[inline]
     pub fn read_string(&self) -> Result<String, DeserializeError> {
         self.tokens[self.value_ind]
             .as_scalar()
@@ -195,6 +215,7 @@ where
             })
     }
 
+    #[inline]
     pub fn read_scalar(&self) -> Result<Scalar<'data>, DeserializeError> {
         self.tokens[self.value_ind]
             .as_scalar()
@@ -203,6 +224,7 @@ where
             })
     }
 
+    #[inline]
     pub fn read_object(&self) -> Result<ObjectReader<'data, 'tokens, E>, DeserializeError> {
         match self.tokens[self.value_ind] {
             TextToken::Object(ind) => Ok(ObjectReader {
@@ -225,6 +247,7 @@ where
         }
     }
 
+    #[inline]
     pub fn read_array(&self) -> Result<ArrayReader<'data, 'tokens, E>, DeserializeError> {
         match self.tokens[self.value_ind] {
             TextToken::Array(ind) => Ok(ArrayReader {
@@ -261,6 +284,7 @@ impl<'data, 'tokens, E> ArrayReader<'data, 'tokens, E>
 where
     E: Encoding + Clone,
 {
+    #[inline]
     pub fn next_value(&mut self) -> Option<ValueReader<'data, 'tokens, E>> {
         if self.token_ind < self.end_ind {
             let value_ind = self.token_ind;
