@@ -149,7 +149,7 @@ where
             Reader::Value(x) => match x.token() {
                 TextToken::Scalar(s) => visit_str!(x.decode(s.view_data()), visitor),
                 TextToken::Header(_) | TextToken::Array(_) => self.deserialize_seq(visitor),
-                TextToken::Object(_) => self.deserialize_map(visitor),
+                TextToken::Object(_) | TextToken::HiddenObject(_) => self.deserialize_map(visitor),
                 _ => Err(DeserializeError {
                     kind: DeserializeErrorKind::Unsupported(String::from(
                         "unsupported value reader token",

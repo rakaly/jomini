@@ -9,6 +9,8 @@ pub type KeyValue<'data, 'tokens, E> = (
     ValueReader<'data, 'tokens, E>,
 );
 
+/// Calculate what index the next value is. This assumes that a header + value
+/// are two separate values
 #[inline]
 fn next_idx_header(tokens: &[TextToken], idx: usize) -> usize {
     match tokens[idx] {
@@ -18,6 +20,8 @@ fn next_idx_header(tokens: &[TextToken], idx: usize) -> usize {
     }
 }
 
+/// Calculate what index the next value is. This assumes that a header + value
+/// is one value
 #[inline]
 fn next_idx(tokens: &[TextToken], idx: usize) -> usize {
     match tokens[idx] {
@@ -227,7 +231,7 @@ where
     #[inline]
     pub fn read_object(&self) -> Result<ObjectReader<'data, 'tokens, E>, DeserializeError> {
         match self.tokens[self.value_ind] {
-            TextToken::Object(ind) => Ok(ObjectReader {
+            TextToken::Object(ind) | TextToken::HiddenObject(ind) => Ok(ObjectReader {
                 tokens: self.tokens,
                 token_ind: self.value_ind + 1,
                 end_ind: ind,
@@ -350,5 +354,31 @@ mod tests {
         assert!(nested.next_value().is_none());
         assert_eq!(value1, String::from("bar"));
         assert_eq!(value2, String::from("qux"));
+    }
+
+    #[test]
+    fn text_reader_hidden_object() {
+        let data = b"levels={10 0=1 0=2}";
+        let tape = TextTape::from_slice(data).unwrap();
+        let mut reader = tape.windows1252_reader();
+
+        let (key, _op, value) = reader.next_field().unwrap();
+        assert_eq!(key.read_string(), String::from("levels"));
+
+        let mut nested = value.read_array().unwrap();
+        let value1 = nested.next_value().unwrap().read_string().unwrap();
+        assert_eq!(value1, String::from("10"));
+
+        let mut hidden = nested.next_value().unwrap().read_object().unwrap();
+        let (key, _op, value) = hidden.next_field().unwrap();
+        assert_eq!(key.read_string(), String::from("0"));
+        assert_eq!(value.read_string().unwrap(), String::from("1"));
+
+        let (key, _op, value) = hidden.next_field().unwrap();
+        assert_eq!(key.read_string(), String::from("0"));
+        assert_eq!(value.read_string().unwrap(), String::from("2"));
+
+        assert!(hidden.next_field().is_none());
+        assert!(nested.next_value().is_none());
     }
 }
