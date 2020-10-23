@@ -1,4 +1,4 @@
-use crate::data::is_boundary;
+use crate::{data::is_boundary, ObjectReader, Utf8Encoding, Windows1252Encoding};
 use crate::{Error, ErrorKind, Scalar};
 
 /// An operator token
@@ -64,6 +64,15 @@ pub enum TextToken<'a> {
     Header(Scalar<'a>),
 }
 
+impl<'a> TextToken<'a> {
+    pub fn as_scalar(&self) -> Option<Scalar<'a>> {
+        match self {
+            TextToken::Header(s) | TextToken::Scalar(s) => Some(*s),
+            _ => None,
+        }
+    }
+}
+
 /// Creates a parser that a writes to a text tape
 #[derive(Debug, Default)]
 pub struct TextTapeParser;
@@ -111,6 +120,16 @@ struct ParserState<'a, 'b> {
 #[derive(Debug, Default)]
 pub struct TextTape<'a> {
     token_tape: Vec<TextToken<'a>>,
+}
+
+impl<'a> TextTape<'a> {
+    pub fn windows1252_reader(&self) -> ObjectReader<Windows1252Encoding> {
+        ObjectReader::new(&self, Windows1252Encoding::new())
+    }
+
+    pub fn utf8_reader(&self) -> ObjectReader<Utf8Encoding> {
+        ObjectReader::new(&self, Utf8Encoding::new())
+    }
 }
 
 #[derive(Debug, PartialEq)]
