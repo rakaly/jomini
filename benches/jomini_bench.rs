@@ -69,7 +69,7 @@ pub fn utf8_benchmark(c: &mut Criterion) {
 
 pub fn to_u64_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("to_u64");
-    for input in [&b"1444"[..], &b"20405029"[..]].iter() {
+    for input in [&b"7"[..], &b"1444"[..], &b"20405029"[..]].iter() {
         let data = Scalar::new(input);
         let ins = std::str::from_utf8(input).unwrap();
         group.bench_with_input(BenchmarkId::from_parameter(ins), &data, |b, &data| {

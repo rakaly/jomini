@@ -1,4 +1,3 @@
-use crate::util::le_u64;
 use crate::{ascii::is_ascii, decode_windows1252};
 use std::error;
 use std::fmt;
@@ -163,30 +162,6 @@ fn to_bool(d: &[u8]) -> Result<bool, ScalarError> {
     }
 }
 
-fn is_digits_wide(d: &[u8]) -> bool {
-    // Taken from simdjson: https://youtu.be/wlvKAT7SZIQ?t=2377
-    const SIZE: usize = std::mem::size_of::<u64>();
-    debug_assert!(d.len() == SIZE);
-
-    let val = le_u64(d);
-    val.checked_add(0x0606_0606_0606_0606).map_or(false, |x| {
-        ((val & 0xF0F0_F0F0_F0F0_F0F0) | ((x & 0xF0F0_F0F0_F0F0_F0F0) >> 4))
-            == 0x3333_3333_3333_3333
-    })
-}
-
-fn is_digits(d: &[u8]) -> bool {
-    !d.iter().any(|&x| x < b'0' || x > b'9')
-}
-
-#[inline]
-fn ascii_u64_to_digits(mut val: u64) -> u64 {
-    // Taken from simdjson: https://youtu.be/wlvKAT7SZIQ?t=2479
-    val = (val & 0x0F0F_0F0F_0F0F_0F0F).wrapping_mul(2561) >> 8;
-    val = (val & 0x00FF_00FF_00FF_00FF).wrapping_mul(6553601) >> 16;
-    (val & 0x0000_FFFF_0000_FFFF).wrapping_mul(42949672960001) >> 32
-}
-
 #[inline]
 fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
     match d.iter().position(|&x| x == b'.') {
@@ -216,45 +191,31 @@ fn to_i64(d: &[u8]) -> Result<i64, ScalarError> {
     Ok(sign * (rest as i64))
 }
 
+/// Convert a buffer to an u64. This function is micro-optimized for small
+/// inputs. Previous implementations had higher throughput on larger input but
+/// couldn't parse small inputs as quickly. Micro-optimizing this function for
+/// small inputs shaved ~7% off deserializing 120MB save as 10% of all time
+/// was spent in this function. Dates are a common occurrence of numbers that
+/// are 1-4 digits in length
 #[inline]
 fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
-    const POWER10: [u64; 8] = [10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10, 1];
-
     if d.is_empty() {
         return Err(ScalarError::AllDigits);
     }
 
-    let mut chunks = d.chunks_exact(8);
-    let all_digits = chunks.all(is_digits_wide);
-    let remainder = chunks.remainder();
-    if !(all_digits & is_digits(&remainder)) {
-        return Err(ScalarError::AllDigits);
-    }
-
     let mut result: u64 = 0;
-    let chunks = d.chunks_exact(8);
-    for chunk in chunks {
-        let val = le_u64(chunk);
+    for digit in d.iter().map(|x| x.wrapping_sub(b'0')) {
+        if digit > 9 {
+            return Err(ScalarError::AllDigits);
+        }
 
-        result = result
-            .checked_mul(100_000_000)
-            .and_then(|x| x.checked_add(ascii_u64_to_digits(val)))
-            .and_then(|x| x.checked_add(result))
-            .ok_or_else(|| ScalarError::Overflow)?;
-    }
+        let (new_result1, overflow1) = result.overflowing_mul(10);
+        let (new_result2, overflow2) = new_result1.overflowing_add(u64::from(digit));
+        if overflow1 | overflow2 {
+            return Err(ScalarError::Overflow);
+        }
 
-    if result != 0 {
-        result = 10_u64
-            .checked_pow(remainder.len() as u32)
-            .and_then(|x| result.checked_mul(x))
-            .ok_or_else(|| ScalarError::Overflow)?;
-    }
-
-    let maxxed = 8 - remainder.len();
-    for (i, &x) in remainder.iter().enumerate() {
-        result = result
-            .checked_add(u64::from(x - b'0') * POWER10[maxxed + i])
-            .ok_or_else(|| ScalarError::Overflow)?;
+        result = new_result2;
     }
 
     Ok(result)
