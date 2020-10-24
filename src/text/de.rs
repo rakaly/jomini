@@ -100,9 +100,7 @@ impl TextDeserializer {
         E: Encoding + Clone,
     {
         let reader = Reader::Object(ObjectReader::new(tape, encoding));
-        let mut root = InternalDeserializer {
-            readers: reader,
-        };
+        let mut root = InternalDeserializer { readers: reader };
         Ok(T::deserialize(&mut root)?)
     }
 }
