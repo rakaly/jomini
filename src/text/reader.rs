@@ -1,12 +1,17 @@
 use crate::{
     DeserializeError, DeserializeErrorKind, Encoding, Operator, Scalar, TextTape, TextToken,
 };
-use std::borrow::Cow;
+use std::{borrow::Cow};
 
 pub type KeyValue<'data, 'tokens, E> = (
     ScalarReader<'data, E>,
     Option<Operator>,
     ValueReader<'data, 'tokens, E>,
+);
+
+pub type KeyValues<'data, 'tokens, E> = (
+    ScalarReader<'data, E>,
+    Vec<ValueReader<'data, 'tokens, E>>,
 );
 
 /// Calculate what index the next value is. This assumes that a header + value
@@ -84,6 +89,8 @@ pub struct ObjectReader<'data, 'tokens, E> {
     end_ind: usize,
     tokens: &'tokens [TextToken<'data>],
     encoding: E,
+    val_ind: usize,
+    seen: Vec<bool>
 }
 
 impl<'data, 'tokens, E> ObjectReader<'data, 'tokens, E>
@@ -96,8 +103,26 @@ where
             tokens,
             end_ind: tokens.len(),
             token_ind: 0,
+            val_ind: 0,
             encoding,
+            seen: Vec::new(),
         }
+    }
+
+    pub fn fields_len(&self) -> usize {
+        let mut ind = self.token_ind;
+        let mut count = 0;
+        while ind < self.end_ind {
+            let key_ind = ind;
+            let value_ind = match self.tokens[key_ind + 1] {
+                TextToken::Operator(_) => key_ind + 2,
+                _ => key_ind + 1,
+            };
+            ind = next_idx(self.tokens, value_ind);
+            count += 1;
+        }
+
+        count
     }
 
     #[inline]
@@ -125,6 +150,65 @@ where
         } else {
             None
         }
+    }
+
+    #[inline]
+    pub fn next_fields(&mut self) -> Option<KeyValues<'data, 'tokens, E>> {
+        if self.val_ind == 0 {
+            self.seen = vec![false; self.fields_len()];
+        }
+
+        let mut values = Vec::new();
+        while self.token_ind < self.end_ind {
+            if !self.seen[self.val_ind] {
+                let key_ind = self.token_ind;
+                let key = &self.tokens[self.token_ind];
+                self.seen[self.val_ind] = true;
+                let key_scalar = if let &TextToken::Scalar(x) = key {
+                    x
+                } else {
+                    // this is a broken invariant, so we safely recover by saying the object
+                    // has no more fields
+                    debug_assert!(false, "All keys should be scalars");
+                    return None;
+                };
+
+                let key_reader = self.new_scalar_reader(key_scalar);
+                let value_ind = match self.tokens[key_ind + 1] {
+                    TextToken::Operator(_) => key_ind + 2,
+                    _ => key_ind + 1,
+                };
+
+                self.token_ind = next_idx(self.tokens, value_ind);
+                let value_reader = self.new_value_reader(value_ind);
+                values.push(value_reader);
+
+                let mut future = self.token_ind;
+                let mut future_ind = self.val_ind + 1;
+                while future < self.end_ind {
+                    if !self.seen[future_ind] && self.tokens[future] == *key {
+                        let value_ind = match self.tokens[future + 1] {
+                            TextToken::Operator(_) => future + 2,
+                            _ => future + 1,
+                        };
+                        self.seen[future_ind] = true;
+                        let value_reader = self.new_value_reader(value_ind);
+                        values.push(value_reader);
+                    }
+                    future_ind += 1;
+                    future = next_idx(self.tokens, future + 1);
+                }
+
+                self.val_ind += 1;
+                dbg!(&self.seen);
+                return Some((key_reader, values));
+            } else {
+                self.val_ind += 1;
+                self.token_ind = next_idx(self.tokens, self.val_ind + 1);
+            }
+        }
+
+        None
     }
 
     #[inline]
@@ -234,7 +318,9 @@ where
             TextToken::Object(ind) | TextToken::HiddenObject(ind) => Ok(ObjectReader {
                 tokens: self.tokens,
                 token_ind: self.value_ind + 1,
+                val_ind: 0,
                 end_ind: ind,
+                seen: Vec::new(),
                 encoding: self.encoding.clone(),
             }),
 
@@ -242,8 +328,10 @@ where
             TextToken::Array(ind) if ind == self.value_ind + 1 => Ok(ObjectReader {
                 tokens: self.tokens,
                 token_ind: self.value_ind + 1,
+                val_ind: 0,
                 end_ind: ind,
                 encoding: self.encoding.clone(),
+                seen: Vec::new(),
             }),
             _ => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from("not an object")),
@@ -289,6 +377,18 @@ where
     E: Encoding + Clone,
 {
     #[inline]
+    pub fn values_len(&mut self) -> usize {
+        let mut count = 0;
+        let mut ind = self.token_ind;
+        while ind < self.end_ind {
+            ind = next_idx_header(self.tokens, ind);
+            count += 1;
+        } 
+
+        count
+    }
+
+    #[inline]
     pub fn next_value(&mut self) -> Option<ValueReader<'data, 'tokens, E>> {
         if self.token_ind < self.end_ind {
             let value_ind = self.token_ind;
@@ -313,6 +413,7 @@ mod tests {
         let data = b"foo=bar";
         let tape = TextTape::from_slice(data).unwrap();
         let mut reader = tape.windows1252_reader();
+        assert_eq!(reader.fields_len(), 1);
 
         let (key, _op, value) = reader.next_field().unwrap();
         assert_eq!(key.read_string(), String::from("foo"));
@@ -348,6 +449,7 @@ mod tests {
         assert_eq!(key.read_string(), String::from("foo"));
 
         let mut nested = value.read_array().unwrap();
+        assert_eq!(nested.values_len(), 2);
         let value1 = nested.next_value().unwrap().read_string().unwrap();
         let value2 = nested.next_value().unwrap().read_string().unwrap();
 
@@ -362,14 +464,18 @@ mod tests {
         let tape = TextTape::from_slice(data).unwrap();
         let mut reader = tape.windows1252_reader();
 
+        assert_eq!(reader.fields_len(), 1);
         let (key, _op, value) = reader.next_field().unwrap();
         assert_eq!(key.read_string(), String::from("levels"));
 
         let mut nested = value.read_array().unwrap();
+        assert_eq!(nested.values_len(), 2);
+
         let value1 = nested.next_value().unwrap().read_string().unwrap();
         assert_eq!(value1, String::from("10"));
 
         let mut hidden = nested.next_value().unwrap().read_object().unwrap();
+        assert_eq!(hidden.fields_len(), 2);
         let (key, _op, value) = hidden.next_field().unwrap();
         assert_eq!(key.read_string(), String::from("0"));
         assert_eq!(value.read_string().unwrap(), String::from("1"));
@@ -380,5 +486,76 @@ mod tests {
 
         assert!(hidden.next_field().is_none());
         assert!(nested.next_value().is_none());
+    }
+
+    #[test]
+    fn text_reader_read_fields() {
+        let data = b"name=aaa name=bbb core=123 core=456 name=ccc name=ddd";
+        let tape = TextTape::from_slice(data).unwrap();
+        let mut reader = tape.windows1252_reader();
+
+        let (key, values) = reader.next_fields().unwrap();
+        assert_eq!(key.read_string(), String::from("name"));
+        assert_eq!(values.len(), 4);
+        assert_eq!(values[0].read_string().unwrap(), String::from("aaa"));
+        assert_eq!(values[1].read_string().unwrap(), String::from("bbb"));
+        assert_eq!(values[2].read_string().unwrap(), String::from("ccc"));
+        assert_eq!(values[3].read_string().unwrap(), String::from("ddd"));
+
+        let (key, values) = reader.next_fields().unwrap();
+        assert_eq!(key.read_string(), String::from("core"));
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0].read_string().unwrap(), String::from("123"));
+        assert_eq!(values[1].read_string().unwrap(), String::from("456"));
+    }
+
+    #[test]
+    fn text_reader_read_fields_nested() {
+        let data = b"army={name=aaa unit={name=bbb} unit={name=ccc}} army={name=ddd unit={name=eee}}";
+        let tape = TextTape::from_slice(data).unwrap();
+        let mut reader = tape.windows1252_reader();
+
+        let (key, army_values) = reader.next_fields().unwrap();
+        assert_eq!(key.read_string(), String::from("army"));
+        assert_eq!(army_values.len(), 2);
+
+        let mut aaa = army_values[0].read_object().unwrap();
+        assert_eq!(aaa.fields_len(), 3);
+        
+        let (key, values) = aaa.next_fields().unwrap();
+        assert_eq!(key.read_string(), String::from("name"));
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].read_string().unwrap(), String::from("aaa"));
+        
+        let (key, values) = aaa.next_fields().unwrap();
+        assert_eq!(key.read_string(), String::from("unit"));
+        assert_eq!(values.len(), 2);
+
+        let mut bbb = values[0].read_object().unwrap();
+        let (key, _, value) = bbb.next_field().unwrap();
+        assert_eq!(key.read_string(), String::from("name"));
+        assert_eq!(value.read_string().unwrap(), String::from("bbb"));
+
+        let mut ccc = values[1].read_object().unwrap();
+        let (key, _, value) = ccc.next_field().unwrap();
+        assert_eq!(key.read_string(), String::from("name"));
+        assert_eq!(value.read_string().unwrap(), String::from("ccc"));
+
+        let mut ddd = army_values[1].read_object().unwrap();
+        assert_eq!(ddd.fields_len(), 2);
+        
+        let (key, values) = ddd.next_fields().unwrap();
+        assert_eq!(key.read_string(), String::from("name"));
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].read_string().unwrap(), String::from("ddd"));
+        
+        let (key, values) = ddd.next_fields().unwrap();
+        assert_eq!(key.read_string(), String::from("unit"));
+        assert_eq!(values.len(), 1);
+
+        let mut eee = values[0].read_object().unwrap();
+        let (key, _, value) = eee.next_field().unwrap();
+        assert_eq!(key.read_string(), String::from("name"));
+        assert_eq!(value.read_string().unwrap(), String::from("eee"));
     }
 }
