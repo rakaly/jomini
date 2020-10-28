@@ -424,7 +424,27 @@ where
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_enum(VariantAccess { de: self })
+        let tmp = match self.reader() {
+            Reader::Value(x) => {
+                if let Ok(x) = x.read_array() {
+                    Ok(x)
+                } else {
+                    Err(DeserializeError {
+                        kind: DeserializeErrorKind::Unsupported(String::from(
+                            "unexpected reader for enum",
+                        )),
+                    })
+                }
+            }
+            _ => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from("unexpected reader for enum")),
+            }),
+        }?;
+
+        visitor.visit_enum(VariantAccess {
+            reader: tmp,
+            de: self,
+        })
     }
 }
 
@@ -495,6 +515,26 @@ where
 
 struct VariantAccess<'a, 'de, 'tokens, E> {
     de: &'a mut InternalDeserializer<'de, 'tokens, E>,
+    reader: ArrayReader<'de, 'tokens, E>,
+}
+
+// There probably is a way to type this out, but I'm a bit tired this
+// morning so a macro it is
+macro_rules! enum_access {
+    ($self:expr, $fun:expr) => {
+        if let Some(x) = $self.reader.next_value() {
+            let old = std::mem::replace(&mut $self.de.readers, Reader::Value(x));
+            let val = $fun()?;
+            let _ = std::mem::replace(&mut $self.de.readers, old);
+            Ok(val)
+        } else {
+            Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "unexpected value for enum variant seed",
+                )),
+            })
+        }
+    };
 }
 
 impl<'a, 'de: 'a, 'tokens, E> de::EnumAccess<'de> for VariantAccess<'a, 'de, 'tokens, E>
@@ -504,11 +544,11 @@ where
     type Error = DeserializeError;
     type Variant = Self;
 
-    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self), Self::Error>
+    fn variant_seed<V>(mut self, seed: V) -> Result<(V::Value, Self), Self::Error>
     where
         V: de::DeserializeSeed<'de>,
     {
-        let val = seed.deserialize(&mut *self.de)?;
+        let val = enum_access!(self, || seed.deserialize(&mut *self.de))?;
         Ok((val, self))
     }
 }
@@ -519,33 +559,41 @@ where
 {
     type Error = DeserializeError;
 
-    fn unit_variant(self) -> Result<(), Self::Error> {
-        de::Deserialize::deserialize(self.de)
+    fn unit_variant(mut self) -> Result<(), Self::Error> {
+        enum_access!(self, || de::Deserialize::deserialize(&mut *self.de))
     }
 
-    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Self::Error>
+    fn newtype_variant_seed<T>(mut self, seed: T) -> Result<T::Value, Self::Error>
     where
         T: de::DeserializeSeed<'de>,
     {
-        seed.deserialize(self.de)
+        enum_access!(self, || seed.deserialize(&mut *self.de))
     }
 
-    fn tuple_variant<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    fn tuple_variant<V>(mut self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        de::Deserializer::deserialize_seq(self.de, visitor)
+        enum_access!(self, || de::Deserializer::deserialize_seq(
+            &mut *self.de,
+            visitor
+        ))
     }
 
     fn struct_variant<V>(
-        self,
+        mut self,
         fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        de::Deserializer::deserialize_struct(self.de, "", fields, visitor)
+        enum_access!(self, || de::Deserializer::deserialize_struct(
+            &mut *self.de,
+            "",
+            fields,
+            visitor
+        ))
     }
 }
 
@@ -1163,6 +1211,30 @@ mod tests {
                 val: 3,
                 a: String::from("b"),
             }
+        );
+    }
+
+    #[test]
+    fn test_deserialize_enum() {
+        let data = b"color = rgb { 10 11 12 }";
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            color: MyColor,
+        }
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        enum MyColor {
+            #[serde(rename = "rgb")]
+            Rgb(u8, u8, u8),
+        }
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                color: MyColor::Rgb(10, 11, 12),
+            },
         );
     }
 
