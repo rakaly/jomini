@@ -144,6 +144,13 @@ where
                 TextToken::Operator(x) => (Some(x), key_ind + 2),
                 _ => (None, key_ind + 1),
             };
+
+            // When reading an mixed object (a = { b = { c } 10 10 10 })
+            // there is an uneven number of keys and values so we drop the last "field"
+            if value_ind >= self.end_ind {
+                return None;
+            }
+
             let value_reader = self.new_value_reader(value_ind);
             self.token_ind = next_idx(self.tokens, value_ind);
             Some((key_reader, op, value_reader))
@@ -342,6 +349,14 @@ where
     pub fn read_array(&self) -> Result<ArrayReader<'data, 'tokens, E>, DeserializeError> {
         match self.tokens[self.value_ind] {
             TextToken::Array(ind) => Ok(ArrayReader {
+                tokens: self.tokens,
+                token_ind: self.value_ind + 1,
+                end_ind: ind,
+                encoding: self.encoding.clone(),
+            }),
+
+            // An object can be considered an array of alternating keys and values
+            TextToken::Object(ind) => Ok(ArrayReader {
                 tokens: self.tokens,
                 token_ind: self.value_ind + 1,
                 end_ind: ind,
@@ -572,5 +587,66 @@ mod tests {
         }
 
         assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn text_reader_mixed_object() {
+        let data = br#"brittany_area = { #5
+            color = { 118  99  151 }
+            169 170 171 172 4384
+        }"#;
+
+        let tape = TextTape::from_slice(data).unwrap();
+        let mut reader = tape.windows1252_reader();
+        let (key, _op, value) = reader.next_field().unwrap();
+        assert_eq!(key.read_str(), "brittany_area");
+
+        let mut keys = vec![];
+        let mut brittany = value.read_object().unwrap();
+        while let Some((key, _op, _value)) = brittany.next_field() {
+            keys.push(key.read_str());
+        }
+
+        assert_eq!(
+            keys,
+            vec![
+                String::from("color"),
+                String::from("169"),
+                String::from("171")
+            ]
+        );
+    }
+
+    #[test]
+    fn text_reader_mixed_object_array() {
+        let data = br#"brittany_area = { #5
+            color = { 118  99  151 }
+            169 170 171 172 4384
+        }"#;
+
+        let tape = TextTape::from_slice(data).unwrap();
+        let mut reader = tape.windows1252_reader();
+        let (key, _op, value) = reader.next_field().unwrap();
+        assert_eq!(key.read_str(), "brittany_area");
+
+        let mut values = vec![];
+        let mut brittany = value.read_array().unwrap();
+        while let Some(value) = brittany.next_value() {
+            let nv = value.token();
+            values.push((*nv).clone());
+        }
+
+        assert_eq!(
+            values,
+            vec![
+                TextToken::Scalar(Scalar::new(b"color")),
+                TextToken::Array(7),
+                TextToken::Scalar(Scalar::new(b"169")),
+                TextToken::Scalar(Scalar::new(b"170")),
+                TextToken::Scalar(Scalar::new(b"171")),
+                TextToken::Scalar(Scalar::new(b"172")),
+                TextToken::Scalar(Scalar::new(b"4384")),
+            ]
+        );
     }
 }

@@ -18,7 +18,7 @@ pub enum Operator {
 }
 
 /// Represents a valid text value
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TextToken<'a> {
     /// Index of the `TextToken::End` that signifies this array's termination
     Array(usize),
@@ -1176,8 +1176,6 @@ mod tests {
 
     #[test]
     fn test_mixed_object_array() {
-        // This is something that probably won't have a deserialized test
-        // as ... how should one interpret it?
         let data = br#"brittany_area = { #5
             color = { 118  99  151 }
             169 170 171 172 4384

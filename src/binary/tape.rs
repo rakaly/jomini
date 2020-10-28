@@ -5,7 +5,7 @@ use crate::{
 use crate::{BinaryFlavor, Error, ErrorKind, Eu4Flavor, Rgb, Scalar};
 
 /// Represents any valid binary value
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BinaryToken<'a> {
     /// Index of the `BinaryToken::End` that signifies this array's termination
     Array(usize),

@@ -1239,6 +1239,56 @@ mod tests {
     }
 
     #[test]
+    fn test_deserialize_mixed_object() {
+        let data = br#"brittany_area = { #5
+            color = { 118  99  151 }
+            169 170 171 172 4384
+        }"#;
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual.brittany_area, vec![169, 170, 171, 172, 4384]);
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            #[serde(deserialize_with = "deserialize_area_vec")]
+            brittany_area: Vec<u16>,
+        }
+
+        fn deserialize_area_vec<'de, D>(deserializer: D) -> Result<Vec<u16>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            struct MapVisitor;
+
+            impl<'de> Visitor<'de> for MapVisitor {
+                type Value = Vec<u16>;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("a map area")
+                }
+
+                fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+                where
+                    A: de::SeqAccess<'de>,
+                {
+                    let mut result = Vec::new();
+
+                    while let Some(x) = seq.next_element::<&str>()? {
+                        if x == "color" {
+                            let _ = seq.next_element::<de::IgnoredAny>();
+                        } else {
+                            result.push(x.parse::<u16>().unwrap());
+                        }
+                    }
+
+                    Ok(result)
+                }
+            }
+
+            deserializer.deserialize_seq(MapVisitor)
+        }
+    }
+    #[test]
     fn test_deserialize_colors() {
         let data = b"color = rgb { 100 200 150 } color2 = hsv { 0.3 0.2 0.8 }";
 
