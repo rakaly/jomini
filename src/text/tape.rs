@@ -65,6 +65,14 @@ pub enum TextToken<'a> {
 }
 
 impl<'a> TextToken<'a> {
+    /// Returns the scalar if the token contains a scalar
+    ///
+    /// ```
+    /// use jomini::{Scalar, TextToken};
+    /// assert_eq!(TextToken::Scalar(Scalar::new(b"abc")).as_scalar(), Some(Scalar::new(b"abc")));
+    /// assert_eq!(TextToken::Header(Scalar::new(b"rgb")).as_scalar(), Some(Scalar::new(b"rgb")));
+    /// assert_eq!(TextToken::Object(2).as_scalar(), None);
+    /// ```
     pub fn as_scalar(&self) -> Option<Scalar<'a>> {
         match self {
             TextToken::Header(s) | TextToken::Scalar(s) => Some(*s),
@@ -123,10 +131,12 @@ pub struct TextTape<'a> {
 }
 
 impl<'a> TextTape<'a> {
+    /// Creates a windows 1252 object reader from the parsed tape
     pub fn windows1252_reader(&self) -> ObjectReader<Windows1252Encoding> {
         ObjectReader::new(&self, Windows1252Encoding::new())
     }
 
+    /// Creates a utf-8 object reader from the parsed tape
     pub fn utf8_reader(&self) -> ObjectReader<Utf8Encoding> {
         ObjectReader::new(&self, Utf8Encoding::new())
     }

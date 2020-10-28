@@ -37,11 +37,19 @@ fn next_idx(tokens: &[TextToken], idx: usize) -> usize {
     }
 }
 
+/// All possible text reader variants
 #[derive(Debug, Clone)]
 pub enum Reader<'data, 'tokens, E> {
+    /// object reader
     Object(ObjectReader<'data, 'tokens, E>),
+
+    /// array reader
     Array(ArrayReader<'data, 'tokens, E>),
+
+    /// scalar reader
     Scalar(ScalarReader<'data, E>),
+    
+    /// value reader
     Value(ValueReader<'data, 'tokens, E>),
 }
 
@@ -49,6 +57,7 @@ impl<'data, 'tokens, E> Reader<'data, 'tokens, E>
 where
     E: Encoding + Clone,
 {
+    /// Interpret value as a string
     #[inline]
     pub fn read_str(&self) -> Result<Cow<'data, str>, DeserializeError> {
         match &self {
@@ -60,6 +69,7 @@ where
         }
     }
 
+    /// Interpret value as a string
     #[inline]
     pub fn read_string(&self) -> Result<String, DeserializeError> {
         match &self {
@@ -71,6 +81,7 @@ where
         }
     }
 
+    /// Interpret value as a scalar
     #[inline]
     pub fn read_scalar(&self) -> Result<Scalar<'data>, DeserializeError> {
         match &self {
@@ -83,6 +94,7 @@ where
     }
 }
 
+/// A reader that will advance through an object
 #[derive(Debug, Clone)]
 pub struct ObjectReader<'data, 'tokens, E> {
     token_ind: usize,
@@ -97,6 +109,7 @@ impl<'data, 'tokens, E> ObjectReader<'data, 'tokens, E>
 where
     E: Encoding + Clone,
 {
+    /// Create a new object reader from parsed data with encoded strings
     pub fn new(tape: &'tokens TextTape<'data>, encoding: E) -> Self {
         let tokens = tape.tokens();
         ObjectReader {
@@ -109,6 +122,7 @@ where
         }
     }
 
+    /// Return the number of key value pairs that the object contains
     pub fn fields_len(&self) -> usize {
         let mut ind = self.token_ind;
         let mut count = 0;
@@ -125,6 +139,7 @@ where
         count
     }
 
+    /// Advance the reader and return the next field
     #[inline]
     pub fn next_field(&mut self) -> Option<KeyValue<'data, 'tokens, E>> {
         if self.token_ind < self.end_ind {
@@ -159,6 +174,7 @@ where
         }
     }
 
+    /// Advance the reader and return all fields that share the same key in the object
     #[inline]
     pub fn next_fields(&mut self) -> Option<KeyValues<'data, 'tokens, E>> {
         if self.val_ind == 0 {
@@ -235,6 +251,7 @@ where
     }
 }
 
+/// A text reader that wraps an underlying scalar value
 #[derive(Debug, Clone)]
 pub struct ScalarReader<'data, E> {
     scalar: Scalar<'data>,
@@ -245,22 +262,26 @@ impl<'data, E> ScalarReader<'data, E>
 where
     E: Encoding,
 {
+    /// Decode the data with a given string encoding
     #[inline]
     pub fn read_str(&self) -> Cow<'data, str> {
         self.encoding.decode(self.scalar.view_data())
     }
 
+    /// Decode the data with a given string encoding
     #[inline]
     pub fn read_string(&self) -> String {
         self.encoding.decode(self.scalar.view_data()).into_owned()
     }
 
+    /// Return the underlying scalar
     #[inline]
     pub fn read_scalar(&self) -> Scalar<'data> {
         self.scalar
     }
 }
 
+/// A text reader for a text value
 #[derive(Debug, Clone)]
 pub struct ValueReader<'data, 'tokens, E> {
     value_ind: usize,
@@ -269,6 +290,7 @@ pub struct ValueReader<'data, 'tokens, E> {
 }
 
 impl<'data, 'tokens, E> ValueReader<'data, 'tokens, E> {
+    /// Return the token that the reader is abstracting
     #[inline]
     pub fn token(&self) -> &TextToken<'data> {
         &self.tokens[self.value_ind]
@@ -289,6 +311,7 @@ impl<'data, 'tokens, E> ValueReader<'data, 'tokens, E>
 where
     E: Encoding + Clone,
 {
+    /// Interpret the current value as string
     #[inline]
     pub fn read_str(&self) -> Result<Cow<'data, str>, DeserializeError> {
         self.tokens[self.value_ind]
@@ -299,6 +322,7 @@ where
             })
     }
 
+    /// Interpret the current value as string
     #[inline]
     pub fn read_string(&self) -> Result<String, DeserializeError> {
         self.tokens[self.value_ind]
@@ -309,6 +333,7 @@ where
             })
     }
 
+    /// Interpret the current value as a scalar
     #[inline]
     pub fn read_scalar(&self) -> Result<Scalar<'data>, DeserializeError> {
         self.tokens[self.value_ind]
@@ -318,6 +343,7 @@ where
             })
     }
 
+    /// Interpret the current value as an object
     #[inline]
     pub fn read_object(&self) -> Result<ObjectReader<'data, 'tokens, E>, DeserializeError> {
         match self.tokens[self.value_ind] {
@@ -345,6 +371,7 @@ where
         }
     }
 
+    /// Interpret the current value as an array
     #[inline]
     pub fn read_array(&self) -> Result<ArrayReader<'data, 'tokens, E>, DeserializeError> {
         match self.tokens[self.value_ind] {
@@ -378,6 +405,7 @@ where
     }
 }
 
+/// A text reader that advances through a sequence of values
 #[derive(Debug, Clone)]
 pub struct ArrayReader<'data, 'tokens, E> {
     token_ind: usize,
@@ -390,6 +418,7 @@ impl<'data, 'tokens, E> ArrayReader<'data, 'tokens, E>
 where
     E: Encoding + Clone,
 {
+    /// Return the number of values in the array
     #[inline]
     pub fn values_len(&self) -> usize {
         let mut count = 0;
@@ -402,6 +431,7 @@ where
         count
     }
 
+    /// Advance the array and return the next value
     #[inline]
     pub fn next_value(&mut self) -> Option<ValueReader<'data, 'tokens, E>> {
         if self.token_ind < self.end_ind {

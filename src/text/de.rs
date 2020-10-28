@@ -485,6 +485,10 @@ where
         let _ = std::mem::replace(&mut self.de.readers, old);
         res
     }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.reader.fields_len())
+    }
 }
 
 struct SeqAccess<'a, 'de, 'tokens, E> {
@@ -510,6 +514,10 @@ where
         } else {
             Ok(None)
         }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.reader.values_len())
     }
 }
 
