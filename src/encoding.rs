@@ -33,7 +33,7 @@ pub trait Encoding: Sized {
 /// assert_eq!(encoding.decode(b"\xfe\xff\xfe\xff\xfe\xff\xfe\xff\xfe\xff"), "þÿþÿþÿþÿþÿ");
 /// assert_eq!(encoding.decode(b"hi\x81\x8a"), "hi\u{81}Š");
 /// ```
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct Windows1252Encoding;
 
 impl Windows1252Encoding {
@@ -72,7 +72,7 @@ impl<T: Encoding> Encoding for &'_ T {
 /// assert_eq!(encoding.decode(b"J\xc3\xa5hk\xc3\xa5m\xc3\xa5hkke"), "Jåhkåmåhkke");
 /// assert_eq!(encoding.decode("Jåhkåmåhkke".as_bytes()), "Jåhkåmåhkke");
 /// ```
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct Utf8Encoding;
 
 impl Utf8Encoding {

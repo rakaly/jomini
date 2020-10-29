@@ -1,10 +1,10 @@
+use super::tape::{array_len, object_len};
 use crate::{
     de::ColorSequence, BinaryFlavor, BinaryTape, BinaryToken, Ck3Flavor, DeserializeError,
     DeserializeErrorKind, Encoding, Error, Eu4Flavor, FailedResolveStrategy, TokenResolver,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
-use super::tape::{array_len, object_len};
 
 /// A structure to deserialize binary data into Rust values.
 ///

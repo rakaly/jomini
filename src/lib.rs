@@ -104,9 +104,27 @@ the binary format, but as a string when in plaintext.
 The plaintext parser is geared towards save file parsing and is not yet general enough to handle
 files that embed operators other than equals.
 
+## The Mid-level API
+
+If the automatic deserialization via `JominiDeserialize` is too high level, there is a mid-level
+api where one can easily iterate through the parsed document and interrogate fields for
+their information. 
+
+```rust
+use jomini::TextTape;
+
+let data = b"name=aaa name=bbb core=123 name=ccc name=ddd";
+let tape = TextTape::from_slice(data).unwrap();
+let mut reader = tape.windows1252_reader();
+
+while let Some((key, _op, value)) = reader.next_field() {
+    println!("{:?}={:?}", key.read_str(), value.read_str().unwrap());
+}
+```
+
 ## One Level Lower
 
-If the automatic deserialization via `JominiDeserialize` is too high level, one can
+At the very bottom of the API layer, one can
 interact with the raw data directly via `TextTape` and `BinaryTape`.
 
 ```rust
