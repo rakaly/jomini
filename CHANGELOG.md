@@ -1,3 +1,67 @@
+## v0.8.0 - 2020-10-29
+
+First up, this release brings some performance benefits when deserializing. Optimizations went into ensuring that smaller numbers faster to decode and pre-allocating containers like vectors or hashmaps with the known size.
+
+By far the biggest change is the introduction of mid-level API for the text format. Working with the low level tape -- well, it can be too low level. And while the
+high level serde bindings are nice, but sometimes it not a good fit. This version
+introduces a mid level API that bridges the two extremes.
+
+The best thing about this mid-level API is that it reuses the low level tape
+and the high level serde api can be implemented on top of the mid-level without
+a performance penalty.
+
+For now only the text format has this intermediate layer as the benefits are
+more immediate. The binary format is a bit simpler and adding this intermediate
+layer would seem to only complicate things.
+
+There are a couple more benefits that the mid level API helped with:
+
+Enums are deserializable.
+
+```
+color1 = rgb { 10 20 30 }
+color2 = hsv { 0.3 0.2 0.8 }
+color3 = hsv360 { 25 75 63 }
+```
+
+Can be deserialized to:
+
+```rust
+enum MyColor {
+    #[serde(rename = "rgb")]
+     Rgb(u8, u8, u8),
+    #[serde(rename = "hsv")]
+     Hsv(f32, f32, f32),
+    #[serde(rename = "hsv360")]
+     Hsv360(u8, u8, u8)
+}
+```
+
+Also values that are both an array and object can be deserialized too:
+
+```
+brittany_area = { #5
+    color = { 118  99  151 }
+    169 170 171 172 4384
+}
+```
+
+Just make sure the serde deserializer is written to understand the individual values passed to it.
+
+Some sample usage:
+
+```rust
+let data = b"name=aaa name=bbb core=123 name=ccc name=ddd";
+let tape = TextTape::from_slice(data).unwrap();
+let mut reader = tape.windows1252_reader();
+
+while let Some((key, _op, value)) = reader.next_field() {
+    println!("{:?}={:?}", key.read_str(), value.read_str().unwrap());
+}
+```
+
+This release needed a minor bump as the text deserializer now needs an encoding that implements `Clone` (if this is a problem, raise an issue). Also the `Token` types now implement `Clone`
+
 ## v0.7.2 - 2020-10-12
 
 This release is all about performance:
