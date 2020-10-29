@@ -108,7 +108,7 @@ files that embed operators other than equals.
 
 If the automatic deserialization via `JominiDeserialize` is too high level, there is a mid-level
 api where one can easily iterate through the parsed document and interrogate fields for
-their information. 
+their information.
 
 ```rust
 use jomini::TextTape;
@@ -124,8 +124,8 @@ while let Some((key, _op, value)) = reader.next_field() {
 
 ## One Level Lower
 
-At the very bottom of the API layer, one can
-interact with the raw data directly via `TextTape` and `BinaryTape`.
+At the lowest layer, one can interact with the raw data directly via `TextTape`
+and `BinaryTape`.
 
 ```rust
 use jomini::{TextTape, TextToken, Scalar};
