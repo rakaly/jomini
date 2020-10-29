@@ -710,7 +710,9 @@ pub(crate) fn object_len(tokens: &[BinaryToken], mut key_idx: usize) -> usize {
 
         let val_ind = key_idx + 1;
         key_idx = match tokens.get(val_ind) {
-            Some(BinaryToken::Array(x)) | Some(BinaryToken::Object(x)) | Some(BinaryToken::HiddenObject(x)) => x + 1,
+            Some(BinaryToken::Array(x))
+            | Some(BinaryToken::Object(x))
+            | Some(BinaryToken::HiddenObject(x)) => x + 1,
             _ => val_ind + 1,
         };
 
@@ -1283,7 +1285,7 @@ mod tests {
             BinaryToken::Token(0x0000),
             BinaryToken::Token(0x0001),
             BinaryToken::Token(0x0002),
-            BinaryToken::Token(0x0003)
+            BinaryToken::Token(0x0003),
         ];
 
         assert_eq!(object_len(&tokens, 0), 2);

@@ -48,7 +48,7 @@ pub enum Reader<'data, 'tokens, E> {
 
     /// scalar reader
     Scalar(ScalarReader<'data, E>),
-    
+
     /// value reader
     Value(ValueReader<'data, 'tokens, E>),
 }
@@ -394,7 +394,7 @@ where
             TextToken::Header(_) => Ok(ArrayReader {
                 tokens: self.tokens,
                 token_ind: self.value_ind,
-                end_ind: next_idx(self.tokens, self.value_ind),
+                end_ind: next_idx(self.tokens, self.value_ind + 1),
                 encoding: self.encoding.clone(),
             }),
 
@@ -451,6 +451,49 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn iterate_array<'data, 'tokens, E>(mut reader: ArrayReader<E>)
+    where
+        E: crate::Encoding + Clone,
+    {
+        while let Some(value) = reader.next_value() {
+            match value.token() {
+                TextToken::Object(_) | TextToken::HiddenObject(_) => {
+                    iterate_object(value.read_object().unwrap());
+                }
+                TextToken::Array(_) => {
+                    iterate_array(value.read_array().unwrap());
+                }
+                TextToken::End(_) => panic!("end!?"),
+                TextToken::Operator(_) => panic!("end!?"),
+                TextToken::Scalar(_) | TextToken::Header(_) => {
+                    let _ = value.read_str().unwrap();
+                }
+            }
+        }
+    }
+
+    fn iterate_object<'data, 'tokens, E>(mut reader: ObjectReader<E>)
+    where
+        E: crate::Encoding + Clone,
+    {
+        while let Some((key, _op, value)) = reader.next_field() {
+            let _ = key.read_str();
+            match value.token() {
+                TextToken::Object(_) | TextToken::HiddenObject(_) => {
+                    iterate_object(value.read_object().unwrap());
+                }
+                TextToken::Array(_) | TextToken::Header(_) => {
+                    iterate_array(value.read_array().unwrap());
+                }
+                TextToken::End(_) => panic!("end!?"),
+                TextToken::Operator(_) => panic!("end!?"),
+                TextToken::Scalar(_) => {
+                    let _ = value.read_str().unwrap();
+                }
+            }
+        }
+    }
 
     #[test]
     fn simple_text_reader_text() {
@@ -678,5 +721,54 @@ mod tests {
                 TextToken::Scalar(Scalar::new(b"4384")),
             ]
         );
+    }
+
+    #[test]
+    fn text_reader_header() {
+        let data = b"color = rgb { 10 20 30 }";
+        let tape = TextTape::from_slice(data).unwrap();
+        let mut reader = tape.windows1252_reader();
+        let (key, _op, value) = reader.next_field().unwrap();
+        assert_eq!(key.read_str(), "color");
+
+        let mut header_array = value.read_array().unwrap();
+        let rgb = header_array.next_value().unwrap();
+        assert_eq!(rgb.read_str().unwrap(), "rgb");
+
+        let vals = header_array.next_value().unwrap();
+        let mut s = vals.read_array().unwrap();
+
+        let r = s
+            .next_value()
+            .unwrap()
+            .read_scalar()
+            .unwrap()
+            .to_u64()
+            .unwrap();
+        let g = s
+            .next_value()
+            .unwrap()
+            .read_scalar()
+            .unwrap()
+            .to_u64()
+            .unwrap();
+        let b = s
+            .next_value()
+            .unwrap()
+            .read_scalar()
+            .unwrap()
+            .to_u64()
+            .unwrap();
+
+        assert_eq!(r, 10);
+        assert_eq!(g, 20);
+        assert_eq!(b, 30);
+    }
+
+    #[test]
+    fn reader_crash1() {
+        let data = b"a=r{}";
+        let tape = TextTape::from_slice(data).unwrap();
+        iterate_object(tape.windows1252_reader());
     }
 }
