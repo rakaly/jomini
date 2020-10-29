@@ -699,6 +699,44 @@ impl<'a> BinaryTape<'a> {
     }
 }
 
+/// Returns the number of fields left in an object
+pub(crate) fn object_len(tokens: &[BinaryToken], mut key_idx: usize) -> usize {
+    let mut count = 0;
+
+    while let Some(key) = tokens.get(key_idx) {
+        if let BinaryToken::End(_) = key {
+            return count;
+        }
+
+        let val_ind = key_idx + 1;
+        key_idx = match tokens.get(val_ind) {
+            Some(BinaryToken::Array(x)) | Some(BinaryToken::Object(x)) | Some(BinaryToken::HiddenObject(x)) => x + 1,
+            _ => val_ind + 1,
+        };
+
+        count += 1;
+    }
+
+    count
+}
+
+/// Returns the number of values left in an array
+pub(crate) fn array_len(tokens: &[BinaryToken], mut val_ind: usize) -> usize {
+    let mut count = 0;
+
+    while let Some(val) = tokens.get(val_ind) {
+        val_ind = match val {
+            BinaryToken::Array(x) | BinaryToken::Object(x) | BinaryToken::HiddenObject(x) => x + 1,
+            BinaryToken::End(_) => return count,
+            _ => val_ind + 1,
+        };
+
+        count += 1;
+    }
+
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1237,6 +1275,74 @@ mod tests {
                 BinaryToken::Token(0x284d),
             ]
         );
+    }
+
+    #[test]
+    fn test_object_len() {
+        let tokens = vec![
+            BinaryToken::Token(0x0000),
+            BinaryToken::Token(0x0001),
+            BinaryToken::Token(0x0002),
+            BinaryToken::Token(0x0003)
+        ];
+
+        assert_eq!(object_len(&tokens, 0), 2);
+        assert_eq!(object_len(&tokens, 2), 1);
+        assert_eq!(object_len(&tokens, 4), 0);
+    }
+
+    #[test]
+    fn test_object_len2() {
+        let tokens = vec![
+            BinaryToken::Token(0x0000),
+            BinaryToken::Object(6),
+            BinaryToken::Token(0x0001),
+            BinaryToken::Token(0x0002),
+            BinaryToken::Token(0x0003),
+            BinaryToken::Token(0x0004),
+            BinaryToken::End(1),
+            BinaryToken::Token(0x0005),
+            BinaryToken::Token(0x0006),
+        ];
+
+        assert_eq!(object_len(&tokens, 0), 2);
+        assert_eq!(object_len(&tokens, 2), 2);
+        assert_eq!(object_len(&tokens, 4), 1);
+        assert_eq!(object_len(&tokens, 6), 0);
+        assert_eq!(object_len(&tokens, 7), 1);
+        assert_eq!(object_len(&tokens, 9), 0);
+    }
+
+    #[test]
+    fn test_array_len() {
+        let tokens = vec![
+            BinaryToken::Token(0x0000),
+            BinaryToken::Array(4),
+            BinaryToken::Token(0x0001),
+            BinaryToken::Token(0x0002),
+            BinaryToken::End(1),
+        ];
+
+        assert_eq!(array_len(&tokens, 2), 2);
+        assert_eq!(array_len(&tokens, 3), 1);
+        assert_eq!(array_len(&tokens, 4), 0);
+    }
+
+    #[test]
+    fn test_array_len2() {
+        let tokens = vec![
+            BinaryToken::Token(0x0000),
+            BinaryToken::Array(8),
+            BinaryToken::Object(7),
+            BinaryToken::Token(0x0001),
+            BinaryToken::Token(0x0002),
+            BinaryToken::Token(0x0003),
+            BinaryToken::Token(0x0004),
+            BinaryToken::End(1),
+            BinaryToken::End(1),
+        ];
+
+        assert_eq!(array_len(&tokens, 2), 1);
     }
 
     #[test]

@@ -4,6 +4,7 @@ use crate::{
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
+use super::tape::{array_len, object_len};
 
 /// A structure to deserialize binary data into Rust values.
 ///
@@ -290,6 +291,10 @@ impl<'c, 'de, 'a, 'res: 'de, RES: TokenResolver, E: Encoding> MapAccess<'de>
             config: self.config,
         })
     }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(object_len(&self.tokens, self.tape_idx))
+    }
 }
 
 struct KeyDeserializer<'b, 'de: 'b, 'res: 'de, RES, E> {
@@ -565,6 +570,10 @@ impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: Encoding> SeqAccess<'de>
             self.idx = next_key + 1;
             seed.deserialize(self).map(Some)
         }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(array_len(&self.tokens, self.idx))
     }
 }
 
