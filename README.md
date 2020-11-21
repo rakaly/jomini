@@ -19,7 +19,7 @@ Imperator saves.
 - ✔ Safe: Extensively fuzzed against potential malicious input
 - ✔ Ergonomic: Use [serde](https://serde.rs/derive.html)-like macros to have parsing logic automatically implemented
 - ✔ Embeddable: Cross platform native apps, statically compiled services, or in the browser via [WASM](https://webassembly.org/)
-- ✔ Agnostic: Parse EU4, HOI4, Imperator, CK3, etc save files
+- ✔ Agnostic: [Parse EU4](https://github.com/rakaly/eu4save), HOI4, [Imperator](https://github.com/rakaly/imperator-save), [CK3](https://github.com/rakaly/ck3save), etc save files
 
 ## Quick Start
 
