@@ -23,6 +23,7 @@ jobs:
         - macos
         - win-msvc
         - stable-mips
+        - stable-32
         include:
         - build: stable
           os: ubuntu-latest
@@ -43,6 +44,10 @@ jobs:
           os: ubuntu-latest
           rust: stable
           target: mips64-unknown-linux-gnuabi64
+        - build: stable-32
+          os: ubuntu-latest
+          rust: stable
+          target: i686-unknown-linux-gnu
     steps:
     - uses: actions/checkout@v2
       
