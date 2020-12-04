@@ -828,8 +828,13 @@ mod tests {
     }
 
     #[test]
-    fn test_size_of_binary_token() {
-        assert_eq!(std::mem::size_of::<TextToken>(), 24);
+    fn test_size_of_text_token() {
+        let token_size = std::mem::size_of::<TextToken>();
+        assert!(token_size <= 24);
+        assert_eq!(
+            token_size,
+            std::mem::size_of::<Scalar>() + std::mem::size_of::<usize>()
+        );
     }
 
     #[test]
