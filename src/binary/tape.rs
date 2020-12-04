@@ -750,7 +750,10 @@ mod tests {
 
     #[test]
     fn test_size_of_binary_token() {
-        assert_eq!(std::mem::size_of::<BinaryToken>(), 24);
+        let token_size = std::mem::size_of::<BinaryToken>();
+        let maxed = std::cmp::max(std::mem::size_of::<Scalar>(), std::mem::size_of::<Rgb>());
+        assert!(token_size <= 24);
+        assert_eq!(token_size, maxed + std::mem::size_of::<usize>());
     }
 
     #[test]
