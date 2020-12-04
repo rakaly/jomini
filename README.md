@@ -98,9 +98,6 @@ Caller is responsible for:
 - Providing the conversion to reconcile how, for example, a date may be encoded as an integer in
 the binary format, but as a string when in plaintext.
 
-The plaintext parser is geared towards save file parsing and is not yet general enough to handle
-files that embed operators other than equals.
-
 ## The Mid-level API
 
 If the automatic deserialization via `JominiDeserialize` is too high level, there is a mid-level
