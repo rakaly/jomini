@@ -175,7 +175,7 @@ fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
             let frac = to_i64(&trail)? as f64;
             let digits = 10u32
                 .checked_pow(trail.len() as u32)
-                .ok_or_else(|| ScalarError::Overflow)? as f64;
+                .ok_or(ScalarError::Overflow)? as f64;
             Ok((sign as f64).mul_add(frac / digits, leadf))
         }
         None => to_i64(d).map(|x| x as f64),
