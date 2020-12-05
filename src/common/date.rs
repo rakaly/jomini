@@ -9,7 +9,7 @@ const DAYS_PER_MONTH: [u8; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30,
 /// world on simpler terms: that every year should be treated as a non-leap year.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Date {
-    year: u16,
+    year: i16,
     month: u8,
     day: u8,
 }
@@ -44,7 +44,7 @@ impl Date {
     /// assert!(Date::new(800, 12, 32).is_none());
     /// assert!(Date::new(2020, 2, 29).is_none());
     /// ```
-    pub fn new(year: u16, month: u8, day: u8) -> Option<Self> {
+    pub fn new(year: i16, month: u8, day: u8) -> Option<Self> {
         if year != 0 && month != 0 && day != 0 {
             if let Some(&days) = DAYS_PER_MONTH.get(usize::from(month)) {
                 if day <= days {
@@ -63,7 +63,7 @@ impl Date {
     /// let date = Date::parse_from_str("1445.02.03").expect("to parse date");
     /// assert_eq!(date.year(), 1445);
     /// ```
-    pub fn year(&self) -> u16 {
+    pub fn year(&self) -> i16 {
         self.year
     }
 
@@ -127,17 +127,17 @@ impl Date {
                     _ => return None,
                 }
                 start = pos + 1;
-            } else if c > b'9' || c < b'0' {
+            } else if c > b'9' || (c < b'0' && c != b'-') {
                 return None;
             }
         }
 
         let span3 = &data[start..];
 
-        if let Ok(y) = Scalar::new(span1).to_u64() {
+        if let Ok(y) = Scalar::new(span1).to_i64() {
             if let Ok(m) = Scalar::new(span2).to_u64() {
                 if let Ok(d) = Scalar::new(span3).to_u64() {
-                    return Date::new(y as u16, m as u8, d as u8);
+                    return Date::new(y as i16, m as u8, d as u8);
                 }
             }
         }
@@ -204,7 +204,7 @@ impl Date {
         let (month, day) = month_day_from_julian(days_since_jan1);
 
         Date {
-            year: year as u16,
+            year: year as i16,
             month: month as u8,
             day: day as u8,
         }
@@ -216,15 +216,15 @@ impl Date {
         s /= 24;
         let days_since_jan1 = s % 365;
         s /= 365;
-        let year = s.checked_sub(5000).unwrap_or(0);
-        if year < 1 {
-            return None;
-        }
+        let year = match s.checked_sub(5000) {
+            Some(y) => y,
+            None => return None,
+        };
 
         let (month, day) = month_day_from_julian(days_since_jan1);
 
         Some(Date {
-            year: year as u16,
+            year: year as i16,
             month: month as u8,
             day: day as u8,
         })
@@ -365,6 +365,18 @@ mod tests {
     fn test_first_bin_date() {
         let date = Date::from_binary(56379360).unwrap();
         assert_eq!(date.iso_8601(), String::from("1436-01-01"));
+    }
+
+    #[test]
+    fn test_negative_date() {
+        // EU4 Monarch birth dates can be negative, no idea what those mean
+        let date = Date::parse_from_str("-17.1.1").unwrap();
+        assert_eq!(date.game_fmt(), String::from("-17.1.1"));
+
+        let date2 = Date::from_binary(43651080).unwrap();
+        assert_eq!(date.game_fmt(), String::from("-17.1.1"));
+
+        assert_eq!(date, date2);
     }
 
     #[test]
