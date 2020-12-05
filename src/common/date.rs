@@ -223,8 +223,8 @@ impl Date {
 
         Some(Date {
             year: year as i16,
-            month: month as u8,
-            day: day as u8,
+            month,
+            day,
         })
     }
 
@@ -252,10 +252,10 @@ impl Date {
     }
 }
 
-fn month_day_from_julian(days_since_jan1: i32) -> (i32, i32) {
+fn month_day_from_julian(days_since_jan1: i32) -> (u8, u8) {
     // https://landweb.modaps.eosdis.nasa.gov/browse/calendar.html
     // except we start at 0 instead of 1
-    match days_since_jan1 {
+    let (month, day) = match days_since_jan1 {
         0..=30 => (1, days_since_jan1 + 1),
         31..=58 => (2, days_since_jan1 - 30),
         59..=89 => (3, days_since_jan1 - 58),
@@ -269,7 +269,10 @@ fn month_day_from_julian(days_since_jan1: i32) -> (i32, i32) {
         304..=333 => (11, days_since_jan1 - 303),
         334..=364 => (12, days_since_jan1 - 333),
         _ => unreachable!(),
-    }
+    };
+
+    debug_assert!(day < 255);
+    (month, day as u8)
 }
 
 #[cfg(feature = "derive")]
