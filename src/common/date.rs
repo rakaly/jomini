@@ -127,8 +127,6 @@ impl Date {
                     _ => return None,
                 }
                 start = pos + 1;
-            } else if c > b'9' || (c < b'0' && c != b'-') {
-                return None;
             }
         }
 
