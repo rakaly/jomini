@@ -1,4 +1,5 @@
 use crate::{ascii::is_ascii, decode_windows1252};
+use std::convert::TryFrom;
 use std::error;
 use std::fmt;
 
@@ -188,7 +189,9 @@ fn to_i64(d: &[u8]) -> Result<i64, ScalarError> {
     let isn = is_negative as u64;
     let sign = -((isn as i64 * 2).wrapping_sub(1));
     let rest = to_u64(&d[isn as usize..])?;
-    Ok(sign * (rest as i64))
+    i64::try_from(rest)
+        .map(|x| sign * x)
+        .map_err(|_| ScalarError::Overflow)
 }
 
 /// Convert a buffer to an u64. This function is micro-optimized for small
@@ -285,6 +288,13 @@ mod tests {
             (Scalar::new(b"-20405029553322").to_i64()),
             Ok(-20405029553322)
         );
+
+        assert_eq!(
+            Scalar::new(b"9223372036854775807").to_i64(),
+            Ok(9223372036854775807)
+        );
+        assert!(Scalar::new(b"-9223372036854775809").to_i64().is_err());
+        assert!(Scalar::new(b"9223372036854775808").to_i64().is_err());
     }
 
     #[test]
