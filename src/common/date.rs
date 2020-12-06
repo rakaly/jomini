@@ -218,17 +218,19 @@ impl Date {
     /// assert_eq!(expected, date.add_days(1));
     /// assert_eq!(expected2, date.add_days(-1));
     /// ```
+    ///
+    /// Will panic on overflow or underflow.
     pub fn add_days(&self, days: i32) -> Date {
-        let new_days = self.days() + days;
+        let new_days = self
+            .days()
+            .checked_add(days)
+            .expect("adding days overflowed");
         let days_since_jan1 = new_days % 365;
         let year = new_days / 365;
         let (month, day) = month_day_from_julian(days_since_jan1);
 
-        Date {
-            year: year as i16,
-            month: month as u8,
-            day: day as u8,
-        }
+        let year = i16::try_from(year).expect("year to fit inside signed 32bits");
+        Date { year, month, day }
     }
 
     /// Decodes a date from a number that had been parsed from binary data
@@ -398,6 +400,20 @@ mod tests {
     #[test]
     fn test_binary_date_overflow() {
         assert_eq!(Date::from_binary(999379360), None);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_add_adds_year_overflow() {
+        let date = Date::parse_from_str("1400.1.2").unwrap();
+        let _ = date.add_days(100000000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_add_adds_day_overflow() {
+        let date = Date::parse_from_str("1400.1.2").unwrap();
+        let _ = date.add_days(i32::MAX);
     }
 
     #[test]
