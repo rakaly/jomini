@@ -1,5 +1,6 @@
 use crate::Scalar;
 use std::cmp::Ordering;
+use std::convert::TryFrom;
 
 const DAYS_PER_MONTH: [u8; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
@@ -132,15 +133,37 @@ impl Date {
 
         let span3 = &data[start..];
 
-        if let Ok(y) = Scalar::new(span1).to_i64() {
-            if let Ok(m) = Scalar::new(span2).to_u64() {
-                if let Ok(d) = Scalar::new(span3).to_u64() {
-                    return Date::new(y as i16, m as u8, d as u8);
-                }
-            }
-        }
+        let year = Scalar::new(span1)
+            .to_i64()
+            .ok()
+            .and_then(|x| i16::try_from(x).ok());
 
-        None
+        let year = match year {
+            Some(x) => x,
+            None => return None,
+        };
+
+        let month = Scalar::new(span2)
+            .to_u64()
+            .ok()
+            .and_then(|x| u8::try_from(x).ok());
+
+        let month = match month {
+            Some(x) => x,
+            None => return None,
+        };
+
+        let day = Scalar::new(span3)
+            .to_u64()
+            .ok()
+            .and_then(|x| u8::try_from(x).ok());
+
+        let day = match day {
+            Some(x) => x,
+            None => return None,
+        };
+
+        Date::new(year, month, day)
     }
 
     fn days(&self) -> i32 {
@@ -366,6 +389,14 @@ mod tests {
     fn test_first_bin_date() {
         let date = Date::from_binary(56379360).unwrap();
         assert_eq!(date.iso_8601(), String::from("1436-01-01"));
+    }
+
+    #[test]
+    fn test_text_date_overflow() {
+        assert_eq!(Date::parse_from_str("1444.257.1"), None);
+        assert_eq!(Date::parse_from_str("1444.1.257"), None);
+        assert_eq!(Date::parse_from_str("60000.1.1"), None);
+        assert_eq!(Date::parse_from_str("-60000.1.1"), None);
     }
 
     #[test]
