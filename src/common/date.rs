@@ -172,9 +172,7 @@ impl Date {
     }
 
     fn days(&self) -> i32 {
-        let mut days: i32 = 0;
-        days += i32::from(self.year) * 365;
-        days += match self.month {
+        let month_days = match self.month {
             1 => -1,
             2 => 30,
             3 => 58,
@@ -189,9 +187,13 @@ impl Date {
             12 => 333,
             _ => unreachable!(),
         };
-        days += i32::from(self.day);
 
-        days
+        let year_day = i32::from(self.year) * 365;
+        if year_day < 0 {
+            year_day - month_days - i32::from(self.day)
+        } else {
+            year_day + month_days + i32::from(self.day)
+        }
     }
 
     /// Returns the number of days between two dates
@@ -230,7 +232,8 @@ impl Date {
             .days()
             .checked_add(days)
             .expect("adding days overflowed");
-        let days_since_jan1 = new_days % 365;
+
+        let days_since_jan1 = (new_days % 365).abs();
         let year = new_days / 365;
         let (month, day) = month_day_from_julian(days_since_jan1);
 
@@ -240,6 +243,10 @@ impl Date {
 
     /// Decodes a date from a number that had been parsed from binary data
     pub fn from_binary(mut s: i32) -> Option<Self> {
+        if s < 0 {
+            return None
+        }
+
         let _hours = s % 24;
         s /= 24;
         let days_since_jan1 = s % 365;
@@ -565,5 +572,39 @@ mod tests {
         let date = Date::parse_from_str("1457.3.5").unwrap();
         let date2 = Date::parse_from_str("1457.3.4").unwrap();
         assert!(date2 < date);
+    }
+
+    #[test]
+    fn test_binary_date_regression() {
+        let input = i32::from_le_bytes([14, 54, 43, 253]);
+        let _ = Date::from_binary(input);
+    }
+
+    #[test]
+    fn test_date_days() {
+        let date = Date::parse_from_str("1.1.1").unwrap();
+        assert_eq!(date.days(), 365);
+
+        let date = Date::parse_from_str("-1.1.1").unwrap();
+        assert_eq!(date.days(), -365);
+
+        let date = Date::parse_from_str("-1.1.2").unwrap();
+        assert_eq!(date.days(), -366);
+
+        let date = Date::parse_from_str("-1.2.2").unwrap();
+        assert_eq!(date.days(), -397);
+    }
+
+    #[test]
+    fn test_negative_date_math() {
+        let date = Date::parse_from_str("-1.1.2").unwrap();
+        let d1 = date.add_days(1);
+        assert_eq!(d1.game_fmt(), "-1.1.1");
+        assert_eq!(date.days_until(&d1), 1);
+
+        let date = Date::parse_from_str("-3.6.3").unwrap();
+        let d1 = date.add_days(1);
+        assert_eq!(d1.game_fmt(), "-3.6.2");
+        assert_eq!(date.days_until(&d1), 1);
     }
 }
