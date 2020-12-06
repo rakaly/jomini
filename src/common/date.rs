@@ -46,7 +46,12 @@ impl Date {
     /// assert!(Date::new(2020, 2, 29).is_none());
     /// ```
     pub fn new(year: i16, month: u8, day: u8) -> Option<Self> {
-        if year != 0 && month != 0 && day != 0 {
+        // Years can be negative in EU4 (but seemingly can't be zero). Antonio
+        // I holds the record at with `birth_date=-58.1.1` and since I don't
+        // anticipate more rulers to be added that nearly double the negative,
+        // we cap what we're looking for at -100 years (we don't want the
+        // melter to accidentally think a number is a date)
+        if year != 0 && month != 0 && day != 0 && year > -100 {
             if let Some(&days) = DAYS_PER_MONTH.get(usize::from(month)) {
                 if day <= days {
                     return Some(Date { year, month, day });
@@ -245,8 +250,7 @@ impl Date {
         };
 
         let (month, day) = month_day_from_julian(days_since_jan1);
-
-        Some(Date { year, month, day })
+        Date::new(year, month, day)
     }
 
     /// Formats a date in the ISO 8601 format: YYYY-MM-DD
@@ -414,6 +418,16 @@ mod tests {
     fn test_add_adds_day_overflow() {
         let date = Date::parse_from_str("1400.1.2").unwrap();
         let _ = date.add_days(i32::MAX);
+    }
+
+    #[test]
+    fn test_ignore_bin_dates() {
+        // These are numbers from a savefile that shouldn't be interpreted as dates
+        assert_eq!(Date::from_binary(380947), None);
+        assert_eq!(Date::from_binary(21282204), None);
+        assert_eq!(Date::from_binary(33370842), None);
+        assert_eq!(Date::from_binary(42267422), None);
+        assert_eq!(Date::from_binary(693362154), None);
     }
 
     #[test]
