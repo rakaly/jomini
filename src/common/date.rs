@@ -237,18 +237,14 @@ impl Date {
         s /= 24;
         let days_since_jan1 = s % 365;
         s /= 365;
-        let year = match s.checked_sub(5000) {
+        let year = match s.checked_sub(5000).and_then(|x| i16::try_from(x).ok()) {
             Some(y) => y,
             None => return None,
         };
 
         let (month, day) = month_day_from_julian(days_since_jan1);
 
-        Some(Date {
-            year: year as i16,
-            month,
-            day,
-        })
+        Some(Date { year, month, day })
     }
 
     /// Formats a date in the ISO 8601 format: YYYY-MM-DD
@@ -397,6 +393,11 @@ mod tests {
         assert_eq!(Date::parse_from_str("1444.1.257"), None);
         assert_eq!(Date::parse_from_str("60000.1.1"), None);
         assert_eq!(Date::parse_from_str("-60000.1.1"), None);
+    }
+
+    #[test]
+    fn test_binary_date_overflow() {
+        assert_eq!(Date::from_binary(999379360), None);
     }
 
     #[test]
