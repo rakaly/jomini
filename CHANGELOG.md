@@ -1,3 +1,27 @@
+## v0.8.1 - 2020-12-06
+
+With the newly found knowledge that EU4 savefiles contain dates that are negative, eg:
+
+```
+birth_date=-17.1.1
+```
+
+The `Date` struct needed to be reworked. At the API level `Date::year()` now returns an `i16` instead of `u16` as now the year can be negative. While technically a breaking change, this is treated more a necessary bugfix. The current max negative year is -100.
+
+This patch release also clamps down on unexpected behavior. Previously
+
+```
+1444.257.1
+```
+
+would be parsed as equivalent to
+
+```
+1444.1.1
+```
+
+Now the former example will fail to be parsed as a date. This same fix has been applied to binary dates.
+
 ## v0.8.0 - 2020-10-29
 
 First up, this release brings some performance benefits when deserializing. Optimizations went into ensuring that smaller numbers faster to decode and pre-allocating containers like vectors or hashmaps with the known size.
