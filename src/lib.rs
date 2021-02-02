@@ -16,7 +16,7 @@ project](https://github.com/ParadoxGameConverters/EU4toVic2) to parse ironman EU
 - ✔ Safe: Extensively fuzzed against potential malicious input
 - ✔ Ergonomic: Use [serde](https://serde.rs/derive.html)-like macros to have parsing logic automatically implemented
 - ✔ Embeddable: Cross platform native apps, statically compiled services, or in the browser via [WASM](https://webassembly.org/)
-- ✔ Agnostic: Parse EU4, HOIV, Imperator, CK3, etc save files
+- ✔ Agnostic: [Parse EU4](https://github.com/rakaly/eu4save), [HOI4](https://github.com/rakaly/hoi4save.git), [Imperator](https://github.com/rakaly/imperator-save), [CK3](https://github.com/rakaly/ck3save), etc save files
 
 ## Quick Start
 
