@@ -42,8 +42,11 @@ pub enum BinaryToken<'a> {
     /// Represents a binary signed 32bit integer
     I32(i32),
 
-    /// Represents a binary encoded string
-    Text(Scalar<'a>),
+    /// Represents a binary encoded quoted string
+    Quoted(Scalar<'a>),
+
+    /// Represents a binary encoded quoted string
+    Unquoted(Scalar<'a>),
 
     /// Represents the first binary encoding for representing a rational number
     F32_1(f32),
@@ -65,8 +68,8 @@ const U32: u16 = 0x0014;
 const U64: u16 = 0x029c;
 const I32: u16 = 0x000c;
 const BOOL: u16 = 0x000e;
-const STRING_1: u16 = 0x000f;
-const STRING_2: u16 = 0x0017;
+const QUOTED_STRING: u16 = 0x000f;
+const UNQUOTED_STRING: u16 = 0x0017;
 const F32_1: u16 = 0x000d;
 const F32_2: u16 = 0x0167;
 const RGB: u16 = 0x0243;
@@ -215,19 +218,32 @@ where
     }
 
     #[inline]
-    fn parse_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
+    fn parse_string_inner(&mut self, data: &'a [u8]) -> Result<(Scalar<'a>, &'a [u8]), Error> {
         if data.len() >= 2 {
             let (text_len_data, rest) = data.split_at(2);
             let text_len = usize::from(le_u16(text_len_data));
             if rest.len() >= text_len {
                 let (text, rest) = rest.split_at(text_len);
                 let scalar = Scalar::new(text);
-                self.token_tape.push(BinaryToken::Text(scalar));
-                return Ok(rest);
+                return Ok((scalar, rest));
             }
         }
 
         Err(Error::eof())
+    }
+
+    #[inline]
+    fn parse_quoted_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
+        let (scalar, rest) = self.parse_string_inner(data)?;
+        self.token_tape.push(BinaryToken::Quoted(scalar));
+        Ok(rest)
+    }
+
+    #[inline]
+    fn parse_unquoted_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
+        let (scalar, rest) = self.parse_string_inner(data)?;
+        self.token_tape.push(BinaryToken::Unquoted(scalar));
+        Ok(rest)
     }
 
     fn parse(&mut self) -> Result<(), Error> {
@@ -281,8 +297,12 @@ where
                     data = self.parse_bool(d)?;
                     state = SCALAR_STATE_NEXT[state as usize];
                 }
-                STRING_1 | STRING_2 => {
-                    data = self.parse_string(d)?;
+                QUOTED_STRING => {
+                    data = self.parse_quoted_string(d)?;
+                    state = SCALAR_STATE_NEXT[state as usize];
+                }
+                UNQUOTED_STRING => {
+                    data = self.parse_unquoted_string(d)?;
                     state = SCALAR_STATE_NEXT[state as usize];
                 }
                 F32_1 => {
@@ -384,8 +404,11 @@ where
                             BOOL => {
                                 data = self.parse_bool(data)?;
                             }
-                            STRING_1 | STRING_2 => {
-                                data = self.parse_string(data)?;
+                            QUOTED_STRING => {
+                                data = self.parse_quoted_string(data)?;
+                            }
+                            UNQUOTED_STRING => {
+                                data = self.parse_unquoted_string(data)?;
                             }
                             F32_1 => {
                                 data = self.parse_f32_1(data)?;
@@ -463,8 +486,11 @@ where
                             BOOL => {
                                 data = self.parse_bool(data)?;
                             }
-                            STRING_1 | STRING_2 => {
-                                data = self.parse_string(data)?;
+                            QUOTED_STRING => {
+                                data = self.parse_quoted_string(data)?;
+                            }
+                            UNQUOTED_STRING => {
+                                data = self.parse_unquoted_string(data)?;
                             }
                             F32_1 => {
                                 data = self.parse_f32_1(data)?;
@@ -899,7 +925,7 @@ mod tests {
             tape.token_tape,
             vec![
                 BinaryToken::Token(0x2d82),
-                BinaryToken::Text(Scalar::new(b"ENG")),
+                BinaryToken::Quoted(Scalar::new(b"ENG")),
             ]
         );
     }
@@ -915,7 +941,7 @@ mod tests {
             tape.token_tape,
             vec![
                 BinaryToken::Token(0x2d82),
-                BinaryToken::Text(Scalar::new(b"ENG")),
+                BinaryToken::Unquoted(Scalar::new(b"ENG")),
             ]
         );
     }
@@ -954,10 +980,10 @@ mod tests {
             vec![
                 BinaryToken::Token(0x2ee1),
                 BinaryToken::Array(6),
-                BinaryToken::Text(Scalar::new(b"Art of War")),
-                BinaryToken::Text(Scalar::new(b"Conquest of Paradise")),
-                BinaryToken::Text(Scalar::new(b"Res Publica")),
-                BinaryToken::Text(Scalar::new(b"Wealth of Nations")),
+                BinaryToken::Quoted(Scalar::new(b"Art of War")),
+                BinaryToken::Quoted(Scalar::new(b"Conquest of Paradise")),
+                BinaryToken::Quoted(Scalar::new(b"Res Publica")),
+                BinaryToken::Quoted(Scalar::new(b"Wealth of Nations")),
                 BinaryToken::End(1),
             ]
         );
@@ -1024,8 +1050,8 @@ mod tests {
             vec![
                 BinaryToken::Token(0x29cc),
                 BinaryToken::Object(4),
-                BinaryToken::Text(Scalar::new(b"schools_initiated")),
-                BinaryToken::Text(Scalar::new(b"1444.11.11\n")),
+                BinaryToken::Quoted(Scalar::new(b"schools_initiated")),
+                BinaryToken::Quoted(Scalar::new(b"1444.11.11\n")),
                 BinaryToken::End(1),
             ]
         );
@@ -1104,8 +1130,8 @@ mod tests {
                 BinaryToken::Token(0x2838),
                 BinaryToken::Object(6),
                 BinaryToken::Token(0x2863),
-                BinaryToken::Text(Scalar::new(b"western")),
-                BinaryToken::Text(Scalar::new(b"1446.5.31")),
+                BinaryToken::Unquoted(Scalar::new(b"western")),
+                BinaryToken::Quoted(Scalar::new(b"1446.5.31")),
                 BinaryToken::Token(0x2838),
                 BinaryToken::End(1),
             ]

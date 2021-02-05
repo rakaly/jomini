@@ -244,7 +244,7 @@ impl Date {
     /// Decodes a date from a number that had been parsed from binary data
     pub fn from_binary(mut s: i32) -> Option<Self> {
         if s < 0 {
-            return None
+            return None;
         }
 
         let _hours = s % 24;

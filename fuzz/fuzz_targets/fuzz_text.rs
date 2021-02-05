@@ -34,7 +34,7 @@ fn iterate_array<'data, 'tokens, E>(mut reader: ArrayReader<E>) where E: crate::
             TextToken::Array(_)   => { iterate_array(value.read_array().unwrap()); }
             TextToken::End(_) => panic!("end!?"),
             TextToken::Operator(_) => panic!("end!?"),
-            TextToken::Scalar(_) | TextToken::Header(_) => {
+            TextToken::Unquoted(_) | TextToken::Quoted(_) | TextToken::Header(_) => {
                 let _ = value.read_str().unwrap();
             }
         }
@@ -51,7 +51,7 @@ fn iterate_object<'data, 'tokens, E>(mut reader: ObjectReader<E>) where E: crate
             TextToken::Array(_) | TextToken::Header(_)  => { iterate_array(value.read_array().unwrap()); }
             TextToken::End(_) => panic!("end!?"),
             TextToken::Operator(_) => panic!("end!?"),
-            TextToken::Scalar(_) => {
+            TextToken::Unquoted(_) | TextToken::Quoted(_) => {
                 let _ = value.read_str().unwrap();
             }
         }

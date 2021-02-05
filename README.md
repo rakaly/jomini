@@ -129,8 +129,8 @@ let data = b"foo=bar";
 assert_eq!(
     TextTape::from_slice(&data[..])?.tokens(),
     &[
-        TextToken::Scalar(Scalar::new(b"foo")),
-        TextToken::Scalar(Scalar::new(b"bar")),
+        TextToken::Unquoted(Scalar::new(b"foo")),
+        TextToken::Unquoted(Scalar::new(b"bar")),
     ]
 );
 ```
