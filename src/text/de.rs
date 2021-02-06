@@ -145,7 +145,9 @@ where
         match &self.readers {
             Reader::Scalar(x) => visit_str!(x.read_str(), visitor),
             Reader::Value(x) => match x.token() {
-                TextToken::Scalar(s) => visit_str!(x.decode(s.view_data()), visitor),
+                TextToken::Quoted(s) | TextToken::Unquoted(s) => {
+                    visit_str!(x.decode(s.view_data()), visitor)
+                }
                 TextToken::Header(_) | TextToken::Array(_) => self.deserialize_seq(visitor),
                 TextToken::Object(_) | TextToken::HiddenObject(_) => self.deserialize_map(visitor),
                 _ => Err(DeserializeError {

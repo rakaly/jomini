@@ -144,13 +144,14 @@ where
     pub fn next_field(&mut self) -> Option<KeyValue<'data, 'tokens, E>> {
         if self.token_ind < self.end_ind {
             let key_ind = self.token_ind;
-            let key_scalar = if let TextToken::Scalar(x) = self.tokens[key_ind] {
-                x
-            } else {
-                // this is a broken invariant, so we safely recover by saying the object
-                // has no more fields
-                debug_assert!(false, "All keys should be scalars");
-                return None;
+            let key_scalar = match self.tokens[key_ind] {
+                TextToken::Quoted(x) | TextToken::Unquoted(x) => x,
+                _ => {
+                    // this is a broken invariant, so we safely recover by saying the object
+                    // has no more fields
+                    debug_assert!(false, "All keys should be scalars");
+                    return None;
+                }
             };
 
             let key_reader = self.new_scalar_reader(key_scalar);
@@ -187,13 +188,14 @@ where
                 let key_ind = self.token_ind;
                 let key = &self.tokens[self.token_ind];
                 self.seen[self.val_ind] = true;
-                let key_scalar = if let TextToken::Scalar(x) = *key {
-                    x
-                } else {
-                    // this is a broken invariant, so we safely recover by saying the object
-                    // has no more fields
-                    debug_assert!(false, "All keys should be scalars");
-                    return None;
+                let key_scalar = match self.tokens[key_ind] {
+                    TextToken::Quoted(x) | TextToken::Unquoted(x) => x,
+                    _ => {
+                        // this is a broken invariant, so we safely recover by saying the object
+                        // has no more fields
+                        debug_assert!(false, "All keys should be scalars");
+                        return None;
+                    }
                 };
 
                 let key_reader = self.new_scalar_reader(key_scalar);
@@ -466,7 +468,7 @@ mod tests {
                 }
                 TextToken::End(_) => panic!("end!?"),
                 TextToken::Operator(_) => panic!("end!?"),
-                TextToken::Scalar(_) | TextToken::Header(_) => {
+                TextToken::Quoted(_) | TextToken::Unquoted(_) | TextToken::Header(_) => {
                     let _ = value.read_str().unwrap();
                 }
             }
@@ -488,7 +490,7 @@ mod tests {
                 }
                 TextToken::End(_) => panic!("end!?"),
                 TextToken::Operator(_) => panic!("end!?"),
-                TextToken::Scalar(_) => {
+                TextToken::Quoted(_) | TextToken::Unquoted(_) => {
                     let _ = value.read_str().unwrap();
                 }
             }
@@ -712,13 +714,13 @@ mod tests {
         assert_eq!(
             values,
             vec![
-                TextToken::Scalar(Scalar::new(b"color")),
+                TextToken::Unquoted(Scalar::new(b"color")),
                 TextToken::Array(7),
-                TextToken::Scalar(Scalar::new(b"169")),
-                TextToken::Scalar(Scalar::new(b"170")),
-                TextToken::Scalar(Scalar::new(b"171")),
-                TextToken::Scalar(Scalar::new(b"172")),
-                TextToken::Scalar(Scalar::new(b"4384")),
+                TextToken::Unquoted(Scalar::new(b"169")),
+                TextToken::Unquoted(Scalar::new(b"170")),
+                TextToken::Unquoted(Scalar::new(b"171")),
+                TextToken::Unquoted(Scalar::new(b"172")),
+                TextToken::Unquoted(Scalar::new(b"4384")),
             ]
         );
     }

@@ -19,9 +19,9 @@ fn test_greater_than_operator() {
     assert_eq!(
         tape.tokens(),
         vec![
-            TextToken::Scalar(Scalar::new(b"age")),
+            TextToken::Unquoted(Scalar::new(b"age")),
             TextToken::Operator(Operator::GreaterThan),
-            TextToken::Scalar(Scalar::new(b"16")),
+            TextToken::Unquoted(Scalar::new(b"16")),
         ]
     );
 }
