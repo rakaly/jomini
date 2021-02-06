@@ -1,3 +1,35 @@
+## v0.9.0 - 2021-02-05
+
+This release differentiates between quoted and unquoted values as some games (eg: EU4) may parse values differently depending if they are enclosed in quotes.
+
+This means that binary and text tape tokens for now include a quoted and unquoted variant.
+
+So the below
+
+```rust
+TextToken::Scalar
+```
+
+is replaced with with
+
+```rust
+TextToken::Quoted
+TextToken::Unquoted
+```
+
+And the binary equivalent is
+
+```rust
+BinaryToken::Text
+```
+
+replaced with
+
+```rust
+BinaryToken::Quoted
+BinaryToken::Unquoted
+```
+
 ## v0.8.1 - 2020-12-06
 
 With the newly found knowledge that EU4 savefiles contain dates that are negative, eg:
