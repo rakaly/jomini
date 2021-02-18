@@ -1701,6 +1701,20 @@ mod tests {
     }
 
     #[test]
+    fn test_unquoted_non_ascii() {
+        // More vic2 shenanigans
+        let data = b"jean_jaur\xe8s = bar ";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"jean_jaur\xe8s")),
+                TextToken::Unquoted(Scalar::new(b"bar")),
+            ]
+        );
+    }
+
+    #[test]
     fn test_initial_end_does_not_panic() {
         let res = parse(&b"}"[..]);
         assert!(res.is_ok() || res.is_err());
