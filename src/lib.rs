@@ -6,7 +6,8 @@ A low level, performance oriented parser for
 
 Jomini is the cornerstone of the [Rakaly](https://rakaly.com/eu4), an EU4 achievement leaderboard
 and save file analyzer. This library is also used in the [Paradox Game Converters
-project](https://github.com/ParadoxGameConverters/EU4toVic2) to parse ironman EU4 and CK3 saves.
+project](https://github.com/ParadoxGameConverters/EU4toVic2) to parse ironman EU4, CK3, and
+Imperator saves.
 
 ## Features
 
@@ -16,7 +17,7 @@ project](https://github.com/ParadoxGameConverters/EU4toVic2) to parse ironman EU
 - ✔ Safe: Extensively fuzzed against potential malicious input
 - ✔ Ergonomic: Use [serde](https://serde.rs/derive.html)-like macros to have parsing logic automatically implemented
 - ✔ Embeddable: Cross platform native apps, statically compiled services, or in the browser via [WASM](https://webassembly.org/)
-- ✔ Agnostic: [Parse EU4](https://github.com/rakaly/eu4save), [HOI4](https://github.com/rakaly/hoi4save.git), [Imperator](https://github.com/rakaly/imperator-save), [CK3](https://github.com/rakaly/ck3save), etc save files
+- ✔ Agnostic: [Parse EU4](https://github.com/rakaly/eu4save), [HOI4](https://github.com/rakaly/hoi4save.git), [Imperator](https://github.com/rakaly/imperator-save), [CK3](https://github.com/rakaly/ck3save), and Vic2 save and game files
 
 ## Quick Start
 
