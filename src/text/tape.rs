@@ -548,9 +548,19 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
                             let end_idx = self.token_tape.len();
                             if parent_ind == 0 && grand_ind == 0 {
-                                return Err(Error::new(ErrorKind::StackEmpty {
-                                    offset: self.offset(data),
-                                }));
+                                // Allow one extraneous trailing close brace if it is the last
+                                // non-whitespace character in the file (support Vic2 saves)
+                                match self.skip_ws_t(&data[1..]) {
+                                    Some(_) => {
+                                        return Err(Error::new(ErrorKind::StackEmpty {
+                                            offset: self.offset(data),
+                                        }));
+                                    }
+                                    None => {
+                                        data = &data[1..];
+                                        continue;
+                                    }
+                                }
                             }
 
                             self.token_tape.push(TextToken::End(parent_ind));
@@ -1671,6 +1681,21 @@ mod tests {
                 TextToken::Unquoted(Scalar::new(b"intrigue")),
                 TextToken::Operator(Operator::GreaterThanEqual),
                 TextToken::Unquoted(Scalar::new(b"high_skill_rating")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extraneous_closing_bracket() {
+        let data = b"foo = { bar } } ";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"foo")),
+                TextToken::Array(3),
+                TextToken::Unquoted(Scalar::new(b"bar")),
+                TextToken::End(1),
             ]
         );
     }
