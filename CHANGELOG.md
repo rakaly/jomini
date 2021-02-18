@@ -1,3 +1,7 @@
+## v0.9.1 - 2021-02-18
+
+Add Vic2 save file compatibility by allowing text documents with an extraneous closing brace to still be parsed.
+
 ## v0.9.0 - 2021-02-05
 
 This release differentiates between quoted and unquoted values as some games (eg: EU4) may parse values differently depending if they are enclosed in quotes.
