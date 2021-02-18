@@ -940,6 +940,19 @@ mod tests {
     }
 
     #[test]
+    fn test_quotes_with_escape_sequences() {
+        // Preventative measures to ensure we don't regress on imperator color codes
+        let data = b"custom_name=\"ab \x15D ( ID: 691 )\x15!\"";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"custom_name")),
+                TextToken::Quoted(Scalar::new(b"ab \x15D ( ID: 691 )\x15!")),
+            ]
+        );
+    }
+
+    #[test]
     fn test_numbers_are_scalars() {
         let data = b"foo=1.000";
 
