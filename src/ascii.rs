@@ -8,12 +8,12 @@ pub fn is_ascii(data: &[u8]) -> bool {
     let mut iter = data.chunks_exact(8 * 4);
     let mut res = iter.all(|data| {
         (le_u64(data) | le_u64(&data[8..]) | le_u64(&data[16..]) | le_u64(&data[24..]))
-            & 0x80808080_80808080
+            & 0x8080_8080_8080_8080
             == 0
     });
 
     let mut iter2 = iter.remainder().chunks_exact(8);
-    res &= iter2.all(|data| le_u64(data) & 0x80808080_80808080 == 0);
+    res &= iter2.all(|data| le_u64(data) & 0x8080_8080_8080_8080 == 0);
     res & iter2.remainder().is_ascii()
 }
 

@@ -119,7 +119,7 @@ pub(crate) fn decode_windows1252(d: &[u8]) -> Cow<str> {
     let mut offset = 0;
     while let Some(n) = chunk_iter.next() {
         let wide = le_u64(n);
-        if wide & 0x80808080_80808080 != 0 || contains_zero_byte(wide ^ repeat_byte(b'\\')) {
+        if wide & 0x8080_8080_8080_8080 != 0 || contains_zero_byte(wide ^ repeat_byte(b'\\')) {
             return Cow::Owned(windows_1252_create(d, offset));
         }
 
@@ -165,7 +165,7 @@ pub(crate) fn decode_utf8(d: &[u8]) -> Cow<str> {
     let mut is_ascii = true;
     while let Some(n) = chunk_iter.next() {
         let wide = le_u64(n);
-        is_ascii &= wide & 0x80808080_80808080 == 0;
+        is_ascii &= wide & 0x8080_8080_8080_8080 == 0;
         if contains_zero_byte(wide ^ repeat_byte(b'\\')) {
             return Cow::Owned(utf8_create(d, offset));
         }
