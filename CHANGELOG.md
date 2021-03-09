@@ -1,3 +1,9 @@
+## v0.10.0 - 2021-03-08
+
+A small change, but an API change nontheless.
+
+`ScalarError::PrecisionLoss(f64)` has been introduced for `Scalar::to_f64` which will be raised whenever the integer that is parsed can't be represented as a 64 bit float without precision loss. If precision loss is desirable, the old behavior can be restored by inspecting the scalar error for `PrecisionLoss` and returning the inner 64 bit float.
+
 ## v0.9.1 - 2021-02-18
 
 Add Vic2 save file compatibility by allowing text documents with an extraneous closing brace to still be parsed.
