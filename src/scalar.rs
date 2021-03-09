@@ -14,6 +14,9 @@ pub enum ScalarError {
 
     /// The scalar was not a recognized boolean value
     InvalidBool,
+
+    /// The scalar would lose precision if the given float was returned
+    PrecisionLoss(f64),
 }
 
 impl fmt::Display for ScalarError {
@@ -22,6 +25,7 @@ impl fmt::Display for ScalarError {
             ScalarError::AllDigits => write!(f, "did not contain all digits"),
             ScalarError::InvalidBool => write!(f, "is not a valid bool"),
             ScalarError::Overflow => write!(f, "caused an overflow"),
+            ScalarError::PrecisionLoss(_) => write!(f, "precision loss"),
         }
     }
 }
@@ -179,7 +183,25 @@ fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
                 .ok_or(ScalarError::Overflow)? as f64;
             Ok((sign as f64).mul_add(frac / digits, leadf))
         }
-        None => to_i64(d).map(|x| x as f64),
+        None => {
+            if d.get(0).map_or(false, |&x| x == b'-') {
+                let val = to_i64(d)?;
+                let result = val as f64;
+                if val < -9007199254740991 || val > 9007199254740991 {
+                    Err(ScalarError::PrecisionLoss(result))
+                } else {
+                    Ok(result)
+                }
+            } else {
+                let val = to_u64(d)?;
+                let result = val as f64;
+                if val > 9007199254740991 {
+                    Err(ScalarError::PrecisionLoss(result))
+                } else {
+                    Ok(result)
+                }
+            }
+        },
     }
 }
 
@@ -337,6 +359,28 @@ mod tests {
         assert!(s.to_f64().is_err());
         assert!(s.to_i64().is_err());
         assert!(s.to_u64().is_err());
+    }
+
+    #[test]
+    fn scalar_precision() {
+        let s = Scalar::new(b"90071992547409097");
+        assert_eq!(s.to_i64(), Ok(90071992547409097));
+        assert_eq!(s.to_u64(), Ok(90071992547409097));
+        let fl = s.to_f64().unwrap_err();
+        assert_eq!(fl, ScalarError::PrecisionLoss(90071992547409100.0));
+
+
+        let s = Scalar::new(b"18446744073709547616");
+        assert!(s.to_i64().is_err());
+        assert_eq!(s.to_u64(), Ok(18446744073709547616));
+        let fl = s.to_f64().unwrap_err();
+        assert_eq!(fl, ScalarError::PrecisionLoss(18446744073709548000.0));
+
+        let s = Scalar::new(b"-90071992547409097");
+        assert_eq!(s.to_i64(), Ok(-90071992547409097));
+        assert!(s.to_u64().is_err());
+        let fl = s.to_f64().unwrap_err();
+        assert_eq!(fl, ScalarError::PrecisionLoss(-90071992547409100.0));
     }
 
     #[quickcheck]
