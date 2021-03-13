@@ -685,8 +685,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             data = &data[1..];
                         }
 
-                        // Check to not parse too far into the object's array trailer
+                        // Check to not parse too far into the object's array trailer, also make
+                        // sure there is an outer object for us to scope to
                         b'}' => {
+                            if parent_ind == 0 {
+                                return Err(Error::new(ErrorKind::StackEmpty {
+                                    offset: self.offset(data),
+                                }));
+                            }
+
                             state = ParseState::Key;
                         }
 
@@ -1712,6 +1719,12 @@ mod tests {
                 TextToken::Unquoted(Scalar::new(b"bar")),
             ]
         );
+    }
+
+    #[test]
+    fn incomplete_object_fail_to_parse() {
+        let data = b"T&}";
+        TextTape::from_slice(data).unwrap_err();
     }
 
     #[test]

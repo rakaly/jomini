@@ -201,7 +201,7 @@ fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
                     Ok(result)
                 }
             }
-        },
+        }
     }
 }
 
@@ -368,7 +368,6 @@ mod tests {
         assert_eq!(s.to_u64(), Ok(90071992547409097));
         let fl = s.to_f64().unwrap_err();
         assert_eq!(fl, ScalarError::PrecisionLoss(90071992547409100.0));
-
 
         let s = Scalar::new(b"18446744073709547616");
         assert!(s.to_i64().is_err());
