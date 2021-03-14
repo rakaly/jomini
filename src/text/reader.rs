@@ -31,7 +31,7 @@ fn next_idx_header(tokens: &[TextToken], idx: usize) -> usize {
 fn next_idx(tokens: &[TextToken], idx: usize) -> usize {
     match tokens[idx] {
         TextToken::Array(x) | TextToken::Object(x) | TextToken::HiddenObject(x) => x + 1,
-        TextToken::Operator(_) => idx + 2,
+        TextToken::Operator(_) => next_idx(tokens, idx + 1),
         TextToken::Header(_) => next_idx_header(tokens, idx + 1),
         _ => idx + 1,
     }
@@ -204,8 +204,14 @@ where
                     _ => (None, key_ind + 1),
                 };
 
-                self.token_ind = next_idx(self.tokens, value_ind);
+                // When reading an mixed object (a = { b = { c } 10 10 10 })
+                // there is an uneven number of keys and values so we drop the last "field"
+                if value_ind >= self.end_ind {
+                    return None;
+                }
+
                 let value_reader = self.new_value_reader(value_ind);
+                self.token_ind = next_idx(self.tokens, value_ind);
                 values.push((op, value_reader));
 
                 let mut future = self.token_ind;
@@ -217,8 +223,10 @@ where
                             _ => (None, future + 1),
                         };
                         self.seen[future_ind] = true;
-                        let value_reader = self.new_value_reader(value_ind);
-                        values.push((op, value_reader));
+                        if value_ind < self.end_ind {
+                            let value_reader = self.new_value_reader(value_ind);
+                            values.push((op, value_reader));
+                        }
                     }
                     future_ind += 1;
                     future = next_idx(self.tokens, future + 1);
@@ -454,46 +462,48 @@ where
 mod tests {
     use super::*;
 
-    fn iterate_array<'data, 'tokens, E>(mut reader: ArrayReader<E>)
+    fn read_value<E>(value: ValueReader<E>)
     where
         E: crate::Encoding + Clone,
     {
-        while let Some(value) = reader.next_value() {
-            match value.token() {
-                TextToken::Object(_) | TextToken::HiddenObject(_) => {
-                    iterate_object(value.read_object().unwrap());
-                }
-                TextToken::Array(_) => {
-                    iterate_array(value.read_array().unwrap());
-                }
-                TextToken::End(_) => panic!("end!?"),
-                TextToken::Operator(_) => panic!("end!?"),
-                TextToken::Quoted(_) | TextToken::Unquoted(_) | TextToken::Header(_) => {
-                    let _ = value.read_str().unwrap();
-                }
+        match value.token() {
+            TextToken::Object(_) | TextToken::HiddenObject(_) => {
+                iterate_object(value.read_object().unwrap());
+            }
+            TextToken::Array(_) => {
+                iterate_array(value.read_array().unwrap());
+            }
+            TextToken::End(_) => panic!("end!?"),
+            TextToken::Operator(_) => panic!("end!?"),
+            TextToken::Unquoted(_) | TextToken::Quoted(_) | TextToken::Header(_) => {
+                let _ = value.read_str().unwrap();
             }
         }
     }
 
-    fn iterate_object<'data, 'tokens, E>(mut reader: ObjectReader<E>)
+    fn iterate_array<E>(mut reader: ArrayReader<E>)
     where
         E: crate::Encoding + Clone,
     {
+        while let Some(value) = reader.next_value() {
+            read_value(value)
+        }
+    }
+
+    fn iterate_object<E>(mut reader: ObjectReader<E>)
+    where
+        E: crate::Encoding + Clone,
+    {
+        let mut fields_reader = reader.clone();
+        while let Some((_key, entries)) = fields_reader.next_fields() {
+            for (_op, value) in entries {
+                read_value(value);
+            }
+        }
+
         while let Some((key, _op, value)) = reader.next_field() {
             let _ = key.read_str();
-            match value.token() {
-                TextToken::Object(_) | TextToken::HiddenObject(_) => {
-                    iterate_object(value.read_object().unwrap());
-                }
-                TextToken::Array(_) | TextToken::Header(_) => {
-                    iterate_array(value.read_array().unwrap());
-                }
-                TextToken::End(_) => panic!("end!?"),
-                TextToken::Operator(_) => panic!("end!?"),
-                TextToken::Quoted(_) | TextToken::Unquoted(_) => {
-                    let _ = value.read_str().unwrap();
-                }
-            }
+            read_value(value);
         }
     }
 
@@ -773,4 +783,62 @@ mod tests {
         let tape = TextTape::from_slice(data).unwrap();
         iterate_object(tape.windows1252_reader());
     }
+
+    #[test]
+    fn text_reader_object_fields() {
+        let data = b"a{b=}";
+        if let Ok(tape) = TextTape::from_slice(data) {
+            let reader = tape.windows1252_reader();
+            iterate_object(reader);
+        }
+    }
+
+    #[test]
+    fn text_reader_object_fields_op() {
+        let data = b"a{c=d b>}";
+        if let Ok(tape) = TextTape::from_slice(data) {
+            let reader = tape.windows1252_reader();
+            iterate_object(reader);
+        }
+    }
+
+    #[test]
+    fn text_reader_object_fields_op2() {
+        let data = b"a{}b>{}";
+        if let Ok(tape) = TextTape::from_slice(data) {
+            let reader = tape.windows1252_reader();
+            iterate_object(reader);
+        }
+    }
+
+    #[test]
+    fn text_reader_object_fields_dupe() {
+        let data = b"a{b=c d=E d}";
+        if let Ok(tape) = TextTape::from_slice(data) {
+            dbg!(&tape);
+            let reader = tape.windows1252_reader();
+            iterate_object(reader);
+        }
+    }
+
+    #[test]
+    fn text_reader_object_fields_header() {
+        let data = b"a{}b>r{}";
+        if let Ok(tape) = TextTape::from_slice(data) {
+            let reader = tape.windows1252_reader();
+            iterate_object(reader);
+        }
+    }
+
+    // Investigate why this test case is so slow
+    // #[test]
+    // fn text_reader_oom() {
+    //     let data = b"w{w={w={w={a={w={w={.=w={W={={w={w={a={w={w={.=w={W={w={w={b=}.{B{6={b={w={w={.b=}}}ws!=}}}}={=b}}=}}}}={w=}}}}}w={w={b=}.{B{6={b={w={w={.b=}}}ws!=}}}}={=b}}=}}}}={w=}}}}}";
+    //     if let Ok(tape) = TextTape::from_slice(data) {
+    //         dbg!(&tape);
+    //         assert!(false);
+    //         let reader = tape.windows1252_reader();
+    //         iterate_object(reader);
+    //     }
+    // }
 }

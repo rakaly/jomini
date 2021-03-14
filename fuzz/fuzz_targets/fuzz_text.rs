@@ -25,7 +25,7 @@ struct Stat {
     localization: Option<String>,
 }
 
-fn read_value<'data, 'tokens, E>(value: ValueReader<E>)
+fn read_value<E>(value: ValueReader<E>)
 where
     E: crate::Encoding + Clone,
 {
@@ -44,7 +44,7 @@ where
     }
 }
 
-fn iterate_array<'data, 'tokens, E>(mut reader: ArrayReader<E>)
+fn iterate_array<E>(mut reader: ArrayReader<E>)
 where
     E: crate::Encoding + Clone,
 {
@@ -53,7 +53,7 @@ where
     }
 }
 
-fn iterate_object<'data, 'tokens, E>(mut reader: ObjectReader<E>)
+fn iterate_object<E>(mut reader: ObjectReader<E>)
 where
     E: crate::Encoding + Clone,
 {
