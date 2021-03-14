@@ -19,6 +19,5 @@ fuzz_target!(|data: &[u8]| {
                 assert_eq!(d.days_until(&d.add_days(-1)), -1);
             }
         }
-
     }
 });
