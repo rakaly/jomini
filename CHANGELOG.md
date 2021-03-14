@@ -1,3 +1,17 @@
+## v0.10.1 - 2021-03-14
+
+Bugfix for inputs like:
+
+```
+T&}
+```
+
+Which would be parsed successfully as a tape that contains only a key but would subsequently panic if the reader was iterated, as objects assume that every key has a value.
+
+Now the above input will fail to parse.
+
+Also squashed several edge cases that could arise when using a text object reader's `next_fields` method
+
 ## v0.10.0 - 2021-03-08
 
 A small change, but an API change nontheless.
