@@ -53,8 +53,7 @@ struct MyStruct {
 }
 
 struct MyArea {
-    #[serde(default)]
-    color: Vec<u8>,
+    color: Option<Vec<u8>>,
     trailer: Vec<u16>,
 }
 ```
