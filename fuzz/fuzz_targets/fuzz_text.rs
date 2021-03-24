@@ -68,6 +68,10 @@ where
         let _ = key.read_str();
         read_value(value);
     }
+
+    if let Some(trailer) = reader.at_trailer() {
+        iterate_array(trailer);
+    }
 }
 
 fuzz_target!(|data: &[u8]| {
