@@ -304,6 +304,7 @@ where
                     de: self,
                     reader: x,
                     value: None,
+                    at_trailer: false,
                 };
                 visitor.visit_map(map)
             }
@@ -312,6 +313,7 @@ where
                     de: self,
                     reader: x.read_object()?,
                     value: None,
+                    at_trailer: false,
                 };
                 visitor.visit_map(map)
             }
@@ -327,18 +329,26 @@ where
     where
         V: Visitor<'de>,
     {
-        if let Reader::Value(x) = self.reader() {
-            let map = SeqAccess {
-                de: self,
-                reader: x.read_array()?,
-            };
-            visitor.visit_seq(map)
-        } else {
-            Err(DeserializeError {
+        match self.reader() {
+            Reader::Value(x) => {
+                let map = SeqAccess {
+                    de: self,
+                    reader: x.read_array()?,
+                };
+                visitor.visit_seq(map)
+            }
+            Reader::Array(x) => {
+                let map = SeqAccess {
+                    de: self,
+                    reader: x,
+                };
+                visitor.visit_seq(map)
+            }
+            _ => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "unexpected reader for sequence",
                 )),
-            })
+            }),
         }
     }
 
@@ -454,6 +464,7 @@ struct MapAccess<'a, 'de, 'tokens, E> {
     de: &'a mut InternalDeserializer<'de, 'tokens, E>,
     reader: ObjectReader<'de, 'tokens, E>,
     value: Option<ValueReader<'de, 'tokens, E>>,
+    at_trailer: bool,
 }
 
 impl<'a, 'de: 'a, 'tokens, E> de::MapAccess<'de> for MapAccess<'a, 'de, 'tokens, E>
@@ -472,6 +483,9 @@ where
             let res = seed.deserialize(&mut *self.de).map(Some);
             let _ = std::mem::replace(&mut self.de.readers, old);
             res
+        } else if !self.at_trailer && self.reader.at_trailer().is_some() {
+            self.at_trailer = true;
+            seed.deserialize(TrailerKeyDeserializer).map(Some)
         } else {
             Ok(None)
         }
@@ -481,11 +495,19 @@ where
     where
         V: DeserializeSeed<'de>,
     {
-        let r = self.value.take().unwrap();
-        let old = std::mem::replace(&mut self.de.readers, Reader::Value(r));
-        let res = seed.deserialize(&mut *self.de);
-        let _ = std::mem::replace(&mut self.de.readers, old);
-        res
+        if !self.at_trailer {
+            let r = self.value.take().unwrap();
+            let old = std::mem::replace(&mut self.de.readers, Reader::Value(r));
+            let res = seed.deserialize(&mut *self.de);
+            let _ = std::mem::replace(&mut self.de.readers, old);
+            res
+        } else {
+            let trailer = self.reader.at_trailer().unwrap();
+            let old = std::mem::replace(&mut self.de.readers, Reader::Array(trailer));
+            let res = seed.deserialize(&mut *self.de);
+            let _ = std::mem::replace(&mut self.de.readers, old);
+            res
+        }
     }
 
     fn size_hint(&self) -> Option<usize> {
@@ -607,6 +629,24 @@ where
     }
 }
 
+struct TrailerKeyDeserializer;
+
+impl<'de> de::Deserializer<'de> for TrailerKeyDeserializer {
+    type Error = DeserializeError;
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_borrowed_str("trailer")
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct enum identifier ignored_any
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,8 +655,8 @@ mod tests {
         de::{self, Deserializer},
         Deserialize,
     };
-    use std::collections::HashMap;
     use std::fmt;
+    use std::{collections::HashMap, marker::PhantomData};
 
     fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
     where
@@ -1249,7 +1289,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialize_mixed_object() {
+    fn test_deserialize_mixed_object_array() {
         let data = br#"brittany_area = { #5
             color = { 118  99  151 }
             169 170 171 172 4384
@@ -1260,44 +1300,49 @@ mod tests {
 
         #[derive(Deserialize, Debug, PartialEq)]
         struct MyStruct {
-            #[serde(deserialize_with = "deserialize_area_vec")]
             brittany_area: Vec<u16>,
         }
+    }
 
-        fn deserialize_area_vec<'de, D>(deserializer: D) -> Result<Vec<u16>, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            struct MapVisitor;
+    #[test]
+    fn test_deserialize_mixed_object_into_object() {
+        let data = br#"brittany_area = { #5
+            color = { 118  99  151 }
+            169 170 171 172 4384
+        }
+        another_area = { 100 }"#;
 
-            impl<'de> Visitor<'de> for MapVisitor {
-                type Value = Vec<u16>;
-
-                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                    formatter.write_str("a map area")
-                }
-
-                fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-                where
-                    A: de::SeqAccess<'de>,
-                {
-                    let mut result = Vec::new();
-
-                    while let Some(x) = seq.next_element::<&str>()? {
-                        if x == "color" {
-                            let _ = seq.next_element::<de::IgnoredAny>();
-                        } else {
-                            result.push(x.parse::<u16>().unwrap());
-                        }
-                    }
-
-                    Ok(result)
-                }
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual.brittany_area,
+            MyArea {
+                color: vec![118, 99, 151],
+                trailer: vec![169, 170, 171, 172, 4384],
             }
+        );
 
-            deserializer.deserialize_seq(MapVisitor)
+        assert_eq!(
+            actual.another_area,
+            MyArea {
+                color: Vec::new(),
+                trailer: vec![100],
+            }
+        );
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            brittany_area: MyArea,
+            another_area: MyArea,
+        }
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyArea {
+            #[serde(default)]
+            color: Vec<u8>,
+            trailer: Vec<u16>,
         }
     }
+
     #[test]
     fn test_deserialize_colors() {
         let data = b"color = rgb { 100 200 150 } color2 = hsv { 0.3 0.2 0.8 }";
@@ -1381,6 +1426,90 @@ mod tests {
 
                 deserializer.deserialize_seq(ColorVisitor)
             }
+        }
+    }
+
+    pub(crate) fn deserialize_vec_pair<'de, D, K, V>(
+        deserializer: D,
+    ) -> Result<Vec<(K, V)>, D::Error>
+    where
+        D: Deserializer<'de>,
+        K: Deserialize<'de>,
+        V: Deserialize<'de>,
+    {
+        struct VecPairVisitor<K1, V1> {
+            marker: PhantomData<Vec<(K1, V1)>>,
+        }
+
+        impl<'de, K1, V1> de::Visitor<'de> for VecPairVisitor<K1, V1>
+        where
+            K1: Deserialize<'de>,
+            V1: Deserialize<'de>,
+        {
+            type Value = Vec<(K1, V1)>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a map containing key value tuples")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let mut values = if let Some(size) = map.size_hint() {
+                    Vec::with_capacity(size)
+                } else {
+                    Vec::new()
+                };
+
+                while let Some((key, value)) = map.next_entry()? {
+                    values.push((key, value));
+                }
+
+                Ok(values)
+            }
+        }
+
+        deserializer.deserialize_map(VecPairVisitor {
+            marker: PhantomData,
+        })
+    }
+
+    #[test]
+    fn test_deserialize_vec_pair() {
+        let data = b"active_idea_groups = { a = 10 }";
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                active_idea_groups: vec![(String::from("a"), 10)]
+            }
+        );
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            #[serde(default, deserialize_with = "deserialize_vec_pair")]
+            active_idea_groups: Vec<(String, u8)>,
+        }
+    }
+
+    #[test]
+    fn test_deserialize_vec_pair_empty() {
+        let data = b"active_idea_groups = {}";
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                active_idea_groups: Vec::new()
+            }
+        );
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            #[serde(default, deserialize_with = "deserialize_vec_pair")]
+            active_idea_groups: Vec<(String, u8)>,
         }
     }
 }

@@ -122,12 +122,17 @@ where
         }
     }
 
-    /// Return the number of key value pairs that the object contains
+    /// Return the number of key value pairs that the object contains.
+    /// Does not count the object trailer if present
     pub fn fields_len(&self) -> usize {
         let mut ind = self.token_ind;
         let mut count = 0;
         while ind < self.end_ind {
             let key_ind = ind;
+            if let TextToken::Array(_) = self.tokens[key_ind] {
+                return count;
+            }
+
             let value_ind = match self.tokens[key_ind + 1] {
                 TextToken::Operator(_) => key_ind + 2,
                 _ => key_ind + 1,
@@ -146,10 +151,13 @@ where
             let key_ind = self.token_ind;
             let key_scalar = match self.tokens[key_ind] {
                 TextToken::Quoted(x) | TextToken::Unquoted(x) => x,
+                TextToken::Array(_) => {
+                    return None;
+                }
                 _ => {
                     // this is a broken invariant, so we safely recover by saying the object
                     // has no more fields
-                    debug_assert!(false, "All keys should be scalars");
+                    debug_assert!(false, "All keys should be scalars or have a trailer");
                     return None;
                 }
             };
@@ -179,7 +187,8 @@ where
     #[inline]
     pub fn next_fields(&mut self) -> Option<KeyValues<'data, 'tokens, E>> {
         if self.val_ind == 0 {
-            self.seen = vec![false; self.fields_len()];
+            // add one to the field len to account for the possibility of an object trailer
+            self.seen = vec![false; self.fields_len() + 1];
         }
 
         let mut values = Vec::new();
@@ -190,6 +199,9 @@ where
                 self.seen[self.val_ind] = true;
                 let key_scalar = match self.tokens[key_ind] {
                     TextToken::Quoted(x) | TextToken::Unquoted(x) => x,
+                    TextToken::Array(_) => {
+                        return None;
+                    }
                     _ => {
                         // this is a broken invariant, so we safely recover by saying the object
                         // has no more fields
@@ -216,7 +228,7 @@ where
 
                 let mut future = self.token_ind;
                 let mut future_ind = self.val_ind + 1;
-                while future < self.end_ind {
+                while future < self.end_ind && !matches!(self.tokens[future], TextToken::Array(_)) {
                     if !self.seen[future_ind] && self.tokens[future] == *key {
                         let (op, value_ind) = match self.tokens[future + 1] {
                             TextToken::Operator(x) => (Some(x), future + 2),
@@ -241,6 +253,33 @@ where
         }
 
         None
+    }
+
+    /// Exposes the object trailer at the end of the object if it exists. It is
+    /// the responsibility of the caller to make sure they are at the end of the
+    /// object (where the trailer would be located). An object trailer is looks like:
+    ///
+    /// ```ignore
+    /// brittany_area = { color = { 10 10 10 } 100 200 300 }
+    ///
+    #[inline]
+    pub fn at_trailer(&mut self) -> Option<ArrayReader<'data, 'tokens, E>> {
+        if let Some(TextToken::Array(ind)) = self.tokens.get(self.token_ind) {
+            // trailers must be at least one element in length, else we're just reading
+            // an object as an array
+            if *ind != self.token_ind + 1 {
+                Some(ArrayReader {
+                    tokens: self.tokens,
+                    token_ind: self.token_ind + 1,
+                    end_ind: *ind,
+                    encoding: self.encoding.clone(),
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 
     #[inline]
@@ -366,10 +405,10 @@ where
                 encoding: self.encoding.clone(),
             }),
 
-            // An array can be an object if it is empty
-            TextToken::Array(ind) if ind == self.value_ind + 1 => Ok(ObjectReader {
+            // An array can be an object if it is empty or interpreted as an object with only a trailer
+            TextToken::Array(ind) => Ok(ObjectReader {
                 tokens: self.tokens,
-                token_ind: self.value_ind + 1,
+                token_ind: self.value_ind,
                 val_ind: 0,
                 end_ind: ind,
                 encoding: self.encoding.clone(),
@@ -392,13 +431,17 @@ where
                 encoding: self.encoding.clone(),
             }),
 
-            // An object can be considered an array of alternating keys and values
-            TextToken::Object(ind) => Ok(ArrayReader {
-                tokens: self.tokens,
-                token_ind: self.value_ind + 1,
-                end_ind: ind,
-                encoding: self.encoding.clone(),
-            }),
+            // An object can be an array when it has a trailer at the end
+            TextToken::Object(_) => {
+                let mut obj = self.read_object().unwrap();
+                while obj.next_field().is_some() {}
+                Ok(obj.at_trailer().unwrap_or_else(|| ArrayReader {
+                    tokens: self.tokens,
+                    token_ind: 0,
+                    end_ind: 0,
+                    encoding: self.encoding.clone(),
+                }))
+            }
 
             // A header can be seen as a two element array
             TextToken::Header(_) => Ok(ArrayReader {
@@ -504,6 +547,10 @@ mod tests {
         while let Some((key, _op, value)) = reader.next_field() {
             let _ = key.read_str();
             read_value(value);
+        }
+
+        if let Some(trailer) = reader.at_trailer() {
+            iterate_array(trailer);
         }
     }
 
@@ -692,18 +739,29 @@ mod tests {
             keys.push(key.read_str());
         }
 
+        assert_eq!(keys, vec![String::from("color"),]);
+
+        let mut values = vec![];
+        let mut trailer = brittany.at_trailer().unwrap();
+        while let Some(value) = trailer.next_value() {
+            let nv = value.token();
+            values.push((*nv).clone());
+        }
+
         assert_eq!(
-            keys,
+            values,
             vec![
-                String::from("color"),
-                String::from("169"),
-                String::from("171")
+                TextToken::Unquoted(Scalar::new(b"169")),
+                TextToken::Unquoted(Scalar::new(b"170")),
+                TextToken::Unquoted(Scalar::new(b"171")),
+                TextToken::Unquoted(Scalar::new(b"172")),
+                TextToken::Unquoted(Scalar::new(b"4384")),
             ]
         );
     }
 
     #[test]
-    fn text_reader_mixed_object_array() {
+    fn text_reader_mixed_object_fields() {
         let data = br#"brittany_area = { #5
             color = { 118  99  151 }
             169 170 171 172 4384
@@ -714,9 +772,13 @@ mod tests {
         let (key, _op, value) = reader.next_field().unwrap();
         assert_eq!(key.read_str(), "brittany_area");
 
+        let mut brittany = value.read_object().unwrap();
+        brittany.next_fields().unwrap();
+        assert!(brittany.next_fields().is_none());
+
         let mut values = vec![];
-        let mut brittany = value.read_array().unwrap();
-        while let Some(value) = brittany.next_value() {
+        let mut trailer = brittany.at_trailer().unwrap();
+        while let Some(value) = trailer.next_value() {
             let nv = value.token();
             values.push((*nv).clone());
         }
@@ -724,8 +786,6 @@ mod tests {
         assert_eq!(
             values,
             vec![
-                TextToken::Unquoted(Scalar::new(b"color")),
-                TextToken::Array(7),
                 TextToken::Unquoted(Scalar::new(b"169")),
                 TextToken::Unquoted(Scalar::new(b"170")),
                 TextToken::Unquoted(Scalar::new(b"171")),
@@ -733,6 +793,24 @@ mod tests {
                 TextToken::Unquoted(Scalar::new(b"4384")),
             ]
         );
+    }
+
+    #[test]
+    fn text_reader_empty_container() {
+        let data = b"active_idea_groups={ }";
+        let tape = TextTape::from_slice(data).unwrap();
+        let mut reader = tape.windows1252_reader();
+        let (key, _op, value) = reader.next_field().unwrap();
+        assert_eq!(key.read_str(), "active_idea_groups");
+
+        let mut empty_array = value.read_array().unwrap();
+        assert_eq!(0, empty_array.values_len());
+        assert!(empty_array.next_value().is_none());
+
+        let mut empty_object = value.read_object().unwrap();
+        assert_eq!(0, empty_object.fields_len());
+        assert!(empty_object.next_field().is_none());
+        assert!(empty_object.at_trailer().is_none());
     }
 
     #[test]
@@ -794,15 +872,6 @@ mod tests {
     }
 
     #[test]
-    fn text_reader_object_fields_op() {
-        let data = b"a{c=d b>}";
-        if let Ok(tape) = TextTape::from_slice(data) {
-            let reader = tape.windows1252_reader();
-            iterate_object(reader);
-        }
-    }
-
-    #[test]
     fn text_reader_object_fields_op2() {
         let data = b"a{}b>{}";
         if let Ok(tape) = TextTape::from_slice(data) {
@@ -815,7 +884,6 @@ mod tests {
     fn text_reader_object_fields_dupe() {
         let data = b"a{b=c d=E d}";
         if let Ok(tape) = TextTape::from_slice(data) {
-            dbg!(&tape);
             let reader = tape.windows1252_reader();
             iterate_object(reader);
         }
@@ -824,6 +892,15 @@ mod tests {
     #[test]
     fn text_reader_object_fields_header() {
         let data = b"a{}b>r{}";
+        if let Ok(tape) = TextTape::from_slice(data) {
+            let reader = tape.windows1252_reader();
+            iterate_object(reader);
+        }
+    }
+
+    #[test]
+    fn text_reader_object_fields_dupe2() {
+        let data = b"a{b=c d b}";
         if let Ok(tape) = TextTape::from_slice(data) {
             let reader = tape.windows1252_reader();
             iterate_object(reader);
