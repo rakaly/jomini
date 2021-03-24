@@ -25,8 +25,8 @@ derive = ["serde", "jomini_derive"]
 [dev-dependencies]
 encoding_rs = "0.8"
 criterion = "0.3"
-quickcheck = "0.9"
-quickcheck_macros = "0.9"
+quickcheck = "1"
+quickcheck_macros = "1"
 serde = { version = "1", features = ["derive"] }
 
 [[bench]]
