@@ -1,3 +1,74 @@
+## v0.11.0 - 2021-03-24
+
+Another small, but breaking change that shouldn't effect the majority of users.
+
+There's PDS syntax that exhibits, what I call, object trailers:
+
+```
+brittany_area = { #5
+    color = { 118  99  151 }
+    169 170 171 172 4384
+}
+```
+
+This syntax was previously parsed into an ambiguous format where the
+trailer values are interpretted as alternating key value pairs (while
+allowing a key to omit a value):
+
+Now the parser wraps the trailer in an array so that the object key is
+the trailer array:
+
+```rust
+TextToken::Array(14),
+TextToken::Unquoted(Scalar::new(b"169")),
+TextToken::Unquoted(Scalar::new(b"170")),
+TextToken::Unquoted(Scalar::new(b"171")),
+TextToken::Unquoted(Scalar::new(b"172")),
+TextToken::Unquoted(Scalar::new(b"4384")),
+TextToken::End(8),
+```
+
+This makes the detection of an object with an array trailer trivial:
+check if the last key in the object is an array. This method has been
+added to the `ObjectReader` struct which will expose the reader for the
+trailer when the rest of the keys have been iterated.
+
+Deserializing sees major ergonomic improvements here. Given our sample document
+above, users can now decide how they want to deserialize in a much more
+ergonomic fashion:
+
+Both:
+
+```rust
+struct MyStruct {
+    brittany_area: Vec<u16>,
+}
+```
+
+and
+
+```rust
+struct MyStruct {
+    brittany_area: MyArea,
+}
+
+struct MyArea {
+    #[serde(default)]
+    color: Vec<u8>,
+    trailer: Vec<u16>,
+}
+```
+
+Work out of the box with no need to write custom deserialization logic.
+
+With all the code added, there was no performance hit as either the
+conditional will almost always be static, making it friendly to the
+branch predictor, or code was added to an already cold path.
+
+This is a breaking change due to how the tape structure will change
+and deserialization logic that previously handled object trailers
+will need to be updated
+
 ## v0.10.1 - 2021-03-14
 
 Bugfix for inputs like:
