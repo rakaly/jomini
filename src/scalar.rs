@@ -167,41 +167,61 @@ fn to_bool(d: &[u8]) -> Result<bool, ScalarError> {
     }
 }
 
+/// Inspired by https://github.com/lemire/fast_double_parser
 #[inline]
 fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
-    match d.iter().position(|&x| x == b'.') {
-        Some(idx) => {
-            let lead = to_i64(&d[..idx])?;
+    let mut data = d;
+    if data.is_empty() {
+        return Err(ScalarError::AllDigits);
+    }
 
-            // https://graphics.stanford.edu/~seander/bithacks.html#CopyIntegerSign
-            let sign = 1 | (lead >> (std::mem::size_of::<i64>() * 8 - 1));
-            let leadf = lead as f64;
-            let trail = &d[idx + 1..];
-            let frac = to_i64(&trail)? as f64;
-            let digits = 10u32
-                .checked_pow(trail.len() as u32)
-                .ok_or(ScalarError::Overflow)? as f64;
-            Ok((sign as f64).mul_add(frac / digits, leadf))
-        }
-        None => {
-            if d.get(0).map_or(false, |&x| x == b'-') {
-                let val = to_i64(d)?;
-                let result = val as f64;
-                if val < -9007199254740991 || val > 9007199254740991 {
-                    Err(ScalarError::PrecisionLoss(result))
-                } else {
-                    Ok(result)
-                }
+    let mut negative = false;
+    if data[0] == b'-' {
+        negative = true;
+        data = &data[1..];
+    }
+
+    let (lead, mut left) = if data.get(0).map_or(false, |&x| x == b'.') {
+        (0, data)
+    } else {
+        to_u64_t(data, 0)?
+    };
+
+    if left.is_empty() {
+        if negative {
+            let val = i64::try_from(lead)
+                .map(|x| -1 * x)
+                .map_err(|_| ScalarError::Overflow)?;
+            let result = val as f64;
+
+            if val < -9007199254740991 || val > 9007199254740991 {
+                return Err(ScalarError::PrecisionLoss(result));
             } else {
-                let val = to_u64(d)?;
-                let result = val as f64;
-                if val > 9007199254740991 {
-                    Err(ScalarError::PrecisionLoss(result))
-                } else {
-                    Ok(result)
-                }
+                return Ok(result);
+            }
+        } else {
+            let val = lead;
+            let result = val as f64;
+            if val > 9007199254740991 {
+                return Err(ScalarError::PrecisionLoss(result));
+            } else {
+                return Ok(result);
             }
         }
+    } else if left[0] == b'.' {
+        left = &left[1..];
+        let exponent = data.len() - (data.len() - left.len());
+        let (i, left) = to_u64_t(left, lead)?;
+        if !left.is_empty() {
+            return Err(ScalarError::AllDigits);
+        }
+
+        let pow = POWER_OF_TEN.get(exponent).ok_or(ScalarError::Overflow)?;
+        let d = (i as f64) / *pow;
+        let sign = -((negative as i64 * 2).wrapping_sub(1)) as f64;
+        Ok(sign * d)
+    } else {
+        return Err(ScalarError::AllDigits);
     }
 }
 
@@ -224,27 +244,59 @@ fn to_i64(d: &[u8]) -> Result<i64, ScalarError> {
 /// are 1-4 digits in length
 #[inline]
 fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
-    if d.is_empty() {
+    let (result, left) = to_u64_t(d, 0)?;
+    if left.is_empty() {
+        Ok(result)
+    } else {
+        Err(ScalarError::AllDigits)
+    }
+}
+
+#[inline]
+fn to_u64_t(d: &[u8], start: u64) -> Result<(u64, &[u8]), ScalarError> {
+    if d.is_empty() || !is_integer(d[0]) {
         return Err(ScalarError::AllDigits);
     }
 
-    let mut result: u64 = 0;
-    for digit in d.iter().map(|x| x.wrapping_sub(b'0')) {
-        if digit > 9 {
-            return Err(ScalarError::AllDigits);
+    let digit = d[0] - b'0';
+    let mut result = if start == 0 {
+        u64::from(digit)
+    } else {
+        overflow_mul_add(start, digit)?
+    };
+
+    for (i, &x) in (&d[1..]).iter().enumerate() {
+        if !is_integer(x) {
+            return Ok((result, &d[i + 1..]));
         }
 
-        let (new_result1, overflow1) = result.overflowing_mul(10);
-        let (new_result2, overflow2) = new_result1.overflowing_add(u64::from(digit));
-        if overflow1 | overflow2 {
-            return Err(ScalarError::Overflow);
-        }
-
-        result = new_result2;
+        result = overflow_mul_add(result, x - b'0')?;
     }
 
-    Ok(result)
+    Ok((result, &[]))
 }
+
+#[inline]
+fn overflow_mul_add(acc: u64, digit: u8) -> Result<u64, ScalarError> {
+    let (new_result1, overflow1) = acc.overflowing_mul(10);
+    let (new_result2, overflow2) = new_result1.overflowing_add(u64::from(digit));
+    if overflow1 | overflow2 {
+        return Err(ScalarError::Overflow);
+    }
+
+    Ok(new_result2)
+}
+
+/// https://github.com/lemire/fast_double_parser/blob/47d76a06f57b19cb2e816611297071ba663b7223/include/fast_double_parser.h#L215
+#[inline]
+fn is_integer(c: u8) -> bool {
+    c >= b'0' && c <= b'9'
+}
+
+const POWER_OF_TEN: [f64; 23] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+    1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
+];
 
 #[cfg(test)]
 mod tests {
@@ -277,6 +329,9 @@ mod tests {
         );
 
         assert_eq!((Scalar::new(b"0.504").to_f64()), Ok(0.504));
+        assert_eq!((Scalar::new(b"-0.504").to_f64()), Ok(-0.504));
+        assert_eq!((Scalar::new(b".504").to_f64()), Ok(0.504));
+        assert_eq!((Scalar::new(b"-.504").to_f64()), Ok(-0.504));
         assert_eq!((Scalar::new(b"1.00125").to_f64()), Ok(1.00125));
         assert_eq!((Scalar::new(b"-1.50000").to_f64()), Ok(-1.5));
         assert_eq!((Scalar::new(b"-10000.0").to_f64()), Ok(-10000.0));
@@ -291,6 +346,17 @@ mod tests {
             (Scalar::new(b"-20405029553322.015").to_f64()),
             Ok(-20405029553322.015)
         );
+        assert_eq!(
+            Scalar::new(b"10.99999999999999").to_f64(),
+            Ok(10.99999999999999)
+        );
+        assert!(Scalar::new(b"E").to_f64().is_err());
+        assert!(Scalar::new(b"").to_f64().is_err());
+    }
+
+    #[test]
+    fn scalar_f64_fraction_too_long() {
+        assert!(Scalar::new(b"0.00000000000000000000000").to_f64().is_err());
     }
 
     #[test]
@@ -349,7 +415,6 @@ mod tests {
             .to_f64()
             .is_err());
         assert!(Scalar::new(b"10.99999990999999999999999").to_f64().is_err());
-        assert!(Scalar::new(b"10.99999999999999").to_f64().is_err());
     }
 
     #[test]

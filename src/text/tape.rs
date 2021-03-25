@@ -702,7 +702,12 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             }
 
                             let ind = self.token_tape.len() - 1;
-                            if array_ind_of_hidden_obj.is_some() || !matches!(self.token_tape[ind], TextToken::Unquoted(_) | TextToken::Quoted(_)) {
+                            if array_ind_of_hidden_obj.is_some()
+                                || !matches!(
+                                    self.token_tape[ind],
+                                    TextToken::Unquoted(_) | TextToken::Quoted(_)
+                                )
+                            {
                                 return Err(Error::new(ErrorKind::InvalidSyntax {
                                     msg: String::from("complex trailers are not supported"),
                                     offset: self.offset(data),
@@ -1357,7 +1362,6 @@ mod tests {
             ]
         );
     }
-
 
     #[test]
     fn test_regression() {
