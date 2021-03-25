@@ -80,9 +80,15 @@ pub fn to_u64_benchmark(c: &mut Criterion) {
 }
 
 pub fn to_f64_benchmark(c: &mut Criterion) {
-    c.bench_function("to_f64", |b| {
-        b.iter(|| Scalar::new(b"20405029.125").to_f64())
-    });
+    let mut group = c.benchmark_group("to_f64");
+    for input in [&b"10"[..], &b"-1000"[..], &b"20405029.125"[..]].iter() {
+        let data = Scalar::new(input);
+        let ins = std::str::from_utf8(input).unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(ins), &data, |b, &data| {
+            b.iter(|| black_box(data.to_f64().unwrap()))
+        });
+    }
+    group.finish();
 }
 
 pub fn binary_deserialize_benchmark(c: &mut Criterion) {
