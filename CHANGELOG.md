@@ -1,3 +1,9 @@
+## v0.11.1 - 2021-03-25
+
+Fix float parsing inaccuracy for (-1, 0) numbers. Previously `Scalar::to_f64`
+would parse number that fall in the range of (-1, 0) would have their sign
+incorrectly parsed, so `-0.5` would be parsed as `0.5`.
+
 ## v0.11.0 - 2021-03-24
 
 Another small, but breaking change that shouldn't effect the majority of users.
