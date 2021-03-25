@@ -38,8 +38,14 @@ where
         }
         TextToken::End(_) => panic!("end!?"),
         TextToken::Operator(_) => panic!("end!?"),
-        TextToken::Unquoted(_) | TextToken::Quoted(_) | TextToken::Header(_) => {
-            let _ = value.read_str().unwrap();
+        TextToken::Unquoted(x) | TextToken::Quoted(x) | TextToken::Header(x) => {
+            let _ = x.to_f64();
+            let _ = x.to_u64();
+            let _ = x.to_i64();
+            let _ = x.is_ascii();
+            let _ = x.to_bool();
+            let stringed = value.read_str().unwrap();
+            let _ = jomini::common::Date::parse_from_str(stringed);
         }
     }
 }
