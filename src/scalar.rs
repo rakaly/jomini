@@ -190,22 +190,22 @@ fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
     if left.is_empty() {
         if negative {
             let val = i64::try_from(lead)
-                .map(|x| -1 * x)
+                .map(|x| -x)
                 .map_err(|_| ScalarError::Overflow)?;
             let result = val as f64;
 
             if val < -9007199254740991 || val > 9007199254740991 {
-                return Err(ScalarError::PrecisionLoss(result));
+                Err(ScalarError::PrecisionLoss(result))
             } else {
-                return Ok(result);
+                Ok(result)
             }
         } else {
             let val = lead;
             let result = val as f64;
             if val > 9007199254740991 {
-                return Err(ScalarError::PrecisionLoss(result));
+                Err(ScalarError::PrecisionLoss(result))
             } else {
-                return Ok(result);
+                Ok(result)
             }
         }
     } else if left[0] == b'.' {
@@ -221,7 +221,7 @@ fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
         let sign = -((negative as i64 * 2).wrapping_sub(1)) as f64;
         Ok(sign * d)
     } else {
-        return Err(ScalarError::AllDigits);
+        Err(ScalarError::AllDigits)
     }
 }
 
@@ -254,7 +254,7 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
 
 #[inline]
 fn to_u64_t(d: &[u8], start: u64) -> Result<(u64, &[u8]), ScalarError> {
-    if d.is_empty() || !is_integer(d[0]) {
+    if d.is_empty() || !d[0].is_ascii_digit() {
         return Err(ScalarError::AllDigits);
     }
 
@@ -266,7 +266,7 @@ fn to_u64_t(d: &[u8], start: u64) -> Result<(u64, &[u8]), ScalarError> {
     };
 
     for (i, &x) in (&d[1..]).iter().enumerate() {
-        if !is_integer(x) {
+        if !x.is_ascii_digit() {
             return Ok((result, &d[i + 1..]));
         }
 
@@ -285,12 +285,6 @@ fn overflow_mul_add(acc: u64, digit: u8) -> Result<u64, ScalarError> {
     }
 
     Ok(new_result2)
-}
-
-/// https://github.com/lemire/fast_double_parser/blob/47d76a06f57b19cb2e816611297071ba663b7223/include/fast_double_parser.h#L215
-#[inline]
-fn is_integer(c: u8) -> bool {
-    c >= b'0' && c <= b'9'
 }
 
 const POWER_OF_TEN: [f64; 23] = [
