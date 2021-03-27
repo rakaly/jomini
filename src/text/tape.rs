@@ -553,19 +553,9 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
                             let end_idx = self.token_tape.len();
                             if parent_ind == 0 && grand_ind == 0 {
-                                // Allow one extraneous trailing close brace if it is the last
-                                // non-whitespace character in the file (support Vic2 saves)
-                                match self.skip_ws_t(&data[1..]) {
-                                    Some(_) => {
-                                        return Err(Error::new(ErrorKind::StackEmpty {
-                                            offset: self.offset(data),
-                                        }));
-                                    }
-                                    None => {
-                                        data = &data[1..];
-                                        continue;
-                                    }
-                                }
+                                // Allow extraneous close braces to support malformatted game files (ugh)
+                                data = &data[1..];
+                                continue;
                             }
 
                             self.token_tape.push(TextToken::End(parent_ind));
@@ -958,18 +948,6 @@ mod tests {
                 TextToken::Unquoted(Scalar::new(b"bar")),
             ]
         );
-    }
-
-    #[test]
-    fn test_error_offset() {
-        let data = b"foo={}} a=c";
-        let err = TextTape::from_slice(&data[..]).unwrap_err();
-        match err.kind() {
-            ErrorKind::StackEmpty { offset, .. } => {
-                assert_eq!(*offset, 6);
-            }
-            _ => assert!(false),
-        }
     }
 
     #[test]
@@ -1835,6 +1813,40 @@ mod tests {
     }
 
     #[test]
+    fn test_extraneous_closing_bracket3() {
+        let data = b"a c}}";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"c")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extraneous_bracket() {
+        // from eu4 verona.txt
+        let data = br#"color = { 121 163 114 } } army_names = {"Armata di $PROVINCE$"}"#;
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"color")),
+                TextToken::Array(5),
+                TextToken::Unquoted(Scalar::new(b"121")),
+                TextToken::Unquoted(Scalar::new(b"163")),
+                TextToken::Unquoted(Scalar::new(b"114")),
+                TextToken::End(1),
+                TextToken::Unquoted(Scalar::new(b"army_names")),
+                TextToken::Array(9),
+                TextToken::Quoted(Scalar::new(b"Armata di $PROVINCE$")),
+                TextToken::End(7),
+            ]
+        );
+    }
+
+    #[test]
     fn test_unquoted_non_ascii() {
         // More vic2 shenanigans
         let data = b"jean_jaur\xe8s = bar ";
@@ -1890,18 +1902,18 @@ mod tests {
     #[test]
     fn deny_trailer_inside_hidden_object() {
         let data = b"k{a=a { ta { b } a=z=aP } } } a }";
-        TextTape::from_slice(data).unwrap_err();
+        let err = TextTape::from_slice(data).unwrap_err();
+        match err.kind() {
+            ErrorKind::InvalidSyntax { offset, .. } => {
+                assert_eq!(*offset, 21);
+            }
+            _ => assert!(false),
+        }
     }
 
     #[test]
     fn incomplete_object_fail_to_parse() {
         let data = b"T&}";
-        TextTape::from_slice(data).unwrap_err();
-    }
-
-    #[test]
-    fn incomplete_object_fail_to_parse2() {
-        let data = b"a c}}";
         TextTape::from_slice(data).unwrap_err();
     }
 
