@@ -1,3 +1,20 @@
+## v0.11.2 - 2021-03-27
+
+Allow extraneous closing brace at any point. Previously extraneous closing
+braces could only be at the end of the document (something seen in Vic II
+saves), but there are EU4 game files where an extraneous closing brace ocurrs
+in the middle (looking at you verona.txt):
+
+```
+a = { 1 }
+}
+b = 2
+```
+
+This commit makes the parser purposely accept invalid documents in an
+effort to be as flexible as possible. Any file that is parseable by PDS
+should be parseable by us.
+
 ## v0.11.1 - 2021-03-25
 
 Fix float parsing inaccuracy for (-1, 0) numbers. Previously `Scalar::to_f64`
