@@ -1,3 +1,75 @@
+## v0.12.0 - 2021-04-07
+
+Support EU4 parameter definition syntax. Inside EU4's scripts directory there are files that contain the
+parameter definition syntax
+
+It has a simple key value version.
+
+```
+each_estate_effect = {
+        if = {
+                limit = {
+                        has_estate = estate_brahmins
+                }
+                [[effect]
+                        $effect$
+                ]
+                [[brahmins_effect]
+                        $brahmins_effect$
+                ]
+        }
+}
+```
+
+And a more complex object version:
+
+```
+pick_random_estate_if_present = {
+        random_list = {
+                1 = {
+                        set_country_flag = estate_brahmins_$flag$
+                        [[estate_action]
+                        $estate_action$ = estate_brahmins
+                        ]
+                }
+        }
+}
+```
+
+This syntax seems specific to EU4 (checked imperator, ck3, hoi4, and
+vic2). The syntax was introduced in the Dharma patch with the following
+notes:
+
+> Scripted triggers or effects now support conditional compilation on
+arguments provided to them. You can now check for if an argument is
+defined or not and make the script look entirely different based on
+that. Syntax is [[var_name] code here ] for if variable is defined or
+[[!var_name] code here ] for if it is not.
+
+The parameter key is represented as a new text token:
+`TextToken::Parameter`. There's another type of parameter usage -- an
+unset parameter. Since the game has no instances of this, the following
+is contrived:
+
+```
+pick_random_estate_if_present = {
+        random_list = {
+                1 = {
+                        set_country_flag = estate_brahmins_$flag$
+                        [[!estate_action]
+                        $estate_action$ = estate_brahmins
+                        ]
+                }
+        }
+}
+```
+
+The key is represented as an `TextToken::UndefinedParamater`.
+
+This release also stores which type of scalar the scalar reader is
+abstracting over so that downstream clients can interpret parameters
+differently.
+
 ## v0.11.2 - 2021-03-27
 
 Allow extraneous closing brace at any point. Previously extraneous closing
