@@ -149,8 +149,12 @@ where
     pub fn next_field(&mut self) -> Option<KeyValue<'data, 'tokens, E>> {
         if self.token_ind < self.end_ind {
             let key_ind = self.token_ind;
-            let key_scalar = match self.tokens[key_ind] {
-                TextToken::Quoted(x) | TextToken::Unquoted(x) => x,
+            let token = self.tokens[key_ind].clone();
+            let key_scalar = match token {
+                TextToken::Quoted(x)
+                | TextToken::Unquoted(x)
+                | TextToken::Parameter(x)
+                | TextToken::UndefinedParameter(x) => x,
                 TextToken::Array(_) => {
                     return None;
                 }
@@ -162,7 +166,7 @@ where
                 }
             };
 
-            let key_reader = self.new_scalar_reader(key_scalar);
+            let key_reader = self.new_scalar_reader(key_scalar, token);
 
             let (op, value_ind) = match self.tokens[key_ind + 1] {
                 TextToken::Operator(x) => (Some(x), key_ind + 2),
@@ -197,8 +201,12 @@ where
                 let key_ind = self.token_ind;
                 let key = &self.tokens[self.token_ind];
                 self.seen[self.val_ind] = true;
-                let key_scalar = match self.tokens[key_ind] {
-                    TextToken::Quoted(x) | TextToken::Unquoted(x) => x,
+                let token = self.tokens[key_ind].clone();
+                let key_scalar = match token {
+                    TextToken::Quoted(x)
+                    | TextToken::Unquoted(x)
+                    | TextToken::Parameter(x)
+                    | TextToken::UndefinedParameter(x) => x,
                     TextToken::Array(_) => {
                         return None;
                     }
@@ -210,7 +218,7 @@ where
                     }
                 };
 
-                let key_reader = self.new_scalar_reader(key_scalar);
+                let key_reader = self.new_scalar_reader(key_scalar, token);
                 let (op, value_ind) = match self.tokens[key_ind + 1] {
                     TextToken::Operator(x) => (Some(x), key_ind + 2),
                     _ => (None, key_ind + 1),
@@ -283,9 +291,14 @@ where
     }
 
     #[inline]
-    fn new_scalar_reader(&self, scalar: Scalar<'data>) -> ScalarReader<'data, E> {
+    fn new_scalar_reader(
+        &self,
+        scalar: Scalar<'data>,
+        token: TextToken<'data>,
+    ) -> ScalarReader<'data, E> {
         ScalarReader {
             scalar,
+            token,
             encoding: self.encoding.clone(),
         }
     }
@@ -304,6 +317,7 @@ where
 #[derive(Debug, Clone)]
 pub struct ScalarReader<'data, E> {
     scalar: Scalar<'data>,
+    token: TextToken<'data>,
     encoding: E,
 }
 
@@ -327,6 +341,12 @@ where
     #[inline]
     pub fn read_scalar(&self) -> Scalar<'data> {
         self.scalar
+    }
+
+    /// Return the token that the reader is abstracting
+    #[inline]
+    pub fn token(&self) -> &TextToken<'data> {
+        &self.token
     }
 }
 
@@ -518,7 +538,11 @@ mod tests {
             }
             TextToken::End(_) => panic!("end!?"),
             TextToken::Operator(_) => panic!("end!?"),
-            TextToken::Unquoted(_) | TextToken::Quoted(_) | TextToken::Header(_) => {
+            TextToken::Unquoted(_)
+            | TextToken::Quoted(_)
+            | TextToken::Header(_)
+            | TextToken::Parameter(_)
+            | TextToken::UndefinedParameter(_) => {
                 let _ = value.read_str().unwrap();
             }
         }
