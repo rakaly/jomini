@@ -51,6 +51,28 @@ pub enum TextToken<'a> {
     /// Extracted quoted scalar value
     Quoted(Scalar<'a>),
 
+    /// A parameter scalar
+    ///
+    /// Only seen so far in EU4. From the patch notes:
+    ///
+    /// > Scripted triggers or effects now support conditional compilation on arguments provided to them.
+    /// > You can now check for if an argument is defined or not and make the script look entirely different based on that.
+    /// > Syntax is [[var_name] code here ] for if variable is defined
+    ///
+    /// ```ignore
+    /// generate_advisor = { [[scaled_skill] if = { } ] }
+    /// ```
+    Parameter(Scalar<'a>),
+
+    /// An undefined parameter, see Parameter variant for more info.
+    ///
+    /// Syntax for undefined variable:
+    ///
+    /// ```ignore
+    /// [[!var_name] code here ]
+    /// ```
+    UndefinedParameter(Scalar<'a>),
+
     /// A present, but non-equal operator token
     Operator(Operator),
 
@@ -79,7 +101,11 @@ impl<'a> TextToken<'a> {
     /// ```
     pub fn as_scalar(&self) -> Option<Scalar<'a>> {
         match self {
-            TextToken::Header(s) | TextToken::Unquoted(s) | TextToken::Quoted(s) => Some(*s),
+            TextToken::Header(s)
+            | TextToken::Unquoted(s)
+            | TextToken::Quoted(s)
+            | TextToken::Parameter(s)
+            | TextToken::UndefinedParameter(s) => Some(*s),
             _ => None,
         }
     }
@@ -313,9 +339,9 @@ fn split_at_scalar(d: &[u8]) -> (Scalar, &[u8]) {
         //  8 | . . . . . . . .  | . . . . . . . .
         //  9 | x . . . . . . .  | . . . . . . . .
         //  a | x . . . . . . .  | . . . . . . . .
-        //  b | x . . . . . . x  | . . . . . . . .
+        //  b | x . . . . x . x  | . . . . . . . .
         //  c | x . . x . . . .  | . . . . . . . .
-        //  d | x . . x . . . x  | . . . . . . . .
+        //  d | x . . x . x . x  | . . . . . . . .
         //  e | . . . x . . . .  | . . . . . . . .
         //  f | . . . . . . . .  | . . . . . . . .
         //
@@ -330,9 +356,10 @@ fn split_at_scalar(d: &[u8]) -> (Scalar, &[u8]) {
         //  < = 0x3c
         //  = = 0x3d
         //  > = 0x3e
+        //  [ = 0x5b
+        //  ] = 0x5d
         //  { = 0x7b
         //  } = 0x7d
-        //
         // * = unknown if boundary character. Can be removed for perf
         while ptr <= end_ptr {
             let input = _mm_loadu_si128(ptr as *const __m128i);
@@ -356,6 +383,10 @@ fn split_at_scalar(d: &[u8]) -> (Scalar, &[u8]) {
             result = _mm_or_si128(result, t8);
             let t9 = _mm_cmpeq_epi8(input, _mm_set1_epi8(125));
             result = _mm_or_si128(result, t9);
+            let t10 = _mm_cmpeq_epi8(input, _mm_set1_epi8(91));
+            result = _mm_or_si128(result, t10);
+            let t11 = _mm_cmpeq_epi8(input, _mm_set1_epi8(93));
+            result = _mm_or_si128(result, t11);
 
             let found_mask = _mm_movemask_epi8(result);
             if found_mask != 0 {
@@ -538,7 +569,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                 }
                 ParseState::Key => {
                     match data[0] {
-                        b'}' => {
+                        b'}' | b']' => {
                             let grand_ind = match self.token_tape.get(parent_ind) {
                                 Some(TextToken::Array(x)) => *x,
                                 Some(TextToken::Object(x)) => *x,
@@ -620,10 +651,21 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             }
                         }
 
+                        b'[' => {
+                            data = self.parse_parameter_definition(
+                                data,
+                                &mut parent_ind,
+                                &mut state,
+                                false,
+                                array_ind_of_hidden_obj.is_some(),
+                            )?;
+                        }
+
                         b'"' => {
                             data = self.parse_quote_scalar(data)?;
                             state = ParseState::KeyValueSeparator;
                         }
+
                         _ => {
                             data = self.parse_scalar(data);
                             state = ParseState::KeyValueSeparator;
@@ -750,6 +792,17 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             self.token_tape[ind] = TextToken::Array(ind + 1);
                             self.token_tape.push(TextToken::End(ind));
                             data = &data[1..];
+                        }
+
+                        // start of a parameter definition
+                        b'[' => {
+                            data = self.parse_parameter_definition(
+                                data,
+                                &mut parent_ind,
+                                &mut state,
+                                true,
+                                array_ind_of_hidden_obj.is_some(),
+                            )?;
                         }
 
                         // array of objects or another array
@@ -888,6 +941,85 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     }
                 },
             }
+        }
+    }
+
+    fn parse_parameter_definition(
+        &mut self,
+        data: &'a [u8],
+        parent_ind: &mut usize,
+        state: &mut ParseState,
+        initial: bool,
+        inside_hidden_object: bool,
+    ) -> Result<&'a [u8], Error> {
+        if inside_hidden_object {
+            return Err(Error::new(ErrorKind::InvalidSyntax {
+                offset: self.offset(data),
+                msg: String::from("parameter definitions inside hidden objects are not allowed"),
+            }));
+        }
+
+        if !matches!(data.get(1), Some(&x) if x == b'[') {
+            return Err(Error::new(ErrorKind::InvalidSyntax {
+                offset: self.offset(data),
+                msg: String::from("expected start of parameter definition"),
+            }));
+        }
+
+        // This is for parse_open to know and we signal that a parameter
+        // definition means an object as parameters should be uniquely named
+        if initial {
+            let ind = self.token_tape.len() - 1;
+            self.token_tape[ind] = TextToken::Object(*parent_ind);
+            *parent_ind = ind;
+        }
+
+        let is_undefined = matches!(data.get(2), Some(&x) if x == b'!');
+        let data = data
+            .get(2 + is_undefined as usize..)
+            .ok_or_else(Error::eof)?;
+
+        if data.is_empty() {
+            return Err(Error::eof());
+        }
+
+        let (scalar, data) = split_at_scalar(&data);
+        if !matches!(data.get(0), Some(&x) if x == b']') {
+            return Err(Error::new(ErrorKind::InvalidSyntax {
+                offset: self.offset(data),
+                msg: String::from("expected end of parameter name"),
+            }));
+        }
+
+        let data = &data[1..];
+
+        let token = if is_undefined {
+            TextToken::UndefinedParameter(scalar)
+        } else {
+            TextToken::Parameter(scalar)
+        };
+
+        self.token_tape.push(token);
+
+        // now we have to determine if are looking at a parameter value or
+        // parameter object. We know when we are looking at a parameter value
+        // when `]` is encountered first after the value
+        let data = self.skip_ws_t(data).ok_or_else(Error::eof)?;
+        let (key_or_value, data) = split_at_scalar(data);
+        let data = self.skip_ws_t(data).ok_or_else(Error::eof)?;
+        if data[0] == b']' {
+            let value = key_or_value;
+            self.token_tape.push(TextToken::Unquoted(value));
+            *state = ParseState::Key;
+            Ok(&data[1..])
+        } else {
+            let key = key_or_value;
+            let grand_ind = *parent_ind;
+            *parent_ind = self.token_tape.len();
+            self.token_tape.push(TextToken::Object(grand_ind));
+            self.token_tape.push(TextToken::Unquoted(key));
+            *state = ParseState::KeyValueSeparator;
+            Ok(data)
         }
     }
 }
@@ -1879,6 +2011,119 @@ mod tests {
                 TextToken::End(1)
             ]
         );
+    }
+
+    #[test]
+    fn test_parameter_value() {
+        let data = b"generate_advisor = { [[effect] $effect$ ] }";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"generate_advisor")),
+                TextToken::Object(4),
+                TextToken::Parameter(Scalar::new(b"effect")),
+                TextToken::Unquoted(Scalar::new(b"$effect$")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parameter_object() {
+        let data = b"generate_advisor = { [[scaled_skill] a=b ] }";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"generate_advisor")),
+                TextToken::Object(7),
+                TextToken::Parameter(Scalar::new(b"scaled_skill")),
+                TextToken::Object(6),
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::End(3),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parameter_object2() {
+        let data = b"generate_advisor = { [[add] if = { a=b }] }";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"generate_advisor")),
+                TextToken::Object(10),
+                TextToken::Parameter(Scalar::new(b"add")),
+                TextToken::Object(9),
+                TextToken::Unquoted(Scalar::new(b"if")),
+                TextToken::Object(8),
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::End(5),
+                TextToken::End(3),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parameter_object3() {
+        let data = b"generate_advisor = { [[add] if = { a=b }] [[remove] if={c=d}] }";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"generate_advisor")),
+                TextToken::Object(18),
+                TextToken::Parameter(Scalar::new(b"add")),
+                TextToken::Object(9),
+                TextToken::Unquoted(Scalar::new(b"if")),
+                TextToken::Object(8),
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::End(5),
+                TextToken::End(3),
+                TextToken::Parameter(Scalar::new(b"remove")),
+                TextToken::Object(17),
+                TextToken::Unquoted(Scalar::new(b"if")),
+                TextToken::Object(16),
+                TextToken::Unquoted(Scalar::new(b"c")),
+                TextToken::Unquoted(Scalar::new(b"d")),
+                TextToken::End(13),
+                TextToken::End(11),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_undefined_parameter_object() {
+        let data = b"generate_advisor = { [[!scaled_skill] a=b ] }";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"generate_advisor")),
+                TextToken::Object(7),
+                TextToken::UndefinedParameter(Scalar::new(b"scaled_skill")),
+                TextToken::Object(6),
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::End(3),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parameter_eof() {
+        let data = b"[[";
+        TextTape::from_slice(data).unwrap_err();
+    }
+
+    #[test]
+    fn test_deny_parameter_in_hidden_object() {
+        let data = b"s{a b=c[[a]}";
+        TextTape::from_slice(data).unwrap_err();
     }
 
     #[test]

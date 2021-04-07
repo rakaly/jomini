@@ -38,7 +38,11 @@ where
         }
         TextToken::End(_) => panic!("end!?"),
         TextToken::Operator(_) => panic!("end!?"),
-        TextToken::Unquoted(x) | TextToken::Quoted(x) | TextToken::Header(x) => {
+        TextToken::Unquoted(x)
+        | TextToken::Quoted(x)
+        | TextToken::Header(x)
+        | TextToken::Parameter(x)
+        | TextToken::UndefinedParameter(x) => {
             let _ = x.to_f64();
             let _ = x.to_u64();
             let _ = x.to_i64();
