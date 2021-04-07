@@ -1,3 +1,7 @@
+## v0.12.1 - 2021-04-07
+
+Fix botched v0.12.0 release
+
 ## v0.12.0 - 2021-04-07
 
 Support EU4 parameter definition syntax. Inside EU4's scripts directory there are files that contain the
