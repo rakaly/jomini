@@ -1,5 +1,5 @@
 use crate::{
-    util::{le_i32, le_u16, le_u32, le_u64},
+    util::{get, le_u32},
     Ck3Flavor,
 };
 use crate::{BinaryFlavor, Error, ErrorKind, Eu4Flavor, Rgb, Scalar};
@@ -144,7 +144,7 @@ where
 
     #[inline]
     fn parse_next_id_opt(&mut self, data: &'a [u8]) -> Option<(&'a [u8], u16)> {
-        if let Some(val) = data.get(..2).map(le_u16) {
+        if let Some(val) = get::<2>(data).map(u16::from_le_bytes) {
             Some((&data[2..], val))
         } else {
             None
@@ -158,29 +158,34 @@ where
 
     #[inline]
     fn parse_u32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = data.get(..4).map(le_u32).ok_or_else(Error::eof)?;
+        let val = get::<4>(data)
+            .map(u32::from_le_bytes)
+            .ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::U32(val));
         Ok(&data[4..])
     }
 
     #[inline]
     fn parse_u64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = data.get(..8).map(le_u64).ok_or_else(Error::eof)?;
+        let val = get::<8>(data)
+            .map(u64::from_le_bytes)
+            .ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::U64(val));
         Ok(&data[8..])
     }
 
     #[inline]
     fn parse_i32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = data.get(..4).map(le_i32).ok_or_else(Error::eof)?;
+        let val = get::<4>(data)
+            .map(i32::from_le_bytes)
+            .ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::I32(val));
         Ok(&data[4..])
     }
 
     #[inline]
     fn parse_f32_1(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = data
-            .get(..4)
+        let val = get::<4>(data)
             .map(|x| self.flavor.visit_f32_1(x))
             .ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::F32_1(val));
@@ -189,8 +194,7 @@ where
 
     #[inline]
     fn parse_f32_2(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = data
-            .get(..8)
+        let val = get::<8>(data)
             .map(|x| self.flavor.visit_f32_2(x))
             .ok_or_else(Error::eof)?;
         self.token_tape.push(BinaryToken::F32_2(val));
@@ -219,9 +223,8 @@ where
 
     #[inline]
     fn parse_string_inner(&mut self, data: &'a [u8]) -> Result<(Scalar<'a>, &'a [u8]), Error> {
-        if data.len() >= 2 {
-            let (text_len_data, rest) = data.split_at(2);
-            let text_len = usize::from(le_u16(text_len_data));
+        if let Some(text_len) = get::<2>(data).map(u16::from_le_bytes).map(usize::from) {
+            let rest = &data[2..];
             if rest.len() >= text_len {
                 let (text, rest) = rest.split_at(text_len);
                 let scalar = Scalar::new(text);
