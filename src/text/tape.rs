@@ -470,6 +470,29 @@ impl<'a, 'b> ParserState<'a, 'b> {
         Ok(rest)
     }
 
+    #[inline(never)]
+    fn parse_variable(&mut self, d: &'a [u8]) -> Result<&'a [u8], Error> {
+        // detect if the variable is interpolated
+        if d.get(1).map_or(false, |&x| x == b'[') {
+            let mut pos = 2;
+            while pos < d.len() {
+                if d[pos] == b']' {
+                    let (scalar, rest) = d.split_at(pos + 1);
+                    self.token_tape.push(TextToken::Unquoted(Scalar::new(scalar)));
+                    return Ok(rest);
+                } else {
+                    pos += 1;
+                }
+            }
+        
+            Err(Error::eof())
+        } else {
+            let (scalar, rest) = split_at_scalar(d);
+            self.token_tape.push(TextToken::Unquoted(scalar));
+            Ok(rest)
+        }
+    }
+
     #[inline]
     fn parse_scalar(&mut self, d: &'a [u8]) -> &'a [u8] {
         let (scalar, rest) = split_at_scalar(d);
@@ -666,6 +689,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             state = ParseState::KeyValueSeparator;
                         }
 
+                        b'@' => {
+                            data = self.parse_variable(data)?;
+                            state = ParseState::KeyValueSeparator;
+                        }
+
                         _ => {
                             data = self.parse_scalar(data);
                             state = ParseState::KeyValueSeparator;
@@ -756,6 +784,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             data = self.parse_quote_scalar(data)?;
                             state = ParseState::Key;
                         }
+                        b'@' => {
+                            data = self.parse_variable(data)?;
+                            state = ParseState::Key;
+                        }
                         _ => {
                             if lack_operator && parent_ind != 0 {
                                 if array_ind_of_hidden_obj.is_some() {
@@ -814,6 +846,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         }
                         b'"' => {
                             data = self.parse_quote_scalar(data)?;
+                            state = ParseState::FirstValue;
+                        }
+                        b'@' => {
+                            data = self.parse_variable(data)?;
                             state = ParseState::FirstValue;
                         }
                         _ => {
@@ -908,6 +944,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     }
                     b'"' => {
                         data = self.parse_quote_scalar(data)?;
+                        state = ParseState::ArrayValue;
+                    }
+                    b'@' => {
+                        data = self.parse_variable(data)?;
                         state = ParseState::ArrayValue;
                     }
                     b'=' => {
@@ -1559,6 +1599,33 @@ mod tests {
             vec![
                 TextToken::Unquoted(Scalar::new(b"@planet_standard_scale")),
                 TextToken::Unquoted(Scalar::new(b"11")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_interpolated_variable() {
+        let data = b"position = { @[1-leopard_x] @leopard_y }";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"position")),
+                TextToken::Array(4),
+                TextToken::Unquoted(Scalar::new(b"@[1-leopard_x]")),
+                TextToken::Unquoted(Scalar::new(b"@leopard_y")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_variable_value() {
+        let data = b"window_name = @default_window_name";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"window_name")),
+                TextToken::Unquoted(Scalar::new(b"@default_window_name")),
             ]
         );
     }
