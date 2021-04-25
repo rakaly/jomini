@@ -153,6 +153,46 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
         })
     });
 
+    let mut f32_data_v = Vec::new();
+    for _ in 0..10000 {
+        f32_data_v.extend_from_slice(&0x000du16.to_le_bytes());
+        f32_data_v.extend_from_slice(&0x0001u32.to_le_bytes());
+        f32_data_v.extend_from_slice(&0x0001u16.to_le_bytes());
+        f32_data_v.extend_from_slice(&0x000du16.to_le_bytes());
+        f32_data_v.extend_from_slice(&0x0002u32.to_le_bytes());
+    }
+
+    let f32_data = f32_data_v.as_slice();
+    group.throughput(Throughput::Bytes(f32_data.len() as u64));
+    group.bench_function(BenchmarkId::new("binary", "f32"), |b| {
+        let mut tape = BinaryTape::default();
+        b.iter(move || {
+            BinaryTape::eu4_parser()
+                .parse_slice_into_tape(&f32_data[..], &mut tape)
+                .unwrap();
+        })
+    });
+
+    let mut f64_data_v = Vec::new();
+    for _ in 0..10000 {
+        f64_data_v.extend_from_slice(&0x0167u16.to_le_bytes());
+        f64_data_v.extend_from_slice(&0x0001u64.to_le_bytes());
+        f64_data_v.extend_from_slice(&0x0001u16.to_le_bytes());
+        f64_data_v.extend_from_slice(&0x0167u16.to_le_bytes());
+        f64_data_v.extend_from_slice(&0x0002u64.to_le_bytes());
+    }
+
+    let f64_data = f64_data_v.as_slice();
+    group.throughput(Throughput::Bytes(f64_data.len() as u64));
+    group.bench_function(BenchmarkId::new("binary", "f64"), |b| {
+        let mut tape = BinaryTape::default();
+        b.iter(move || {
+            BinaryTape::eu4_parser()
+                .parse_slice_into_tape(&f64_data[..], &mut tape)
+                .unwrap();
+        })
+    });
+
     group.finish();
 }
 
