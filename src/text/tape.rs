@@ -478,13 +478,14 @@ impl<'a, 'b> ParserState<'a, 'b> {
             while pos < d.len() {
                 if d[pos] == b']' {
                     let (scalar, rest) = d.split_at(pos + 1);
-                    self.token_tape.push(TextToken::Unquoted(Scalar::new(scalar)));
+                    let scalar = Scalar::new(scalar);
+                    self.token_tape.push(TextToken::Unquoted(scalar));
                     return Ok(rest);
                 } else {
                     pos += 1;
                 }
             }
-        
+
             Err(Error::eof())
         } else {
             let (scalar, rest) = split_at_scalar(d);
