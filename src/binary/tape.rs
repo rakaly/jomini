@@ -49,10 +49,10 @@ pub enum BinaryToken<'a> {
     Unquoted(Scalar<'a>),
 
     /// Represents the first binary encoding for representing a rational number
-    F32_1(f32),
+    F32(f32),
 
     /// Represents the second binary encoding for representing a rational number
-    F32_2(f32),
+    F64(f64),
 
     /// Represents a 16bit token key that can be resolved to an equivalent textual representation.
     Token(u16),
@@ -70,8 +70,8 @@ const I32: u16 = 0x000c;
 const BOOL: u16 = 0x000e;
 const QUOTED_STRING: u16 = 0x000f;
 const UNQUOTED_STRING: u16 = 0x0017;
-const F32_1: u16 = 0x000d;
-const F32_2: u16 = 0x0167;
+const F32: u16 = 0x000d;
+const F64: u16 = 0x0167;
 const RGB: u16 = 0x0243;
 
 /// Customizes how the binary tape is parsed from data
@@ -184,20 +184,20 @@ where
     }
 
     #[inline]
-    fn parse_f32_1(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
+    fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let val = get::<4>(data)
-            .map(|x| self.flavor.visit_f32_1(x))
+            .map(|x| self.flavor.visit_f32(x))
             .ok_or_else(Error::eof)?;
-        self.token_tape.push(BinaryToken::F32_1(val));
+        self.token_tape.push(BinaryToken::F32(val));
         Ok(&data[4..])
     }
 
     #[inline]
-    fn parse_f32_2(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
+    fn parse_f64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let val = get::<8>(data)
-            .map(|x| self.flavor.visit_f32_2(x))
+            .map(|x| self.flavor.visit_f64(x))
             .ok_or_else(Error::eof)?;
-        self.token_tape.push(BinaryToken::F32_2(val));
+        self.token_tape.push(BinaryToken::F64(val));
         Ok(&data[8..])
     }
 
@@ -308,12 +308,12 @@ where
                     data = self.parse_unquoted_string(d)?;
                     state = SCALAR_STATE_NEXT[state as usize];
                 }
-                F32_1 => {
-                    data = self.parse_f32_1(d)?;
+                F32 => {
+                    data = self.parse_f32(d)?;
                     state = SCALAR_STATE_NEXT[state as usize];
                 }
-                F32_2 => {
-                    data = self.parse_f32_2(d)?;
+                F64 => {
+                    data = self.parse_f64(d)?;
                     state = SCALAR_STATE_NEXT[state as usize];
                 }
 
@@ -413,11 +413,11 @@ where
                             UNQUOTED_STRING => {
                                 data = self.parse_unquoted_string(data)?;
                             }
-                            F32_1 => {
-                                data = self.parse_f32_1(data)?;
+                            F32 => {
+                                data = self.parse_f32(data)?;
                             }
-                            F32_2 => {
-                                data = self.parse_f32_2(data)?;
+                            F64 => {
+                                data = self.parse_f64(data)?;
                             }
                             RGB => {
                                 data = self.parse_rgb(data)?;
@@ -495,11 +495,11 @@ where
                             UNQUOTED_STRING => {
                                 data = self.parse_unquoted_string(data)?;
                             }
-                            F32_1 => {
-                                data = self.parse_f32_1(data)?;
+                            F32 => {
+                                data = self.parse_f32(data)?;
                             }
-                            F32_2 => {
-                                data = self.parse_f32_2(data)?;
+                            F64 => {
+                                data = self.parse_f64(data)?;
                             }
                             RGB => {
                                 data = self.parse_rgb(data)?;
@@ -820,7 +820,7 @@ mod tests {
 
             assert_eq!(
                 parse(&full_data[..]).unwrap().token_tape,
-                vec![BinaryToken::Token(0x2d82), BinaryToken::F32_1(*result),]
+                vec![BinaryToken::Token(0x2d82), BinaryToken::F32(*result),]
             );
         }
     }
@@ -840,7 +840,7 @@ mod tests {
                     .parse_slice(&full_data[..])
                     .unwrap()
                     .token_tape,
-                vec![BinaryToken::Token(0x2d82), BinaryToken::F32_1(*result),]
+                vec![BinaryToken::Token(0x2d82), BinaryToken::F32(*result),]
             );
         }
 
@@ -860,7 +860,7 @@ mod tests {
                     .parse_slice(&full_data[..])
                     .unwrap()
                     .token_tape,
-                vec![BinaryToken::Token(0x2d82), BinaryToken::F32_2(*result),]
+                vec![BinaryToken::Token(0x2d82), BinaryToken::F64(*result),]
             );
         }
     }
@@ -873,7 +873,7 @@ mod tests {
 
         assert_eq!(
             parse(&data[..]).unwrap().token_tape,
-            vec![BinaryToken::Token(0x2d82), BinaryToken::F32_2(1.78732),]
+            vec![BinaryToken::Token(0x2d82), BinaryToken::F64(1.78732),]
         );
     }
 
