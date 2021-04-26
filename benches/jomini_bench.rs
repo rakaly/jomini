@@ -10,18 +10,6 @@ const METADATA_TXT: &'static [u8] = include_bytes!("../tests/fixtures/meta.txt")
 const CK3_BIN: &'static [u8] = include_bytes!("../tests/fixtures/ck3-header.bin");
 const CK3_TXT: &'static [u8] = include_bytes!("../tests/fixtures/ck3-header.txt");
 
-pub fn is_ascii_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("is_ascii");
-    for size in [1, 4, 8, 16, 32, 64, 128, 256, 512].iter() {
-        let data = vec![b'a'; *size as usize];
-        group.throughput(Throughput::Bytes(*size as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &_size| {
-            b.iter(|| Scalar::new(black_box(&data)).is_ascii());
-        });
-    }
-    group.finish();
-}
-
 pub fn windows1252_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("windows1252");
     for size in [2, 4, 8, 16, 32, 64, 128, 256, 512].iter() {
@@ -239,7 +227,6 @@ pub fn date_benchmark(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    is_ascii_benchmark,
     utf8_benchmark,
     windows1252_benchmark,
     binary_parse_benchmark,
