@@ -1,4 +1,4 @@
-use crate::{ascii::is_ascii, decode_windows1252};
+use crate::decode_windows1252;
 use std::convert::TryFrom;
 use std::error;
 use std::fmt;
@@ -138,7 +138,7 @@ impl<'a> Scalar<'a> {
     /// assert!(!v2.is_ascii());
     /// ```
     pub fn is_ascii(&self) -> bool {
-        is_ascii(self.data)
+        self.data.is_ascii()
     }
 }
 
@@ -150,7 +150,7 @@ impl<'a> fmt::Debug for Scalar<'a> {
 
 impl<'a> fmt::Display for Scalar<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if is_ascii(self.data) {
+        if self.is_ascii() {
             write!(f, "{}", decode_windows1252(self.data))
         } else {
             write!(f, "non-ascii string of {} length", self.data.len())
