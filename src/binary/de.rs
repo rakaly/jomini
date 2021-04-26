@@ -326,8 +326,8 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES: TokenResolver, E: Encoding, V:
                 Cow::Owned(s) => visitor.visit_string(s),
             }
         }
-        BinaryToken::F32_1(x) => visitor.visit_f32(x),
-        BinaryToken::F32_2(x) => visitor.visit_f32(x),
+        BinaryToken::F32(x) => visitor.visit_f32(x),
+        BinaryToken::F64(x) => visitor.visit_f64(x),
         BinaryToken::Token(s) => match config.resolver.resolve(s) {
             Some(id) => visitor.visit_borrowed_str(id),
             None => match config.failed_resolve_strategy {

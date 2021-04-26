@@ -3,19 +3,19 @@ use crate::{Encoding, Utf8Encoding, Windows1252Encoding};
 /// Trait customizing decoding values from binary data
 pub trait BinaryFlavor: Sized + Encoding {
     /// Decode a f32 from 4 bytes of data
-    fn visit_f32_1(&self, data: [u8; 4]) -> f32;
+    fn visit_f32(&self, data: [u8; 4]) -> f32;
 
-    /// Decode a f32 from 8 bytes of data
-    fn visit_f32_2(&self, data: [u8; 8]) -> f32;
+    /// Decode a f64 from 8 bytes of data
+    fn visit_f64(&self, data: [u8; 8]) -> f64;
 }
 
 impl<T: BinaryFlavor> BinaryFlavor for &'_ T {
-    fn visit_f32_1(&self, data: [u8; 4]) -> f32 {
-        (**self).visit_f32_1(data)
+    fn visit_f32(&self, data: [u8; 4]) -> f32 {
+        (**self).visit_f32(data)
     }
 
-    fn visit_f32_2(&self, data: [u8; 8]) -> f32 {
-        (**self).visit_f32_2(data)
+    fn visit_f64(&self, data: [u8; 8]) -> f64 {
+        (**self).visit_f64(data)
     }
 }
 
@@ -37,15 +37,15 @@ impl Encoding for Eu4Flavor {
 }
 
 impl BinaryFlavor for Eu4Flavor {
-    fn visit_f32_1(&self, data: [u8; 4]) -> f32 {
+    fn visit_f32(&self, data: [u8; 4]) -> f32 {
         // First encoding is an i32 that has a fixed point offset of 3 decimal digits
         i32::from_le_bytes(data) as f32 / 1000.0
     }
 
-    fn visit_f32_2(&self, data: [u8; 8]) -> f32 {
+    fn visit_f64(&self, data: [u8; 8]) -> f64 {
         // Second encoding is Q17.15 with 5 fractional digits
         // https://en.wikipedia.org/wiki/Q_(number_format)
-        let val = i64::from_le_bytes(data) as f32 / 32768.0;
+        let val = i64::from_le_bytes(data) as f64 / 32768.0;
         (val * 10_0000.0).floor() / 10_0000.0
     }
 }
@@ -68,11 +68,11 @@ impl Encoding for Ck3Flavor {
 }
 
 impl BinaryFlavor for Ck3Flavor {
-    fn visit_f32_1(&self, data: [u8; 4]) -> f32 {
+    fn visit_f32(&self, data: [u8; 4]) -> f32 {
         f32::from_bits(u32::from_le_bytes(data))
     }
 
-    fn visit_f32_2(&self, data: [u8; 8]) -> f32 {
-        i64::from_le_bytes(data) as f32 / 1000.0
+    fn visit_f64(&self, data: [u8; 8]) -> f64 {
+        i64::from_le_bytes(data) as f64 / 1000.0
     }
 }
