@@ -1,3 +1,12 @@
+## v0.13.0 - 2021-04-26
+
+- Support for interpolated variables like `@[1-leopard_x]`
+- EU4 and CK3 binary flavors now use full 8 bits to decode 64 bit floats
+- Rename `BinaryFlavor::visit_f32_1` to `BinaryFlavor::visit_f32`
+- Rename `BinaryFlavor::visit_f32_2` to `BinaryFlavor::visit_f64`
+- `BinaryFlavor::visit_f32` receives an array instead of slice
+- `BinaryFlavor::visit_f64` receives an array instead of slice
+
 ## v0.12.1 - 2021-04-07
 
 Fix botched v0.12.0 release
