@@ -61,7 +61,7 @@ impl TextDeserializer {
         T: Deserialize<'a>,
     {
         let tape = TextTape::from_slice(data)?;
-        Ok(TextDeserializer::from_windows1252_tape(&tape)?)
+        TextDeserializer::from_windows1252_tape(&tape)
     }
 
     /// Deserialize the given text tape assuming quoted strings are windows1252 encoded.
@@ -78,7 +78,7 @@ impl TextDeserializer {
         T: Deserialize<'a>,
     {
         let tape = TextTape::from_slice(data)?;
-        Ok(TextDeserializer::from_utf8_tape(&tape)?)
+        TextDeserializer::from_utf8_tape(&tape)
     }
 
     /// Deserialize the given text tape assuming quoted strings are utf8 encoded.

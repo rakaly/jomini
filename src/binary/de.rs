@@ -140,7 +140,7 @@ where
         RES: TokenResolver,
     {
         let tape = BinaryTape::parser_flavor(&self.flavor).parse_slice(data)?;
-        Ok(self.from_tape(&tape, resolver)?)
+        self.from_tape(&tape, resolver)
     }
 
     /// Deserialize the given binary tape
