@@ -1,3 +1,19 @@
+## v0.13.1 - 2021-04-27
+
+Remove cap on negative years in dates. With the release of leviathan we now
+have prehistoric monuments with large negative dates like:
+```
+-2500.1.1
+```
+
+Previously these dates would fail to parse in both text and binary forms as
+years below -100 were considered invalid due to binary integers and dates
+being encoded the same way in the binary format.
+
+Now one can construct a date with an unbounded negative date, and a function
+was introduced a function that allows binary format users to ask if the data
+is more likely a date than an integer. The new function is `Date::from_binary_heuristic`
+
 ## v0.13.0 - 2021-04-26
 
 - Support for interpolated variables like `@[1-leopard_x]`
