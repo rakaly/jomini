@@ -51,7 +51,7 @@ impl Date {
         // anticipate more rulers to be added that nearly double the negative,
         // we cap what we're looking for at -100 years (we don't want the
         // melter to accidentally think a number is a date)
-        if year != 0 && month != 0 && day != 0 && year > -100 {
+        if year != 0 && month != 0 && day != 0 {
             if let Some(&days) = DAYS_PER_MONTH.get(usize::from(month)) {
                 if day <= days {
                     return Some(Date { year, month, day });
@@ -260,6 +260,17 @@ impl Date {
         Date::new(year, month, day)
     }
 
+    /// Decodes a date from a number that had been parsed from binary data with the
+    /// added check that the date is not too far fetched. This function is useful
+    /// when working with binary data and it's not clear with an encountered integer
+    /// is supposed to represent a date or a number.
+    pub fn from_binary_heuristic(s: i32) -> Option<Self> {
+        match Self::from_binary(s) {
+            Some(x) if x.year() > -100 => Some(x),
+            _ => None,
+        }
+    }
+
     /// Formats a date in the ISO 8601 format: YYYY-MM-DD
     ///
     /// ```
@@ -430,11 +441,11 @@ mod tests {
     #[test]
     fn test_ignore_bin_dates() {
         // These are numbers from a savefile that shouldn't be interpreted as dates
-        assert_eq!(Date::from_binary(380947), None);
-        assert_eq!(Date::from_binary(21282204), None);
-        assert_eq!(Date::from_binary(33370842), None);
-        assert_eq!(Date::from_binary(42267422), None);
-        assert_eq!(Date::from_binary(693362154), None);
+        assert_eq!(Date::from_binary_heuristic(380947), None);
+        assert_eq!(Date::from_binary_heuristic(21282204), None);
+        assert_eq!(Date::from_binary_heuristic(33370842), None);
+        assert_eq!(Date::from_binary_heuristic(42267422), None);
+        assert_eq!(Date::from_binary_heuristic(693362154), None);
     }
 
     #[test]
@@ -447,6 +458,19 @@ mod tests {
         assert_eq!(date.game_fmt(), String::from("-17.1.1"));
 
         assert_eq!(date, date2);
+    }
+
+    #[test]
+    fn test_very_negative_date() {
+        // EU4 stonehenge and pyramids
+        let date = Date::parse_from_str("-2500.1.1").unwrap();
+        assert_eq!(date.game_fmt(), String::from("-2500.1.1"));
+
+        let date2 = Date::from_binary(21900000).unwrap();
+        assert_eq!(date.game_fmt(), String::from("-2500.1.1"));
+        assert_eq!(date, date2);
+
+        assert_eq!(Date::from_binary_heuristic(21900000), None);
     }
 
     #[test]
