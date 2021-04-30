@@ -43,10 +43,10 @@ impl BinaryFlavor for Eu4Flavor {
     }
 
     fn visit_f64(&self, data: [u8; 8]) -> f64 {
-        // Second encoding is Q17.15 with 5 fractional digits
+        // Second encoding is Q49.15 with 5 fractional digits
         // https://en.wikipedia.org/wiki/Q_(number_format)
         let val = i64::from_le_bytes(data) as f64 / 32768.0;
-        (val * 10_0000.0).floor() / 10_0000.0
+        (val * 10_0000.0).round() / 10_0000.0
     }
 }
 
@@ -74,5 +74,21 @@ impl BinaryFlavor for Ck3Flavor {
 
     fn visit_f64(&self, data: [u8; 8]) -> f64 {
         i64::from_le_bytes(data) as f64 / 1000.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn eu4_flavor_f64_rounding() {
+        // This test was taken by running an observer game (plaintext)
+        // with cloud auto save (binary) and comparing the two and
+        // noticing that truncation instead of rounding would yield
+        // `2.49859` instead of the expected `2.49860`
+        let flavor = Eu4Flavor(Windows1252Encoding::new());
+        let data: [u8; 8] = [210, 63, 1, 0, 0, 0, 0, 0];
+        let actual = flavor.visit_f64(data);
+        assert_eq!(actual, 2.49860);
     }
 }
