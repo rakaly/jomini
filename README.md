@@ -14,7 +14,7 @@ Imperator saves.
 ## Features
 
 - ✔ Versatile: Handle both plaintext and binary encoded data
-- ✔ Fast: Parse data at 1 GB/s
+- ✔ Fast: Parse data at over 1 GB/s
 - ✔ Small: Compile with zero dependencies
 - ✔ Safe: Extensively fuzzed against potential malicious input
 - ✔ Ergonomic: Use [serde](https://serde.rs/derive.html)-like macros to have parsing logic automatically implemented
