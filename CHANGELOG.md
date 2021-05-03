@@ -1,3 +1,27 @@
+## v0.13.2 - 2021-05-03
+
+In 1.31.2 EU4 saves there is syntax like:
+
+```plain
+history={
+  capital=945 {}
+  1444.11.11={
+    # ..
+  }
+}
+```
+
+Previously the `945` would be parsed as the header to an empty array
+(reminder that headers are those like `rgb`, `hsv`, `hsv360`, `LIST`).
+
+This release recognizes it as an empty object and skips it.
+
+This change leads to a 10-20% throughput increase in text parsing.
+
+There's a minor bugfix included in this release that increases the
+decoding accuracy of 64 bit floating point values in EU4 binary data
+by up to a 10,000th.
+
 ## v0.13.1 - 2021-04-27
 
 Remove cap on negative years in dates. With the release of leviathan we now
