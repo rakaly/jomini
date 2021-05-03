@@ -180,7 +180,6 @@ enum ParseState {
     ArrayValue,
     ParseOpen,
     FirstValue,
-    EmptyObject,
 }
 
 /// I'm not smart enough to figure out the behavior of handling escape sequences when
@@ -582,15 +581,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
             data = d;
             match state {
-                ParseState::EmptyObject => {
-                    if data[0] != b'}' {
-                        return Err(Error::new(ErrorKind::InvalidEmptyObject {
-                            offset: self.offset(data),
-                        }));
-                    }
-                    data = &data[1..];
-                    state = ParseState::Key;
-                }
                 ParseState::Key => {
                     match data[0] {
                         b'}' | b']' => {
@@ -652,27 +642,27 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
                         // Empty object or token header
                         b'{' => {
-                            data = &data[1..];
-                            if let Some(last) = self.token_tape.last_mut() {
-                                if let TextToken::Unquoted(x) = last {
-                                    if array_ind_of_hidden_obj.is_some() {
-                                        return Err(Error::new(ErrorKind::InvalidSyntax {
-                                            offset: self.offset(data) - 2,
-                                            msg: String::from(
-                                                "header values inside a hidden object are unsupported",
-                                            ),
-                                        }));
-                                    }
-
-                                    *last = TextToken::Header(*x);
-                                    self.token_tape.push(TextToken::Array(0));
-                                    state = ParseState::ParseOpen;
-                                } else {
-                                    state = ParseState::EmptyObject;
-                                }
-                            } else {
-                                state = ParseState::EmptyObject;
+                            data = self.skip_ws_t(&data[1..]).ok_or_else(Error::eof)?;
+                            if data[0] == b'}' {
+                                data = &data[1..];
+                                continue;
                             }
+
+                            if let Some(last) = self.token_tape.last_mut() {
+                                if let TextToken::Unquoted(header) = last {
+                                    if array_ind_of_hidden_obj.is_none() {
+                                        *last = TextToken::Header(*header);
+                                        self.token_tape.push(TextToken::Array(0));
+                                        state = ParseState::ParseOpen;
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            return Err(Error::new(ErrorKind::InvalidSyntax {
+                                offset: self.offset(data),
+                                msg: String::from("invalid syntax for token headers"),
+                            }));
                         }
 
                         b'[' => {
@@ -1425,11 +1415,29 @@ mod tests {
             parse(&data[..]).unwrap().token_tape,
             vec![
                 TextToken::Unquoted(Scalar::new(b"foo")),
+                TextToken::Object(4),
+                TextToken::Unquoted(Scalar::new(b"bar")),
+                TextToken::Unquoted(Scalar::new(b"val")),
+                TextToken::End(1),
+                TextToken::Unquoted(Scalar::new(b"me")),
+                TextToken::Unquoted(Scalar::new(b"you")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_empty_objects3() {
+        let data = b"foo={bar=val { } a=b} me=you";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"foo")),
                 TextToken::Object(6),
                 TextToken::Unquoted(Scalar::new(b"bar")),
-                TextToken::Header(Scalar::new(b"val")),
-                TextToken::Array(5),
-                TextToken::End(4),
+                TextToken::Unquoted(Scalar::new(b"val")),
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"b")),
                 TextToken::End(1),
                 TextToken::Unquoted(Scalar::new(b"me")),
                 TextToken::Unquoted(Scalar::new(b"you")),
