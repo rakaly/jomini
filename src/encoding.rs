@@ -4,9 +4,15 @@ use crate::{
 };
 use std::borrow::Cow;
 
-/// An encoding for interpretting byte data as text
+/// An encoding for interpreting byte data as UTF-8 text
 ///
-/// Several transformations also should take place:
+/// It is heavily encouraged that encoding implementations are marked
+/// as `Copy` to make sure they are as cheap to copy as possible. In
+/// an experiment storing the encoding in a `Rc` resulted in a decrease
+/// of deserialization throughput by over 10%, as encodings are passed
+/// around everywhere.
+///
+/// An encoding should also perform additional actions when:
 ///
 /// - trailing whitespace is removed
 /// - escape sequences are unescaped
