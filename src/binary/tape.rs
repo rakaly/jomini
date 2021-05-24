@@ -144,11 +144,9 @@ where
 
     #[inline]
     fn parse_next_id_opt(&mut self, data: &'a [u8]) -> Option<(&'a [u8], u16)> {
-        if let Some(val) = get::<2>(data).map(u16::from_le_bytes) {
-            Some((&data[2..], val))
-        } else {
-            None
-        }
+        get::<2>(data)
+            .map(u16::from_le_bytes)
+            .map(|val| (&data[2..], val))
     }
 
     #[inline]
