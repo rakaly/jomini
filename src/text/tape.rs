@@ -1143,6 +1143,20 @@ mod tests {
     }
 
     #[test]
+    fn test_scalars_with_quoteas_delimiters() {
+        let data = br#""foo"="bar"3="1444.11.11""#;
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Quoted(Scalar::new(b"foo")),
+                TextToken::Quoted(Scalar::new(b"bar")),
+                TextToken::Unquoted(Scalar::new(b"3")),
+                TextToken::Quoted(Scalar::new(b"1444.11.11")),
+            ]
+        );
+    }
+
+    #[test]
     fn test_escaped_quotes() {
         let data = br#"name = "Joe \"Captain\" Rogers""#;
 
