@@ -54,6 +54,9 @@ pub enum ErrorKind {
 
     /// An error occurred when deserializing the data
     Deserialize(DeserializeError),
+
+    /// An error occurred when performing IO.
+    Io(std::io::Error),
 }
 
 impl ErrorKind {
@@ -72,6 +75,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match *self.0 {
             ErrorKind::Deserialize(ref err) => Some(err),
+            ErrorKind::Io(ref err) => Some(err),
             _ => None,
         }
     }
@@ -91,6 +95,7 @@ impl std::fmt::Display for Error {
                 "invalid syntax encountered: {} (offset: {})", msg, offset
             ),
             ErrorKind::Deserialize(ref err) => write!(f, "deserialize error: {}", err),
+            ErrorKind::Io(ref err) => write!(f, "io error: {}", err),
         }
     }
 }
@@ -163,6 +168,12 @@ impl serde::de::Error for DeserializeError {
         DeserializeError {
             kind: DeserializeErrorKind::Message(msg.to_string()),
         }
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Error::new(ErrorKind::Io(error))
     }
 }
 

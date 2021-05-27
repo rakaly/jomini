@@ -1,5 +1,6 @@
 use crate::{data::is_boundary, ObjectReader, Utf8Encoding, Windows1252Encoding};
 use crate::{Error, ErrorKind, Scalar};
+use std::fmt::Display;
 
 /// An operator token
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -15,6 +16,17 @@ pub enum Operator {
 
     /// A `>=` token
     GreaterThanEqual,
+}
+
+impl Display for Operator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Operator::LessThan => f.write_str("<"),
+            Operator::GreaterThan => f.write_str(">"),
+            Operator::LessThanEqual => f.write_str("<="),
+            Operator::GreaterThanEqual => f.write_str(">="),
+        }
+    }
 }
 
 /// Represents a valid text value
