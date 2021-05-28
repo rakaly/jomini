@@ -142,6 +142,43 @@ assert_eq!(
 
 If one will only use `TextTape` and `BinaryTape` then `jomini` can be compiled without default
 features, resulting in a build without dependencies.
+
+## Write API
+
+There are two targeted use cases for the write API. One is when a text tape is on hand.
+This is useful when one needs to reformat a document (note that comments are not
+preserved):
+
+```rust
+use jomini::{TextTape, TextWriterBuilder};
+
+let tape = TextTape::from_slice(b"hello   = world")?;
+let mut out: Vec<u8> = Vec::new();
+let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+writer.write_tape(&tape)?;
+assert_eq!(&out, b"hello=world\n");
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The writer normalizes any formatting issues. The writer is not able to
+losslessly write all parsed documents, but these are limited to truly
+esoteric situations and hope to be resolved in future releases.
+
+The other use case is geared more towards incremental writing that can be
+found in melters or those crafting documents by hand. These use cases need to
+manually drive the writer:
+
+```rust
+use jomini::TextWriterBuilder;
+let mut out: Vec<u8> = Vec::new();
+let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+writer.write_unquoted(b"hello")?;
+writer.write_unquoted(b"world")?;
+writer.write_unquoted(b"foo")?;
+writer.write_unquoted(b"bar")?;
+assert_eq!(&out, b"hello=world\nfoo=bar\n");
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 */
 #![warn(missing_docs)]
 mod binary;
