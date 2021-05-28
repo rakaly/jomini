@@ -115,7 +115,7 @@ where
     }
 
     /// Returns true if the next write event would be a key
-    pub fn expecting_key_next(&self) -> bool {
+    pub fn expecting_key(&self) -> bool {
         self.state == WriteState::Key || self.state == WriteState::FirstKey
     }
 
@@ -266,7 +266,7 @@ where
     /// # }
     /// ```
     pub fn write_quoted(&mut self, data: &[u8]) -> Result<(), Error> {
-        if self.expecting_key_next() {
+        if self.expecting_key() {
             return self.write_unquoted(data);
         }
 
@@ -806,7 +806,7 @@ mod tests {
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_unquoted(b"hello")?;
         writer.write_unquoted(b"world")?;
-        assert!(writer.expecting_key_next());
+        assert!(writer.expecting_key());
         writer.write_unquoted(b"foo")?;
         writer.write_unquoted(b"bar")?;
         assert_eq!(std::str::from_utf8(&out).unwrap(), "hello=world\nfoo=bar\n");
@@ -1011,7 +1011,7 @@ mod tests {
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_unquoted(b"data")?;
         writer.write_object_start()?;
-        assert!(writer.expecting_key_next());
+        assert!(writer.expecting_key());
         writer.write_end()?;
 
         assert_eq!(std::str::from_utf8(&out).unwrap(), "data={ }\n");
