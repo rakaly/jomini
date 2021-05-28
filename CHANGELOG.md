@@ -1,3 +1,7 @@
+## v0.14.0 - 2021-05-27
+
+- Adds an API to output text documents. [See documentation](https://github.com/rakaly/jomini/blob/409c1ac00464e507deb4fc9a3b9912516e77478b/README.md#write-api)
+
 ## v0.13.2 - 2021-05-03
 
 In 1.31.2 EU4 saves there is syntax like:
