@@ -116,7 +116,7 @@ where
 
     /// Returns true if the next write event would be a key
     pub fn expecting_key_next(&self) -> bool {
-        self.state == WriteState::Key
+        self.state == WriteState::Key || self.state == WriteState::FirstKey
     }
 
     /// Write out the start of an object
@@ -266,7 +266,7 @@ where
     /// # }
     /// ```
     pub fn write_quoted(&mut self, data: &[u8]) -> Result<(), Error> {
-        if self.state == WriteState::Key {
+        if self.expecting_key_next() {
             return self.write_unquoted(data);
         }
 
@@ -480,7 +480,6 @@ where
     }
 
     fn write_preamble(&mut self) -> Result<(), Error> {
-        self.just_wrote_line_terminator = false;
         match self.state {
             WriteState::ArrayValue => {
                 self.writer.write_all(b" ")?;
@@ -498,6 +497,7 @@ where
             _ => {}
         };
 
+        self.just_wrote_line_terminator = false;
         Ok(())
     }
 
@@ -806,6 +806,7 @@ mod tests {
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_unquoted(b"hello")?;
         writer.write_unquoted(b"world")?;
+        assert!(writer.expecting_key_next());
         writer.write_unquoted(b"foo")?;
         writer.write_unquoted(b"bar")?;
         assert_eq!(std::str::from_utf8(&out).unwrap(), "hello=world\nfoo=bar\n");
@@ -824,6 +825,21 @@ mod tests {
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
             "hello={\n  world foo\n}\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn write_quoted_array() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_unquoted(b"hello")?;
+        writer.write_array_start()?;
+        writer.write_quoted(b"The Punic Wars")?;
+        writer.write_end()?;
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "hello={\n  \"The Punic Wars\"\n}\n"
         );
         Ok(())
     }
@@ -995,6 +1011,7 @@ mod tests {
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_unquoted(b"data")?;
         writer.write_object_start()?;
+        assert!(writer.expecting_key_next());
         writer.write_end()?;
 
         assert_eq!(std::str::from_utf8(&out).unwrap(), "data={ }\n");
