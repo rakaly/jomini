@@ -1,4 +1,7 @@
-use crate::{ArrayReader, Encoding, Error, ErrorKind, ObjectReader, Operator, TextTape, TextToken, ValueReader, common::Date};
+use crate::{
+    common::Date, ArrayReader, Encoding, Error, ErrorKind, ObjectReader, Operator, TextTape,
+    TextToken, ValueReader,
+};
 use std::{fmt::Arguments, io::Write, ops::Deref};
 
 /// Customizes writer behavior at a field level
@@ -69,20 +72,6 @@ pub struct TextWriterBuilder {
     indent_factor: u8,
 }
 
-// #[derive(Debug, Clone)]
-// pub enum TextEvent<'a> {
-//     Object,
-//     Array,
-//     End,
-//     HiddenObject,
-//     Unquoted(&'a [u8]),
-//     Quoted(&'a [u8]),
-//     Parameter(&'a [u8]),
-//     UndefinedParameter(&'a [u8]),
-//     Operator(Operator),
-//     Header(&'a [u8]),
-// }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DepthMode {
     Object,
@@ -97,33 +86,18 @@ enum WriteState {
     KeyValueSeparator = 3,
     ArrayValue = 4,
     ArrayValueFirst = 5,
+    FirstKey = 6,
 }
 
-const WRITE_STATE_NEXT: [WriteState; 6] = [
+const WRITE_STATE_NEXT: [WriteState; 7] = [
     WriteState::Error,
     WriteState::KeyValueSeparator,
     WriteState::Key,
     WriteState::Key,
     WriteState::ArrayValue,
     WriteState::ArrayValue,
+    WriteState::KeyValueSeparator,
 ];
-
-// impl<'a> From<TextToken<'a>> for TextEvent<'a> {
-//     fn from(x: TextToken<'a>) -> Self {
-//         match x {
-//             TextToken::Array(_) => TextEvent::Array,
-//             TextToken::Object(_) => TextEvent::Object,
-//             TextToken::HiddenObject(_) => TextEvent::HiddenObject,
-//             TextToken::Unquoted(x) => TextEvent::Unquoted(x.view_data()),
-//             TextToken::Quoted(x) => TextEvent::Quoted(x.view_data()),
-//             TextToken::Parameter(x) => TextEvent::Parameter(x.view_data()),
-//             TextToken::UndefinedParameter(x) => TextEvent::UndefinedParameter(x.view_data()),
-//             TextToken::Operator(x) => TextEvent::Operator(x),
-//             TextToken::End(_) => TextEvent::End,
-//             TextToken::Header(x) => TextEvent::Header(x.view_data()),
-//         }
-//     }
-// }
 
 impl<W, V> TextWriter<W, V>
 where
@@ -147,7 +121,7 @@ where
 
     /// Write out the start of an object
     pub fn write_object_start(&mut self) -> Result<(), Error> {
-        if self.mode == DepthMode::Object {
+        if self.mode == DepthMode::Object || self.state == WriteState::ArrayValueFirst {
             self.write_preamble()?;
         } else if self.state != WriteState::ArrayValueFirst {
             self.write_indent()?;
@@ -157,8 +131,8 @@ where
         self.depth.push(self.mode);
         self.just_wrote_line_terminator = false;
         self.mode = DepthMode::Object;
-        self.state = WriteState::Key;
-        self.write_line_terminator()?;
+        self.state = WriteState::FirstKey;
+        // self.write_line_terminator()?;
         Ok(())
     }
 
@@ -166,17 +140,15 @@ where
     pub fn write_array_start(&mut self) -> Result<(), Error> {
         self.write_preamble()?;
         self.writer.write_all(b"{")?;
-        self.write_line_terminator()?;
         self.depth.push(self.mode);
         self.mode = DepthMode::Array;
-        self.write_indent()?;
         self.state = WriteState::ArrayValueFirst;
         Ok(())
     }
 
     /// Write the end of an array or object
     pub fn write_end(&mut self) -> Result<(), Error> {
-        // let old_mode = self.mode;
+        let old_state = self.state;
         if let Some(mode) = self.depth.pop() {
             self.mode = mode;
             self.state = match mode {
@@ -187,8 +159,13 @@ where
             return Err(Error::new(ErrorKind::StackEmpty { offset: 0 }));
         }
 
-        self.write_line_terminator()?;
-        self.write_indent()?;
+        if old_state != WriteState::ArrayValueFirst && old_state != WriteState::FirstKey {
+            self.write_line_terminator()?;
+            self.write_indent()?;
+        } else {
+            self.writer.write_all(b" ")?;
+        }
+
         self.writer.write_all(b"}")?;
         self.just_wrote_line_terminator = false;
         self.write_line_terminator()?;
@@ -514,6 +491,10 @@ where
             WriteState::KeyValueSeparator => {
                 self.writer.write_all(b"=")?;
             }
+            WriteState::ArrayValueFirst | WriteState::FirstKey => {
+                self.write_line_terminator()?;
+                self.write_indent()?;
+            }
             _ => {}
         };
 
@@ -561,32 +542,43 @@ where
         Ok(())
     }
 
-    fn write_object_core<R>(&mut self, mut reader: ObjectReader<R>) -> Result<(), Error> where R: Encoding + Clone {
+    fn write_object_core<R>(&mut self, mut reader: ObjectReader<R>) -> Result<(), Error>
+    where
+        R: Encoding + Clone,
+    {
         while let Some((key, op, value)) = reader.next_field() {
             match key.token() {
                 TextToken::Parameter(x) => {
+                    self.write_preamble()?;
                     write!(self.writer, "[[")?;
                     self.writer.write_all(x.view_data())?;
                     self.writer.write_all(b"]")?;
 
                     if let Ok(obj) = value.read_object() {
                         self.write_object_core(obj)?;
+                        self.write_indent()?;
                     } else {
                         self.write_value(value)?;
                     }
                     self.writer.write_all(b"]")?;
+                    self.just_wrote_line_terminator = false;
+                    self.write_line_terminator()?;
                 }
                 TextToken::UndefinedParameter(x) => {
+                    self.write_preamble()?;
                     write!(self.writer, "[[!")?;
                     self.writer.write_all(x.view_data())?;
                     self.writer.write_all(b"]")?;
 
                     if let Ok(obj) = value.read_object() {
                         self.write_object_core(obj)?;
+                        self.write_indent()?;
                     } else {
                         self.write_value(value)?;
                     }
                     self.writer.write_all(b"]")?;
+                    self.just_wrote_line_terminator = false;
+                    self.write_line_terminator()?;
                 }
                 TextToken::Quoted(x) => {
                     // quoted keys really shouldn't happen but when they do
@@ -596,7 +588,7 @@ where
                     if let Some(op) = op {
                         self.write_operator(op)?;
                     }
-            
+
                     self.write_value(value)?;
                 }
                 _ => {
@@ -604,7 +596,7 @@ where
                     if let Some(op) = op {
                         self.write_operator(op)?;
                     }
-            
+
                     self.write_value(value)?;
                 }
             }
@@ -624,7 +616,10 @@ where
         Ok(())
     }
 
-    fn write_value<R>(&mut self, value: ValueReader<R>) -> Result<(), Error> where R: Encoding + Clone {
+    fn write_value<R>(&mut self, value: ValueReader<R>) -> Result<(), Error>
+    where
+        R: Encoding + Clone,
+    {
         match value.token() {
             TextToken::Array(_) => self.write_array(value.read_array().unwrap())?,
             TextToken::Object(_) => self.write_object(value.read_object().unwrap())?,
@@ -655,7 +650,10 @@ where
         Ok(())
     }
 
-    fn write_array<R>(&mut self, mut array: ArrayReader<R>) -> Result<(), Error> where R: Encoding + Clone {
+    fn write_array<R>(&mut self, mut array: ArrayReader<R>) -> Result<(), Error>
+    where
+        R: Encoding + Clone,
+    {
         self.write_array_start()?;
 
         while let Some(value) = array.next_value() {
@@ -666,7 +664,10 @@ where
         Ok(())
     }
 
-    fn write_object<R>(&mut self, object: ObjectReader<R>) -> Result<(), Error> where R: Encoding + Clone {
+    fn write_object<R>(&mut self, object: ObjectReader<R>) -> Result<(), Error>
+    where
+        R: Encoding + Clone,
+    {
         self.write_object_start()?;
         self.write_object_core(object)?;
         self.write_end()?;
@@ -977,6 +978,30 @@ mod tests {
     }
 
     #[test]
+    fn write_empty_array() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_unquoted(b"data")?;
+        writer.write_array_start()?;
+        writer.write_end()?;
+
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "data={ }\n");
+        Ok(())
+    }
+
+    #[test]
+    fn write_empty_object() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_unquoted(b"data")?;
+        writer.write_object_start()?;
+        writer.write_end()?;
+
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "data={ }\n");
+        Ok(())
+    }
+
+    #[test]
     fn write_with_alternate_indent() -> Result<(), Box<dyn Error>> {
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new()
@@ -1019,7 +1044,10 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "army={\n  name=abc\n}\narmy={\n  name=def\n}\n");
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "army={\n  name=abc\n}\narmy={\n  name=def\n}\n"
+        );
         Ok(())
     }
 
@@ -1052,7 +1080,10 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "color=rgb {\n  100 50 200\n}\n");
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "color=rgb {\n  100 50 200\n}\n"
+        );
         Ok(())
     }
 
@@ -1063,7 +1094,10 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "generate_advisor={\n[[scaled_skill]  a=b\n]}\n");
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "generate_advisor={\n  [[scaled_skill]\n  a=b\n  ]\n}\n"
+        );
         Ok(())
     }
 
@@ -1074,7 +1108,10 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "generate_advisor={\n[[!scaled_skill]  a=b\n]}\n");
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "generate_advisor={\n  [[!scaled_skill]\n  a=b\n  ]\n}\n"
+        );
         Ok(())
     }
 
