@@ -1356,6 +1356,43 @@ mod tests {
     }
 
     #[test]
+    fn test_no_equal_object_field() {
+        let data = br#"
+        dlc002 = {
+            name = "Arachnoid Portrait Pack"
+            steam_id = "447680"
+            gog_store_id = ""
+            paradoxplaza_store_url ""
+            category = "content_pack"
+            show = no
+            recommendations = {}
+        }"#;
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"dlc002")),
+                TextToken::Object(17),
+                TextToken::Unquoted(Scalar::new(b"name")),
+                TextToken::Quoted(Scalar::new(b"Arachnoid Portrait Pack")),
+                TextToken::Unquoted(Scalar::new(b"steam_id")),
+                TextToken::Quoted(Scalar::new(b"447680")),
+                TextToken::Unquoted(Scalar::new(b"gog_store_id")),
+                TextToken::Quoted(Scalar::new(b"")),
+                TextToken::Unquoted(Scalar::new(b"paradoxplaza_store_url")),
+                TextToken::Quoted(Scalar::new(b"")),
+                TextToken::Unquoted(Scalar::new(b"category")),
+                TextToken::Quoted(Scalar::new(b"content_pack")),
+                TextToken::Unquoted(Scalar::new(b"show")),
+                TextToken::Unquoted(Scalar::new(b"no")),
+                TextToken::Unquoted(Scalar::new(b"recommendations")),
+                TextToken::Array(16),
+                TextToken::End(15),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
     fn test_empty_array() {
         let data = b"discovered_by={}";
 
