@@ -87,9 +87,11 @@ enum WriteState {
     ArrayValue = 4,
     ArrayValueFirst = 5,
     FirstKey = 6,
+    HiddenObjectKey = 7,
+    HiddenObjectValue = 8,
 }
 
-const WRITE_STATE_NEXT: [WriteState; 7] = [
+const WRITE_STATE_NEXT: [WriteState; 9] = [
     WriteState::Error,
     WriteState::KeyValueSeparator,
     WriteState::Key,
@@ -97,6 +99,8 @@ const WRITE_STATE_NEXT: [WriteState; 7] = [
     WriteState::ArrayValue,
     WriteState::ArrayValue,
     WriteState::KeyValueSeparator,
+    WriteState::HiddenObjectValue,
+    WriteState::HiddenObjectKey,
 ];
 
 impl<W, V> TextWriter<W, V>
@@ -116,7 +120,9 @@ where
 
     /// Returns true if the next write event would be a key
     pub fn expecting_key(&self) -> bool {
-        self.state == WriteState::Key || self.state == WriteState::FirstKey
+        self.state == WriteState::Key
+            || self.state == WriteState::FirstKey
+            || self.state == WriteState::HiddenObjectKey
     }
 
     /// Write out the start of an object
@@ -132,7 +138,13 @@ where
         self.just_wrote_line_terminator = false;
         self.mode = DepthMode::Object;
         self.state = WriteState::FirstKey;
-        // self.write_line_terminator()?;
+        Ok(())
+    }
+
+    /// Write the start of a hidden object (eg: `data = { 10 a=b }`)
+    pub fn write_hidden_object_start(&mut self) -> Result<(), Error> {
+        self.mode = DepthMode::Object;
+        self.state = WriteState::HiddenObjectKey;
         Ok(())
     }
 
@@ -481,13 +493,13 @@ where
 
     fn write_preamble(&mut self) -> Result<(), Error> {
         match self.state {
-            WriteState::ArrayValue => {
+            WriteState::ArrayValue | WriteState::HiddenObjectKey => {
                 self.writer.write_all(b" ")?;
             }
             WriteState::Key => {
                 self.write_indent()?;
             }
-            WriteState::KeyValueSeparator => {
+            WriteState::KeyValueSeparator | WriteState::HiddenObjectValue => {
                 self.writer.write_all(b"=")?;
             }
             WriteState::ArrayValueFirst | WriteState::FirstKey => {
@@ -625,8 +637,7 @@ where
             TextToken::Object(_) => self.write_object(value.read_object().unwrap())?,
             TextToken::HiddenObject(_) => {
                 let obj = value.read_object().unwrap();
-                self.state = WriteState::Key;
-                self.mode = DepthMode::Object;
+                self.write_hidden_object_start()?;
                 self.write_object_core(obj)?;
             }
             TextToken::Unquoted(x) => {
@@ -994,6 +1005,28 @@ mod tests {
     }
 
     #[test]
+    fn write_hidden_object() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_unquoted(b"data")?;
+        writer.write_array_start()?;
+        writer.write_unquoted(b"10")?;
+        writer.write_hidden_object_start()?;
+        writer.write_unquoted(b"d")?;
+        writer.write_unquoted(b"e")?;
+        writer.write_unquoted(b"f")?;
+        writer.write_unquoted(b"g")?;
+        writer.write_end()?;
+        writer.write_unquoted(b"a")?;
+        writer.write_unquoted(b"b")?;
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "data={\n  10 d=e f=g\n}\na=b\n"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn write_empty_array() -> Result<(), Box<dyn Error>> {
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
@@ -1081,12 +1114,15 @@ mod tests {
 
     #[test]
     fn write_hidden_object_tape() -> Result<(), Box<dyn Error>> {
-        let data = b"vals={1 a=b}";
+        let data = b"vals={1 a=b d=f}";
         let tape = TextTape::from_slice(data)?;
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "vals={\n  1  a=b\n}\n");
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "vals={\n  1 a=b d=f\n}\n"
+        );
         Ok(())
     }
 
