@@ -1,3 +1,8 @@
+## v0.14.1 - 2021-05-29
+
+- Introduce `TextWriter::write_hidden_object_start` to fix hidden objects increasing the indent
+- Fix empty array values lacking proper indent when written
+
 ## v0.14.0 - 2021-05-27
 
 - Adds an API to output text documents. [See documentation](https://github.com/rakaly/jomini/blob/409c1ac00464e507deb4fc9a3b9912516e77478b/README.md#write-api)
