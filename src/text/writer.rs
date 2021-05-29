@@ -493,7 +493,14 @@ where
 
     fn write_preamble(&mut self) -> Result<(), Error> {
         match self.state {
-            WriteState::ArrayValue | WriteState::HiddenObjectKey => {
+            WriteState::ArrayValue => {
+                if self.just_wrote_line_terminator {
+                    self.write_indent()?;
+                } else {
+                    self.writer.write_all(b" ")?;
+                }
+            }
+            WriteState::HiddenObjectKey => {
                 self.writer.write_all(b" ")?;
             }
             WriteState::Key => {
@@ -977,6 +984,24 @@ mod tests {
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
             "data={\n  settings={\n    0 1\n  }\n  name=world\n}\na=b\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn write_empty_nested_arrays() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_unquoted(b"data")?;
+        writer.write_array_start()?;
+        writer.write_array_start()?;
+        writer.write_end()?;
+        writer.write_array_start()?;
+        writer.write_end()?;
+        writer.write_end()?;
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "data={\n  { }\n  { }\n}\n"
         );
         Ok(())
     }
