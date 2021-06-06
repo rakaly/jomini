@@ -237,19 +237,19 @@ impl Date {
         let year = new_days / 365;
         let (month, day) = month_day_from_julian(days_since_jan1);
 
-        let year = i16::try_from(year).expect("year to fit inside signed 32bits");
+        let year = i16::try_from(year).expect("year to fit inside signed 16bits");
         Date { year, month, day }
     }
 
     /// Decodes a date from a number that had been parsed from binary data
     pub fn from_binary(mut s: i32) -> Option<Self> {
-        if s < 0 {
-            return None;
-        }
-
         let _hours = s % 24;
         s /= 24;
         let days_since_jan1 = s % 365;
+        if days_since_jan1 < 0 {
+            return None;
+        }
+
         s /= 365;
         let year = match s.checked_sub(5000).and_then(|x| i16::try_from(x).ok()) {
             Some(y) => y,
@@ -467,10 +467,23 @@ mod tests {
         assert_eq!(date.game_fmt(), String::from("-2500.1.1"));
 
         let date2 = Date::from_binary(21900000).unwrap();
-        assert_eq!(date.game_fmt(), String::from("-2500.1.1"));
+        assert_eq!(date2.game_fmt(), String::from("-2500.1.1"));
         assert_eq!(date, date2);
 
         assert_eq!(Date::from_binary_heuristic(21900000), None);
+    }
+
+    #[test]
+    fn test_very_negative_date2() {
+        // EU4 monuments expanded
+        let date = Date::parse_from_str("-10000.1.1").unwrap();
+        assert_eq!(date.game_fmt(), String::from("-10000.1.1"));
+
+        let date2 = Date::from_binary(-43800000).unwrap();
+        assert_eq!(date2.game_fmt(), String::from("-10000.1.1"));
+        assert_eq!(date, date2);
+
+        assert_eq!(Date::from_binary_heuristic(-43800000), None);
     }
 
     #[test]
