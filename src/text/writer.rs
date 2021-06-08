@@ -1,6 +1,6 @@
 use crate::{
-    common::Date, ArrayReader, Encoding, Error, ErrorKind, ObjectReader, Operator, TextTape,
-    TextToken, ValueReader,
+    common::PdsDateFormatter, ArrayReader, Encoding, Error, ErrorKind, ObjectReader, Operator,
+    TextTape, TextToken, ValueReader,
 };
 use std::{fmt::Arguments, io::Write, ops::Deref};
 
@@ -429,34 +429,22 @@ where
         Ok(())
     }
 
-    /// Write a date in the game format
+    /// Write a date formatted in the game style
     ///
     /// ```
-    /// use jomini::{common::Date, TextWriterBuilder};
+    /// use jomini::{common::{Date, PdsDate}, TextWriterBuilder};
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut out: Vec<u8> = Vec::new();
     /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
-    /// let date = Date::new(1444, 12, 1).unwrap();
+    /// let date = Date::from_ymd(1444, 11, 11);
     /// writer.write_unquoted(b"start")?;
-    /// writer.write_date(date);
-    /// assert_eq!(&out, b"start=1444.12.1\n");
+    /// writer.write_date(date.game_fmt())?;
+    /// assert_eq!(&out, b"start=1444.11.11\n");
     /// # Ok(())
     /// # }
     /// ```
-    pub fn write_date(&mut self, data: Date) -> Result<(), Error> {
-        self.write_preamble()?;
-
-        write!(
-            self.writer,
-            "{}.{}.{}",
-            data.year(),
-            data.month(),
-            data.day()
-        )?;
-
-        self.write_epilogue()?;
-        self.state = WRITE_STATE_NEXT[self.state as usize];
-        Ok(())
+    pub fn write_date(&mut self, data: PdsDateFormatter) -> Result<(), Error> {
+        write!(self, "{}", data)
     }
 
     /// Write formatted data

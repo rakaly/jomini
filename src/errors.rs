@@ -107,7 +107,7 @@ impl From<DeserializeError> for Error {
 }
 
 /// A Serde deserialization error.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct DeserializeError {
     pub(crate) kind: DeserializeErrorKind,
 }
@@ -120,7 +120,7 @@ impl DeserializeError {
 }
 
 /// The type of a Serde deserialization error.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum DeserializeErrorKind {
     /// A generic Serde deserialization error
     Message(String),
@@ -171,6 +171,22 @@ impl serde::de::Error for DeserializeError {
     }
 }
 
+/// A date error.
+#[derive(Debug, PartialEq)]
+pub struct DateError;
+
+impl std::error::Error for DateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+
+impl std::fmt::Display for DateError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "unable to decode date")
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         Error::new(ErrorKind::Io(error))
@@ -182,5 +198,15 @@ impl From<ScalarError> for DeserializeError {
         DeserializeError {
             kind: DeserializeErrorKind::Scalar(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn test_size_error_struct() {
+        assert!(std::mem::size_of::<Error>() <= 8);
     }
 }
