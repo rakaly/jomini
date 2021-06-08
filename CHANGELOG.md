@@ -1,3 +1,7 @@
+## v0.14.2 - 2021-06-08
+
+- Support parsing binary dates prior to 5000 BC
+
 ## v0.14.1 - 2021-05-29
 
 - Introduce `TextWriter::write_hidden_object_start` to fix hidden objects increasing the indent
