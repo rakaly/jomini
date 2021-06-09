@@ -69,7 +69,7 @@ pub enum TextToken<'a> {
     ///
     /// > Scripted triggers or effects now support conditional compilation on arguments provided to them.
     /// > You can now check for if an argument is defined or not and make the script look entirely different based on that.
-    /// > Syntax is [[var_name] code here ] for if variable is defined
+    /// > Syntax is `[[var_name] code here ]` for if variable is defined
     ///
     /// ```ignore
     /// generate_advisor = { [[scaled_skill] if = { } ] }
