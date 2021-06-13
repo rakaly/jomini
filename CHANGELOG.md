@@ -1,3 +1,7 @@
+## v0.15.0 -2021-06-13
+
+Dates have been overhauled to support HOI4 and Stellaris and to match chrono's API. [See this PR for more info](https://github.com/rakaly/jomini/pull/74)
+
 ## v0.14.2 - 2021-06-08
 
 - Support parsing binary dates prior to 5000 BC
