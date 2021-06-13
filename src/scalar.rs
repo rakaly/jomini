@@ -227,13 +227,24 @@ fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
 
 #[inline]
 fn to_i64(d: &[u8]) -> Result<i64, ScalarError> {
+    let (result, left) = to_i64_t(d)?;
+    if left.is_empty() {
+        Ok(result)
+    } else {
+        Err(ScalarError::AllDigits)
+    }
+}
+
+#[inline]
+pub(crate) fn to_i64_t(d: &[u8]) -> Result<(i64, &[u8]), ScalarError> {
     let is_negative = d.get(0).map_or(false, |&x| x == b'-');
     let isn = is_negative as u64;
     let sign = -((isn as i64 * 2).wrapping_sub(1));
-    let rest = to_u64(&d[isn as usize..])?;
-    i64::try_from(rest)
+    let (val, rest) = to_u64_t(&d[isn as usize..], 0)?;
+    let val = i64::try_from(val)
         .map(|x| sign * x)
-        .map_err(|_| ScalarError::Overflow)
+        .map_err(|_| ScalarError::Overflow)?;
+    Ok((val, rest))
 }
 
 /// Convert a buffer to an u64. This function is micro-optimized for small
@@ -243,7 +254,7 @@ fn to_i64(d: &[u8]) -> Result<i64, ScalarError> {
 /// was spent in this function. Dates are a common occurrence of numbers that
 /// are 1-4 digits in length
 #[inline]
-fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
+pub(crate) fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
     let (result, left) = to_u64_t(d, 0)?;
     if left.is_empty() {
         Ok(result)
@@ -253,7 +264,7 @@ fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
 }
 
 #[inline]
-fn to_u64_t(d: &[u8], start: u64) -> Result<(u64, &[u8]), ScalarError> {
+pub(crate) fn to_u64_t(d: &[u8], start: u64) -> Result<(u64, &[u8]), ScalarError> {
     if d.is_empty() || !d[0].is_ascii_digit() {
         return Err(ScalarError::AllDigits);
     }

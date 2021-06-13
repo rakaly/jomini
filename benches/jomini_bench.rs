@@ -214,13 +214,16 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
 pub fn date_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("eu4date-parse");
     group.bench_function("valid-date", |b| {
-        b.iter(|| Date::parse_from_str("1444.11.11").unwrap())
+        b.iter(|| Date::parse("1444.11.11").unwrap())
+    });
+    group.bench_function("binary-date", |b| {
+        b.iter(|| Date::from_binary(56379360).unwrap())
     });
     group.bench_function("invalid-date", |b| {
-        b.iter(|| Date::parse_from_str("marketplace").is_none())
+        b.iter(|| Date::parse("marketplace").is_err())
     });
     group.bench_function("long-invalid-date", |b| {
-        b.iter(|| Date::parse_from_str("incidents_bur_inheritance.5").is_none())
+        b.iter(|| Date::parse("incidents_bur_inheritance.5").is_err())
     });
     group.finish();
 }

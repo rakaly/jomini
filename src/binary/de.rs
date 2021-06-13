@@ -620,6 +620,8 @@ fn array_len(tokens: &[BinaryToken], mut val_ind: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::{Date, DateHour};
+
     use super::*;
     use jomini_derive::JominiDeserialize;
     use serde::{de::Deserializer, Deserialize};
@@ -846,6 +848,48 @@ mod tests {
             actual,
             MyStruct {
                 field1: String::from("ENG"),
+            }
+        );
+    }
+
+    #[test]
+    fn test_date_field() {
+        let data = [0x82, 0x2d, 0x01, 0x00, 0x0c, 0x00, 0xe0, 0x47, 0x5c, 0x03];
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: Date,
+        }
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, String::from("field1"));
+
+        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                field1: Date::from_ymd(1436, 1, 1)
+            }
+        );
+    }
+
+    #[test]
+    fn test_datehour_field() {
+        let data = [0x82, 0x2d, 0x01, 0x00, 0x0c, 0x00, 0x4b, 0x1d, 0x9f, 0x03];
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: DateHour,
+        }
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, String::from("field1"));
+
+        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                field1: DateHour::from_ymdh(1936, 1, 1, 12)
             }
         );
     }

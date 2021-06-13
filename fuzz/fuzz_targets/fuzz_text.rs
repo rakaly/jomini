@@ -49,7 +49,7 @@ where
             let _ = x.is_ascii();
             let _ = x.to_bool();
             let stringed = value.read_str().unwrap();
-            let _ = jomini::common::Date::parse_from_str(stringed);
+            let _ = jomini::common::Date::parse(stringed.as_ref());
         }
     }
 }

@@ -649,6 +649,8 @@ impl<'de> de::Deserializer<'de> for TrailerKeyDeserializer {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::{Date, DateHour, UniformDate};
+
     use super::*;
     use jomini_derive::JominiDeserialize;
     use serde::{
@@ -1510,6 +1512,60 @@ mod tests {
         struct MyStruct {
             #[serde(default, deserialize_with = "deserialize_vec_pair")]
             active_idea_groups: Vec<(String, u8)>,
+        }
+    }
+
+    #[test]
+    fn test_deserialize_date_string() {
+        let data = b"date=\"1444.11.11\"";
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                date: Date::from_ymd(1444, 11, 11)
+            }
+        );
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            date: Date,
+        }
+    }
+
+    #[test]
+    fn test_deserialize_datehour_string() {
+        let data = b"date=\"1936.1.1.24\"";
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                date: DateHour::from_ymdh(1936, 1, 1, 24)
+            }
+        );
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            date: DateHour,
+        }
+    }
+
+    #[test]
+    fn test_deserialize_uniform_date() {
+        let data = b"date=\"2200.2.30\"";
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                date: UniformDate::from_ymd(2200, 2, 30),
+            }
+        );
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            date: UniformDate,
         }
     }
 }
