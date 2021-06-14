@@ -1,4 +1,8 @@
-## v0.15.0 -2021-06-13
+## v0.15.1 - 2021-06-13
+
+Fix overflow panic on new `DateHour::from_binary` methods when negative hours occur
+
+## v0.15.0 - 2021-06-13
 
 Dates have been overhauled to support HOI4 and Stellaris and to match chrono's API. [See this PR for more info](https://github.com/rakaly/jomini/pull/74)
 
