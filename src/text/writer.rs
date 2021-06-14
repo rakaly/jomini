@@ -803,6 +803,7 @@ fn escape(data: &[u8], mut buffer: Vec<u8>) -> ReuseVec {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::{DateHour, PdsDate};
     use super::*;
     use std::error::Error;
 
@@ -1220,5 +1221,19 @@ mod tests {
         assert_eq!(b"abc"[..], *actual);
         let actual = escape(b"Joe \"Captain\" Rogers\n", actual.buffer());
         assert_eq!(br#"Joe \"Captain\" Rogers"#[..], *actual);
+    }
+
+    #[test]
+    fn test_date_hour_write()  -> Result<(), Box<dyn Error>> {
+        let date = DateHour::from_ymdh(1936, 1, 1, 1);
+        let date2 = DateHour::from_ymdh(1936, 1, 1, 24);
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_unquoted(b"date")?;
+        writer.write_date(date.game_fmt())?;
+        writer.write_unquoted(b"date2")?;
+        writer.write_date(date2.game_fmt())?;
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "date=1936.1.1.1\ndate2=1936.1.1.24\n");
+        Ok(())
     }
 }

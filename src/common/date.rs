@@ -86,6 +86,7 @@ impl Display for PdsDateFormatter {
 }
 
 /// A [RawDate] where each component is a full data type
+#[derive(Debug)]
 struct ExpandedRawDate {
     year: i16,
     month: u8,
@@ -98,10 +99,11 @@ impl ExpandedRawDate {
         // quite annoying that the binary format uses a 24 hour clock
         // indexed at 0 so it is up to a higher level API to determine
         // to map the hour to 1 based.
-        let hour = (s % 24) as u8;
+        let hour = s % 24;
         s /= 24;
+
         let days_since_jan1 = s % 365;
-        if days_since_jan1 < 0 {
+        if hour < 0 || days_since_jan1 < 0 {
             return None;
         }
 
@@ -112,7 +114,7 @@ impl ExpandedRawDate {
             year,
             month,
             day,
-            hour,
+            hour: hour as u8,
         })
     }
 
@@ -1435,5 +1437,12 @@ mod tests {
         let _date: Date = "1444.11.11".parse().unwrap();
         let _date: DateHour = "1936.1.1.1".parse().unwrap();
         let _date: UniformDate = "2200.01.01".parse().unwrap();
+    }
+
+    #[test]
+    fn test_date_hour_negative_regression() {
+        assert!(Date::from_binary(-1).is_none());
+        assert!(DateHour::from_binary(-1).is_none());
+        assert!(Date::from_binary(-24).is_none());
     }
 }
