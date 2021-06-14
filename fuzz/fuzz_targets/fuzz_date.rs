@@ -9,6 +9,7 @@ fuzz_target!(|data: &[u8]| {
 
     let num = i32::from_le_bytes([data[0], data[1], data[2], data[3]]);
     let _ = jomini::common::Date::from_binary(num);
+    let _ = jomini::common::DateHour::from_binary(num);
     if let Ok(d) = jomini::common::Date::parse(&data[4..]) {
         match d.game_fmt().to_string().as_str() {
             // I'm not sure how math works when we go across the border
