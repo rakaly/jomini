@@ -1,8 +1,12 @@
 /*!
 
 A low level, performance oriented parser for
-[EU4](https://en.wikipedia.org/wiki/Europa_Universalis_IV) save files and other
-[PDS](https://www.paradoxplaza.com/) developed titles.
+[EU4](https://en.wikipedia.org/wiki/Europa_Universalis_IV) save files and
+other [PDS](https://www.paradoxplaza.com/) developed titles. Consult [the
+write-up](https://rakaly.com/blog/a-tour-of-pds-clausewitz-syntax) for an in-depth
+look at the Paradox Clausewitz format and the pitfalls that come trying to support
+all variations. It's extremely difficult to write a robust and fast parser for
+this format, but jomini succeeds in this regards.
 
 Jomini is the cornerstone of the [Rakaly](https://rakaly.com/eu4), an EU4 achievement leaderboard
 and save file analyzer. This library is also used in the [Paradox Game Converters
