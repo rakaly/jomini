@@ -62,7 +62,7 @@ impl<'a> Scalar<'a> {
     }
 
     /// View the raw data
-    pub fn view_data(&self) -> &'a [u8] {
+    pub fn view_data(self) -> &'a [u8] {
         self.data
     }
 
@@ -77,7 +77,7 @@ impl<'a> Scalar<'a> {
     /// let v2 = Scalar::new(b"-5.67821");
     /// assert_eq!(v2.to_f64(), Ok(-5.67821));
     /// ```
-    pub fn to_f64(&self) -> Result<f64, ScalarError> {
+    pub fn to_f64(self) -> Result<f64, ScalarError> {
         to_f64(self.data)
     }
 
@@ -92,7 +92,7 @@ impl<'a> Scalar<'a> {
     /// let v2 = Scalar::new(b"no");
     /// assert_eq!(v2.to_bool(), Ok(false));
     /// ```
-    pub fn to_bool(&self) -> Result<bool, ScalarError> {
+    pub fn to_bool(self) -> Result<bool, ScalarError> {
         to_bool(self.data)
     }
 
@@ -107,7 +107,7 @@ impl<'a> Scalar<'a> {
     /// let v2 = Scalar::new(b"120");
     /// assert_eq!(v2.to_i64(), Ok(120));
     /// ```
-    pub fn to_i64(&self) -> Result<i64, ScalarError> {
+    pub fn to_i64(self) -> Result<i64, ScalarError> {
         to_i64(self.data)
     }
 
@@ -122,7 +122,7 @@ impl<'a> Scalar<'a> {
     /// let v2 = Scalar::new(b"120");
     /// assert_eq!(v2.to_i64(), Ok(120));
     /// ```
-    pub fn to_u64(&self) -> Result<u64, ScalarError> {
+    pub fn to_u64(self) -> Result<u64, ScalarError> {
         to_u64(self.data)
     }
 
@@ -137,7 +137,7 @@ impl<'a> Scalar<'a> {
     /// let v2 = Scalar::new(&[255][..]);
     /// assert!(!v2.is_ascii());
     /// ```
-    pub fn is_ascii(&self) -> bool {
+    pub fn is_ascii(self) -> bool {
         self.data.is_ascii()
     }
 }
