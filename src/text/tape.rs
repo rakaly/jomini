@@ -1046,21 +1046,19 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
         // now we have to determine if are looking at a parameter value or
         // parameter object. We know when we are looking at a parameter value
-        // when `]` is encountered first after the value
+        // when `]` is encountered first after the value else it's a key
         let data = self.skip_ws_t(data).ok_or_else(Error::eof)?;
         let (key_or_value, data) = split_at_scalar(data);
         let data = self.skip_ws_t(data).ok_or_else(Error::eof)?;
         if data[0] == b']' {
-            let value = key_or_value;
-            self.token_tape.push(TextToken::Unquoted(value));
+            self.token_tape.push(TextToken::Unquoted(key_or_value));
             *state = ParseState::Key;
             Ok(&data[1..])
         } else {
-            let key = key_or_value;
             let grand_ind = *parent_ind;
             *parent_ind = self.token_tape.len();
             self.token_tape.push(TextToken::Object(grand_ind));
-            self.token_tape.push(TextToken::Unquoted(key));
+            self.token_tape.push(TextToken::Unquoted(key_or_value));
             *state = ParseState::KeyValueSeparator;
             Ok(data)
         }
