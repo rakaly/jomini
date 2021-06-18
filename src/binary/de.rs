@@ -321,7 +321,7 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES: TokenResolver, E: Encoding, V:
         BinaryToken::U64(x) => visitor.visit_u64(x),
         BinaryToken::I32(x) => visitor.visit_i32(x),
         BinaryToken::Quoted(x) | BinaryToken::Unquoted(x) => {
-            match config.encoding.decode(x.view_data()) {
+            match config.encoding.decode(x.as_bytes()) {
                 Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
                 Cow::Owned(s) => visitor.visit_string(s),
             }

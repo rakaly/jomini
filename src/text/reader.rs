@@ -328,13 +328,13 @@ where
     /// Decode the data with a given string encoding
     #[inline]
     pub fn read_str(&self) -> Cow<'data, str> {
-        self.encoding.decode(self.scalar.view_data())
+        self.encoding.decode(self.scalar.as_bytes())
     }
 
     /// Decode the data with a given string encoding
     #[inline]
     pub fn read_string(&self) -> String {
-        self.encoding.decode(self.scalar.view_data()).into_owned()
+        self.encoding.decode(self.scalar.as_bytes()).into_owned()
     }
 
     /// Return the underlying scalar
@@ -385,7 +385,7 @@ where
     pub fn read_str(&self) -> Result<Cow<'data, str>, DeserializeError> {
         self.tokens[self.value_ind]
             .as_scalar()
-            .map(|x| self.encoding.decode(x.view_data()))
+            .map(|x| self.encoding.decode(x.as_bytes()))
             .ok_or_else(|| DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from("not a scalar")),
             })
@@ -396,7 +396,7 @@ where
     pub fn read_string(&self) -> Result<String, DeserializeError> {
         self.tokens[self.value_ind]
             .as_scalar()
-            .map(|x| self.encoding.decode(x.view_data()).into_owned())
+            .map(|x| self.encoding.decode(x.as_bytes()).into_owned())
             .ok_or_else(|| DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from("not a scalar")),
             })
