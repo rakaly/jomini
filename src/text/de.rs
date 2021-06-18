@@ -146,7 +146,7 @@ where
             Reader::Scalar(x) => visit_str!(x.read_str(), visitor),
             Reader::Value(x) => match x.token() {
                 TextToken::Quoted(s) | TextToken::Unquoted(s) => {
-                    visit_str!(x.decode(s.view_data()), visitor)
+                    visit_str!(x.decode(s.as_bytes()), visitor)
                 }
                 TextToken::Header(_) | TextToken::Array(_) => self.deserialize_seq(visitor),
                 TextToken::Object(_) | TextToken::HiddenObject(_) => self.deserialize_map(visitor),
@@ -179,14 +179,14 @@ where
     where
         V: Visitor<'de>,
     {
-        visitor.visit_borrowed_bytes(self.reader_ref().read_scalar()?.view_data())
+        visitor.visit_borrowed_bytes(self.reader_ref().read_scalar()?.as_bytes())
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_byte_buf(self.reader_ref().read_scalar()?.view_data().to_vec())
+        visitor.visit_byte_buf(self.reader_ref().read_scalar()?.as_bytes().to_vec())
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Self::Error>

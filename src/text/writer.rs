@@ -558,7 +558,7 @@ where
                 TextToken::Parameter(x) => {
                     self.write_preamble()?;
                     write!(self.writer, "[[")?;
-                    self.writer.write_all(x.view_data())?;
+                    self.writer.write_all(x.as_bytes())?;
                     self.writer.write_all(b"]")?;
 
                     if let Ok(obj) = value.read_object() {
@@ -574,7 +574,7 @@ where
                 TextToken::UndefinedParameter(x) => {
                     self.write_preamble()?;
                     write!(self.writer, "[[!")?;
-                    self.writer.write_all(x.view_data())?;
+                    self.writer.write_all(x.as_bytes())?;
                     self.writer.write_all(b"]")?;
 
                     if let Ok(obj) = value.read_object() {
@@ -591,7 +591,7 @@ where
                     // quoted keys really shouldn't happen but when they do
                     // we should make sure to preserve them. This is different
                     // behavior than writing by hand.
-                    self.force_write_quotes(x.view_data())?;
+                    self.force_write_quotes(x.as_bytes())?;
                     if let Some(op) = op {
                         self.write_operator(op)?;
                     }
@@ -599,7 +599,7 @@ where
                     self.write_value(value)?;
                 }
                 _ => {
-                    self.write_unquoted(key.read_scalar().view_data())?;
+                    self.write_unquoted(key.read_scalar().as_bytes())?;
                     if let Some(op) = op {
                         self.write_operator(op)?;
                     }
@@ -636,10 +636,10 @@ where
                 self.write_object_core(obj)?;
             }
             TextToken::Unquoted(x) => {
-                self.write_unquoted(x.view_data())?;
+                self.write_unquoted(x.as_bytes())?;
             }
             TextToken::Quoted(x) => {
-                self.force_write_quotes(x.view_data())?;
+                self.force_write_quotes(x.as_bytes())?;
             }
             TextToken::Parameter(_) => unreachable!(),
             TextToken::UndefinedParameter(_) => unreachable!(),
@@ -647,7 +647,7 @@ where
             TextToken::End(_) => unreachable!(),
             TextToken::Header(x) => {
                 let mut arr = value.read_array().unwrap();
-                self.write_header(x.view_data())?;
+                self.write_header(x.as_bytes())?;
                 arr.next_value().unwrap();
                 let elem = arr.next_value().unwrap();
                 self.write_value(elem)?;
