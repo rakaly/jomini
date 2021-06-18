@@ -1084,6 +1084,7 @@ mod datederive {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quickcheck_macros::quickcheck;
 
     #[test]
     fn test_date_roundtrip() {
@@ -1444,5 +1445,19 @@ mod tests {
         assert!(Date::from_binary(-1).is_none());
         assert!(DateHour::from_binary(-1).is_none());
         assert!(Date::from_binary(-24).is_none());
+    }
+
+    #[quickcheck]
+    fn test_binary_date_equality(data: i32) -> bool {
+        Date::from_binary(data)
+            .map(|x| x == Date::from_binary(x.to_binary()).unwrap())
+            .unwrap_or(true)
+    }
+
+    #[quickcheck]
+    fn test_binary_date_hour_equality(data: i32) -> bool {
+        DateHour::from_binary(data)
+            .map(|x| x == DateHour::from_binary(x.to_binary()).unwrap())
+            .unwrap_or(true)
     }
 }
