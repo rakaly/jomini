@@ -401,7 +401,7 @@ impl Date {
     /// assert_eq!(728, date.days_until(&date4));
     /// assert_eq!(-728, date4.days_until(&date));
     /// ```
-    pub fn days_until(&self, other: &Date) -> i32 {
+    pub fn days_until(self, other: &Date) -> i32 {
         other.days() - self.days()
     }
 
@@ -419,7 +419,7 @@ impl Date {
     /// ```
     ///
     /// Will panic on overflow or underflow.
-    pub fn add_days(&self, days: i32) -> Date {
+    pub fn add_days(self, days: i32) -> Date {
         let new_days = self
             .days()
             .checked_add(days)
@@ -473,7 +473,7 @@ impl Date {
     /// let date = Date::from_ymd(1, 1, 1);
     /// assert_eq!(43808760, date.to_binary());
     /// ```
-    pub fn to_binary(&self) -> i32 {
+    pub fn to_binary(self) -> i32 {
         let ordinal_day = julian_ordinal_day(self.month()) + i32::from(self.day());
         to_binary(self.year(), ordinal_day, 0)
     }
@@ -675,7 +675,7 @@ impl DateHour {
     /// assert_eq!(43808760, date.to_binary());
     /// ```
     #[inline]
-    pub fn to_binary(&self) -> i32 {
+    pub fn to_binary(self) -> i32 {
         let ordinal_day = julian_ordinal_day(self.month()) + i32::from(self.day());
         to_binary(self.year(), ordinal_day, self.hour())
     }
@@ -1456,6 +1456,12 @@ mod tests {
         assert!(Date::from_binary(-1).is_none());
         assert!(DateHour::from_binary(-1).is_none());
         assert!(Date::from_binary(-24).is_none());
+    }
+
+    #[test]
+    fn test_memory_size() {
+        // https://users.rust-lang.org/t/guidelines-for-self-ownership-on-copy-types/61262/2
+        assert!(std::mem::size_of::<Date>() <= 2 * std::mem::size_of::<usize>());
     }
 
     #[quickcheck]

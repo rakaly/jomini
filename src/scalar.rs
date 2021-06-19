@@ -315,6 +315,12 @@ mod tests {
     use quickcheck_macros::quickcheck;
 
     #[test]
+    fn test_memory_size() {
+        // https://users.rust-lang.org/t/guidelines-for-self-ownership-on-copy-types/61262/2
+        assert!(std::mem::size_of::<Scalar>() <= 2 * std::mem::size_of::<usize>());
+    }
+
+    #[test]
     fn scalar_to_bool() {
         assert_eq!((Scalar::new(b"yes").to_bool()), Ok(true));
         assert_eq!((Scalar::new(b"no").to_bool()), Ok(false));
