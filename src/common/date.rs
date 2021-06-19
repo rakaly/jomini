@@ -576,6 +576,7 @@ impl Debug for DateHour {
 }
 
 impl DateHour {
+    #[inline]
     fn from_expanded(date: ExpandedRawDate) -> Option<Self> {
         Self::from_ymdh_opt(date.year, date.month, date.day, date.hour)
     }
@@ -590,6 +591,7 @@ impl DateHour {
     /// assert!(DateHour::from_ymdh_opt(1936, 1, 1, 24).is_some());
     /// assert!(DateHour::from_ymdh_opt(1936, 1, 1, 0).is_none());
     /// ```
+    #[inline]
     pub fn from_ymdh_opt(year: i16, month: u8, day: u8, hour: u8) -> Option<Self> {
         RawDate::from_ymdh_opt(year, month, day, hour).and_then(|raw| {
             let days = DAYS_PER_MONTH[usize::from(month)];
@@ -606,6 +608,7 @@ impl DateHour {
     /// let date = DateHour::from_ymdh(1936, 1, 3, 12);
     /// assert_eq!(date.day(), 3);
     /// ```
+    #[inline]
     pub fn from_ymdh(year: i16, month: u8, day: u8, hour: u8) -> Self {
         Self::from_ymdh_opt(year, month, day, hour).unwrap()
     }
@@ -629,6 +632,7 @@ impl DateHour {
     /// use jomini::common::DateHour;
     /// assert_eq!(DateHour::parse("1936.1.1.24"), Ok(DateHour::from_ymdh(1936, 1, 1, 24)));
     /// ```
+    #[inline]
     pub fn parse<T: AsRef<[u8]>>(s: T) -> Result<Self, DateError> {
         ExpandedRawDate::parse(s)
             .and_then(Self::from_expanded)
@@ -636,6 +640,7 @@ impl DateHour {
     }
 
     /// Decode a number extracted from the binary format into a date.
+    #[inline]
     pub fn from_binary(s: i32) -> Option<Self> {
         ExpandedRawDate::from_binary(s).and_then(|mut raw| {
             // Shift hour from 0 based 24 hour clock to 1 based 24 hour clock
@@ -649,6 +654,7 @@ impl DateHour {
     /// value to support HOI4 mods that move the start date up). There is a
     /// special exception made for 1.1.1.1 and -1.1.1.1 which represents an
     /// event that has not occurred yet.
+    #[inline]
     pub fn from_binary_heuristic(s: i32) -> Option<Self> {
         Self::from_binary(s).and_then(|x| {
             let is_min_year = x.year() == 1 || x.year() == -1;
@@ -668,6 +674,7 @@ impl DateHour {
     /// let date = DateHour::from_ymdh(1, 1, 1, 1);
     /// assert_eq!(43808760, date.to_binary());
     /// ```
+    #[inline]
     pub fn to_binary(&self) -> i32 {
         let ordinal_day = julian_ordinal_day(self.month()) + i32::from(self.day());
         to_binary(self.year(), ordinal_day, self.hour())
@@ -766,6 +773,7 @@ impl Debug for UniformDate {
 }
 
 impl UniformDate {
+    #[inline]
     fn from_expanded(date: ExpandedRawDate) -> Option<Self> {
         if date.hour != 0 {
             None
@@ -788,6 +796,7 @@ impl UniformDate {
     /// assert!(UniformDate::from_ymd_opt(800, 12, 32).is_none());
     /// assert!(UniformDate::from_ymd_opt(2020, 2, 29).is_some());
     /// ```
+    #[inline]
     pub fn from_ymd_opt(year: i16, month: u8, day: u8) -> Option<Self> {
         if day > 30 {
             None
@@ -799,6 +808,7 @@ impl UniformDate {
     /// Create a new date from year, month, and day parts
     ///
     /// Will panic if the date does not exist.
+    #[inline]
     pub fn from_ymd(year: i16, month: u8, day: u8) -> Self {
         Self::from_ymd_opt(year, month, day).unwrap()
     }
@@ -810,6 +820,7 @@ impl UniformDate {
     /// use jomini::common::UniformDate;
     /// assert_eq!(UniformDate::parse("2200.02.30"), Ok(UniformDate::from_ymd(2200, 2, 30)));
     /// ```
+    #[inline]
     pub fn parse<T: AsRef<[u8]>>(s: T) -> Result<Self, DateError> {
         ExpandedRawDate::parse(s)
             .and_then(Self::from_expanded)
