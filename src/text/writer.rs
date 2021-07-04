@@ -261,7 +261,9 @@ where
     ///
     /// Unlike the unquoted variant, this method will inspect the data to
     /// ensure everything is properly escaped, like quotes and escape
-    /// characters. And will trim trailing newlines.
+    /// characters. And will trim trailing newlines. The textual data to write
+    /// out is assumed to already be in the correct encoding (windows-1252 or
+    /// UTF-8)
     ///
     /// Also if one tries to write a quoted field as a key this method
     /// will redirect to the unquoted variant
