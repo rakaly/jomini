@@ -1,3 +1,9 @@
+## v0.16.0 - 2021-07-04
+
+- (Breaking change): `Scalar` and date methods now take self instead of self reference (no downstream code is expected to change because of this).
+- (Breaking change): Rename `Scalar::view_data` to `Scalar::as_bytes`
+- Fix missing escape character in when writing out escaped text and the input ends with a character that needs to be escaped
+
 ## v0.15.1 - 2021-06-13
 
 Fix overflow panic on new `DateHour::from_binary` methods when negative hours occur
