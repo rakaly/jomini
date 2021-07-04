@@ -1230,6 +1230,8 @@ mod tests {
         assert_eq!(br#"Project \"Eagle\""#[..], *actual);
         let actual = escape(br#"Project Eagle""#, actual.buffer());
         assert_eq!(br#"Project Eagle\""#[..], *actual);
+        let actual = escape(br#"\abc\"#, actual.buffer());
+        assert_eq!(br#"\\abc\\"#[..], *actual);
     }
 
     #[test]
