@@ -782,6 +782,9 @@ fn escape(data: &[u8], mut buffer: Vec<u8>) -> ReuseVec {
 
             if let Some(&last) = data.last() {
                 if last != b'\n' {
+                    if last == b'\\' || last == b'"' {
+                        buffer.push(b'\\');
+                    }
                     buffer.push(last);
                 }
             }
@@ -1221,6 +1224,10 @@ mod tests {
         assert_eq!(b"abc"[..], *actual);
         let actual = escape(b"Joe \"Captain\" Rogers\n", actual.buffer());
         assert_eq!(br#"Joe \"Captain\" Rogers"#[..], *actual);
+        let actual = escape(br#"Project "Eagle""#, actual.buffer());
+        assert_eq!(br#"Project \"Eagle\""#[..], *actual);
+        let actual = escape(br#"Project Eagle""#, actual.buffer());
+        assert_eq!(br#"Project Eagle\""#[..], *actual);
     }
 
     #[test]
