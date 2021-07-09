@@ -275,12 +275,7 @@ pub(crate) fn to_u64_t(d: &[u8], start: u64) -> Result<(u64, &[u8]), ScalarError
         return Err(ScalarError::AllDigits);
     }
 
-    let digit = d[0] - b'0';
-    let mut result = if start == 0 {
-        u64::from(digit)
-    } else {
-        overflow_mul_add(start, digit)?
-    };
+    let mut result = overflow_mul_add(start, d[0] - b'0')?;
 
     for (i, &x) in (&d[1..]).iter().enumerate() {
         if !x.is_ascii_digit() {
