@@ -1,3 +1,7 @@
+## v0.16.1 - 2021-07-10
+
+- Add support for decoding numbers with leading plus sign
+
 ## v0.16.0 - 2021-07-04
 
 - (Breaking change): `Scalar` and date methods now take self instead of self reference (no downstream code is expected to change because of this).
