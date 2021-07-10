@@ -651,6 +651,12 @@ where
                             }));
                         }
 
+                        if parent_ind + 2 == self.token_tape.len() {
+                            data = d;
+                            state = ParseState::ObjectValue;
+                            continue;
+                        }
+
                         let hidden_object = BinaryToken::Object(parent_ind);
                         array_ind_of_hidden_obj = Some(parent_ind);
                         parent_ind = self.token_tape.len() - 1;
@@ -1224,6 +1230,33 @@ mod tests {
                 BinaryToken::Token(0xbbbb),
                 BinaryToken::Token(0xcccc),
                 BinaryToken::End(11),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_heterogenous_list2() {
+        let data = [
+            0x1e, 0x3d, 0x01, 0x00, 0x03, 0x00, 0x03, 0x00, 0x03, 0x00, 0x0b, 0x00, 0x01, 0x00,
+            0x14, 0x00, 0x03, 0x00, 0x00, 0x00, 0xe1, 0x00, 0x01, 0x00, 0x14, 0x00, 0x69, 0x12,
+            0x00, 0x00, 0x04, 0x00, 0x0c, 0x00, 0x07, 0x00, 0x00, 0x00, 0x04, 0x00, 0x04, 0x00,
+        ];
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                BinaryToken::Token(0x3d1e),
+                BinaryToken::Array(11),
+                BinaryToken::Array(10),
+                BinaryToken::Object(8),
+                BinaryToken::Token(0x0b),
+                BinaryToken::U32(3),
+                BinaryToken::Token(0xe1),
+                BinaryToken::U32(4713),
+                BinaryToken::End(3),
+                BinaryToken::I32(7),
+                BinaryToken::End(2),
+                BinaryToken::End(1),
             ]
         );
     }
