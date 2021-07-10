@@ -176,22 +176,25 @@ fn to_bool(d: &[u8]) -> Result<bool, ScalarError> {
 /// Inspired by https://github.com/lemire/fast_double_parser
 #[inline]
 fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
-    let mut data = d;
-    if data.is_empty() {
-        return Err(ScalarError::AllDigits);
+    let (&c, mut data) = d.split_first().ok_or(ScalarError::AllDigits)?;
+    let mut c = c;
+
+    let negative = c == b'-';
+    if negative {
+        let (&c1, data1) = data.split_first().ok_or(ScalarError::AllDigits)?;
+        c = c1;
+        data = data1;
     }
 
-    let mut negative = false;
-    if data[0] == b'-' {
-        negative = true;
-        data = &data[1..];
-    }
-
-    let (lead, mut left) = if data.get(0).map_or(false, |&x| x == b'.') {
-        (0, data)
+    let (lead, mut left) = if c.is_ascii_digit() {
+        to_u64_t2(data, u64::from(c - b'0'))
+    } else if c == b'.' {
+        Ok((0, if negative { &d[1..] } else { &d }))
+    } else if c == b'+' {
+        to_u64_t2(data, 0)
     } else {
-        to_u64_t(data, 0)?
-    };
+        Err(ScalarError::AllDigits)
+    }?;
 
     if left.is_empty() {
         if negative {
@@ -243,10 +246,21 @@ fn to_i64(d: &[u8]) -> Result<i64, ScalarError> {
 
 #[inline]
 pub(crate) fn to_i64_t(d: &[u8]) -> Result<(i64, &[u8]), ScalarError> {
-    let is_negative = d.get(0).map_or(false, |&x| x == b'-');
-    let isn = is_negative as u64;
-    let sign = -((isn as i64 * 2).wrapping_sub(1));
-    let (val, rest) = to_u64_t(&d[isn as usize..], 0)?;
+    let (&c, data) = d.split_first().ok_or(ScalarError::AllDigits)?;
+    let mut sign = 1;
+
+    let start = if c.is_ascii_digit() {
+        c - b'0'
+    } else if c == b'-' {
+        sign = -1;
+        0
+    } else if c == b'+' {
+        0
+    } else {
+        return Err(ScalarError::AllDigits);
+    };
+
+    let (val, rest) = to_u64_t2(data, u64::from(start))?;
     let val = i64::try_from(val)
         .map(|x| sign * x)
         .map_err(|_| ScalarError::Overflow)?;
@@ -261,7 +275,17 @@ pub(crate) fn to_i64_t(d: &[u8]) -> Result<(i64, &[u8]), ScalarError> {
 /// are 1-4 digits in length
 #[inline]
 pub(crate) fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
-    let (result, left) = to_u64_t(d, 0)?;
+    let (&c, data) = d.split_first().ok_or(ScalarError::AllDigits)?;
+    let start = if c.is_ascii_digit() {
+        c - b'0'
+    } else if c == b'+' {
+        0
+    } else {
+        return Err(ScalarError::AllDigits);
+    };
+
+    let (result, left) = to_u64_t2(data, u64::from(start))?;
+
     if left.is_empty() {
         Ok(result)
     } else {
@@ -269,17 +293,25 @@ pub(crate) fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
     }
 }
 
+/// Similar to `to_u64` except a plus sign is not allowed
 #[inline]
 pub(crate) fn to_u64_t(d: &[u8], start: u64) -> Result<(u64, &[u8]), ScalarError> {
-    if d.is_empty() || !d[0].is_ascii_digit() {
-        return Err(ScalarError::AllDigits);
+    let (result, left) = to_u64_t2(d, start)?;
+
+    // Check to make sure that at least one character was read
+    if left == d {
+        Err(ScalarError::Overflow)
+    } else {
+        Ok((result, left))
     }
+}
 
-    let mut result = overflow_mul_add(start, d[0] - b'0')?;
-
-    for (i, &x) in (&d[1..]).iter().enumerate() {
+#[inline]
+fn to_u64_t2(d: &[u8], start: u64) -> Result<(u64, &[u8]), ScalarError> {
+    let mut result = start;
+    for (i, &x) in d.iter().enumerate() {
         if !x.is_ascii_digit() {
-            return Ok((result, &d[i + 1..]));
+            return Ok((result, &d[i..]));
         }
 
         result = overflow_mul_add(result, x - b'0')?;
@@ -362,6 +394,8 @@ mod tests {
             Scalar::new(b"10.99999999999999").to_f64(),
             Ok(10.99999999999999)
         );
+        assert_eq!((Scalar::new(b"+0.5").to_f64()), Ok(0.5));
+
         assert!(Scalar::new(b"E").to_f64().is_err());
         assert!(Scalar::new(b"").to_f64().is_err());
     }
@@ -389,6 +423,9 @@ mod tests {
             Ok(-20405029553322)
         );
 
+        assert_eq!((Scalar::new(b"+0").to_i64()), Ok(0));
+        assert_eq!((Scalar::new(b"+1").to_i64()), Ok(1));
+
         assert_eq!(
             Scalar::new(b"9223372036854775807").to_i64(),
             Ok(9223372036854775807)
@@ -402,6 +439,7 @@ mod tests {
         assert_eq!((Scalar::new(b"0").to_u64()), Ok(0));
         assert_eq!((Scalar::new(b"1").to_u64()), Ok(1));
         assert_eq!((Scalar::new(b"45").to_u64()), Ok(45));
+        assert_eq!((Scalar::new(b"+45").to_u64()), Ok(45));
         assert_eq!((Scalar::new(b"10000").to_u64()), Ok(10000));
         assert_eq!((Scalar::new(b"20405029").to_u64()), Ok(20405029));
         assert_eq!(
