@@ -1,3 +1,7 @@
+## v0.16.2 - 2021-07-10
+
+- Fix binary parsing where an object within several arrays would be decoded as an hidden object instead of a regular object
+
 ## v0.16.1 - 2021-07-10
 
 - Add support for decoding numbers with leading plus sign
