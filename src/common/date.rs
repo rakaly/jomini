@@ -1,4 +1,4 @@
-use crate::scalar::{to_i64_t, to_u64, to_u64_t};
+use crate::scalar::{to_i64_t, to_u64_t};
 use crate::DateError;
 use std::cmp::Ordering;
 use std::convert::TryFrom;
@@ -142,10 +142,10 @@ impl ExpandedRawDate {
         }
 
         let (delim3, data) = data.split_first()?;
-        let hour = to_u64(data).ok()?;
+        let (hour, data) = to_u64_t(data, 0).ok()?;
         let hour = u8::try_from(hour).ok()?;
 
-        if hour != 0 && *delim1 == b'.' && *delim2 == b'.' && *delim3 == b'.' {
+        if data.is_empty() && hour != 0 && *delim1 == b'.' && *delim2 == b'.' && *delim3 == b'.' {
             Some(ExpandedRawDate {
                 year,
                 month,

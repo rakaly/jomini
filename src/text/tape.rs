@@ -2252,6 +2252,18 @@ mod tests {
     }
 
     #[test]
+    fn test_text_number_plus() {
+        let data = b"pop_happiness = +0.10";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"pop_happiness")),
+                TextToken::Unquoted(Scalar::new(b"+0.10")),
+            ]
+        );
+    }
+
+    #[test]
     fn test_parameter_eof() {
         let data = b"[[";
         TextTape::from_slice(data).unwrap_err();

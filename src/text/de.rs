@@ -1568,4 +1568,17 @@ mod tests {
             date: UniformDate,
         }
     }
+
+    #[test]
+    fn test_deserialize_positive_num() {
+        let data = b"pop_happiness = +0.10";
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { pop_happiness: 0.1 });
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            pop_happiness: f64,
+        }
+    }
 }
