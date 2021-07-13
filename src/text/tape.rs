@@ -880,12 +880,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     }
                 }
                 ParseState::FirstValue => match data[0] {
-                    b'=' => {
+                    b'=' | b'>' | b'<' => {
                         let ind = self.token_tape.len() - 2;
                         self.token_tape[ind] = TextToken::Object(parent_ind);
-                        data = &data[1..];
                         parent_ind = ind;
-                        state = ParseState::ObjectValue;
+                        state = ParseState::KeyValueSeparator;
                     }
                     _ => {
                         let ind = self.token_tape.len() - 2;
@@ -2065,6 +2064,24 @@ mod tests {
                 TextToken::Unquoted(Scalar::new(b"intrigue")),
                 TextToken::Operator(Operator::GreaterThanEqual),
                 TextToken::Unquoted(Scalar::new(b"high_skill_rating")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_operator_in_object() {
+        let data = b"value={ date < 1941.7.7 is_preparing=true }";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"value")),
+                TextToken::Object(7),
+                TextToken::Unquoted(Scalar::new(b"date")),
+                TextToken::Operator(Operator::LessThan),
+                TextToken::Unquoted(Scalar::new(b"1941.7.7")),
+                TextToken::Unquoted(Scalar::new(b"is_preparing")),
+                TextToken::Unquoted(Scalar::new(b"true")),
+                TextToken::End(1),
             ]
         );
     }
