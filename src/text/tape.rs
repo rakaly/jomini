@@ -465,7 +465,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
             let mut ptr = start_ptr;
             while ptr < end_ptr {
                 match *ptr {
-                    b' ' | b'\t' | b'\n' | b'\r' => {}
+                    b' ' | b'\t' | b'\n' | b'\r' | b';' => {}
                     b'#' => {
                         ptr = ptr.offset(1);
                         while ptr < end_ptr && *ptr != b'\n' {
@@ -2338,6 +2338,20 @@ mod tests {
             vec![
                 TextToken::Unquoted(Scalar::new(b"pop_happiness")),
                 TextToken::Unquoted(Scalar::new(b"+0.10")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_skip_semicolon() {
+        let data = b"value=\"win\"; a=b";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"value")),
+                TextToken::Quoted(Scalar::new(b"win")),
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"b")),
             ]
         );
     }
