@@ -583,10 +583,28 @@ impl<'a, 'b> ParserState<'a, 'b> {
             let d = match self.skip_ws_t(data) {
                 Some(d) => d,
                 None => {
-                    if parent_ind == 0 && state == ParseState::Key {
+                    if state != ParseState::Key {
+                        return Err(Error::eof());
+                    }
+
+                    if parent_ind == 0 {
                         return Ok(());
                     } else {
-                        return Err(Error::eof());
+                        // Support for files that don't have enough closing brackets (ugh)
+                        let grand_ind = match self.token_tape.get(parent_ind) {
+                            Some(TextToken::Array(x)) => *x,
+                            Some(TextToken::Object(x)) => *x,
+                            _ => 0,
+                        };
+
+                        if grand_ind == 0 {
+                            let end_idx = self.token_tape.len();
+                            self.token_tape.push(TextToken::End(parent_ind));
+                            self.token_tape[parent_ind] = TextToken::Object(end_idx);
+                            return Ok(());
+                        } else {
+                            return Err(Error::eof());
+                        }
                     }
                 }
             };
@@ -2111,6 +2129,26 @@ mod tests {
                 TextToken::Array(9),
                 TextToken::Quoted(Scalar::new(b"Armata di $PROVINCE$")),
                 TextToken::End(7),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_missing_bracket() {
+        let data = br#"BRA_GAR_01 = { ordered = { 1 = { "%da Divisao de Infantaria" } }"#;
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"BRA_GAR_01")),
+                TextToken::Object(9),
+                TextToken::Unquoted(Scalar::new(b"ordered")),
+                TextToken::Object(8),
+                TextToken::Unquoted(Scalar::new(b"1")),
+                TextToken::Array(7),
+                TextToken::Quoted(Scalar::new(b"%da Divisao de Infantaria")),
+                TextToken::End(5),
+                TextToken::End(3),
+                TextToken::End(1),
             ]
         );
     }
