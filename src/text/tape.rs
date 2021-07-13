@@ -153,9 +153,12 @@ impl TextTapeParser {
             data,
             original_length: data.len(),
             token_tape,
+            utf8_bom: false,
         };
 
         state.parse()?;
+        tape.utf8_bom = state.utf8_bom;
+
         Ok(())
     }
 }
@@ -164,12 +167,14 @@ struct ParserState<'a, 'b> {
     data: &'a [u8],
     original_length: usize,
     token_tape: &'b mut Vec<TextToken<'a>>,
+    utf8_bom: bool,
 }
 
 /// Houses the tape of tokens that is extracted from plaintext data
 #[derive(Debug, Default)]
 pub struct TextTape<'a> {
     token_tape: Vec<TextToken<'a>>,
+    utf8_bom: bool,
 }
 
 impl<'a> TextTape<'a> {
@@ -438,6 +443,11 @@ impl<'a> TextTape<'a> {
     pub fn tokens(&self) -> &[TextToken<'a>] {
         self.token_tape.as_slice()
     }
+
+    /// Return if there was a UTF8 BOM in the data
+    pub fn utf8_bom(&self) -> bool {
+        self.utf8_bom
+    }
 }
 
 impl<'a, 'b> ParserState<'a, 'b> {
@@ -563,6 +573,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
     pub fn parse(&mut self) -> Result<(), Error> {
         let mut data = self.data;
         let mut state = ParseState::Key;
+
+        self.utf8_bom = data.get(..3).map_or(false, |x| x == &[0xef, 0xbb, 0xbf]);
+        if self.utf8_bom {
+            data = &data[3..];
+        }
 
         // This variable keeps track of outer array when we're parsing a hidden object.
         // A hidden object textually looks like:
@@ -1635,6 +1650,15 @@ mod tests {
                 TextToken::Unquoted(Scalar::new(b"qux")),
             ]
         );
+    }
+
+    #[test]
+    fn test_bom() {
+        let data = b"\xef\xbb\xbf#hello";
+        let tape = parse(&data[..]).unwrap();
+
+        assert_eq!(tape.token_tape, vec![]);
+        assert!(tape.utf8_bom);
     }
 
     #[test]
