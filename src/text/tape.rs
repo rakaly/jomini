@@ -582,7 +582,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
         let mut data = self.data;
         let mut state = ParseState::Key;
 
-        self.utf8_bom = data.get(..3).map_or(false, |x| x == &[0xef, 0xbb, 0xbf]);
+        self.utf8_bom = data.get(..3).map_or(false, |x| x == [0xef, 0xbb, 0xbf]);
         if self.utf8_bom {
             data = &data[3..];
         }
