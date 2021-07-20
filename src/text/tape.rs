@@ -16,6 +16,9 @@ pub enum Operator {
 
     /// A `>=` token
     GreaterThanEqual,
+
+    /// A `!=` token
+    NotEqual,
 }
 
 impl Display for Operator {
@@ -25,6 +28,7 @@ impl Display for Operator {
             Operator::GreaterThan => f.write_str(">"),
             Operator::LessThanEqual => f.write_str("<="),
             Operator::GreaterThanEqual => f.write_str(">="),
+            Operator::NotEqual => f.write_str("!="),
         }
     }
 }
@@ -563,6 +567,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     .push(TextToken::Operator(Operator::GreaterThan));
                 &d[1..]
             }
+        } else if d[0] == b'!' && d.get(1).map_or(false, |c| *c == b'=') {
+            self.token_tape
+                .push(TextToken::Operator(Operator::NotEqual));
+            &d[2..]
         } else {
             d
         }
@@ -2088,6 +2096,19 @@ mod tests {
                 TextToken::Unquoted(Scalar::new(b"intrigue")),
                 TextToken::Operator(Operator::GreaterThanEqual),
                 TextToken::Unquoted(Scalar::new(b"high_skill_rating")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_not_equal_operator() {
+        let data = b"count != 2";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"count")),
+                TextToken::Operator(Operator::NotEqual),
+                TextToken::Unquoted(Scalar::new(b"2")),
             ]
         );
     }
