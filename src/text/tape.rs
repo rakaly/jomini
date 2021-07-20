@@ -547,7 +547,14 @@ impl<'a, 'b> ParserState<'a, 'b> {
         // token (the 99.9% typical case) if possible.
         if d[0] == b'=' {
             &d[1..]
-        } else if d[0] == b'<' {
+        } else {
+            self.parse_key_value_separator_unlikely(d)
+        }
+    }
+
+    #[inline(never)]
+    fn parse_key_value_separator_unlikely(&mut self, d: &'a [u8]) -> &'a [u8] {
+        if d[0] == b'<' {
             if d.get(1).map_or(false, |c| *c == b'=') {
                 self.token_tape
                     .push(TextToken::Operator(Operator::LessThanEqual));
