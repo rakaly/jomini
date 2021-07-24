@@ -19,6 +19,9 @@ pub enum Operator {
 
     /// A `!=` token
     NotEqual,
+
+    /// A `==` token
+    Exact,
 }
 
 impl Display for Operator {
@@ -29,6 +32,7 @@ impl Display for Operator {
             Operator::LessThanEqual => f.write_str("<="),
             Operator::GreaterThanEqual => f.write_str(">="),
             Operator::NotEqual => f.write_str("!="),
+            Operator::Exact => f.write_str("=="),
         }
     }
 }
@@ -545,7 +549,16 @@ impl<'a, 'b> ParserState<'a, 'b> {
         //
         // These are especially tricky, but essentially this function's job is to skip the equal
         // token (the 99.9% typical case) if possible.
-        if d[0] == b'=' {
+        let range = d.as_ptr_range();
+        let mut cur = range.start;
+        if !(unsafe { *cur } == b'=') {
+            return self.parse_key_value_separator_unlikely(d)
+        }
+
+        cur = unsafe { cur.add(1) };
+        if cur == range.end {
+            self.parse_key_value_separator_unlikely(d)
+        } else if unsafe { *cur } != b'=' {
             &d[1..]
         } else {
             self.parse_key_value_separator_unlikely(d)
@@ -577,6 +590,9 @@ impl<'a, 'b> ParserState<'a, 'b> {
         } else if d[0] == b'!' && d.get(1).map_or(false, |c| *c == b'=') {
             self.token_tape
                 .push(TextToken::Operator(Operator::NotEqual));
+            &d[2..]
+        } else if d[0] == b'=' && d.get(1).map_or(false, |c| *c == b'=') {
+            self.token_tape.push(TextToken::Operator(Operator::Exact));
             &d[2..]
         } else {
             d
@@ -2116,6 +2132,19 @@ mod tests {
                 TextToken::Unquoted(Scalar::new(b"count")),
                 TextToken::Operator(Operator::NotEqual),
                 TextToken::Unquoted(Scalar::new(b"2")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_not_exact_operator() {
+        let data = b"start_date == 1066.9.15";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"start_date")),
+                TextToken::Operator(Operator::Exact),
+                TextToken::Unquoted(Scalar::new(b"1066.9.15")),
             ]
         );
     }
