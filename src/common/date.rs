@@ -226,7 +226,7 @@ impl RawDate {
     ///
     /// Will return none for an invalid date
     pub fn from_ymdh_opt(year: i16, month: u8, day: u8, hour: u8) -> Option<Self> {
-        if year != 0 && month != 0 && month < 13 && day != 0 && day < 32 && hour < 25 {
+        if month != 0 && month < 13 && day != 0 && day < 32 && hour < 25 {
             let data = (u16::from(month) << 12) + (u16::from(day) << 7) + (u16::from(hour) << 2);
             Some(RawDate { year, data })
         } else {
@@ -1179,6 +1179,12 @@ mod tests {
         assert_eq!(date.game_fmt().to_string(), String::from("-17.1.1"));
 
         assert_eq!(date, date2);
+    }
+
+    #[test]
+    fn test_zero_date() {
+        let date = Date::from_binary(43800000).unwrap();
+        assert_eq!(date.iso_8601().to_string(), String::from("0000-01-01"));
     }
 
     #[test]
