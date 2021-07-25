@@ -1,3 +1,14 @@
+## v0.16.3 - 2021-07-25
+
+- Support deserializing dates with a zero year
+- Support CK2 exact operator (==)
+- Support CK3 not equal operator (!=)
+- Support skipping over semicolons when parsing text
+- Support parsing text with UTF-8 BOM
+- Support parsing files with missing brackets
+- Small performance improvement to text parsing
+- Improve support for parsing operators
+
 ## v0.16.2 - 2021-07-10
 
 - Fix binary parsing where an object within several arrays would be decoded as an hidden object instead of a regular object
