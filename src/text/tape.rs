@@ -551,8 +551,8 @@ impl<'a, 'b> ParserState<'a, 'b> {
         // token (the 99.9% typical case) if possible.
         let range = d.as_ptr_range();
         let mut cur = range.start;
-        if !(unsafe { *cur } == b'=') {
-            return self.parse_key_value_separator_unlikely(d)
+        if unsafe { *cur } != b'=' {
+            return self.parse_key_value_separator_unlikely(d);
         }
 
         cur = unsafe { cur.add(1) };
