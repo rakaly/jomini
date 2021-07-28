@@ -247,6 +247,126 @@ where
         Ok(rest)
     }
 
+    #[inline(never)]
+    fn fix_hidden_error(
+        &mut self,
+        data: &'a [u8],
+        array_ind_of_hidden_obj: &mut Option<usize>,
+        parent_ind: &mut usize,
+    ) -> Result<(), Error> {
+        // the `is_some` + `unwrap` approach is consistently 8-10% faster
+        // on the eu4 benchmark and I'm not sure why
+        let array_ind = array_ind_of_hidden_obj.take().unwrap();
+
+        // before we error, we should check if we previously parsed an empty array
+        // `history={{} 1444.11.11={core=AAA}}`
+        // so we're going to go back up the stack until we see our parent object
+        // and ensure that everything along the way is an empty array
+
+        let mut start = self.token_tape.len() - 3;
+        while start > array_ind {
+            match self.token_tape[start] {
+                BinaryToken::End(x) if x == start - 1 => {
+                    start -= 2;
+                }
+                _ => {
+                    return Err(Error::new(ErrorKind::InvalidSyntax {
+                        offset: self.offset(data) - 2,
+                        msg: String::from("nested values inside a hidden object are unsupported"),
+                    }));
+                }
+            }
+        }
+
+        let empty_objects_to_remove = self.token_tape.len() - 2 - array_ind;
+
+        let grand_ind = match self.token_tape[array_ind] {
+            BinaryToken::Array(x) => x,
+            _ => 0,
+        };
+
+        for _ in 0..empty_objects_to_remove {
+            self.token_tape.remove(self.token_tape.len() - 3);
+        }
+
+        *parent_ind = array_ind;
+        self.token_tape[*parent_ind] = BinaryToken::Object(grand_ind);
+
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn pop_hidden_object(
+        &mut self,
+        state: &mut ParseState,
+        end_idx: usize,
+        array_ind_of_hidden_obj: &mut Option<usize>,
+        parent_ind: &mut usize,
+    ) {
+        let array_ind = array_ind_of_hidden_obj.take().unwrap();
+
+        self.token_tape[*parent_ind] = BinaryToken::HiddenObject(end_idx);
+        let end_idx = self.token_tape.len();
+        self.token_tape.push(BinaryToken::End(array_ind));
+
+        // Grab the grand parent from the outer array. Even though the logic should
+        // be more strict (ie: throwing an error when if the parent array index doesn't exist,
+        // or if the parent doesn't exist), but since hidden objects are such a rather rare
+        // occurrence, it's better to be flexible
+        let grand_ind = if let Some(parent) = self.token_tape.get_mut(array_ind) {
+            let grand_ind = match parent {
+                BinaryToken::Array(x) => *x,
+                _ => 0,
+            };
+            *parent = BinaryToken::Array(end_idx);
+            grand_ind
+        } else {
+            0
+        };
+
+        *state = match self.token_tape.get(grand_ind) {
+            Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
+            Some(BinaryToken::Object(_x)) => ParseState::Key,
+            _ => ParseState::Key,
+        };
+
+        *parent_ind = grand_ind;
+    }
+
+    #[inline(never)]
+    fn push_hidden_object(
+        &mut self,
+        data: &'a [u8],
+        array_ind_of_hidden_obj: &mut Option<usize>,
+        parent_ind: &mut usize,
+    ) -> Result<(), Error> {
+        // CK3 introduced hidden object inside lists so we work around it by trying to
+        // make the object explicit, but we first check to see if we have any prior
+        // array values
+        if self.token_tape.len() - *parent_ind <= 1
+            || matches!(
+                self.token_tape[self.token_tape.len() - 1],
+                BinaryToken::End(_)
+            )
+        {
+            return Err(Error::new(ErrorKind::InvalidSyntax {
+                msg: String::from("hidden object must start with a key"),
+                offset: self.offset(data),
+            }));
+        }
+
+        if *parent_ind + 2 == self.token_tape.len() {
+            return Ok(());
+        }
+
+        let hidden_object = BinaryToken::Object(*parent_ind);
+        *array_ind_of_hidden_obj = Some(*parent_ind);
+        *parent_ind = self.token_tape.len() - 1;
+        self.token_tape
+            .insert(self.token_tape.len() - 1, hidden_object);
+        Ok(())
+    }
+
     fn parse(&mut self) -> Result<(), Error> {
         let mut data = self.data;
         let mut state = ParseState::Key;
@@ -318,45 +438,11 @@ where
                 OPEN => {
                     if state == ParseState::ObjectValue {
                         if array_ind_of_hidden_obj.is_some() {
-                            // the `is_some` + `unwrap` approach is consistently 8-10% faster
-                            // on the eu4 benchmark and I'm not sure why
-                            let array_ind = array_ind_of_hidden_obj.take().unwrap();
-
-                            // before we error, we should check if we previously parsed an empty array
-                            // `history={{} 1444.11.11={core=AAA}}`
-                            // so we're going to go back up the stack until we see our parent object
-                            // and ensure that everything along the way is an empty array
-
-                            let mut start = self.token_tape.len() - 3;
-                            while start > array_ind {
-                                match self.token_tape[start] {
-                                    BinaryToken::End(x) if x == start - 1 => {
-                                        start -= 2;
-                                    }
-                                    _ => {
-                                        return Err(Error::new(ErrorKind::InvalidSyntax {
-                                            offset: self.offset(data) - 2,
-                                            msg: String::from(
-                                                "nested values inside a hidden object are unsupported",
-                                            ),
-                                        }));
-                                    }
-                                }
-                            }
-
-                            let empty_objects_to_remove = self.token_tape.len() - 2 - array_ind;
-
-                            let grand_ind = match self.token_tape[array_ind] {
-                                BinaryToken::Array(x) => x,
-                                _ => 0,
-                            };
-
-                            for _ in 0..empty_objects_to_remove {
-                                self.token_tape.remove(self.token_tape.len() - 3);
-                            }
-
-                            parent_ind = array_ind;
-                            self.token_tape[parent_ind] = BinaryToken::Object(grand_ind);
+                            self.fix_hidden_error(
+                                data,
+                                &mut array_ind_of_hidden_obj,
+                                &mut parent_ind,
+                            )?;
                         }
 
                         let ind = self.token_tape.len();
@@ -569,34 +655,13 @@ where
                         }
 
                         self.token_tape.push(BinaryToken::End(parent_ind));
-                        if let Some(array_ind) = array_ind_of_hidden_obj.take() {
-                            self.token_tape[parent_ind] = BinaryToken::HiddenObject(end_idx);
-                            let end_idx = self.token_tape.len();
-                            self.token_tape.push(BinaryToken::End(array_ind));
-
-                            // Grab the grand parent from the outer array. Even though the logic should
-                            // be more strict (ie: throwing an error when if the parent array index doesn't exist,
-                            // or if the parent doesn't exist), but since hidden objects are such a rather rare
-                            // occurrence, it's better to be flexible
-                            let grand_ind = if let Some(parent) = self.token_tape.get_mut(array_ind)
-                            {
-                                let grand_ind = match parent {
-                                    BinaryToken::Array(x) => *x,
-                                    _ => 0,
-                                };
-                                *parent = BinaryToken::Array(end_idx);
-                                grand_ind
-                            } else {
-                                0
-                            };
-
-                            state = match self.token_tape.get(grand_ind) {
-                                Some(BinaryToken::Array(_x)) => ParseState::ArrayValue,
-                                Some(BinaryToken::Object(_x)) => ParseState::Key,
-                                _ => ParseState::Key,
-                            };
-
-                            parent_ind = grand_ind;
+                        if array_ind_of_hidden_obj.is_some() {
+                            self.pop_hidden_object(
+                                &mut state,
+                                end_idx,
+                                &mut array_ind_of_hidden_obj,
+                                &mut parent_ind,
+                            );
                         } else {
                             self.token_tape[parent_ind] = BinaryToken::Object(end_idx);
                             parent_ind = grand_ind;
@@ -636,34 +701,9 @@ where
                         data = d;
                         state = ParseState::ObjectValue;
                     } else if state == ParseState::ArrayValue {
-                        // CK3 introduced hidden object inside lists so we work around it by trying to
-                        // make the object explicit, but we first check to see if we have any prior
-                        // array values
-                        if self.token_tape.len() - parent_ind <= 1
-                            || matches!(
-                                self.token_tape[self.token_tape.len() - 1],
-                                BinaryToken::End(_)
-                            )
-                        {
-                            return Err(Error::new(ErrorKind::InvalidSyntax {
-                                msg: String::from("hidden object must start with a key"),
-                                offset: self.offset(data),
-                            }));
-                        }
-
-                        if parent_ind + 2 == self.token_tape.len() {
-                            data = d;
-                            state = ParseState::ObjectValue;
-                            continue;
-                        }
-
-                        let hidden_object = BinaryToken::Object(parent_ind);
-                        array_ind_of_hidden_obj = Some(parent_ind);
-                        parent_ind = self.token_tape.len() - 1;
-                        self.token_tape
-                            .insert(self.token_tape.len() - 1, hidden_object);
-                        state = ParseState::ObjectValue;
+                        self.push_hidden_object(d, &mut array_ind_of_hidden_obj, &mut parent_ind)?;
                         data = d;
+                        state = ParseState::ObjectValue;
                     } else {
                         return Err(Error::new(ErrorKind::InvalidSyntax {
                             msg: String::from("EQUAL not valid for a key"),
