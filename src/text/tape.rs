@@ -188,12 +188,12 @@ pub struct TextTape<'a> {
 impl<'a> TextTape<'a> {
     /// Creates a windows 1252 object reader from the parsed tape
     pub fn windows1252_reader(&self) -> ObjectReader<Windows1252Encoding> {
-        ObjectReader::new(&self, Windows1252Encoding::new())
+        ObjectReader::new(self, Windows1252Encoding::new())
     }
 
     /// Creates a utf-8 object reader from the parsed tape
     pub fn utf8_reader(&self) -> ObjectReader<Utf8Encoding> {
-        ObjectReader::new(&self, Utf8Encoding::new())
+        ObjectReader::new(self, Utf8Encoding::new())
     }
 }
 
@@ -301,7 +301,7 @@ fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
     }
 
     // from memchr: "SSE2 is avalbale on all x86_64 targets, so no CPU feature detection is necessary"
-    unsafe { inner(&d) }
+    unsafe { inner(d) }
 }
 
 #[inline]
@@ -428,7 +428,7 @@ fn split_at_scalar(d: &[u8]) -> (Scalar, &[u8]) {
     }
 
     // from memchr: "SSE2 is avalbale on all x86_64 targets, so no CPU feature detection is necessary"
-    unsafe { inner(&d) }
+    unsafe { inner(d) }
 }
 
 impl<'a> TextTape<'a> {
@@ -1089,7 +1089,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
             return Err(Error::eof());
         }
 
-        let (scalar, data) = split_at_scalar(&data);
+        let (scalar, data) = split_at_scalar(data);
         if !matches!(data.get(0), Some(&x) if x == b']') {
             return Err(Error::new(ErrorKind::InvalidSyntax {
                 offset: self.offset(data),

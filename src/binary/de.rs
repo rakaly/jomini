@@ -286,13 +286,13 @@ impl<'c, 'de, 'a, 'res: 'de, RES: TokenResolver, E: Encoding> MapAccess<'de>
     {
         seed.deserialize(ValueDeserializer {
             value_ind: self.value_ind,
-            tokens: &self.tokens,
+            tokens: self.tokens,
             config: self.config,
         })
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(object_len(&self.tokens, self.tape_idx))
+        Some(object_len(self.tokens, self.tape_idx))
     }
 }
 
@@ -388,7 +388,7 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: Encoding> de::Deserializer<'
             }),
             BinaryToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
             BinaryToken::Object(x) | BinaryToken::HiddenObject(x) => {
-                visitor.visit_map(BinaryMap::new(&self.config, self.tokens, idx + 1, *x))
+                visitor.visit_map(BinaryMap::new(self.config, self.tokens, idx + 1, *x))
             }
             BinaryToken::End(_x) => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
@@ -484,12 +484,12 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: Encoding> de::Deserializer<'
         let idx = self.value_ind;
         match &self.tokens[idx] {
             BinaryToken::Object(x) | BinaryToken::HiddenObject(x) => {
-                visitor.visit_map(BinaryMap::new(&self.config, self.tokens, idx + 1, *x))
+                visitor.visit_map(BinaryMap::new(self.config, self.tokens, idx + 1, *x))
             }
 
             // An array is supported if it is empty
             BinaryToken::Array(x) => {
-                visitor.visit_map(BinaryMap::new(&self.config, self.tokens, idx + 1, *x))
+                visitor.visit_map(BinaryMap::new(self.config, self.tokens, idx + 1, *x))
             }
             _ => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
@@ -574,7 +574,7 @@ impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: Encoding> SeqAccess<'de>
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(array_len(&self.tokens, self.idx))
+        Some(array_len(self.tokens, self.idx))
     }
 }
 
