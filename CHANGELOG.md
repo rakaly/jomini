@@ -1,3 +1,9 @@
+## v0.16.4 - 2021-09-07
+
+- Added `#[jomini(take_last)]` attribute to use the last instance when duplicate fields are encountered
+- Improved binary parsing throughput by up to 15%
+- Date classes (excluding `RawDate`) can now parse dates from textual numbers (for when other, 3rd party melters mistakenly encode a date as a number).
+
 ## v0.16.3 - 2021-07-25
 
 - Support deserializing dates with a zero year
