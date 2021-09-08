@@ -20,6 +20,24 @@ fn is_duplicated(f: &Field) -> bool {
         .any(|_| true)
 }
 
+fn is_take_last(f: &Field) -> bool {
+    f.attrs
+        .iter()
+        .filter(|attr| attr.path.is_ident("jomini"))
+        .map(|attr| attr.parse_meta().unwrap())
+        .filter_map(|meta| match meta {
+            Meta::List(x) => Some(x),
+            _ => None,
+        })
+        .flat_map(|x| x.nested)
+        .filter_map(|x| match x {
+            NestedMeta::Meta(m) => Some(m.path().clone()),
+            _ => None,
+        })
+        .filter(|p| p.is_ident("take_last"))
+        .any(|_| true)
+}
+
 enum DefaultFallback {
     Path(Ident),
     Yes,
@@ -173,6 +191,9 @@ fn ungroup(mut ty: &Type) -> &Type {
 /// - `#[jomini(default = "...")]`
 /// - `#[jomini(deserialize_with = "...")]`
 ///
+/// Another attribute unique to jomini is `#[jomini(take_last)]` which will take the last occurence
+/// of a field. Helpful when a field is duplicated accidentally.
+///
 /// ## The Why
 ///
 /// Serde's `Deserialize` implementation will raise an error if a field occurs more than once in
@@ -269,10 +290,16 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 quote! { serde::de::MapAccess::next_value::<#x>(&mut __map) }
             };
 
-            quote! {
-                #match_arm => match #field_name_opt {
-                    None => #field_name_opt = Some(#des?),
-                    _ => { return Err(<__A::Error as ::serde::de::Error>::duplicate_field(#name_str)); }
+            if !is_take_last(f) {
+                quote! {
+                    #match_arm => match #field_name_opt {
+                        None => #field_name_opt = Some(#des?),
+                        _ => { return Err(<__A::Error as ::serde::de::Error>::duplicate_field(#name_str)); }
+                    }
+                }
+            } else {
+                quote! {
+                    #match_arm => #field_name_opt = Some(#des?)
                 }
             }
         } else {
