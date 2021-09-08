@@ -122,6 +122,10 @@ impl ExpandedRawDate {
         let data = s.as_ref();
 
         let (year, data) = to_i64_t(data).ok()?;
+        if data.is_empty() {
+            return i32::try_from(year).ok().and_then(Self::from_binary);
+        }
+
         let year = i16::try_from(year).ok()?;
         let (delim1, data) = data.split_first()?;
 
@@ -260,9 +264,19 @@ impl RawDate {
     ///
     /// A zero component for the hour is disallowed, so the hour
     /// must be omitted when parsing to only a date without a time component.
+    ///
+    /// Unlike [`Date::parse`], this will not parse the textual form of the
+    /// date's binary representation.
     pub fn parse<T: AsRef<[u8]>>(s: T) -> Result<Self, DateError> {
-        ExpandedRawDate::parse(s)
+        ExpandedRawDate::parse(&s)
             .and_then(Self::from_expanded)
+            .and_then(|x| {
+                if to_i64_t(s.as_ref()).ok()?.1.is_empty() {
+                    None
+                } else {
+                    Some(x)
+                }
+            })
             .ok_or(DateError)
     }
 }
@@ -373,7 +387,9 @@ impl Date {
         Self::from_ymd_opt(year, month, day).unwrap()
     }
 
-    /// Parses a string and returns a new Date if valid.
+    /// Parses a string and returns a new [`Date`] if valid. The expected
+    /// format is either YYYY.MM.DD or a number representing of the equivalent
+    /// binary representation.
     ///
     /// ```
     /// use jomini::common::{Date, PdsDate};
@@ -451,13 +467,14 @@ impl Date {
     /// added check that the date is not too far fetched. This function is useful
     /// when working with binary data and it's not clear with an encountered integer
     /// is supposed to represent a date or a number.
+    ///
+    /// We use -100 as a cut off dates for years. Antonio I (EU4) holds the
+    /// record with a birth date of `-58.1.1`. The exception is monuments,
+    /// which date back to -2500 or even farther back (mods), but this
+    /// function is just a heuristic so direct any extreme dates towards
+    /// [`Date::from_binary`].
     pub fn from_binary_heuristic(s: i32) -> Option<Self> {
         ExpandedRawDate::from_binary(s).and_then(|x| {
-            // We use -100 as a cut off dates for years. Antonio I (EU4) holds
-            // the record with a birth date of `-58.1.1`. The exception is
-            // monuments, which date back to -2500 or even farther back
-            // (mods), but this function is just a heuristic so direct any
-            // extreme dates towards `[Date::from_binary]`.
             if x.year > -100 {
                 Self::from_expanded(x)
             } else {
@@ -1447,6 +1464,14 @@ mod tests {
 
         let date3 = UniformDate::parse("1.01.01").unwrap();
         assert_eq!(date3.game_fmt().to_string(), String::from("1.01.01"));
+    }
+
+    #[test]
+    fn test_date_converted_into_number() {
+        // So that we can decode paperman melted saves where a date is
+        // detected as a number
+        assert!(RawDate::parse(b"43808760").is_err());
+        assert_eq!(Date::parse(b"43808760").unwrap(), Date::from_ymd(1, 1, 1));
     }
 
     #[test]
