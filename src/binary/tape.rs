@@ -1,4 +1,5 @@
 use crate::{
+    copyless::VecHelper,
     util::{get, le_u32},
     Ck3Flavor,
 };
@@ -159,7 +160,7 @@ where
         let val = get::<4>(data)
             .map(u32::from_le_bytes)
             .ok_or_else(Error::eof)?;
-        self.token_tape.push(BinaryToken::U32(val));
+        self.token_tape.alloc().init(BinaryToken::U32(val));
         Ok(&data[4..])
     }
 
@@ -168,7 +169,7 @@ where
         let val = get::<8>(data)
             .map(u64::from_le_bytes)
             .ok_or_else(Error::eof)?;
-        self.token_tape.push(BinaryToken::U64(val));
+        self.token_tape.alloc().init(BinaryToken::U64(val));
         Ok(&data[8..])
     }
 
@@ -177,7 +178,7 @@ where
         let val = get::<4>(data)
             .map(i32::from_le_bytes)
             .ok_or_else(Error::eof)?;
-        self.token_tape.push(BinaryToken::I32(val));
+        self.token_tape.alloc().init(BinaryToken::I32(val));
         Ok(&data[4..])
     }
 
@@ -186,7 +187,7 @@ where
         let val = get::<4>(data)
             .map(|x| self.flavor.visit_f32(x))
             .ok_or_else(Error::eof)?;
-        self.token_tape.push(BinaryToken::F32(val));
+        self.token_tape.alloc().init(BinaryToken::F32(val));
         Ok(&data[4..])
     }
 
@@ -195,14 +196,14 @@ where
         let val = get::<8>(data)
             .map(|x| self.flavor.visit_f64(x))
             .ok_or_else(Error::eof)?;
-        self.token_tape.push(BinaryToken::F64(val));
+        self.token_tape.alloc().init(BinaryToken::F64(val));
         Ok(&data[8..])
     }
 
     #[inline]
     fn parse_bool(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let val = data.get(0).map(|&x| x != 0).ok_or_else(Error::eof)?;
-        self.token_tape.push(BinaryToken::Bool(val));
+        self.token_tape.alloc().init(BinaryToken::Bool(val));
         Ok(&data[1..])
     }
 
@@ -215,7 +216,7 @@ where
                 b: le_u32(&x[16..]),
             })
             .ok_or_else(Error::eof)?;
-        self.token_tape.push(BinaryToken::Rgb(val));
+        self.token_tape.alloc().init(BinaryToken::Rgb(val));
         Ok(&data[22..])
     }
 
@@ -236,14 +237,14 @@ where
     #[inline]
     fn parse_quoted_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let (scalar, rest) = self.parse_string_inner(data)?;
-        self.token_tape.push(BinaryToken::Quoted(scalar));
+        self.token_tape.alloc().init(BinaryToken::Quoted(scalar));
         Ok(rest)
     }
 
     #[inline]
     fn parse_unquoted_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let (scalar, rest) = self.parse_string_inner(data)?;
-        self.token_tape.push(BinaryToken::Unquoted(scalar));
+        self.token_tape.alloc().init(BinaryToken::Unquoted(scalar));
         Ok(rest)
     }
 
@@ -307,7 +308,7 @@ where
 
         self.token_tape[*parent_ind] = BinaryToken::HiddenObject(end_idx);
         let end_idx = self.token_tape.len();
-        self.token_tape.push(BinaryToken::End(array_ind));
+        self.token_tape.alloc().init(BinaryToken::End(array_ind));
 
         // Grab the grand parent from the outer array. Even though the logic should
         // be more strict (ie: throwing an error when if the parent array index doesn't exist,
@@ -446,7 +447,7 @@ where
                         }
 
                         let ind = self.token_tape.len();
-                        self.token_tape.push(BinaryToken::Array(0));
+                        self.token_tape.alloc().init(BinaryToken::Array(0));
 
                         data = d;
                         let (d, token_id) = self.parse_next_id(data)?;
@@ -463,7 +464,7 @@ where
                                 };
 
                                 self.token_tape[ind] = BinaryToken::Array(ind + 1);
-                                self.token_tape.push(BinaryToken::End(ind));
+                                self.token_tape.alloc().init(BinaryToken::End(ind));
                                 continue;
                             }
 
@@ -507,7 +508,7 @@ where
                                 data = self.parse_rgb(data)?;
                             }
                             x => {
-                                self.token_tape.push(BinaryToken::Token(x));
+                                self.token_tape.alloc().init(BinaryToken::Token(x));
                             }
                         }
 
@@ -534,7 +535,7 @@ where
                         }
                     } else if state == ParseState::ArrayValue {
                         let ind = self.token_tape.len();
-                        self.token_tape.push(BinaryToken::Array(0));
+                        self.token_tape.alloc().init(BinaryToken::Array(0));
                         let (d, token_id) = self.parse_next_id(d)?;
                         data = d;
 
@@ -548,7 +549,7 @@ where
                                 };
 
                                 self.token_tape[ind] = BinaryToken::Array(ind + 1);
-                                self.token_tape.push(BinaryToken::End(ind));
+                                self.token_tape.alloc().init(BinaryToken::End(ind));
                                 continue;
                             }
 
@@ -556,7 +557,7 @@ where
                             OPEN => {
                                 self.token_tape[ind] = BinaryToken::Array(parent_ind);
                                 parent_ind = self.token_tape.len();
-                                self.token_tape.push(BinaryToken::Array(ind));
+                                self.token_tape.alloc().init(BinaryToken::Array(ind));
                                 state = ParseState::ArrayValue;
                                 continue;
                             }
@@ -589,7 +590,7 @@ where
                                 data = self.parse_rgb(data)?;
                             }
                             x => {
-                                self.token_tape.push(BinaryToken::Token(x));
+                                self.token_tape.alloc().init(BinaryToken::Token(x));
                             }
                         }
 
@@ -654,7 +655,7 @@ where
                             }));
                         }
 
-                        self.token_tape.push(BinaryToken::End(parent_ind));
+                        self.token_tape.alloc().init(BinaryToken::End(parent_ind));
                         if array_ind_of_hidden_obj.is_some() {
                             self.pop_hidden_object(
                                 &mut state,
@@ -681,7 +682,7 @@ where
 
                         let end_idx = self.token_tape.len();
                         self.token_tape[parent_ind] = BinaryToken::Array(end_idx);
-                        self.token_tape.push(BinaryToken::End(parent_ind));
+                        self.token_tape.alloc().init(BinaryToken::End(parent_ind));
                         parent_ind = grand_ind;
                     } else if state == ParseState::ObjectValue {
                         return Err(Error::new(ErrorKind::InvalidSyntax {
@@ -713,7 +714,7 @@ where
                 }
                 x => {
                     data = d;
-                    self.token_tape.push(BinaryToken::Token(x));
+                    self.token_tape.alloc().init(BinaryToken::Token(x));
                     state = SCALAR_STATE_NEXT[state as usize];
                 }
             }

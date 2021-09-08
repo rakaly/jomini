@@ -188,6 +188,7 @@ assert_eq!(&out, b"hello=world\nfoo=bar\n");
 #![warn(missing_docs)]
 mod binary;
 pub mod common;
+mod copyless;
 mod data;
 #[cfg(feature = "derive")]
 pub(crate) mod de;
