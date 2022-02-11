@@ -1,6 +1,6 @@
 use crate::{
     copyless::VecHelper,
-    util::{get, le_u32},
+    util::{get_split, le_u32},
     Ck3Flavor,
 };
 use crate::{BinaryFlavor, Error, ErrorKind, Eu4Flavor, Rgb, Scalar};
@@ -145,9 +145,7 @@ where
 
     #[inline]
     fn parse_next_id_opt(&mut self, data: &'a [u8]) -> Option<(&'a [u8], u16)> {
-        get::<2>(data)
-            .map(u16::from_le_bytes)
-            .map(|val| (&data[2..], val))
+        get_split::<2>(data).map(|(head, rest)| (rest, u16::from_le_bytes(head)))
     }
 
     #[inline]
@@ -157,47 +155,42 @@ where
 
     #[inline]
     fn parse_u32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = get::<4>(data)
-            .map(u32::from_le_bytes)
-            .ok_or_else(Error::eof)?;
+        let (head, rest) = get_split::<4>(data).ok_or_else(Error::eof)?;
+        let val = u32::from_le_bytes(head);
         self.token_tape.alloc().init(BinaryToken::U32(val));
-        Ok(&data[4..])
+        Ok(rest)
     }
 
     #[inline]
     fn parse_u64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = get::<8>(data)
-            .map(u64::from_le_bytes)
-            .ok_or_else(Error::eof)?;
+        let (head, rest) = get_split::<8>(data).ok_or_else(Error::eof)?;
+        let val = u64::from_le_bytes(head);
         self.token_tape.alloc().init(BinaryToken::U64(val));
-        Ok(&data[8..])
+        Ok(rest)
     }
 
     #[inline]
     fn parse_i32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = get::<4>(data)
-            .map(i32::from_le_bytes)
-            .ok_or_else(Error::eof)?;
+        let (head, rest) = get_split::<4>(data).ok_or_else(Error::eof)?;
+        let val = i32::from_le_bytes(head);
         self.token_tape.alloc().init(BinaryToken::I32(val));
-        Ok(&data[4..])
+        Ok(rest)
     }
 
     #[inline]
     fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = get::<4>(data)
-            .map(|x| self.flavor.visit_f32(x))
-            .ok_or_else(Error::eof)?;
+        let (head, rest) = get_split::<4>(data).ok_or_else(Error::eof)?;
+        let val = self.flavor.visit_f32(head);
         self.token_tape.alloc().init(BinaryToken::F32(val));
-        Ok(&data[4..])
+        Ok(rest)
     }
 
     #[inline]
     fn parse_f64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = get::<8>(data)
-            .map(|x| self.flavor.visit_f64(x))
-            .ok_or_else(Error::eof)?;
+        let (head, rest) = get_split::<8>(data).ok_or_else(Error::eof)?;
+        let val = self.flavor.visit_f64(head);
         self.token_tape.alloc().init(BinaryToken::F64(val));
-        Ok(&data[8..])
+        Ok(rest)
     }
 
     #[inline]
@@ -208,30 +201,27 @@ where
     }
 
     fn parse_rgb(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = data
-            .get(..22) // u16 `{` + (u16 + u32) * 3 + u16 `}`
-            .map(|x| Rgb {
-                r: le_u32(&x[4..]),
-                g: le_u32(&x[10..]),
-                b: le_u32(&x[16..]),
-            })
-            .ok_or_else(Error::eof)?;
+        let (head, rest) = get_split::<22>(data).ok_or_else(Error::eof)?;
+        let val = Rgb {
+            r: le_u32(&head[4..]),
+            g: le_u32(&head[10..]),
+            b: le_u32(&head[16..]),
+        };
         self.token_tape.alloc().init(BinaryToken::Rgb(val));
-        Ok(&data[22..])
+        Ok(rest)
     }
 
     #[inline]
     fn parse_string_inner(&mut self, data: &'a [u8]) -> Result<(Scalar<'a>, &'a [u8]), Error> {
-        if let Some(text_len) = get::<2>(data).map(u16::from_le_bytes).map(usize::from) {
-            let rest = &data[2..];
-            if rest.len() >= text_len {
-                let (text, rest) = rest.split_at(text_len);
-                let scalar = Scalar::new(text);
-                return Ok((scalar, rest));
-            }
+        let (head, rest) = get_split::<2>(data).ok_or_else(Error::eof)?;
+        let text_len = usize::from(u16::from_le_bytes(head));
+        if text_len <= rest.len() {
+            let (text, rest) = rest.split_at(text_len);
+            let scalar = Scalar::new(text);
+            Ok((scalar, rest))
+        } else {
+            Err(Error::eof())
         }
-
-        Err(Error::eof())
     }
 
     #[inline]

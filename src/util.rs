@@ -6,8 +6,13 @@ fn take<const N: usize>(data: &[u8]) -> [u8; N] {
 }
 
 #[inline]
-pub(crate) fn get<const N: usize>(data: &[u8]) -> Option<[u8; N]> {
-    data.get(..N).map(take)
+pub(crate) fn get_split<const N: usize>(data: &[u8]) -> Option<([u8; N], &[u8])> {
+    if N <= data.len() {
+        let (head, tail) = data.split_at(N);
+        Some((take::<N>(head), tail))
+    } else {
+        None
+    }
 }
 
 #[inline]
