@@ -369,7 +369,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     });
 
-    let expecting = format!("struct {}", struct_ident.to_string());
+    let expecting = format!("struct {}", struct_ident);
     let struct_ident_str = struct_ident.to_string();
 
     let field_names: Vec<_> = named_fields
