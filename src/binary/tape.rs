@@ -1,9 +1,8 @@
 use crate::{
     copyless::VecHelper,
     util::{get_split, le_u32},
-    Ck3Flavor,
 };
-use crate::{BinaryFlavor, Error, ErrorKind, Eu4Flavor, Rgb, Scalar};
+use crate::{Error, ErrorKind, Rgb, Scalar};
 
 /// Represents any valid binary value
 #[derive(Debug, Clone, PartialEq)]
@@ -50,10 +49,10 @@ pub enum BinaryToken<'a> {
     Unquoted(Scalar<'a>),
 
     /// Represents the first binary encoding for representing a rational number
-    F32(f32),
+    F32([u8; 4]),
 
     /// Represents the second binary encoding for representing a rational number
-    F64(f64),
+    F64([u8; 8]),
 
     /// Represents a 16bit token key that can be resolved to an equivalent textual representation.
     Token(u16),
@@ -77,27 +76,17 @@ const RGB: u16 = 0x0243;
 
 /// Customizes how the binary tape is parsed from data
 #[derive(Debug)]
-pub struct BinaryTapeParser<F> {
-    flavor: F,
-}
+pub struct BinaryTapeParser;
 
-impl<F> BinaryTapeParser<F>
-where
-    F: BinaryFlavor,
-{
-    /// Create a binary parser with a given flavor
-    pub fn with_flavor(flavor: F) -> Self {
-        BinaryTapeParser { flavor }
-    }
-
-    /// Parse the binary format according to the parser's flavor and return the data tape
+impl BinaryTapeParser {
+    /// Parse the binary format return the data tape
     pub fn parse_slice(self, data: &[u8]) -> Result<BinaryTape, Error> {
         let mut res = BinaryTape::default();
         self.parse_slice_into_tape(data, &mut res)?;
         Ok(res)
     }
 
-    /// Parse the binary format into the given tape according to the parser's flavor.
+    /// Parse the binary format into the given tape.
     pub fn parse_slice_into_tape<'a>(
         self,
         data: &'a [u8],
@@ -109,7 +98,6 @@ where
         token_tape.reserve(data.len() / 5);
         let mut state = ParserState {
             data,
-            flavor: self.flavor,
             original_length: data.len(),
             token_tape,
         };
@@ -119,9 +107,8 @@ where
     }
 }
 
-struct ParserState<'a, 'b, F> {
+struct ParserState<'a, 'b> {
     data: &'a [u8],
-    flavor: F,
     original_length: usize,
     token_tape: &'b mut Vec<BinaryToken<'a>>,
 }
@@ -135,10 +122,7 @@ enum ParseState {
     ArrayValue = 4,
 }
 
-impl<'a, 'b, F> ParserState<'a, 'b, F>
-where
-    F: BinaryFlavor,
-{
+impl<'a, 'b> ParserState<'a, 'b> {
     fn offset(&self, data: &[u8]) -> usize {
         self.original_length - data.len()
     }
@@ -180,16 +164,14 @@ where
     #[inline]
     fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let (head, rest) = get_split::<4>(data).ok_or_else(Error::eof)?;
-        let val = self.flavor.visit_f32(head);
-        self.token_tape.alloc().init(BinaryToken::F32(val));
+        self.token_tape.alloc().init(BinaryToken::F32(head));
         Ok(rest)
     }
 
     #[inline]
     fn parse_f64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let (head, rest) = get_split::<8>(data).ok_or_else(Error::eof)?;
-        let val = self.flavor.visit_f64(head);
-        self.token_tape.alloc().init(BinaryToken::F64(val));
+        self.token_tape.alloc().init(BinaryToken::F64(head));
         Ok(rest)
     }
 
@@ -729,32 +711,9 @@ impl<'a> BinaryTape<'a> {
         BinaryTape::default()
     }
 
-    /// Convenience method for creating a binary parser and parsing the given input in eu4 format
-    pub fn from_eu4(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
-        Self::eu4_parser().parse_slice(data)
-    }
-
-    /// Returns a parser for the eu4 flavor of binary data
-    pub fn eu4_parser() -> BinaryTapeParser<Eu4Flavor> {
-        BinaryTape::parser_flavor(Eu4Flavor::new())
-    }
-
-    /// Convenience method for creating a binary parser and parsing the given input in ck3 format
-    pub fn from_ck3(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
-        Self::ck3_parser().parse_slice(data)
-    }
-
-    /// Returns a parser for the ck3 flavor of binary data
-    pub fn ck3_parser() -> BinaryTapeParser<Ck3Flavor> {
-        BinaryTape::parser_flavor(Ck3Flavor::new())
-    }
-
-    /// Returns a parser for a given flavor of binary data
-    pub fn parser_flavor<F>(flavor: F) -> BinaryTapeParser<F>
-    where
-        F: BinaryFlavor,
-    {
-        BinaryTapeParser::with_flavor(flavor)
+    /// Convenience method for creating a binary parser and parsing the given input
+    pub fn from_slice(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
+        BinaryTapeParser.parse_slice(data)
     }
 
     /// Return the parsed tokens
@@ -766,10 +725,9 @@ impl<'a> BinaryTape<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Ck3Flavor;
 
     fn parse<'a>(data: &'a [u8]) -> Result<BinaryTape<'a>, Error> {
-        BinaryTape::from_eu4(data)
+        BinaryTape::from_slice(data)
     }
 
     #[test]
@@ -788,7 +746,7 @@ mod tests {
     #[test]
     fn test_parse_offset() {
         let data = [0x82, 0x2d, 0x01, 0x00, 0x4c, 0x28, 0x01, 0x00, 0x4c, 0x28];
-        let err = BinaryTape::from_eu4(&data[..]).unwrap_err();
+        let err = BinaryTape::from_slice(&data[..]).unwrap_err();
         match err.kind() {
             ErrorKind::InvalidSyntax { offset, .. } => {
                 assert_eq!(*offset, 6);
@@ -797,7 +755,7 @@ mod tests {
         }
 
         let data2 = [0x82, 0x2d, 0x01, 0x00, 0x01, 0x00];
-        let err = BinaryTape::from_eu4(&data2[..]).unwrap_err();
+        let err = BinaryTape::from_slice(&data2[..]).unwrap_err();
         match err.kind() {
             ErrorKind::InvalidSyntax { offset, .. } => {
                 assert_eq!(*offset, 4);
@@ -848,14 +806,13 @@ mod tests {
             [0xc0, 0xc6, 0x2d, 0x00],
         ];
 
-        let f32_results = [0.023, 0.041, 0.018, 0.542, 1.000, 3000.000];
-
-        for (bin, result) in f32_data.iter().zip(f32_results.iter()) {
+        // let f32_results = [0.023, 0.041, 0.018, 0.542, 1.000, 3000.000];
+        for bin in f32_data.iter() {
             let full_data = [base_data.clone(), bin.to_vec()].concat();
 
             assert_eq!(
                 parse(&full_data[..]).unwrap().token_tape,
-                vec![BinaryToken::Token(0x2d82), BinaryToken::F32(*result),]
+                vec![BinaryToken::Token(0x2d82), BinaryToken::F32(*bin),]
             );
         }
     }
@@ -865,17 +822,13 @@ mod tests {
         let base_data = vec![0x82, 0x2d, 0x01, 0x00, 0x0d, 0x00];
         let f32_data = [[0x8f, 0xc2, 0x75, 0x3e]];
 
-        let f32_results = [0.24];
-
-        for (bin, result) in f32_data.iter().zip(f32_results.iter()) {
+        // let f32_results = [0.24f32];
+        for bin in f32_data.iter() {
             let full_data = [base_data.clone(), bin.to_vec()].concat();
 
             assert_eq!(
-                BinaryTapeParser::with_flavor(Ck3Flavor::new())
-                    .parse_slice(&full_data[..])
-                    .unwrap()
-                    .token_tape,
-                vec![BinaryToken::Token(0x2d82), BinaryToken::F32(*result),]
+                BinaryTape::from_slice(&full_data[..]).unwrap().tokens(),
+                vec![BinaryToken::Token(0x2d82), BinaryToken::F32(*bin),]
             );
         }
 
@@ -885,17 +838,13 @@ mod tests {
             [0x5f, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
         ];
 
-        let f32_results = [1.25, 1.375];
-
-        for (bin, result) in q16_data.iter().zip(f32_results.iter()) {
+        // let f32_results = [1.25, 1.375];
+        for bin in q16_data.iter() {
             let full_data = [base_data.clone(), bin.to_vec()].concat();
 
             assert_eq!(
-                BinaryTapeParser::with_flavor(Ck3Flavor::new())
-                    .parse_slice(&full_data[..])
-                    .unwrap()
-                    .token_tape,
-                vec![BinaryToken::Token(0x2d82), BinaryToken::F64(*result),]
+                BinaryTape::from_slice(&full_data[..]).unwrap().tokens(),
+                vec![BinaryToken::Token(0x2d82), BinaryToken::F64(*bin),]
             );
         }
     }
@@ -908,7 +857,10 @@ mod tests {
 
         assert_eq!(
             parse(&data[..]).unwrap().token_tape,
-            vec![BinaryToken::Token(0x2d82), BinaryToken::F64(1.78732),]
+            vec![
+                BinaryToken::Token(0x2d82),
+                BinaryToken::F64([0xc7, 0xe4, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            ]
         );
     }
 
@@ -1300,7 +1252,7 @@ mod tests {
             0x82, 0x2d, 0x01, 0x00, 0x4b, 0x28, 0x4d, 0x28, 0x01, 0x00, 0x4c, 0x28,
         ];
 
-        BinaryTape::eu4_parser()
+        BinaryTapeParser
             .parse_slice_into_tape(&data[..], &mut tape)
             .unwrap();
 
@@ -1318,7 +1270,7 @@ mod tests {
             0x83, 0x2d, 0x01, 0x00, 0x4c, 0x28, 0x4e, 0x28, 0x01, 0x00, 0x4d, 0x28,
         ];
 
-        BinaryTape::eu4_parser()
+        BinaryTapeParser
             .parse_slice_into_tape(&data2[..], &mut tape)
             .unwrap();
 

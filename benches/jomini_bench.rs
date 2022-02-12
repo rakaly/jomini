@@ -1,9 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use jomini::{
-    common::Date, BinaryDeserializer, BinaryTape, Scalar, TextDeserializer, TextTape, Utf8Encoding,
-    Windows1252Encoding,
+    common::Date, BinaryDeserializer, BinaryFlavor, BinaryTape, BinaryTapeParser, Encoding, Scalar,
+    TextDeserializer, TextTape, Utf8Encoding, Windows1252Encoding,
 };
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 const METADATA_BIN: &'static [u8] = include_bytes!("../tests/fixtures/meta.bin");
 const METADATA_TXT: &'static [u8] = include_bytes!("../tests/fixtures/meta.txt");
@@ -85,6 +85,25 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
         campaign_id: String,
     }
 
+    #[derive(Debug, Default)]
+    pub struct BinaryTestFlavor;
+
+    impl BinaryFlavor for BinaryTestFlavor {
+        fn visit_f32(&self, data: [u8; 4]) -> f32 {
+            f32::from_le_bytes(data)
+        }
+
+        fn visit_f64(&self, data: [u8; 8]) -> f64 {
+            f64::from_le_bytes(data)
+        }
+    }
+
+    impl Encoding for BinaryTestFlavor {
+        fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
+            Windows1252Encoding::decode(data)
+        }
+    }
+
     let data = &METADATA_BIN["EU4bin".len()..];
     let mut group = c.benchmark_group("deserialize");
     let mut map = HashMap::new();
@@ -92,7 +111,7 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("binary", |b| {
         b.iter(|| {
-            let _res: Meta = BinaryDeserializer::eu4_builder()
+            let _res: Meta = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
                 .from_slice(&data[..], &map)
                 .unwrap();
         })
@@ -124,7 +143,7 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     group.bench_function(BenchmarkId::new("binary", "eu4"), |b| {
         let mut tape = BinaryTape::default();
         b.iter(move || {
-            BinaryTape::eu4_parser()
+            BinaryTapeParser
                 .parse_slice_into_tape(&data[..], &mut tape)
                 .unwrap();
         })
@@ -135,7 +154,7 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     group.bench_function(BenchmarkId::new("binary", "ck3"), |b| {
         let mut tape = BinaryTape::default();
         b.iter(move || {
-            BinaryTape::eu4_parser()
+            BinaryTapeParser
                 .parse_slice_into_tape(&data[..], &mut tape)
                 .unwrap();
         })
@@ -155,7 +174,7 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     group.bench_function(BenchmarkId::new("binary", "f32"), |b| {
         let mut tape = BinaryTape::default();
         b.iter(move || {
-            BinaryTape::eu4_parser()
+            BinaryTapeParser
                 .parse_slice_into_tape(&f32_data[..], &mut tape)
                 .unwrap();
         })
@@ -175,7 +194,7 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     group.bench_function(BenchmarkId::new("binary", "f64"), |b| {
         let mut tape = BinaryTape::default();
         b.iter(move || {
-            BinaryTape::eu4_parser()
+            BinaryTapeParser
                 .parse_slice_into_tape(&f64_data[..], &mut tape)
                 .unwrap();
         })

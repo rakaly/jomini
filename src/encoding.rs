@@ -6,6 +6,8 @@ use std::borrow::Cow;
 
 /// An encoding for interpreting byte data as UTF-8 text
 ///
+/// Used in both text and binary format deserializers
+///
 /// It is heavily encouraged that encoding implementations are marked
 /// as `Copy` to make sure they are as cheap to copy as possible. In
 /// an experiment storing the encoding in a `Rc` resulted in a decrease
@@ -16,7 +18,7 @@ use std::borrow::Cow;
 ///
 /// - trailing whitespace is removed
 /// - escape sequences are unescaped
-pub trait Encoding: Sized {
+pub trait Encoding {
     /// Decodes bytes into a utf-8 compatible string -- allocating if necessary
     fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str>;
 }
@@ -60,7 +62,13 @@ impl Encoding for Windows1252Encoding {
     }
 }
 
-impl<T: Encoding> Encoding for &'_ T {
+impl<T: Encoding + ?Sized> Encoding for &'_ T {
+    fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
+        (**self).decode(data)
+    }
+}
+
+impl<T: Encoding + ?Sized> Encoding for Box<T> {
     fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
         (**self).decode(data)
     }
