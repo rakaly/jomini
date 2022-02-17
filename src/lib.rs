@@ -1,18 +1,15 @@
 /*!
 
-A low level, performance oriented parser for
-[EU4](https://en.wikipedia.org/wiki/Europa_Universalis_IV) save files and
-other [PDS](https://www.paradoxplaza.com/) developed titles. Consult [the
-write-up](https://rakaly.com/blog/a-tour-of-pds-clausewitz-syntax) for an in-depth
-look at the Paradox Clausewitz format and the pitfalls that come trying to support
-all variations. It's extremely difficult to write a robust and fast parser for
-this format, but jomini accomplishes both tasks.
+A low level, performance oriented parser for save and game files from [Paradox Development Studio](https://en.wikipedia.org/wiki/Paradox_Development_Studio) titles (eg: Europa Universalis (EU4), Hearts of Iron (HOI4), and Crusader Kings (CK3), Imperator, Stellaris, and Victoria).
 
-Jomini is the cornerstone of [Rakaly](https://rakaly.com/eu4), an EU4
-achievement leaderboard and save file analyzer. This library is also powers
-the [Paradox Game Converters](https://github.com/ParadoxGameConverters) and
-[pdxu](https://github.com/crschnick/pdx_unlimiter) to parse ironman EU4, CK3,
-HOI4, and Imperator saves.
+For an in-depth look at the Paradox Clausewitz format and the pitfalls that come
+trying to support all variations, consult [the write-up](https://pdx.tools/blog/a-tour-of-pds-clausewitz-syntax). In short, it's extremely difficult to write a robust and
+fast parser that abstracts over the format difference between games as well as differences between game patches. Jomini hits the sweet spot between flexibility while still being ergonomic.
+
+Jomini is the cornerstone of the [online EU4 save file
+analyzer](https://pdx.tools). This library also powers the [Paradox Game
+Converters](https://github.com/ParadoxGameConverters) and
+[pdxu](https://github.com/crschnick/pdx_unlimiter).
 
 ## Features
 
@@ -22,7 +19,6 @@ HOI4, and Imperator saves.
 - ✔ Safe: Extensively fuzzed against potential malicious input
 - ✔ Ergonomic: Use [serde](https://serde.rs/derive.html)-like macros to have parsing logic automatically implemented
 - ✔ Embeddable: Cross platform native apps, statically compiled services, or in the browser via [WASM](https://webassembly.org/)
-- ✔ Agnostic: [Parse EU4](https://github.com/rakaly/eu4save), [HOI4](https://github.com/rakaly/hoi4save.git), [Imperator](https://github.com/rakaly/imperator-save), [CK3](https://github.com/rakaly/ck3save), and Vic2 save and game files
 
 ## Quick Start
 
@@ -105,7 +101,7 @@ Caller is responsible for:
 - Stripping off any header that may be present (eg: `EU4txt` / `EU4bin`)
 - Providing the token resolver for the binary format
 - Providing the conversion to reconcile how, for example, a date may be encoded as an integer in
-the binary format, but as a string when in plaintext.
+  the binary format, but as a string when in plaintext.
 
 ## The Mid-level API
 
