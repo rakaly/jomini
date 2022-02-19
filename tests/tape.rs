@@ -3,7 +3,7 @@ use jomini::{BinaryTape, Operator, Scalar, TextTape, TextToken};
 #[test]
 fn reject_bin_obj_in_hidden_obj() {
     let data = include_bytes!("./fixtures/nested-hidden-obj.bin");
-    assert!(BinaryTape::from_eu4(&data[..]).is_err());
+    assert!(BinaryTape::from_slice(&data[..]).is_err());
 }
 
 #[test]

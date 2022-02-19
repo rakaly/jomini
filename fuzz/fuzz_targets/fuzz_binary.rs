@@ -1,7 +1,8 @@
 #![no_main]
+use jomini::{BinaryFlavor, Encoding, Windows1252Encoding};
 use libfuzzer_sys::fuzz_target;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 struct Meta {
@@ -25,6 +26,25 @@ struct Stat {
     localization: Option<String>,
 }
 
+#[derive(Debug, Default)]
+pub struct BinaryTestFlavor;
+
+impl BinaryFlavor for BinaryTestFlavor {
+    fn visit_f32(&self, data: [u8; 4]) -> f32 {
+        f32::from_le_bytes(data)
+    }
+
+    fn visit_f64(&self, data: [u8; 8]) -> f64 {
+        f64::from_le_bytes(data)
+    }
+}
+
+impl Encoding for BinaryTestFlavor {
+    fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
+        Windows1252Encoding::decode(data)
+    }
+}
+
 fuzz_target!(|data: &[u8]| {
     let mut hash = HashMap::new();
     hash.insert(0x000bu16, "id");
@@ -42,7 +62,7 @@ fuzz_target!(|data: &[u8]| {
     hash.insert(0x354eu16, "selector");
     hash.insert(0x209u16, "localization");
 
-    let _: Result<Meta, _> = jomini::BinaryTape::from_eu4(&data).and_then(|tape| {
+    let _: Result<Meta, _> = jomini::BinaryTape::from_slice(&data).and_then(|tape| {
         let tokens = tape.tokens();
         for (i, token) in tokens.iter().enumerate() {
             match token {
@@ -65,6 +85,6 @@ fuzz_target!(|data: &[u8]| {
                 _ => {}
             }
         }
-        jomini::BinaryDeserializer::eu4_builder().from_tape(&tape, &hash)
+        jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor).from_tape(&tape, &hash)
     });
 });

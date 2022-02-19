@@ -1,6 +1,6 @@
 use crate::{
-    de::ColorSequence, BinaryFlavor, BinaryTape, BinaryToken, Ck3Flavor, DeserializeError,
-    DeserializeErrorKind, Encoding, Error, Eu4Flavor, FailedResolveStrategy, TokenResolver,
+    de::ColorSequence, BinaryFlavor, BinaryTape, BinaryToken, DeserializeError,
+    DeserializeErrorKind, Error, FailedResolveStrategy, TokenResolver,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
@@ -13,9 +13,9 @@ use std::borrow::Cow;
 /// The example below demonstrates multiple ways to deserialize data
 ///
 /// ```
-/// use jomini::{BinaryDeserializer, BinaryTape};
+/// use jomini::{BinaryDeserializer, BinaryFlavor, Encoding, JominiDeserialize, Windows1252Encoding};
 /// use serde::Deserialize;
-/// use std::collections::HashMap;
+/// use std::{borrow::Cow, collections::HashMap};
 ///
 /// #[derive(Debug, Clone, Deserialize, PartialEq)]
 /// pub struct StructA {
@@ -36,6 +36,25 @@ use std::borrow::Cow;
 ///   field2: String,
 /// }
 ///
+/// #[derive(Debug, Default)]
+/// pub struct BinaryTestFlavor;
+///
+/// impl BinaryFlavor for BinaryTestFlavor {
+///     fn visit_f32(&self, data: [u8; 4]) -> f32 {
+///         f32::from_le_bytes(data)
+///     }
+///
+///     fn visit_f64(&self, data: [u8; 8]) -> f64 {
+///         f64::from_le_bytes(data)
+///     }
+/// }
+///
+/// impl Encoding for BinaryTestFlavor {
+///     fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
+///         Windows1252Encoding::decode(data)
+///     }
+/// }
+///
 /// let data = [
 ///    0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47,
 ///    0x83, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x48,
@@ -46,15 +65,17 @@ use std::borrow::Cow;
 /// map.insert(0x2d83, String::from("field2"));
 ///
 /// // the data can be parsed and deserialized in one step
-/// let a: StructA = BinaryDeserializer::eu4_builder().from_slice(&data[..], &map)?;
+///
+/// let a: StructA = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+///     .from_slice(&data[..], &map)?;
 /// assert_eq!(a, StructA {
 ///   b: StructB { field1: "ENG".to_string() },
 ///   c: StructC { field2: "ENH".to_string() },
 /// });
 ///
 /// // or split into two steps, whatever is appropriate.
-/// let tape = BinaryTape::from_eu4(&data[..])?;
-/// let deserializer = BinaryDeserializer::eu4_builder();
+/// let tape = jomini::BinaryTape::from_slice(&data[..])?;
+/// let deserializer = BinaryDeserializer::builder_flavor(BinaryTestFlavor);
 /// let b: StructB = deserializer.from_tape(&tape, &map)?;
 /// let c: StructC = deserializer.from_tape(&tape, &map)?;
 /// assert_eq!(b, StructB { field1: "ENG".to_string() });
@@ -64,43 +85,12 @@ use std::borrow::Cow;
 pub struct BinaryDeserializer;
 
 impl BinaryDeserializer {
-    /// Create a builder to custom binary deserialization
-    pub fn eu4_builder() -> BinaryDeserializerBuilder<Eu4Flavor> {
-        BinaryDeserializerBuilder::with_flavor(Eu4Flavor::new())
-    }
-
-    /// Create a builder to custom binary deserialization
-    pub fn ck3_builder() -> BinaryDeserializerBuilder<Ck3Flavor> {
-        BinaryDeserializerBuilder::with_flavor(Ck3Flavor::new())
-    }
-
     /// A customized builder for a certain flavor of binary data
     pub fn builder_flavor<F>(flavor: F) -> BinaryDeserializerBuilder<F>
     where
         F: BinaryFlavor,
     {
         BinaryDeserializerBuilder::with_flavor(flavor)
-    }
-
-    /// Convenience method for parsing and deserializing binary data in a single step
-    pub fn from_eu4<'a, 'res: 'a, RES, T>(data: &'a [u8], resolver: &'res RES) -> Result<T, Error>
-    where
-        T: Deserialize<'a>,
-        RES: TokenResolver,
-    {
-        Self::eu4_builder().from_slice(data, resolver)
-    }
-
-    /// Convenience method for parsing and deserializing binary data in a single step
-    pub fn from_ck3<'a, 'b, 'res: 'a, RES, T>(
-        data: &'a [u8],
-        resolver: &'res RES,
-    ) -> Result<T, Error>
-    where
-        T: Deserialize<'a>,
-        RES: TokenResolver,
-    {
-        Self::ck3_builder().from_slice(data, resolver)
     }
 }
 
@@ -139,7 +129,7 @@ where
         T: Deserialize<'a>,
         RES: TokenResolver,
     {
-        let tape = BinaryTape::parser_flavor(&self.flavor).parse_slice(data)?;
+        let tape = BinaryTape::from_slice(data)?;
         self.from_tape(&tape, resolver)
     }
 
@@ -178,7 +168,7 @@ struct RootDeserializer<'b, 'a: 'b, 'res: 'a, RES, E> {
     config: &'b BinaryConfig<'res, RES, E>,
 }
 
-impl<'b, 'de, 'r, 'res, RES: TokenResolver, E: Encoding> de::Deserializer<'de>
+impl<'b, 'de, 'r, 'res, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
     for &'r mut RootDeserializer<'b, 'de, 'res, RES, E>
 {
     type Error = DeserializeError;
@@ -250,7 +240,7 @@ impl<'c, 'a, 'de, 'res: 'de, RES, E> BinaryMap<'c, 'a, 'de, 'res, RES, E> {
     }
 }
 
-impl<'c, 'de, 'a, 'res: 'de, RES: TokenResolver, E: Encoding> MapAccess<'de>
+impl<'c, 'de, 'a, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> MapAccess<'de>
     for BinaryMap<'c, 'a, 'de, 'res, RES, E>
 {
     type Error = DeserializeError;
@@ -302,7 +292,15 @@ struct KeyDeserializer<'b, 'de: 'b, 'res: 'de, RES, E> {
     tape_idx: usize,
 }
 
-fn visit_key<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES: TokenResolver, E: Encoding, V: Visitor<'de>>(
+fn visit_key<
+    'c,
+    'b: 'c,
+    'de: 'b,
+    'res: 'de,
+    RES: TokenResolver,
+    E: BinaryFlavor,
+    V: Visitor<'de>,
+>(
     tape_idx: usize,
     tokens: &'b [BinaryToken<'de>],
     config: &'b BinaryConfig<'res, RES, E>,
@@ -326,8 +324,8 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES: TokenResolver, E: Encoding, V:
                 Cow::Owned(s) => visitor.visit_string(s),
             }
         }
-        BinaryToken::F32(x) => visitor.visit_f32(x),
-        BinaryToken::F64(x) => visitor.visit_f64(x),
+        BinaryToken::F32(x) => visitor.visit_f32(config.encoding.visit_f32(x)),
+        BinaryToken::F64(x) => visitor.visit_f64(config.encoding.visit_f64(x)),
         BinaryToken::Token(s) => match config.resolver.resolve(s) {
             Some(id) => visitor.visit_borrowed_str(id),
             None => match config.failed_resolve_strategy {
@@ -343,7 +341,7 @@ fn visit_key<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES: TokenResolver, E: Encoding, V:
     }
 }
 
-impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: Encoding> de::Deserializer<'de>
+impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
     for KeyDeserializer<'b, 'de, 'res, RES, E>
 {
     type Error = DeserializeError;
@@ -368,7 +366,7 @@ struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES, E> {
     tokens: &'c [BinaryToken<'de>],
 }
 
-impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: Encoding> de::Deserializer<'de>
+impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
     for ValueDeserializer<'c, 'b, 'de, 'res, RES, E>
 {
     type Error = DeserializeError;
@@ -514,7 +512,7 @@ struct BinarySequence<'b, 'de: 'b, 'res: 'de, RES, E> {
     end_idx: usize,
 }
 
-impl<'b, 'de, 'r, 'res: 'de, RES: TokenResolver, E: Encoding> de::Deserializer<'de>
+impl<'b, 'de, 'r, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
     for &'r mut BinarySequence<'b, 'de, 'res, RES, E>
 {
     type Error = DeserializeError;
@@ -550,7 +548,7 @@ impl<'b, 'de, 'r, 'res: 'de, RES: TokenResolver, E: Encoding> de::Deserializer<'
     }
 }
 
-impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: Encoding> SeqAccess<'de>
+impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> SeqAccess<'de>
     for BinarySequence<'b, 'de, 'res, RES, E>
 {
     type Error = DeserializeError;
@@ -620,20 +618,55 @@ fn array_len(tokens: &[BinaryToken], mut val_ind: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::{Date, DateHour};
-
     use super::*;
+    use crate::common::{Date, DateHour};
+    use crate::{Encoding, Windows1252Encoding};
     use jomini_derive::JominiDeserialize;
     use serde::{de::Deserializer, Deserialize};
     use std::collections::HashMap;
     use std::fmt;
+
+    /// The eu4 binary flavor
+    #[derive(Debug, Default)]
+    pub struct Eu4Flavor(Windows1252Encoding);
+
+    impl Eu4Flavor {
+        /// Creates a new eu4 flavor
+        pub fn new() -> Self {
+            Eu4Flavor(Windows1252Encoding::new())
+        }
+    }
+
+    impl Encoding for Eu4Flavor {
+        fn decode<'a>(&self, data: &'a [u8]) -> std::borrow::Cow<'a, str> {
+            self.0.decode(data)
+        }
+    }
+
+    impl BinaryFlavor for Eu4Flavor {
+        fn visit_f32(&self, data: [u8; 4]) -> f32 {
+            // First encoding is an i32 that has a fixed point offset of 3 decimal digits
+            i32::from_le_bytes(data) as f32 / 1000.0
+        }
+
+        fn visit_f64(&self, data: [u8; 8]) -> f64 {
+            // Second encoding is Q49.15 with 5 fractional digits
+            // https://en.wikipedia.org/wiki/Q_(number_format)
+            let val = i64::from_le_bytes(data) as f64 / 32768.0;
+            (val * 10_0000.0).round() / 10_0000.0
+        }
+    }
+
+    fn eu4_builder() -> BinaryDeserializerBuilder<Eu4Flavor> {
+        BinaryDeserializerBuilder::with_flavor(Eu4Flavor::new())
+    }
 
     fn from_slice<'a, 'res: 'a, RES, T>(data: &'a [u8], resolver: &'res RES) -> Result<T, Error>
     where
         T: Deserialize<'a>,
         RES: TokenResolver,
     {
-        BinaryDeserializer::eu4_builder().from_slice(data, resolver)
+        eu4_builder().from_slice(data, resolver)
     }
 
     #[test]
@@ -1226,7 +1259,7 @@ mod tests {
         }
 
         let map: HashMap<u16, String> = HashMap::new();
-        let actual: Result<MyStruct, _> = BinaryDeserializer::eu4_builder()
+        let actual: Result<MyStruct, _> = eu4_builder()
             .on_failed_resolve(FailedResolveStrategy::Error)
             .from_slice(&data[..], &map);
         assert!(actual.is_err());
@@ -1239,7 +1272,7 @@ mod tests {
         ];
 
         let map: HashMap<u16, String> = HashMap::new();
-        let actual: HashMap<String, &str> = BinaryDeserializer::eu4_builder()
+        let actual: HashMap<String, &str> = eu4_builder()
             .on_failed_resolve(FailedResolveStrategy::Stringify)
             .from_slice(&data[..], &map)
             .unwrap();

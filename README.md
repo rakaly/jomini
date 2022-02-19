@@ -62,17 +62,42 @@ assert_eq!(actual, expected);
 
 ## Binary Parsing
 
-Parsing data encoded in the binary format is done in a similar fashion but with an extra step.
-Tokens can be encoded into 16 integers, and so one must provide a map from these integers to their
-textual representations
+Parsing data encoded in the binary format is done in a similar fashion but with a couple extra steps for the caller to supply:
+
+- How text should be decoded (typically Windows-1252 or UTF-8)
+- How rational (floating point) numbers are decoded
+- How tokens, which are 16 bit integers that uniquely identify strings, are resolved
+
+Implementors be warned, not only does each Paradox game have a different binary format, but the binary format can vary between patches!
+
+Below is an example that defines a sample binary format and uses a hashmap token lookup.
 
 ```rust
-use jomini::{JominiDeserialize, BinaryDeserializer};
-use std::collections::HashMap;
+use jomini::{BinaryDeserializer, BinaryFlavor, Encoding, JominiDeserialize, Windows1252Encoding};
+use std::{borrow::Cow, collections::HashMap};
 
 #[derive(JominiDeserialize, PartialEq, Debug)]
 struct MyStruct {
     field1: String,
+}
+
+#[derive(Debug, Default)]
+pub struct BinaryTestFlavor;
+
+impl BinaryFlavor for BinaryTestFlavor {
+    fn visit_f32(&self, data: [u8; 4]) -> f32 {
+        f32::from_le_bytes(data)
+    }
+
+    fn visit_f64(&self, data: [u8; 8]) -> f64 {
+        f64::from_le_bytes(data)
+    }
+}
+
+impl Encoding for BinaryTestFlavor {
+    fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
+        Windows1252Encoding::decode(data)
+    }
 }
 
 let data = [ 0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47 ];
@@ -80,7 +105,8 @@ let data = [ 0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47 ];
 let mut map = HashMap::new();
 map.insert(0x2d82, "field1");
 
-let actual: MyStruct = BinaryDeserializer::from_eu4(&data[..], &map)?;
+let actual: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+    .from_slice(&data[..], &map)?;
 assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
 ```
 

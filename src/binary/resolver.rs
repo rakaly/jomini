@@ -46,6 +46,12 @@ impl<T: TokenResolver> TokenResolver for &'_ T {
     }
 }
 
+impl<T: TokenResolver + ?Sized> TokenResolver for Box<T> {
+    fn resolve(&self, token: u16) -> Option<&str> {
+        (**self).resolve(token)
+    }
+}
+
 /// Customize how the deserializer reacts when a token can't be resolved
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum FailedResolveStrategy {
