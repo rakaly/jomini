@@ -1,3 +1,35 @@
+## v0.17.0 - 2022-02-19
+
+**Breaking change for only users of the binary API**
+
+Instead of:
+
+```rust
+BinaryDeserializer::from_eu4(/* ... */)
+```
+
+write
+
+```rust
+BinaryDeserializer::builder_flavor(InsertFlavorHere)
+    .from_slice(/* ... */);
+```
+
+Instead of:
+
+```rust
+BinaryTape::from_eu4(/* ... */)
+```
+
+write:
+
+```rust
+BinaryTape::from_slice(/* ... */)
+```
+
+These changes are necessary as a binary flavor may change between game patches, so this avoids
+needing to reparse the binary data when the flavor is unknown.
+
 ## v0.16.4 - 2021-09-07
 
 - Added `#[jomini(take_last)]` attribute to use the last instance when duplicate fields are encountered
