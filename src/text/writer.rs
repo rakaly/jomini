@@ -208,7 +208,6 @@ where
         };
 
         self.write_epilogue()?;
-        self.state = WRITE_STATE_NEXT[self.state as usize];
         Ok(())
     }
 
@@ -253,7 +252,6 @@ where
         self.write_preamble()?;
         self.writer.write_all(data)?;
         self.write_epilogue()?;
-        self.state = WRITE_STATE_NEXT[self.state as usize];
         Ok(())
     }
 
@@ -292,7 +290,6 @@ where
         self.writer.write_all(b"\"")?;
         self.scratch = esc.buffer();
         self.write_epilogue()?;
-        self.state = WRITE_STATE_NEXT[self.state as usize];
         Ok(())
     }
 
@@ -313,7 +310,6 @@ where
         self.write_preamble()?;
         write!(self.writer, "{}", data)?;
         self.write_epilogue()?;
-        self.state = WRITE_STATE_NEXT[self.state as usize];
         Ok(())
     }
 
@@ -334,7 +330,6 @@ where
         self.write_preamble()?;
         write!(self.writer, "{}", data)?;
         self.write_epilogue()?;
-        self.state = WRITE_STATE_NEXT[self.state as usize];
         Ok(())
     }
 
@@ -355,7 +350,6 @@ where
         self.write_preamble()?;
         write!(self.writer, "{}", data)?;
         self.write_epilogue()?;
-        self.state = WRITE_STATE_NEXT[self.state as usize];
         Ok(())
     }
 
@@ -376,7 +370,6 @@ where
         self.write_preamble()?;
         self.visitor.visit_f32(&mut self.writer, data)?;
         self.write_epilogue()?;
-        self.state = WRITE_STATE_NEXT[self.state as usize];
         Ok(())
     }
 
@@ -397,7 +390,6 @@ where
         self.write_preamble()?;
         self.visitor.visit_f64(&mut self.writer, data)?;
         self.write_epilogue()?;
-        self.state = WRITE_STATE_NEXT[self.state as usize];
         Ok(())
     }
 
@@ -468,7 +460,6 @@ where
         self.write_preamble()?;
         self.writer.write_fmt(fmt)?;
         self.write_epilogue()?;
-        self.state = WRITE_STATE_NEXT[self.state as usize];
         Ok(())
     }
 
@@ -512,10 +503,12 @@ where
 
     /// If the next state will be a key, a key should be preceeded by a line terminator
     fn write_epilogue(&mut self) -> Result<(), Error> {
-        if WRITE_STATE_NEXT[self.state as usize] == WriteState::Key {
+        let next = WRITE_STATE_NEXT[self.state as usize];
+        if next == WriteState::Key {
             self.write_line_terminator()?;
         }
 
+        self.state = next;
         Ok(())
     }
 
