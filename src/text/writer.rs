@@ -1250,4 +1250,26 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn test_non_ascii_tape_write() -> Result<(), Box<dyn Error>> {
+        let data = b"name=\"'Abb\xe2 Osmanoglu\"\n";
+        let tape = TextTape::from_slice(data)?;
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_tape(&tape)?;
+        assert_eq!(&out, data);
+        Ok(())
+    }
+
+    #[test]
+    fn test_non_ascii_obj_tape_write() -> Result<(), Box<dyn Error>> {
+        let data = b"obj={\n  name=\"'Abb\xe2 Osmanoglu\"\n}\n";
+        let tape = TextTape::from_slice(data)?;
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_tape(&tape)?;
+        assert_eq!(&out, data);
+        Ok(())
+    }
 }
