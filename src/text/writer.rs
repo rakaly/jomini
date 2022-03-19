@@ -4,46 +4,12 @@ use crate::{
 };
 use std::{fmt::Arguments, io::Write, ops::Deref};
 
-/// Customizes writer behavior at a field level
-pub trait WriteVisitor {
-    /// Defines how 32 bit data is written
-    fn visit_f32<W>(&self, writer: W, data: f32) -> Result<(), Error>
-    where
-        W: Write;
-
-    /// Defines how 64 bit data is written
-    fn visit_f64<W>(&self, writer: W, data: f64) -> Result<(), Error>
-    where
-        W: Write;
-}
-
-/// The default writer that will write floating point at full representation
-#[derive(Debug)]
-pub struct DefaultWriteVisitor;
-
-impl WriteVisitor for DefaultWriteVisitor {
-    fn visit_f32<W>(&self, mut writer: W, data: f32) -> Result<(), Error>
-    where
-        W: Write,
-    {
-        write!(writer, "{}", data).map_err(|e| e.into())
-    }
-
-    fn visit_f64<W>(&self, mut writer: W, data: f64) -> Result<(), Error>
-    where
-        W: Write,
-    {
-        write!(writer, "{}", data).map_err(|e| e.into())
-    }
-}
-
 /// Write data in PDS format.
 ///
 /// Instantiated via `TextWriterBuilder`
 #[derive(Debug)]
-pub struct TextWriter<W, V> {
+pub struct TextWriter<W> {
     writer: W,
-    visitor: V,
     scratch: Vec<u8>,
     mode: DepthMode,
     depth: Vec<DepthMode>,
@@ -103,10 +69,9 @@ const WRITE_STATE_NEXT: [WriteState; 9] = [
     WriteState::HiddenObjectKey,
 ];
 
-impl<W, V> TextWriter<W, V>
+impl<W> TextWriter<W>
 where
     W: Write,
-    V: WriteVisitor,
 {
     /// Get inner writer, keeping ownership
     pub fn inner(&mut self) -> &mut W {
@@ -347,7 +312,7 @@ where
         Ok(())
     }
 
-    /// Write a 32 bit floating point according to the visitor
+    /// Write a 32 bit floating point at full precision
     ///
     /// ```
     /// use jomini::TextWriterBuilder;
@@ -361,13 +326,27 @@ where
     /// # }
     /// ```
     pub fn write_f32(&mut self, data: f32) -> Result<(), Error> {
-        self.write_preamble()?;
-        self.visitor.visit_f32(&mut self.writer, data)?;
-        self.write_epilogue()?;
-        Ok(())
+        write!(self, "{}", data)
     }
 
-    /// Write a 64 bit floating point according to the visitor
+    /// Write a 32 bit floating point at a given precision
+    ///
+    /// ```
+    /// use jomini::TextWriterBuilder;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut out: Vec<u8> = Vec::new();
+    /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+    /// writer.write_unquoted(b"morale")?;
+    /// writer.write_f32_precision(4.0, 3);
+    /// assert_eq!(&out, b"morale=4.000");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn write_f32_precision(&mut self, data: f32, precision: usize) -> Result<(), Error> {
+        write!(self, "{0:.1$}", data, precision)
+    }
+
+    /// Write a 64 bit floating point at full precision
     ///
     /// ```
     /// use jomini::TextWriterBuilder;
@@ -381,10 +360,24 @@ where
     /// # }
     /// ```
     pub fn write_f64(&mut self, data: f64) -> Result<(), Error> {
-        self.write_preamble()?;
-        self.visitor.visit_f64(&mut self.writer, data)?;
-        self.write_epilogue()?;
-        Ok(())
+        write!(self, "{}", data)
+    }
+
+    /// Write a 64 bit floating point at a given precision
+    ///
+    /// ```
+    /// use jomini::TextWriterBuilder;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut out: Vec<u8> = Vec::new();
+    /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+    /// writer.write_unquoted(b"morale")?;
+    /// writer.write_f64_precision(4.0, 3);
+    /// assert_eq!(&out, b"morale=4.000");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn write_f64_precision(&mut self, data: f64, precision: usize) -> Result<(), Error> {
+        write!(self, "{0:.1$}", data, precision)
     }
 
     /// Write a header.
@@ -687,22 +680,12 @@ impl TextWriterBuilder {
     }
 
     /// Construct a text writer from a builder and a writer.
-    pub fn from_writer<R>(&self, writer: R) -> TextWriter<R, DefaultWriteVisitor>
+    pub fn from_writer<R>(&self, writer: R) -> TextWriter<R>
     where
         R: Write,
-    {
-        self.from_writer_visitor(writer, DefaultWriteVisitor)
-    }
-
-    /// Construct a text writer from a builder, writer, and visitor.
-    pub fn from_writer_visitor<R, V>(&self, writer: R, visitor: V) -> TextWriter<R, V>
-    where
-        R: Write,
-        V: WriteVisitor,
     {
         TextWriter {
             writer,
-            visitor,
             scratch: Vec::new(),
             state: WriteState::Key,
             mode: DepthMode::Object,
@@ -887,29 +870,12 @@ mod tests {
 
     #[test]
     fn write_alternative_float_format() -> Result<(), Box<dyn Error>> {
-        struct Eu4Writer;
-        impl WriteVisitor for Eu4Writer {
-            fn visit_f32<W>(&self, mut writer: W, data: f32) -> Result<(), crate::Error>
-            where
-                W: Write,
-            {
-                write!(writer, "{:.3}", data).map_err(|e| e.into())
-            }
-
-            fn visit_f64<W>(&self, mut writer: W, data: f64) -> Result<(), crate::Error>
-            where
-                W: Write,
-            {
-                write!(writer, "{:.5}", data).map_err(|e| e.into())
-            }
-        }
-
         let mut out: Vec<u8> = Vec::new();
-        let mut writer = TextWriterBuilder::new().from_writer_visitor(&mut out, Eu4Writer);
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_unquoted(b"morale")?;
-        writer.write_f32(1.0)?;
+        writer.write_f32_precision(1.0, 3)?;
         writer.write_unquoted(b"strength")?;
-        writer.write_f64(1.0)?;
+        writer.write_f64_precision(1.0, 5)?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
             "morale=1.000\nstrength=1.00000"
@@ -1119,10 +1085,7 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
-        assert_eq!(
-            std::str::from_utf8(&out).unwrap(),
-            "vals={\n  1 a=b d=f\n}"
-        );
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "vals={\n  1 a=b d=f\n}");
         Ok(())
     }
 
