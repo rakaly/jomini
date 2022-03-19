@@ -50,7 +50,7 @@ pub struct TextWriter<W, V> {
     state: WriteState,
     indent_char: u8,
     indent_factor: u8,
-    just_wrote_line_terminator: bool,
+    needs_line_terminator: bool,
 }
 
 /// Construct a customized text writer
@@ -62,7 +62,7 @@ pub struct TextWriter<W, V> {
 /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
 /// writer.write_unquoted(b"hello")?;
 /// writer.write_unquoted(b"world")?;
-/// assert_eq!(std::str::from_utf8(&out).unwrap(), "hello=world\n");
+/// assert_eq!(std::str::from_utf8(&out).unwrap(), "hello=world");
 /// # Ok(())
 /// # }
 /// ```
@@ -127,15 +127,10 @@ where
 
     /// Write out the start of an object
     pub fn write_object_start(&mut self) -> Result<(), Error> {
-        if self.mode == DepthMode::Object || self.state == WriteState::ArrayValueFirst {
-            self.write_preamble()?;
-        } else if self.state != WriteState::ArrayValueFirst {
-            self.write_indent()?;
-        }
-
+        self.write_preamble()?;
         self.writer.write_all(b"{")?;
         self.depth.push(self.mode);
-        self.just_wrote_line_terminator = false;
+        self.needs_line_terminator = true;
         self.mode = DepthMode::Object;
         self.state = WriteState::FirstKey;
         Ok(())
@@ -155,6 +150,7 @@ where
         self.depth.push(self.mode);
         self.mode = DepthMode::Array;
         self.state = WriteState::ArrayValueFirst;
+        self.needs_line_terminator = true;
         Ok(())
     }
 
@@ -172,16 +168,14 @@ where
         }
 
         if old_state != WriteState::ArrayValueFirst && old_state != WriteState::FirstKey {
-            self.write_line_terminator()?;
+            self.writer.write_all(b"\n")?;
             self.write_indent()?;
         } else {
             self.writer.write_all(b" ")?;
         }
 
         self.writer.write_all(b"}")?;
-        self.just_wrote_line_terminator = false;
-        self.write_line_terminator()?;
-
+        self.needs_line_terminator = true;
         Ok(())
     }
 
@@ -196,7 +190,7 @@ where
     /// writer.write_bool(true)?;
     /// writer.write_unquoted(b"foo")?;
     /// writer.write_bool(false)?;
-    /// assert_eq!(&out, b"hello=yes\nfoo=no\n");
+    /// assert_eq!(&out, b"hello=yes\nfoo=no");
     /// # Ok(())
     /// # }
     /// ```
@@ -221,7 +215,7 @@ where
     /// writer.write_unquoted(b"a")?;
     /// writer.write_operator(Operator::LessThan)?;
     /// writer.write_unquoted(b"b")?;
-    /// assert_eq!(&out, b"a < b\n");
+    /// assert_eq!(&out, b"a < b");
     /// # Ok(())
     /// # }
     /// ```
@@ -244,7 +238,7 @@ where
     /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
     /// writer.write_unquoted(b"a")?;
     /// writer.write_unquoted(b"b")?;
-    /// assert_eq!(&out, b"a=b\n");
+    /// assert_eq!(&out, b"a=b");
     /// # Ok(())
     /// # }
     /// ```
@@ -273,7 +267,7 @@ where
     /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
     /// writer.write_quoted(b"name")?;
     /// writer.write_quoted(br#"captain "joe" rogers"#)?;
-    /// assert_eq!(&out, b"name=\"captain \\\"joe\\\" rogers\"\n");
+    /// assert_eq!(&out, b"name=\"captain \\\"joe\\\" rogers\"");
     /// # Ok(())
     /// # }
     /// ```
@@ -302,7 +296,7 @@ where
     /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
     /// writer.write_unquoted(b"stability")?;
     /// writer.write_i32(-3);
-    /// assert_eq!(&out, b"stability=-3\n");
+    /// assert_eq!(&out, b"stability=-3");
     /// # Ok(())
     /// # }
     /// ```
@@ -322,7 +316,7 @@ where
     /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
     /// writer.write_unquoted(b"stability")?;
     /// writer.write_u32(3);
-    /// assert_eq!(&out, b"stability=3\n");
+    /// assert_eq!(&out, b"stability=3");
     /// # Ok(())
     /// # }
     /// ```
@@ -342,7 +336,7 @@ where
     /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
     /// writer.write_unquoted(b"seed")?;
     /// writer.write_u64(1000000000000);
-    /// assert_eq!(&out, b"seed=1000000000000\n");
+    /// assert_eq!(&out, b"seed=1000000000000");
     /// # Ok(())
     /// # }
     /// ```
@@ -362,7 +356,7 @@ where
     /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
     /// writer.write_unquoted(b"morale")?;
     /// writer.write_f32(4.566);
-    /// assert_eq!(&out, b"morale=4.566\n");
+    /// assert_eq!(&out, b"morale=4.566");
     /// # Ok(())
     /// # }
     /// ```
@@ -382,7 +376,7 @@ where
     /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
     /// writer.write_unquoted(b"strength")?;
     /// writer.write_f64(6790.35609);
-    /// assert_eq!(&out, b"strength=6790.35609\n");
+    /// assert_eq!(&out, b"strength=6790.35609");
     /// # Ok(())
     /// # }
     /// ```
@@ -411,7 +405,7 @@ where
     /// writer.write_i32(200)?;
     /// writer.write_i32(50)?;
     /// writer.write_end()?;
-    /// assert_eq!(&out, b"color=rgb {\n  100 200 50\n}\n");
+    /// assert_eq!(&out, b"color=rgb {\n  100 200 50\n}");
     /// # Ok(())
     /// # }
     /// ```
@@ -433,7 +427,7 @@ where
     /// let date = Date::from_ymd(1444, 11, 11);
     /// writer.write_unquoted(b"start")?;
     /// writer.write_date(date.game_fmt())?;
-    /// assert_eq!(&out, b"start=1444.11.11\n");
+    /// assert_eq!(&out, b"start=1444.11.11");
     /// # Ok(())
     /// # }
     /// ```
@@ -452,7 +446,7 @@ where
     /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
     /// writer.write_unquoted(b"start")?;
     /// write!(writer, "unknown_{}", 5)?;
-    /// assert_eq!(&out, b"start=unknown_5\n");
+    /// assert_eq!(&out, b"start=unknown_5");
     /// # Ok(())
     /// # }
     /// ```
@@ -464,18 +458,20 @@ where
     }
 
     fn write_line_terminator(&mut self) -> Result<(), Error> {
-        if !self.just_wrote_line_terminator {
+        if self.needs_line_terminator {
             self.writer.write_all(b"\n")?;
-            self.just_wrote_line_terminator = true;
+            self.needs_line_terminator = false;
         }
 
         Ok(())
     }
 
     fn write_preamble(&mut self) -> Result<(), Error> {
+        let just_wrote_line_terminator = self.needs_line_terminator;
+        self.write_line_terminator()?;
         match self.state {
             WriteState::ArrayValue => {
-                if self.just_wrote_line_terminator {
+                if just_wrote_line_terminator {
                     self.write_indent()?;
                 } else {
                     self.writer.write_all(b" ")?;
@@ -491,24 +487,18 @@ where
                 self.writer.write_all(b"=")?;
             }
             WriteState::ArrayValueFirst | WriteState::FirstKey => {
-                self.write_line_terminator()?;
                 self.write_indent()?;
             }
             _ => {}
         };
 
-        self.just_wrote_line_terminator = false;
         Ok(())
     }
 
-    /// If the next state will be a key, a key should be preceeded by a line terminator
+    /// advance the state
     fn write_epilogue(&mut self) -> Result<(), Error> {
-        let next = WRITE_STATE_NEXT[self.state as usize];
-        if next == WriteState::Key {
-            self.write_line_terminator()?;
-        }
-
-        self.state = next;
+        self.state = WRITE_STATE_NEXT[self.state as usize];
+        self.needs_line_terminator = self.state == WriteState::Key;
         Ok(())
     }
 
@@ -531,7 +521,7 @@ where
     /// let mut out: Vec<u8> = Vec::new();
     /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
     /// writer.write_tape(&tape)?;
-    /// assert_eq!(&out, b"hello=world\n");
+    /// assert_eq!(&out, b"hello=world");
     /// # Ok(())
     /// # }
     /// ```
@@ -554,33 +544,31 @@ where
                     self.write_preamble()?;
                     write!(self.writer, "[[")?;
                     self.writer.write_all(x.as_bytes())?;
-                    self.writer.write_all(b"]")?;
+                    self.writer.write_all(b"]\n")?;
 
                     if let Ok(obj) = value.read_object() {
                         self.write_object_core(obj)?;
+                        self.writer.write_all(b"\n")?;
                         self.write_indent()?;
                     } else {
                         self.write_value(value)?;
                     }
                     self.writer.write_all(b"]")?;
-                    self.just_wrote_line_terminator = false;
-                    self.write_line_terminator()?;
                 }
                 TextToken::UndefinedParameter(x) => {
                     self.write_preamble()?;
                     write!(self.writer, "[[!")?;
                     self.writer.write_all(x.as_bytes())?;
-                    self.writer.write_all(b"]")?;
+                    self.writer.write_all(b"]\n")?;
 
                     if let Ok(obj) = value.read_object() {
                         self.write_object_core(obj)?;
+                        self.writer.write_all(b"\n")?;
                         self.write_indent()?;
                     } else {
                         self.write_value(value)?;
                     }
                     self.writer.write_all(b"]")?;
-                    self.just_wrote_line_terminator = false;
-                    self.write_line_terminator()?;
                 }
                 TextToken::Quoted(x) => {
                     // quoted keys really shouldn't happen but when they do
@@ -721,7 +709,7 @@ impl TextWriterBuilder {
             depth: Vec::with_capacity(16),
             indent_char: self.indent_char,
             indent_factor: self.indent_factor,
-            just_wrote_line_terminator: false,
+            needs_line_terminator: false,
         }
     }
 }
@@ -814,7 +802,7 @@ mod tests {
         assert!(writer.expecting_key());
         writer.write_unquoted(b"foo")?;
         writer.write_unquoted(b"bar")?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "hello=world\nfoo=bar\n");
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "hello=world\nfoo=bar");
         Ok(())
     }
 
@@ -829,7 +817,7 @@ mod tests {
         writer.write_end()?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "hello={\n  world foo\n}\n"
+            "hello={\n  world foo\n}"
         );
         Ok(())
     }
@@ -844,7 +832,7 @@ mod tests {
         writer.write_end()?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "hello={\n  \"The Punic Wars\"\n}\n"
+            "hello={\n  \"The Punic Wars\"\n}"
         );
         Ok(())
     }
@@ -857,7 +845,7 @@ mod tests {
         writer.write_bool(true)?;
         writer.write_unquoted(b"foo")?;
         writer.write_bool(false)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "hello=yes\nfoo=no\n");
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "hello=yes\nfoo=no");
         Ok(())
     }
 
@@ -879,7 +867,7 @@ mod tests {
         writer.write_unquoted(b"h")?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "a < b\nc <= f\nd > g\ne >= h\n"
+            "a < b\nc <= f\nd > g\ne >= h"
         );
         Ok(())
     }
@@ -892,7 +880,7 @@ mod tests {
         writer.write_quoted(br#"captain "joe" rogers"#)?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "name=\"captain \\\"joe\\\" rogers\"\n"
+            "name=\"captain \\\"joe\\\" rogers\""
         );
         Ok(())
     }
@@ -924,7 +912,7 @@ mod tests {
         writer.write_f64(1.0)?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "morale=1.000\nstrength=1.00000\n"
+            "morale=1.000\nstrength=1.00000"
         );
         Ok(())
     }
@@ -947,7 +935,7 @@ mod tests {
         writer.write_unquoted(b"b")?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "data={\n  id={\n    id=10\n  }\n  name=world\n}\na=b\n"
+            "data={\n  id={\n    id=10\n  }\n  name=world\n}\na=b"
         );
         Ok(())
     }
@@ -970,7 +958,7 @@ mod tests {
         writer.write_unquoted(b"b")?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "data={\n  settings={\n    0 1\n  }\n  name=world\n}\na=b\n"
+            "data={\n  settings={\n    0 1\n  }\n  name=world\n}\na=b"
         );
         Ok(())
     }
@@ -988,7 +976,7 @@ mod tests {
         writer.write_end()?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "data={\n  { }\n  { }\n}\n"
+            "data={\n  { }\n  { }\n}"
         );
         Ok(())
     }
@@ -1011,7 +999,7 @@ mod tests {
 
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "data={\n  {\n    a=b\n  }\n  {\n    c=d\n  }\n}\n"
+            "data={\n  {\n    a=b\n  }\n  {\n    c=d\n  }\n}"
         );
         Ok(())
     }
@@ -1033,7 +1021,7 @@ mod tests {
         writer.write_unquoted(b"b")?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "data={\n  10 d=e f=g\n}\na=b\n"
+            "data={\n  10 d=e f=g\n}\na=b"
         );
         Ok(())
     }
@@ -1046,7 +1034,7 @@ mod tests {
         writer.write_array_start()?;
         writer.write_end()?;
 
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "data={ }\n");
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "data={ }");
         Ok(())
     }
 
@@ -1059,7 +1047,7 @@ mod tests {
         assert!(writer.expecting_key());
         writer.write_end()?;
 
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "data={ }\n");
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "data={ }");
         Ok(())
     }
 
@@ -1084,7 +1072,7 @@ mod tests {
         writer.write_unquoted(b"b")?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "data={\n\tsettings={\n\t\t0 1\n\t}\n\tname=world\n}\na=b\n"
+            "data={\n\tsettings={\n\t\t0 1\n\t}\n\tname=world\n}\na=b"
         );
         Ok(())
     }
@@ -1095,7 +1083,7 @@ mod tests {
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_unquoted(b"hello")?;
         write!(writer, "__unknown_{}", 5)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "hello=__unknown_5\n");
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "hello=__unknown_5");
         Ok(())
     }
 
@@ -1108,7 +1096,7 @@ mod tests {
         writer.write_tape(&tape)?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "army={\n  name=abc\n}\narmy={\n  name=def\n}\n"
+            "army={\n  name=abc\n}\narmy={\n  name=def\n}"
         );
         Ok(())
     }
@@ -1120,7 +1108,7 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "vals={\n  1 2\n}\n");
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "vals={\n  1 2\n}");
         Ok(())
     }
 
@@ -1133,7 +1121,7 @@ mod tests {
         writer.write_tape(&tape)?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "vals={\n  1 a=b d=f\n}\n"
+            "vals={\n  1 a=b d=f\n}"
         );
         Ok(())
     }
@@ -1147,7 +1135,7 @@ mod tests {
         writer.write_tape(&tape)?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "color=rgb {\n  100 50 200\n}\n"
+            "color=rgb {\n  100 50 200\n}"
         );
         Ok(())
     }
@@ -1161,7 +1149,7 @@ mod tests {
         writer.write_tape(&tape)?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "generate_advisor={\n  [[scaled_skill]\n  a=b\n  ]\n}\n"
+            "generate_advisor={\n  [[scaled_skill]\n  a=b\n  ]\n}"
         );
         Ok(())
     }
@@ -1175,7 +1163,7 @@ mod tests {
         writer.write_tape(&tape)?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "generate_advisor={\n  [[!scaled_skill]\n  a=b\n  ]\n}\n"
+            "generate_advisor={\n  [[!scaled_skill]\n  a=b\n  ]\n}"
         );
         Ok(())
     }
@@ -1187,7 +1175,7 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "a=\"\"\n");
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "a=\"\"");
         Ok(())
     }
 
@@ -1198,7 +1186,7 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "\"\"=a\n");
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "\"\"=a");
         Ok(())
     }
 
@@ -1239,14 +1227,14 @@ mod tests {
         writer.write_date(date2.game_fmt())?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "date=1936.1.1.1\ndate2=1936.1.1.24\n"
+            "date=1936.1.1.1\ndate2=1936.1.1.24"
         );
         Ok(())
     }
 
     #[test]
     fn test_non_ascii_tape_write() -> Result<(), Box<dyn Error>> {
-        let data = b"name=\"'Abb\xe2 Osmanoglu\"\n";
+        let data = b"name=\"'Abb\xe2 Osmanoglu\"";
         let tape = TextTape::from_slice(data)?;
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
@@ -1257,7 +1245,7 @@ mod tests {
 
     #[test]
     fn test_non_ascii_obj_tape_write() -> Result<(), Box<dyn Error>> {
-        let data = b"obj={\n  name=\"'Abb\xe2 Osmanoglu\"\n}\n";
+        let data = b"obj={\n  name=\"'Abb\xe2 Osmanoglu\"\n}";
         let tape = TextTape::from_slice(data)?;
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
