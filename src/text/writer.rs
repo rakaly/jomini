@@ -218,9 +218,6 @@ where
     /// out is assumed to already be in the correct encoding (windows-1252 or
     /// UTF-8)
     ///
-    /// Also if one tries to write a quoted field as a key this method
-    /// will redirect to the unquoted variant
-    ///
     /// ```
     /// use jomini::TextWriterBuilder;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -228,15 +225,11 @@ where
     /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
     /// writer.write_quoted(b"name")?;
     /// writer.write_quoted(br#"captain "joe" rogers"#)?;
-    /// assert_eq!(&out, b"name=\"captain \\\"joe\\\" rogers\"");
+    /// assert_eq!(&out, b"\"name\"=\"captain \\\"joe\\\" rogers\"");
     /// # Ok(())
     /// # }
     /// ```
     pub fn write_quoted(&mut self, data: &[u8]) -> Result<(), Error> {
-        if self.expecting_key() {
-            return self.write_unquoted(data);
-        }
-
         self.write_preamble()?;
         let esc_buf = self.scratch.split_off(0);
         let esc = escape(data, esc_buf);
@@ -551,10 +544,7 @@ where
                     self.writer.write_all(b"]")?;
                 }
                 TextToken::Quoted(x) => {
-                    // quoted keys really shouldn't happen but when they do
-                    // we should make sure to preserve them. This is different
-                    // behavior than writing by hand.
-                    self.force_write_quotes(x.as_bytes())?;
+                    self.write_escaped_quotes(x.as_bytes())?;
                     if let Some(op) = op {
                         self.write_operator(op)?;
                     }
@@ -575,14 +565,13 @@ where
         Ok(())
     }
 
-    fn force_write_quotes(&mut self, x: &[u8]) -> Result<(), Error> {
-        let mut scratch = self.scratch.split_off(0);
-        scratch.clear();
-        scratch.push(b'"');
-        scratch.extend_from_slice(x);
-        scratch.push(b'"');
-        self.write_unquoted(&scratch)?;
-        self.scratch = scratch;
+    // For when the data is already escaped
+    fn write_escaped_quotes(&mut self, x: &[u8]) -> Result<(), Error> {
+        self.write_preamble()?;
+        self.writer.write_all(b"\"")?;
+        self.writer.write_all(x)?;
+        self.writer.write_all(b"\"")?;
+        self.write_epilogue()?;
         Ok(())
     }
 
@@ -602,7 +591,7 @@ where
                 self.write_unquoted(x.as_bytes())?;
             }
             TextToken::Quoted(x) => {
-                self.force_write_quotes(x.as_bytes())?;
+                self.write_escaped_quotes(x.as_bytes())?;
             }
             TextToken::Parameter(_) => unreachable!(),
             TextToken::UndefinedParameter(_) => unreachable!(),
@@ -850,7 +839,7 @@ mod tests {
         writer.write_quoted(br#"captain "joe" rogers"#)?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "name=\"captain \\\"joe\\\" rogers\""
+            "\"name\"=\"captain \\\"joe\\\" rogers\""
         );
         Ok(())
     }
