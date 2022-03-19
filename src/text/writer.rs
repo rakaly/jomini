@@ -773,7 +773,7 @@ fn escape(data: &[u8], mut buffer: Vec<u8>) -> ReuseVec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::{DateHour, PdsDate};
+    use crate::common::{Date, DateHour, PdsDate};
     use std::error::Error;
 
     #[test]
@@ -879,6 +879,34 @@ mod tests {
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
             "morale=1.000\nstrength=1.00000"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn write_primitives() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_unquoted(b"primitives")?;
+        writer.write_object_start()?;
+        writer.write_unquoted(b"bool")?;
+        writer.write_bool(true)?;
+        writer.write_unquoted(b"date")?;
+        writer.write_date(Date::from_ymd(1444, 11, 11).game_fmt())?;
+        writer.write_unquoted(b"f32")?;
+        writer.write_f32(1.)?;
+        writer.write_unquoted(b"f64")?;
+        writer.write_f64(2.)?;
+        writer.write_unquoted(b"i32")?;
+        writer.write_i32(3)?;
+        writer.write_unquoted(b"u32")?;
+        writer.write_u32(4)?;
+        writer.write_unquoted(b"u64")?;
+        writer.write_u32(5)?;
+        writer.write_end()?;
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "primitives={\n  bool=yes\n  date=1444.11.11\n  f32=1\n  f64=2\n  i32=3\n  u32=4\n  u64=5\n}"
         );
         Ok(())
     }
