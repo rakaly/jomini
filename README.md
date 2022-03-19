@@ -178,7 +178,7 @@ let tape = TextTape::from_slice(b"hello   = world")?;
 let mut out: Vec<u8> = Vec::new();
 let mut writer = TextWriterBuilder::new().from_writer(&mut out);
 writer.write_tape(&tape)?;
-assert_eq!(&out, b"hello=world\n");
+assert_eq!(&out, b"hello=world");
 ```
 
 The writer normalizes any formatting issues. The writer is not able to
@@ -197,7 +197,7 @@ writer.write_unquoted(b"hello")?;
 writer.write_unquoted(b"world")?;
 writer.write_unquoted(b"foo")?;
 writer.write_unquoted(b"bar")?;
-assert_eq!(&out, b"hello=world\nfoo=bar\n");
+assert_eq!(&out, b"hello=world\nfoo=bar");
 ```
 
 ## Unsupported Syntax
