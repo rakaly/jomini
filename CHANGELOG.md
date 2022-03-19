@@ -1,3 +1,11 @@
+## v0.18.0 - 2022-03-19
+
+**Breaking change for only users of the write API**
+
+- `TextWriter::write_quoted` doesn't redirect to an unquoted write if a key is expected
+- Omit terminating newline from written output
+- Remove `WriteVisitor` in favor of `write_fxx_precision` functions (or write directly to the stream with a custom Rust format)
+
 ## v0.17.0 - 2022-02-19
 
 **Breaking change for only users of the binary API**
