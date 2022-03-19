@@ -116,7 +116,7 @@ fn trim_trailing_whitepsace(d: &[u8]) -> &[u8] {
             .iter()
             .rev()
             .position(|x| !is_whitespace(*x))
-            .unwrap_or_else(|| d.len());
+            .unwrap_or(d.len());
         &d[0..d.len() - ind]
     } else {
         d

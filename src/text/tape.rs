@@ -310,7 +310,7 @@ fn split_at_scalar_fallback(d: &[u8]) -> (Scalar, &[u8]) {
     let end_ptr = unsafe { start_ptr.add(d.len()) };
 
     let nind = unsafe { forward_search(start_ptr, end_ptr, is_boundary) };
-    let mut ind = nind.unwrap_or_else(|| d.len());
+    let mut ind = nind.unwrap_or(d.len());
 
     // To work with cases where we have "==bar" we ensure that found index is at least one
     ind = std::cmp::max(ind, 1);

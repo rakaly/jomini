@@ -189,7 +189,7 @@ fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
     let (lead, mut left) = if c.is_ascii_digit() {
         to_u64_t2(data, u64::from(c - b'0'))
     } else if c == b'.' {
-        Ok((0, if negative { &d[1..] } else { &d }))
+        Ok((0, if negative { &d[1..] } else { d }))
     } else if c == b'+' {
         to_u64_t2(data, 0)
     } else {
