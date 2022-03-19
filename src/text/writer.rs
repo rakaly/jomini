@@ -160,14 +160,10 @@ where
     /// # }
     /// ```
     pub fn write_bool(&mut self, data: bool) -> Result<(), Error> {
-        self.write_preamble()?;
         match data {
-            true => self.writer.write_all(b"yes")?,
-            false => self.writer.write_all(b"no")?,
-        };
-
-        self.write_epilogue()?;
-        Ok(())
+            true => write!(self, "yes"),
+            false => write!(self, "no"),
+        }
     }
 
     /// Write an non-equal operator
@@ -266,10 +262,7 @@ where
     /// # }
     /// ```
     pub fn write_i32(&mut self, data: i32) -> Result<(), Error> {
-        self.write_preamble()?;
-        write!(self.writer, "{}", data)?;
-        self.write_epilogue()?;
-        Ok(())
+        write!(self, "{}", data)
     }
 
     /// Write an unsigned 32bit integer.
@@ -286,10 +279,7 @@ where
     /// # }
     /// ```
     pub fn write_u32(&mut self, data: u32) -> Result<(), Error> {
-        self.write_preamble()?;
-        write!(self.writer, "{}", data)?;
-        self.write_epilogue()?;
-        Ok(())
+        write!(self, "{}", data)
     }
 
     /// Write an unsigned 64bit integer.
@@ -306,10 +296,7 @@ where
     /// # }
     /// ```
     pub fn write_u64(&mut self, data: u64) -> Result<(), Error> {
-        self.write_preamble()?;
-        write!(self.writer, "{}", data)?;
-        self.write_epilogue()?;
-        Ok(())
+        write!(self, "{}", data)
     }
 
     /// Write a 32 bit floating point at full precision
