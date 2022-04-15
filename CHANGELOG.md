@@ -1,3 +1,7 @@
+## v0.18.1 - 2022-04-15
+
+- Fix x86 heap buffer overflow on text parsing
+
 ## v0.18.0 - 2022-03-19
 
 **Breaking change for only users of the write API**
