@@ -273,7 +273,7 @@ fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
         let start_ptr = haystack.as_ptr();
         let mut ptr = start_ptr;
         let loop_size = std::mem::size_of::<__m128i>();
-        let end_ptr = start_ptr.add(d.len() / loop_size * loop_size);
+        let end_ptr = start_ptr.add(haystack.len() / loop_size * loop_size);
         let quote = _mm_set1_epi8(b'"' as i8);
         let slash = _mm_set1_epi8(b'\\' as i8);
 
