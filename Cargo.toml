@@ -11,16 +11,21 @@ description = "Low level, performance oriented parser for save and game files fr
 keywords = ["eu4", "ck3", "ironman", "clausewitz"]
 exclude = ["/.github", "/assets"]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [workspace]
 members = ["jomini_derive"]
 
 [dependencies]
 serde = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
 jomini_derive = { path = "jomini_derive", version = "^0.2.2", optional = true }
 
 [features]
 default = ["derive"]
 derive = ["serde", "jomini_derive"]
+json = ["serde", "serde_json"]
 
 [dev-dependencies]
 encoding_rs = "0.8"
@@ -28,6 +33,10 @@ criterion = "0.3"
 quickcheck = "1"
 quickcheck_macros = "1"
 serde = { version = "1", features = ["derive"] }
+
+[[example]]
+name = "json"
+required-features = ["json"]
 
 [[bench]]
 name = "jomini_bench"

@@ -230,6 +230,111 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(not(feature = "json"))]
+pub fn json_benchmark(c: &mut Criterion) {}
+
+#[cfg(feature = "json")]
+pub fn json_benchmark(c: &mut Criterion) {
+    use jomini::json::{DuplicateKeyMode, JsonOptions};
+
+    let data = &METADATA_TXT["EU4txt".len()..];
+    let tape = TextTape::from_slice(data).unwrap();
+
+    let mut group = c.benchmark_group("json");
+
+    let bytes = tape.windows1252_reader().json().to_string().unwrap().len();
+    group.throughput(Throughput::Bytes(bytes as u64));
+    group.bench_function(BenchmarkId::new("preserve", "eu4"), |b| {
+        b.iter(|| tape.windows1252_reader().json().to_string().unwrap())
+    });
+
+    let bytes = tape
+        .windows1252_reader()
+        .json()
+        .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::Group))
+        .to_string()
+        .unwrap()
+        .len();
+
+    group.throughput(Throughput::Bytes(bytes as u64));
+    group.bench_function(BenchmarkId::new("group", "eu4"), |b| {
+        b.iter(|| {
+            tape.windows1252_reader()
+                .json()
+                .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::Group))
+                .to_string()
+                .unwrap()
+        })
+    });
+
+    let bytes = tape
+        .windows1252_reader()
+        .json()
+        .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::KeyValuePairs))
+        .to_string()
+        .unwrap()
+        .len();
+
+    group.throughput(Throughput::Bytes(bytes as u64));
+    group.bench_function(BenchmarkId::new("typed", "eu4"), |b| {
+        b.iter(|| {
+            tape.windows1252_reader()
+                .json()
+                .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::KeyValuePairs))
+                .to_string()
+                .unwrap()
+        })
+    });
+
+    let data = &CK3_TXT[..];
+    let tape = TextTape::from_slice(data).unwrap();
+    let bytes = tape.windows1252_reader().json().to_string().unwrap().len();
+    group.throughput(Throughput::Bytes(bytes as u64));
+    group.bench_function(BenchmarkId::new("preserve", "ck3"), |b| {
+        b.iter(|| tape.windows1252_reader().json().to_string().unwrap())
+    });
+
+    let bytes = tape
+        .windows1252_reader()
+        .json()
+        .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::Group))
+        .to_string()
+        .unwrap()
+        .len();
+
+    group.throughput(Throughput::Bytes(bytes as u64));
+    group.bench_function(BenchmarkId::new("group", "ck3"), |b| {
+        b.iter(|| {
+            tape.windows1252_reader()
+                .json()
+                .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::Group))
+                .to_string()
+                .unwrap()
+        })
+    });
+
+    let bytes = tape
+        .windows1252_reader()
+        .json()
+        .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::KeyValuePairs))
+        .to_string()
+        .unwrap()
+        .len();
+
+    group.throughput(Throughput::Bytes(bytes as u64));
+    group.bench_function(BenchmarkId::new("typed", "ck3"), |b| {
+        b.iter(|| {
+            tape.windows1252_reader()
+                .json()
+                .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::KeyValuePairs))
+                .to_string()
+                .unwrap()
+        })
+    });
+
+    group.finish();
+}
+
 pub fn date_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("eu4date-parse");
     group.bench_function("valid-date", |b| {
@@ -258,5 +363,6 @@ criterion_group!(
     to_u64_benchmark,
     to_f64_benchmark,
     date_benchmark,
+    json_benchmark,
 );
 criterion_main!(benches);

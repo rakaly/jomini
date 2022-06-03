@@ -147,6 +147,27 @@ for (key, _op, value) in reader.fields() {
 }
 ```
 
+*/
+#![cfg_attr(
+    feature = "json",
+    doc = r##"
+The mid-level API also provides the excellent utility of converting the
+plaintext Clausewitz format to JSON when the `json` feature is enabled.
+
+```rust
+use jomini::TextTape;
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let tape = TextTape::from_slice(b"foo=bar")?;
+let reader = tape.windows1252_reader();
+let actual = reader.json().to_string()?;
+assert_eq!(actual, r#"{"foo":"bar"}"#);
+# Ok(())
+# }
+```
+"##
+)]
+/*!
 ## One Level Lower
 
 At the lowest layer, one can interact with the raw data directly via `TextTape`
@@ -216,6 +237,8 @@ mod data;
 pub(crate) mod de;
 mod encoding;
 mod errors;
+#[cfg(feature = "json")]
+pub mod json;
 mod scalar;
 pub mod text;
 pub(crate) mod util;

@@ -9,6 +9,7 @@
 //! [ValuesIter](crate::text::ValuesIter)
 #[cfg(feature = "derive")]
 mod de;
+mod fnv;
 mod operator;
 mod reader;
 mod tape;

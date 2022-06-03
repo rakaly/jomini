@@ -8,6 +8,9 @@ edition = "2018"
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+json = ["jomini/json"]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 serde = { version = "1.0", features = ["derive"] }
