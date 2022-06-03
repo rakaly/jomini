@@ -1,6 +1,7 @@
 use crate::{
-    common::PdsDateFormatter, ArrayReader, Encoding, Error, ErrorKind, ObjectReader, Operator,
-    TextTape, TextToken, ValueReader,
+    common::PdsDateFormatter,
+    text::{ArrayReader, ObjectReader, Operator, ValueReader},
+    Encoding, Error, ErrorKind, TextTape, TextToken,
 };
 use std::{fmt::Arguments, io::Write, ops::Deref};
 
@@ -169,7 +170,7 @@ where
     /// Write an non-equal operator
     ///
     /// ```
-    /// use jomini::{Operator, TextWriterBuilder};
+    /// use jomini::{text::Operator, TextWriterBuilder};
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut out: Vec<u8> = Vec::new();
     /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
@@ -507,11 +508,11 @@ where
         Ok(())
     }
 
-    fn write_object_core<R>(&mut self, mut reader: ObjectReader<R>) -> Result<(), Error>
+    fn write_object_core<R>(&mut self, reader: ObjectReader<R>) -> Result<(), Error>
     where
         R: Encoding + Clone,
     {
-        while let Some((key, op, value)) = reader.next_field() {
+        for (key, op, value) in reader.fields() {
             match key.token() {
                 TextToken::Parameter(x) => {
                     self.write_preamble()?;
@@ -598,23 +599,24 @@ where
             TextToken::Operator(_) => unreachable!(),
             TextToken::End(_) => unreachable!(),
             TextToken::Header(x) => {
-                let mut arr = value.read_array().unwrap();
+                let arr = value.read_array().unwrap();
+                let mut values = arr.values();
                 self.write_header(x.as_bytes())?;
-                arr.next_value().unwrap();
-                let elem = arr.next_value().unwrap();
+                values.next().unwrap();
+                let elem = values.next().unwrap();
                 self.write_value(elem)?;
             }
         }
         Ok(())
     }
 
-    fn write_array<R>(&mut self, mut array: ArrayReader<R>) -> Result<(), Error>
+    fn write_array<R>(&mut self, array: ArrayReader<R>) -> Result<(), Error>
     where
         R: Encoding + Clone,
     {
         self.write_array_start()?;
 
-        while let Some(value) = array.next_value() {
+        for value in array.values() {
             self.write_value(value)?;
         }
 

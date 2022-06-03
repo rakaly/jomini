@@ -140,9 +140,9 @@ use jomini::TextTape;
 
 let data = b"name=aaa name=bbb core=123 name=ccc name=ddd";
 let tape = TextTape::from_slice(data).unwrap();
-let mut reader = tape.windows1252_reader();
+let reader = tape.windows1252_reader();
 
-while let Some((key, _op, value)) = reader.next_field() {
+for (key, _op, value) in reader.fields() {
     println!("{:?}={:?}", key.read_str(), value.read_str().unwrap());
 }
 ```
@@ -217,7 +217,7 @@ pub(crate) mod de;
 mod encoding;
 mod errors;
 mod scalar;
-mod text;
+pub mod text;
 pub(crate) mod util;
 
 pub use self::binary::*;
@@ -225,7 +225,10 @@ pub use self::data::Rgb;
 pub use self::encoding::*;
 pub use self::errors::*;
 pub use self::scalar::{Scalar, ScalarError};
-pub use self::text::*;
+pub use self::text::{TextTape, TextToken, TextWriter, TextWriterBuilder};
+
+#[cfg(feature = "derive")]
+pub use self::text::TextDeserializer;
 
 #[cfg(feature = "derive")]
 pub use jomini_derive::*;
