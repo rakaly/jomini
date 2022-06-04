@@ -1,41 +1,9 @@
-use crate::{data::is_boundary, ObjectReader, Utf8Encoding, Windows1252Encoding};
+use crate::{
+    data::is_boundary,
+    text::{ObjectReader, Operator},
+    Utf8Encoding, Windows1252Encoding,
+};
 use crate::{Error, ErrorKind, Scalar};
-use std::fmt::Display;
-
-/// An operator token
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum Operator {
-    /// A `<` token
-    LessThan,
-
-    /// A `<=` token
-    LessThanEqual,
-
-    /// A `>` token
-    GreaterThan,
-
-    /// A `>=` token
-    GreaterThanEqual,
-
-    /// A `!=` token
-    NotEqual,
-
-    /// A `==` token
-    Exact,
-}
-
-impl Display for Operator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            Operator::LessThan => f.write_str("<"),
-            Operator::GreaterThan => f.write_str(">"),
-            Operator::LessThanEqual => f.write_str("<="),
-            Operator::GreaterThanEqual => f.write_str(">="),
-            Operator::NotEqual => f.write_str("!="),
-            Operator::Exact => f.write_str("=="),
-        }
-    }
-}
 
 /// Represents a valid text value
 #[derive(Debug, Clone, PartialEq)]

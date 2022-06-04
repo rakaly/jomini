@@ -1,6 +1,8 @@
+use super::reader::ValuesIter;
 use crate::{
-    ArrayReader, DeserializeError, DeserializeErrorKind, Encoding, Error, ObjectReader, Reader,
-    TextTape, TextToken, Utf8Encoding, ValueReader, Windows1252Encoding,
+    text::{FieldsIter, ObjectReader, Reader, ValueReader},
+    DeserializeError, DeserializeErrorKind, Encoding, Error, TextTape, TextToken, Utf8Encoding,
+    Windows1252Encoding,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, Visitor};
 use std::borrow::Cow;
@@ -300,21 +302,11 @@ where
     {
         match self.reader() {
             Reader::Object(x) => {
-                let map = MapAccess {
-                    de: self,
-                    reader: x,
-                    value: None,
-                    at_trailer: false,
-                };
+                let map = MapAccess::new(self, x);
                 visitor.visit_map(map)
             }
             Reader::Value(x) => {
-                let map = MapAccess {
-                    de: self,
-                    reader: x.read_object()?,
-                    value: None,
-                    at_trailer: false,
-                };
+                let map = MapAccess::new(self, x.read_object()?);
                 visitor.visit_map(map)
             }
             _ => Err(DeserializeError {
@@ -333,14 +325,14 @@ where
             Reader::Value(x) => {
                 let map = SeqAccess {
                     de: self,
-                    reader: x.read_array()?,
+                    values: x.read_array()?.values(),
                 };
                 visitor.visit_seq(map)
             }
             Reader::Array(x) => {
                 let map = SeqAccess {
                     de: self,
-                    reader: x,
+                    values: x.values(),
                 };
                 visitor.visit_seq(map)
             }
@@ -454,7 +446,7 @@ where
         }?;
 
         visitor.visit_enum(VariantAccess {
-            reader: tmp,
+            values: tmp.values(),
             de: self,
         })
     }
@@ -462,9 +454,26 @@ where
 
 struct MapAccess<'a, 'de, 'tokens, E> {
     de: &'a mut InternalDeserializer<'de, 'tokens, E>,
-    reader: ObjectReader<'de, 'tokens, E>,
+    fields: FieldsIter<'de, 'tokens, E>,
     value: Option<ValueReader<'de, 'tokens, E>>,
     at_trailer: bool,
+}
+
+impl<'a, 'de: 'a, 'tokens, E> MapAccess<'a, 'de, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    fn new(
+        de: &'a mut InternalDeserializer<'de, 'tokens, E>,
+        reader: ObjectReader<'de, 'tokens, E>,
+    ) -> Self {
+        MapAccess {
+            de,
+            fields: reader.fields(),
+            value: None,
+            at_trailer: false,
+        }
+    }
 }
 
 impl<'a, 'de: 'a, 'tokens, E> de::MapAccess<'de> for MapAccess<'a, 'de, 'tokens, E>
@@ -477,13 +486,13 @@ where
     where
         K: DeserializeSeed<'de>,
     {
-        if let Some((key, _op, value)) = self.reader.next_field() {
+        if let Some((key, _op, value)) = self.fields.next() {
             self.value = Some(value);
             let old = std::mem::replace(&mut self.de.readers, Reader::Scalar(key));
             let res = seed.deserialize(&mut *self.de).map(Some);
             let _ = std::mem::replace(&mut self.de.readers, old);
             res
-        } else if !self.at_trailer && self.reader.at_trailer().is_some() {
+        } else if !self.at_trailer && self.fields.at_trailer().is_some() {
             self.at_trailer = true;
             seed.deserialize(TrailerKeyDeserializer).map(Some)
         } else {
@@ -502,7 +511,7 @@ where
             let _ = std::mem::replace(&mut self.de.readers, old);
             res
         } else {
-            let trailer = self.reader.at_trailer().unwrap();
+            let trailer = self.fields.at_trailer().unwrap();
             let old = std::mem::replace(&mut self.de.readers, Reader::Array(trailer));
             let res = seed.deserialize(&mut *self.de);
             let _ = std::mem::replace(&mut self.de.readers, old);
@@ -511,13 +520,14 @@ where
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(self.reader.fields_len())
+        let (lower, upper) = self.fields.size_hint();
+        Some(upper.unwrap_or(lower))
     }
 }
 
 struct SeqAccess<'a, 'de, 'tokens, E> {
     de: &'a mut InternalDeserializer<'de, 'tokens, E>,
-    reader: ArrayReader<'de, 'tokens, E>,
+    values: ValuesIter<'de, 'tokens, E>,
 }
 
 impl<'a, 'de: 'a, 'tokens, E> de::SeqAccess<'de> for SeqAccess<'a, 'de, 'tokens, E>
@@ -530,7 +540,7 @@ where
     where
         T: DeserializeSeed<'de>,
     {
-        if let Some(x) = self.reader.next_value() {
+        if let Some(x) = self.values.next() {
             let old = std::mem::replace(&mut self.de.readers, Reader::Value(x));
             let res = seed.deserialize(&mut *self.de).map(Some);
             let _ = std::mem::replace(&mut self.de.readers, old);
@@ -541,20 +551,21 @@ where
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(self.reader.values_len())
+        let (lower, upper) = self.values.size_hint();
+        Some(upper.unwrap_or(lower))
     }
 }
 
 struct VariantAccess<'a, 'de, 'tokens, E> {
     de: &'a mut InternalDeserializer<'de, 'tokens, E>,
-    reader: ArrayReader<'de, 'tokens, E>,
+    values: ValuesIter<'de, 'tokens, E>,
 }
 
 // There probably is a way to type this out, but I'm a bit tired this
 // morning so a macro it is
 macro_rules! enum_access {
     ($self:expr, $fun:expr) => {
-        if let Some(x) = $self.reader.next_value() {
+        if let Some(x) = $self.values.next() {
             let old = std::mem::replace(&mut $self.de.readers, Reader::Value(x));
             let val = $fun()?;
             let _ = std::mem::replace(&mut $self.de.readers, old);

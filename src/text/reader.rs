@@ -1,7 +1,10 @@
 use crate::{
-    DeserializeError, DeserializeErrorKind, Encoding, Operator, Scalar, TextTape, TextToken,
+    text::Operator, DeserializeError, DeserializeErrorKind, Encoding, Scalar, TextTape, TextToken,
 };
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    collections::{hash_map::Entry, HashMap},
+};
 
 pub type KeyValue<'data, 'tokens, E> = (
     ScalarReader<'data, E>,
@@ -9,10 +12,7 @@ pub type KeyValue<'data, 'tokens, E> = (
     ValueReader<'data, 'tokens, E>,
 );
 
-pub type KeyValues<'data, 'tokens, E> = (
-    ScalarReader<'data, E>,
-    Vec<(Option<Operator>, ValueReader<'data, 'tokens, E>)>,
-);
+pub type KeyValues<'data, 'tokens, E> = (ScalarReader<'data, E>, GroupEntry<'data, 'tokens, E>);
 
 /// Calculate what index the next value is. This assumes that a header + value
 /// are two separate values
@@ -34,6 +34,172 @@ fn next_idx(tokens: &[TextToken], idx: usize) -> usize {
         TextToken::Operator(_) => next_idx(tokens, idx + 1),
         TextToken::Header(_) => next_idx_header(tokens, idx + 1),
         _ => idx + 1,
+    }
+}
+
+#[inline]
+fn fields_len(tokens: &[TextToken], start_ind: usize, end_ind: usize) -> usize {
+    let mut ind = start_ind;
+    let mut count = 0;
+    while ind < end_ind {
+        let key_ind = ind;
+        if let TextToken::Array(_) = tokens[key_ind] {
+            return count;
+        }
+
+        let value_ind = match tokens[key_ind + 1] {
+            TextToken::Operator(_) => key_ind + 2,
+            _ => key_ind + 1,
+        };
+        ind = next_idx(tokens, value_ind);
+        count += 1;
+    }
+
+    count
+}
+
+#[inline]
+pub fn values_len(tokens: &[TextToken], start_ind: usize, end_ind: usize) -> usize {
+    let mut count = 0;
+    let mut ind = start_ind;
+    while ind < end_ind {
+        ind = next_idx_header(tokens, ind);
+        count += 1;
+    }
+
+    count
+}
+
+#[inline]
+fn at_trailer<'data, 'tokens, E>(
+    tokens: &'tokens [TextToken<'data>],
+    encoding: &E,
+    token_ind: usize,
+) -> Option<ArrayReader<'data, 'tokens, E>>
+where
+    E: Encoding + Clone,
+{
+    if let Some(TextToken::Array(ind)) = tokens.get(token_ind) {
+        // trailers must be at least one element in length, else we're just reading
+        // an object as an array
+        if *ind != token_ind + 1 {
+            Some(ArrayReader {
+                tokens,
+                start_ind: token_ind + 1,
+                end_ind: *ind,
+                encoding: encoding.clone(),
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+type OpValue<'data, 'tokens, E> = (Option<Operator>, ValueReader<'data, 'tokens, E>);
+
+/// Iterator over values grouped by duplicate keys
+///
+/// See [FieldGroupsIter](crate::text::FieldGroupsIter) for a worked example
+pub struct GroupEntryIter<'data, 'tokens, 'parent, E> {
+    index: usize,
+    parent: &'parent GroupEntry<'data, 'tokens, E>,
+}
+
+impl<'data, 'tokens, 'parent, E> Iterator for GroupEntryIter<'data, 'tokens, 'parent, E>
+where
+    E: Clone,
+{
+    type Item = (Option<Operator>, ValueReader<'data, 'tokens, E>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &self.parent {
+            GroupEntry::One((op, val)) => {
+                if self.index == 0 {
+                    self.index += 1;
+                    Some((*op, (*val).clone()))
+                } else {
+                    None
+                }
+            }
+            GroupEntry::Multiple(entries) => {
+                let result = entries.get(self.index);
+                self.index += 1;
+                result.map(|(op, val)| (*op, (*val).clone()))
+            }
+        }
+    }
+}
+
+/// Represents a group of values for duplicate keys
+///
+/// May contain one or many values
+///
+/// ```
+/// use jomini::TextTape;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let tape = TextTape::from_slice(b"name=a core=b core=c")?;
+/// let reader = tape.windows1252_reader();
+/// let mut fields = reader.field_groups();
+/// let first_group = fields.next();
+/// let first_key = first_group.as_ref().map(|(key, _)| key.read_str());
+/// assert_eq!(first_key.as_deref(), Some("name"));
+/// let first_values_len = first_group.as_ref().map(|(_, group)| group.len());
+/// assert_eq!(first_values_len, Some(1));
+/// let first_values = first_group.map(|(_, group)| {
+///     group.values()
+///         .filter_map(|(_op, val)| val.read_string().ok())
+///         .collect()
+/// });
+/// assert_eq!(first_values, Some(vec![String::from("a")]));
+///
+/// let second_group = fields.next();
+/// let second_key = second_group.as_ref().map(|(key, _)| key.read_str());
+/// assert_eq!(second_key.as_deref(), Some("core"));
+/// let second_values = second_group.as_ref().map(|(_, group)| group.len());
+/// assert_eq!(second_values, Some(2));
+/// let second_values = second_group.map(|(_, group)| {
+///     group.values()
+///         .filter_map(|(_op, val)| val.read_string().ok())
+///         .collect()
+/// });
+/// assert_eq!(second_values, Some(vec![String::from("b"), String::from("c")]));
+/// # Ok(())
+/// # }
+/// ```
+pub enum GroupEntry<'data, 'tokens, E> {
+    /// Represents that the group is composed of only one value
+    ///
+    /// Most fields should only occur once, so this variant is optimized to
+    /// not require a memory allocation (unlike the `Multiple` variant).
+    One(OpValue<'data, 'tokens, E>),
+
+    /// Represents that the group is composed of several values
+    Multiple(Vec<OpValue<'data, 'tokens, E>>),
+}
+
+impl<'data, 'tokens, E> GroupEntry<'data, 'tokens, E> {
+    /// Returns an iterator that includes all the values
+    pub fn values<'parent>(&'parent self) -> GroupEntryIter<'data, 'tokens, 'parent, E> {
+        GroupEntryIter {
+            index: 0,
+            parent: self,
+        }
+    }
+
+    /// A group can never be empty so this returns false
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// Returns the number of values in the group
+    pub fn len(&self) -> usize {
+        match &self {
+            GroupEntry::One(_) => 1,
+            GroupEntry::Multiple(x) => x.len(),
+        }
     }
 }
 
@@ -94,15 +260,301 @@ where
     }
 }
 
-/// A reader that will advance through an object
-#[derive(Debug, Clone)]
-pub struct ObjectReader<'data, 'tokens, E> {
+/// Iterator over fields of an object grouped by key
+///
+/// Since objects can have duplicated keys across fields, this iterator
+/// consolidates them such that all values with the same key are grouped
+/// together in the order that they appear in the object. Key order is
+/// also equivalent, except that already seen keys will be skipped, as
+/// those values have already been seen in an earlier group.
+///
+/// The process of grouping values together is more expensive than simply
+/// iterating the keys in order, so when possible prefer
+/// [`ObjectReader::fields()`](crate::text::ObjectReader::fields) over
+/// [`ObjectReader::field_groups()`](crate::text::ObjectReader::field_groups).
+///
+/// These groups can be easily iterated:
+///
+/// ```
+/// use jomini::TextTape;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let tape = TextTape::from_slice(b"name=a core=b core=c")?;
+/// let reader = tape.windows1252_reader();
+/// for (key, group) in reader.field_groups() {
+///     match key.read_str().as_ref() {
+///         "name" => assert_eq!(group.len(), 1),
+///         "core" => assert_eq!(group.len(), 2),
+///         x => panic!("unexpected key: {}", x),
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
+/// And picked apart:
+///
+/// ```
+/// use jomini::TextTape;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let tape = TextTape::from_slice(b"name=a core=b core=c")?;
+/// let reader = tape.windows1252_reader();
+/// let mut fields = reader.field_groups();
+/// let first_group = fields.next();
+/// let first_key = first_group.as_ref().map(|(key, _)| key.read_str());
+/// assert_eq!(first_key.as_deref(), Some("name"));
+/// let first_values_len = first_group.as_ref().map(|(_, group)| group.len());
+/// assert_eq!(first_values_len, Some(1));
+/// let first_values = first_group.map(|(_, group)| {
+///     group.values()
+///         .filter_map(|(_op, val)| val.read_string().ok())
+///         .collect()
+/// });
+/// assert_eq!(first_values, Some(vec![String::from("a")]));
+///
+/// let second_group = fields.next();
+/// let second_key = second_group.as_ref().map(|(key, _)| key.read_str());
+/// assert_eq!(second_key.as_deref(), Some("core"));
+/// let second_values = second_group.as_ref().map(|(_, group)| group.len());
+/// assert_eq!(second_values, Some(2));
+/// let second_values = second_group.map(|(_, group)| {
+///     group.values()
+///         .filter_map(|(_op, val)| val.read_string().ok())
+///         .collect()
+/// });
+/// assert_eq!(second_values, Some(vec![String::from("b"), String::from("c")]));
+/// # Ok(())
+/// # }
+/// ```
+pub struct FieldGroupsIter<'data, 'tokens, E> {
+    key_indices: HashMap<&'data [u8], Vec<OpValue<'data, 'tokens, E>>>,
+    fields: FieldsIter<'data, 'tokens, E>,
+}
+
+impl<'data, 'tokens, E> FieldGroupsIter<'data, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    fn new(reader: &ObjectReader<'data, 'tokens, E>) -> Self {
+        let mut key_indices = HashMap::with_capacity(reader.fields_len());
+        for (key, op, val) in reader.fields() {
+            let entry = key_indices.entry(key.read_scalar().as_bytes());
+
+            match entry {
+                Entry::Vacant(x) => {
+                    x.insert(Vec::with_capacity(0));
+                }
+                Entry::Occupied(mut x) => {
+                    x.get_mut().push((op, val));
+                }
+            }
+        }
+
+        let fields = reader.fields();
+
+        FieldGroupsIter {
+            key_indices,
+            fields,
+        }
+    }
+
+    /// See [the other `at_trailer` documentation](crate::text::FieldsIter::at_trailer)
+    pub fn at_trailer(&self) -> Option<ArrayReader<'data, 'tokens, E>> {
+        self.fields.at_trailer()
+    }
+}
+
+impl<'data, 'tokens, E> Iterator for FieldGroupsIter<'data, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    type Item = KeyValues<'data, 'tokens, E>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (key, op, value) = self.fields.next()?;
+
+            if let Some((_key, mut entries)) =
+                self.key_indices.remove_entry(key.read_scalar().as_bytes())
+            {
+                if entries.is_empty() {
+                    return Some((key, GroupEntry::One((op, value))));
+                } else {
+                    entries.insert(0, (op, value));
+                    return Some((key, GroupEntry::Multiple(entries)));
+                }
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.key_indices.len(), None)
+    }
+}
+
+/// Iterator over fields of an object in the order that they appear
+///
+/// Since objects can have duplicated keys across fields, this iterator
+/// may yield items that have duplicate keys.
+///
+/// Fields can be easily iterated:
+///
+/// ```
+/// use jomini::TextTape;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let tape = TextTape::from_slice(b"name=a core=b core=c")?;
+/// let reader = tape.windows1252_reader();
+/// let (names, cores) = reader
+///     .fields()
+///     .fold((0, 0), |(names, cores), (key, _op, _value)| {
+///         match key.read_str().as_ref() {
+///             "name" => (names + 1, cores),
+///             "core" => (names, cores + 1),
+///             x => panic!("unexpected key: {}", x),
+///         }
+///     });
+/// assert_eq!((1, 2), (names, cores));
+/// # Ok(())
+/// # }
+/// ```
+///
+/// And picked apart:
+///
+/// ```
+/// use jomini::TextTape;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let tape = TextTape::from_slice(b"name=a core=b core=c")?;
+/// let reader = tape.windows1252_reader();
+/// let mut fields = reader.fields();
+/// let (first_key, _op, first_val) = fields.next().unwrap();
+/// assert_eq!(first_key.read_str(), "name");
+/// assert_eq!(first_val.read_str().ok().as_deref(), Some("a"));
+/// # Ok(())
+/// # }
+/// ```
+pub struct FieldsIter<'data, 'tokens, E> {
     token_ind: usize,
     end_ind: usize,
     tokens: &'tokens [TextToken<'data>],
     encoding: E,
-    val_ind: usize,
-    seen: Vec<bool>,
+}
+
+impl<'data, 'tokens, E> FieldsIter<'data, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    fn new(reader: &ObjectReader<'data, 'tokens, E>) -> Self {
+        FieldsIter {
+            token_ind: reader.start_ind,
+            end_ind: reader.end_ind,
+            tokens: reader.tokens,
+            encoding: reader.encoding.clone(),
+        }
+    }
+
+    /// Exposes the object trailer at the end of the object if it exists. It is
+    /// the responsibility of the caller to make sure they have exhausted the
+    /// iterator before calling this method, as the any trailer would be at the
+    /// end of the object. An object trailer is looks like:
+    ///
+    /// ```
+    /// use jomini::TextTape;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let data = b"brittany_area = { color = { 10 10 10 } 100 200 300 }";
+    /// let tape = TextTape::from_slice(data)?;
+    /// let reader = tape.windows1252_reader();
+    /// let mut root_fields = reader.fields();
+    /// let (_brittany, _op, brittany_val) = root_fields.next().unwrap();
+    /// let mut brittany_fields = brittany_val.read_object()?.fields();
+    ///
+    /// // consume iterator
+    /// brittany_fields.by_ref().for_each(drop);
+    ///
+    /// let trailer = brittany_fields.at_trailer().map(|array| {
+    ///     array.values()
+    ///         .filter_map(|value| value.read_str().ok())
+    ///         .collect()
+    /// });
+    /// assert_eq!(trailer, Some(vec!["100".into(), "200".into(), "300".into()]));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn at_trailer(&self) -> Option<ArrayReader<'data, 'tokens, E>> {
+        at_trailer(self.tokens, &self.encoding, self.token_ind)
+    }
+}
+
+impl<'data, 'tokens, E> Iterator for FieldsIter<'data, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    type Item = KeyValue<'data, 'tokens, E>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.token_ind >= self.end_ind {
+            return None;
+        }
+
+        let key_ind = self.token_ind;
+        let token = self.tokens[key_ind].clone();
+        let key_scalar = match token {
+            TextToken::Quoted(x)
+            | TextToken::Unquoted(x)
+            | TextToken::Parameter(x)
+            | TextToken::UndefinedParameter(x) => x,
+            TextToken::Array(_) => {
+                return None;
+            }
+            _ => {
+                // this is a broken invariant, so we safely recover by saying the object
+                // has no more fields
+                debug_assert!(false, "All keys should be scalars or have a trailer");
+                return None;
+            }
+        };
+
+        let key_reader = ScalarReader {
+            scalar: key_scalar,
+            token,
+            encoding: self.encoding.clone(),
+        };
+
+        let (op, value_ind) = match self.tokens[key_ind + 1] {
+            TextToken::Operator(x) => (Some(x), key_ind + 2),
+            _ => (None, key_ind + 1),
+        };
+
+        // When reading an mixed object (a = { b = { c } 10 10 10 })
+        // there is an uneven number of keys and values so we drop the last "field"
+        if value_ind >= self.end_ind {
+            return None;
+        }
+
+        let value_reader = ValueReader {
+            value_ind,
+            tokens: self.tokens,
+            encoding: self.encoding.clone(),
+        };
+        self.token_ind = next_idx(self.tokens, value_ind);
+        Some((key_reader, op, value_reader))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = fields_len(self.tokens, self.token_ind, self.end_ind);
+        (len, None)
+    }
+}
+
+/// A reader for objects
+#[derive(Debug, Clone)]
+pub struct ObjectReader<'data, 'tokens, E> {
+    start_ind: usize,
+    end_ind: usize,
+    tokens: &'tokens [TextToken<'data>],
+    encoding: E,
 }
 
 impl<'data, 'tokens, E> ObjectReader<'data, 'tokens, E>
@@ -115,201 +567,31 @@ where
         ObjectReader {
             tokens,
             end_ind: tokens.len(),
-            token_ind: 0,
-            val_ind: 0,
+            start_ind: 0,
             encoding,
-            seen: Vec::new(),
         }
     }
 
     /// Return the number of key value pairs that the object contains.
     /// Does not count the object trailer if present
     pub fn fields_len(&self) -> usize {
-        let mut ind = self.token_ind;
-        let mut count = 0;
-        while ind < self.end_ind {
-            let key_ind = ind;
-            if let TextToken::Array(_) = self.tokens[key_ind] {
-                return count;
-            }
-
-            let value_ind = match self.tokens[key_ind + 1] {
-                TextToken::Operator(_) => key_ind + 2,
-                _ => key_ind + 1,
-            };
-            ind = next_idx(self.tokens, value_ind);
-            count += 1;
-        }
-
-        count
+        fields_len(self.tokens, self.start_ind, self.end_ind)
     }
 
-    /// Advance the reader and return the next field
-    #[inline]
-    pub fn next_field(&mut self) -> Option<KeyValue<'data, 'tokens, E>> {
-        if self.token_ind < self.end_ind {
-            let key_ind = self.token_ind;
-            let token = self.tokens[key_ind].clone();
-            let key_scalar = match token {
-                TextToken::Quoted(x)
-                | TextToken::Unquoted(x)
-                | TextToken::Parameter(x)
-                | TextToken::UndefinedParameter(x) => x,
-                TextToken::Array(_) => {
-                    return None;
-                }
-                _ => {
-                    // this is a broken invariant, so we safely recover by saying the object
-                    // has no more fields
-                    debug_assert!(false, "All keys should be scalars or have a trailer");
-                    return None;
-                }
-            };
-
-            let key_reader = self.new_scalar_reader(key_scalar, token);
-
-            let (op, value_ind) = match self.tokens[key_ind + 1] {
-                TextToken::Operator(x) => (Some(x), key_ind + 2),
-                _ => (None, key_ind + 1),
-            };
-
-            // When reading an mixed object (a = { b = { c } 10 10 10 })
-            // there is an uneven number of keys and values so we drop the last "field"
-            if value_ind >= self.end_ind {
-                return None;
-            }
-
-            let value_reader = self.new_value_reader(value_ind);
-            self.token_ind = next_idx(self.tokens, value_ind);
-            Some((key_reader, op, value_reader))
-        } else {
-            None
-        }
-    }
-
-    /// Advance the reader and return all fields that share the same key in the object
-    #[inline]
-    pub fn next_fields(&mut self) -> Option<KeyValues<'data, 'tokens, E>> {
-        if self.val_ind == 0 {
-            // add one to the field len to account for the possibility of an object trailer
-            self.seen = vec![false; self.fields_len() + 1];
-        }
-
-        let mut values = Vec::new();
-        while self.token_ind < self.end_ind {
-            if !self.seen[self.val_ind] {
-                let key_ind = self.token_ind;
-                let key = &self.tokens[self.token_ind];
-                self.seen[self.val_ind] = true;
-                let token = self.tokens[key_ind].clone();
-                let key_scalar = match token {
-                    TextToken::Quoted(x)
-                    | TextToken::Unquoted(x)
-                    | TextToken::Parameter(x)
-                    | TextToken::UndefinedParameter(x) => x,
-                    TextToken::Array(_) => {
-                        return None;
-                    }
-                    _ => {
-                        // this is a broken invariant, so we safely recover by saying the object
-                        // has no more fields
-                        debug_assert!(false, "All keys should be scalars");
-                        return None;
-                    }
-                };
-
-                let key_reader = self.new_scalar_reader(key_scalar, token);
-                let (op, value_ind) = match self.tokens[key_ind + 1] {
-                    TextToken::Operator(x) => (Some(x), key_ind + 2),
-                    _ => (None, key_ind + 1),
-                };
-
-                // When reading an mixed object (a = { b = { c } 10 10 10 })
-                // there is an uneven number of keys and values so we drop the last "field"
-                if value_ind >= self.end_ind {
-                    return None;
-                }
-
-                let value_reader = self.new_value_reader(value_ind);
-                self.token_ind = next_idx(self.tokens, value_ind);
-                values.push((op, value_reader));
-
-                let mut future = self.token_ind;
-                let mut future_ind = self.val_ind + 1;
-                while future < self.end_ind && !matches!(self.tokens[future], TextToken::Array(_)) {
-                    if !self.seen[future_ind] && self.tokens[future] == *key {
-                        let (op, value_ind) = match self.tokens[future + 1] {
-                            TextToken::Operator(x) => (Some(x), future + 2),
-                            _ => (None, future + 1),
-                        };
-                        self.seen[future_ind] = true;
-                        if value_ind < self.end_ind {
-                            let value_reader = self.new_value_reader(value_ind);
-                            values.push((op, value_reader));
-                        }
-                    }
-                    future_ind += 1;
-                    future = next_idx(self.tokens, future + 1);
-                }
-
-                self.val_ind += 1;
-                return Some((key_reader, values));
-            } else {
-                self.val_ind += 1;
-                self.token_ind = next_idx(self.tokens, self.token_ind + 1);
-            }
-        }
-
-        None
-    }
-
-    /// Exposes the object trailer at the end of the object if it exists. It is
-    /// the responsibility of the caller to make sure they are at the end of the
-    /// object (where the trailer would be located). An object trailer is looks like:
+    /// Iterator over fields as they appear in the object
     ///
-    /// ```ignore
-    /// brittany_area = { color = { 10 10 10 } 100 200 300 }
+    /// See [FieldsIter](crate::text::FieldsIter) for a worked example
+    #[inline]
+    pub fn fields(&self) -> FieldsIter<'data, 'tokens, E> {
+        FieldsIter::new(self)
+    }
+
+    /// Iterator over fields that are grouped by key
     ///
+    /// See [FieldGroupsIter](crate::text::FieldGroupsIter) for a worked example
     #[inline]
-    pub fn at_trailer(&mut self) -> Option<ArrayReader<'data, 'tokens, E>> {
-        if let Some(TextToken::Array(ind)) = self.tokens.get(self.token_ind) {
-            // trailers must be at least one element in length, else we're just reading
-            // an object as an array
-            if *ind != self.token_ind + 1 {
-                Some(ArrayReader {
-                    tokens: self.tokens,
-                    token_ind: self.token_ind + 1,
-                    end_ind: *ind,
-                    encoding: self.encoding.clone(),
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn new_scalar_reader(
-        &self,
-        scalar: Scalar<'data>,
-        token: TextToken<'data>,
-    ) -> ScalarReader<'data, E> {
-        ScalarReader {
-            scalar,
-            token,
-            encoding: self.encoding.clone(),
-        }
-    }
-
-    #[inline]
-    fn new_value_reader(&self, value_ind: usize) -> ValueReader<'data, 'tokens, E> {
-        ValueReader {
-            value_ind,
-            tokens: self.tokens,
-            encoding: self.encoding.clone(),
-        }
+    pub fn field_groups(&self) -> FieldGroupsIter<'data, 'tokens, E> {
+        FieldGroupsIter::new(self)
     }
 }
 
@@ -418,21 +700,17 @@ where
         match self.tokens[self.value_ind] {
             TextToken::Object(ind) | TextToken::HiddenObject(ind) => Ok(ObjectReader {
                 tokens: self.tokens,
-                token_ind: self.value_ind + 1,
-                val_ind: 0,
+                start_ind: self.value_ind + 1,
                 end_ind: ind,
-                seen: Vec::new(),
                 encoding: self.encoding.clone(),
             }),
 
             // An array can be an object if it is empty or interpreted as an object with only a trailer
             TextToken::Array(ind) => Ok(ObjectReader {
                 tokens: self.tokens,
-                token_ind: self.value_ind,
-                val_ind: 0,
+                start_ind: self.value_ind,
                 end_ind: ind,
                 encoding: self.encoding.clone(),
-                seen: Vec::new(),
             }),
             _ => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from("not an object")),
@@ -446,18 +724,19 @@ where
         match self.tokens[self.value_ind] {
             TextToken::Array(ind) => Ok(ArrayReader {
                 tokens: self.tokens,
-                token_ind: self.value_ind + 1,
+                start_ind: self.value_ind + 1,
                 end_ind: ind,
                 encoding: self.encoding.clone(),
             }),
 
             // An object can be an array when it has a trailer at the end
             TextToken::Object(_) => {
-                let mut obj = self.read_object().unwrap();
-                while obj.next_field().is_some() {}
-                Ok(obj.at_trailer().unwrap_or_else(|| ArrayReader {
+                let obj = self.read_object().unwrap();
+                let mut fields = obj.fields();
+                fields.by_ref().for_each(drop);
+                Ok(fields.at_trailer().unwrap_or_else(|| ArrayReader {
                     tokens: self.tokens,
-                    token_ind: 0,
+                    start_ind: 0,
                     end_ind: 0,
                     encoding: self.encoding.clone(),
                 }))
@@ -466,7 +745,7 @@ where
             // A header can be seen as a two element array
             TextToken::Header(_) => Ok(ArrayReader {
                 tokens: self.tokens,
-                token_ind: self.value_ind,
+                start_ind: self.value_ind,
                 end_ind: next_idx(self.tokens, self.value_ind + 1),
                 encoding: self.encoding.clone(),
             }),
@@ -478,35 +757,56 @@ where
     }
 }
 
-/// A text reader that advances through a sequence of values
-#[derive(Debug, Clone)]
-pub struct ArrayReader<'data, 'tokens, E> {
+/// An iterator over the values of an array
+///
+/// ```
+/// use jomini::TextTape;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let tape = TextTape::from_slice(b"cores={a b}")?;
+/// let reader = tape.windows1252_reader();
+///
+/// let mut all_cores = Vec::new();
+/// for (key, _op, value) in reader.fields() {
+///     assert_eq!(key.read_str(), "cores");
+///     let cores = value.read_array()?;
+///     assert_eq!(cores.len(), 2);
+///     for value in cores.values() {
+///         all_cores.push(value.read_string()?);
+///     }
+/// }
+/// assert_eq!(all_cores, vec![String::from("a"), String::from("b")]);
+/// # Ok(())
+/// # }
+/// ```
+pub struct ValuesIter<'data, 'tokens, E> {
     token_ind: usize,
     end_ind: usize,
     tokens: &'tokens [TextToken<'data>],
     encoding: E,
 }
 
-impl<'data, 'tokens, E> ArrayReader<'data, 'tokens, E>
+impl<'data, 'tokens, E> ValuesIter<'data, 'tokens, E>
 where
     E: Encoding + Clone,
 {
-    /// Return the number of values in the array
-    #[inline]
-    pub fn values_len(&self) -> usize {
-        let mut count = 0;
-        let mut ind = self.token_ind;
-        while ind < self.end_ind {
-            ind = next_idx_header(self.tokens, ind);
-            count += 1;
+    fn new(reader: &ArrayReader<'data, 'tokens, E>) -> Self {
+        ValuesIter {
+            token_ind: reader.start_ind,
+            end_ind: reader.end_ind,
+            tokens: reader.tokens,
+            encoding: reader.encoding.clone(),
         }
-
-        count
     }
+}
 
-    /// Advance the array and return the next value
-    #[inline]
-    pub fn next_value(&mut self) -> Option<ValueReader<'data, 'tokens, E>> {
+impl<'data, 'tokens, E> Iterator for ValuesIter<'data, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    type Item = ValueReader<'data, 'tokens, E>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         if self.token_ind < self.end_ind {
             let value_ind = self.token_ind;
             self.token_ind = next_idx_header(self.tokens, self.token_ind);
@@ -518,6 +818,44 @@ where
         } else {
             None
         }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = values_len(self.tokens, self.token_ind, self.end_ind);
+        (len, Some(len))
+    }
+}
+
+/// A text reader for sequences of values
+#[derive(Debug, Clone)]
+pub struct ArrayReader<'data, 'tokens, E> {
+    start_ind: usize,
+    end_ind: usize,
+    tokens: &'tokens [TextToken<'data>],
+    encoding: E,
+}
+
+impl<'data, 'tokens, E> ArrayReader<'data, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    /// Iterator over values of an array
+    ///
+    /// See [ValuesIter](crate::text::ValuesIter) for a worked example
+    #[inline]
+    pub fn values(&self) -> ValuesIter<'data, 'tokens, E> {
+        ValuesIter::new(self)
+    }
+
+    /// Returns if the array is empty
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Return the number of values in the array
+    #[inline]
+    pub fn len(&self) -> usize {
+        values_len(self.tokens, self.start_ind, self.end_ind)
     }
 }
 
@@ -548,32 +886,32 @@ mod tests {
         }
     }
 
-    fn iterate_array<E>(mut reader: ArrayReader<E>)
+    fn iterate_array<E>(reader: ArrayReader<E>)
     where
         E: crate::Encoding + Clone,
     {
-        while let Some(value) = reader.next_value() {
-            read_value(value)
+        for value in reader.values() {
+            read_value(value);
         }
     }
 
-    fn iterate_object<E>(mut reader: ObjectReader<E>)
+    fn iterate_object<E>(reader: ObjectReader<E>)
     where
         E: crate::Encoding + Clone,
     {
-        let mut fields_reader = reader.clone();
-        while let Some((_key, entries)) = fields_reader.next_fields() {
-            for (_op, value) in entries {
+        for (_key, group) in reader.field_groups() {
+            for (_op, value) in group.values() {
                 read_value(value);
             }
         }
 
-        while let Some((key, _op, value)) = reader.next_field() {
+        let mut fields = reader.fields();
+        for (key, _op, value) in fields.by_ref() {
             let _ = key.read_str();
             read_value(value);
         }
 
-        if let Some(trailer) = reader.at_trailer() {
+        if let Some(trailer) = fields.at_trailer() {
             iterate_array(trailer);
         }
     }
@@ -582,48 +920,53 @@ mod tests {
     fn simple_text_reader_text() {
         let data = b"foo=bar";
         let tape = TextTape::from_slice(data).unwrap();
-        let mut reader = tape.windows1252_reader();
+        let reader = tape.windows1252_reader();
         assert_eq!(reader.fields_len(), 1);
 
-        let (key, _op, value) = reader.next_field().unwrap();
+        let mut iter = reader.fields();
+        let (key, _op, value) = iter.next().unwrap();
         assert_eq!(key.read_string(), String::from("foo"));
         assert_eq!(value.read_string().unwrap(), String::from("bar"));
 
-        assert!(reader.next_field().is_none());
+        assert!(iter.next().is_none());
     }
 
     #[test]
     fn simple_text_reader_obj() {
         let data = b"foo={bar=qux}";
         let tape = TextTape::from_slice(data).unwrap();
-        let mut reader = tape.windows1252_reader();
+        let reader = tape.windows1252_reader();
 
-        let (key, _op, value) = reader.next_field().unwrap();
+        let mut iter = reader.fields();
+        let (key, _op, value) = iter.next().unwrap();
         assert_eq!(key.read_string(), String::from("foo"));
 
-        let mut nested = value.read_object().unwrap();
-        let (key2, _op, value2) = nested.next_field().unwrap();
+        let nested = value.read_object().unwrap();
+        let mut nested_iter = nested.fields();
+        let (key2, _op, value2) = nested_iter.next().unwrap();
         assert_eq!(key2.read_string(), String::from("bar"));
         assert_eq!(value2.read_string().unwrap(), String::from("qux"));
-        assert!(nested.next_field().is_none());
-        assert!(reader.next_field().is_none());
+        assert!(nested_iter.next().is_none());
+        assert!(iter.next().is_none());
     }
 
     #[test]
     fn simple_text_reader_array() {
         let data = b"foo={bar qux}";
         let tape = TextTape::from_slice(data).unwrap();
-        let mut reader = tape.windows1252_reader();
+        let reader = tape.windows1252_reader();
 
-        let (key, _op, value) = reader.next_field().unwrap();
+        let mut iter = reader.fields();
+        let (key, _op, value) = iter.next().unwrap();
         assert_eq!(key.read_string(), String::from("foo"));
 
-        let mut nested = value.read_array().unwrap();
-        assert_eq!(nested.values_len(), 2);
-        let value1 = nested.next_value().unwrap().read_string().unwrap();
-        let value2 = nested.next_value().unwrap().read_string().unwrap();
+        let nested = value.read_array().unwrap();
+        let mut values = nested.values();
+        assert_eq!(nested.len(), 2);
+        let value1 = values.next().unwrap().read_string().unwrap();
+        let value2 = values.next().unwrap().read_string().unwrap();
 
-        assert!(nested.next_value().is_none());
+        assert!(values.next().is_none());
         assert_eq!(value1, String::from("bar"));
         assert_eq!(value2, String::from("qux"));
     }
@@ -632,48 +975,56 @@ mod tests {
     fn text_reader_hidden_object() {
         let data = b"levels={10 0=1 0=2}";
         let tape = TextTape::from_slice(data).unwrap();
-        let mut reader = tape.windows1252_reader();
+        let reader = tape.windows1252_reader();
 
         assert_eq!(reader.fields_len(), 1);
-        let (key, _op, value) = reader.next_field().unwrap();
+        let mut iter = reader.fields();
+        let (key, _op, value) = iter.next().unwrap();
         assert_eq!(key.read_string(), String::from("levels"));
 
-        let mut nested = value.read_array().unwrap();
-        assert_eq!(nested.values_len(), 2);
+        let nested = value.read_array().unwrap();
+        assert_eq!(nested.len(), 2);
 
-        let value1 = nested.next_value().unwrap().read_string().unwrap();
+        let mut values = nested.values();
+        let value1 = values.next().unwrap().read_string().unwrap();
         assert_eq!(value1, String::from("10"));
 
-        let mut hidden = nested.next_value().unwrap().read_object().unwrap();
+        let hidden = values.next().unwrap().read_object().unwrap();
         assert_eq!(hidden.fields_len(), 2);
-        let (key, _op, value) = hidden.next_field().unwrap();
+        let mut hidden_iter = hidden.fields();
+        let (key, _op, value) = hidden_iter.next().unwrap();
         assert_eq!(key.read_string(), String::from("0"));
         assert_eq!(value.read_string().unwrap(), String::from("1"));
 
-        let (key, _op, value) = hidden.next_field().unwrap();
+        let (key, _op, value) = hidden_iter.next().unwrap();
         assert_eq!(key.read_string(), String::from("0"));
         assert_eq!(value.read_string().unwrap(), String::from("2"));
 
-        assert!(hidden.next_field().is_none());
-        assert!(nested.next_value().is_none());
+        assert!(hidden_iter.next().is_none());
+        assert!(values.next().is_none());
     }
 
     #[test]
     fn text_reader_read_fields() {
         let data = b"name=aaa name=bbb core=123 core=456 name=ccc name=ddd";
         let tape = TextTape::from_slice(data).unwrap();
-        let mut reader = tape.windows1252_reader();
+        let reader = tape.windows1252_reader();
 
-        let (key, values) = reader.next_fields().unwrap();
+        let mut field_groups = reader.field_groups();
+        let (key, values) = field_groups.next().unwrap();
         assert_eq!(key.read_string(), String::from("name"));
+
+        let values = values.values().collect::<Vec<_>>();
         assert_eq!(values.len(), 4);
         assert_eq!(values[0].1.read_string().unwrap(), String::from("aaa"));
         assert_eq!(values[1].1.read_string().unwrap(), String::from("bbb"));
         assert_eq!(values[2].1.read_string().unwrap(), String::from("ccc"));
         assert_eq!(values[3].1.read_string().unwrap(), String::from("ddd"));
 
-        let (key, values) = reader.next_fields().unwrap();
+        let (key, values) = field_groups.next().unwrap();
         assert_eq!(key.read_string(), String::from("core"));
+
+        let values = values.values().collect::<Vec<_>>();
         assert_eq!(values.len(), 2);
         assert_eq!(values[0].1.read_string().unwrap(), String::from("123"));
         assert_eq!(values[1].1.read_string().unwrap(), String::from("456"));
@@ -684,48 +1035,61 @@ mod tests {
         let data =
             b"army={name=aaa unit={name=bbb} unit={name=ccc}} army={name=ddd unit={name=eee}}";
         let tape = TextTape::from_slice(data).unwrap();
-        let mut reader = tape.windows1252_reader();
+        let reader = tape.windows1252_reader();
+        let mut field_groups = reader.field_groups();
 
-        let (key, army_values) = reader.next_fields().unwrap();
+        let (key, army_values) = field_groups.next().unwrap();
         assert_eq!(key.read_string(), String::from("army"));
         assert_eq!(army_values.len(), 2);
 
-        let mut aaa = army_values[0].1.read_object().unwrap();
+        let army_values = army_values.values().collect::<Vec<_>>();
+        let aaa = army_values[0].1.read_object().unwrap();
+        let mut aaa_groups = aaa.field_groups();
         assert_eq!(aaa.fields_len(), 3);
 
-        let (key, values) = aaa.next_fields().unwrap();
+        let (key, values) = aaa_groups.next().unwrap();
         assert_eq!(key.read_string(), String::from("name"));
         assert_eq!(values.len(), 1);
-        assert_eq!(values[0].1.read_string().unwrap(), String::from("aaa"));
+        assert_eq!(
+            values.values().nth(0).unwrap().1.read_string().unwrap(),
+            String::from("aaa")
+        );
 
-        let (key, values) = aaa.next_fields().unwrap();
+        let (key, values) = aaa_groups.next().unwrap();
         assert_eq!(key.read_string(), String::from("unit"));
         assert_eq!(values.len(), 2);
 
-        let mut bbb = values[0].1.read_object().unwrap();
-        let (key, _, value) = bbb.next_field().unwrap();
+        let bbb = values.values().nth(0).unwrap().1.read_object().unwrap();
+        let mut bbb_fields = bbb.fields();
+        let (key, _, value) = bbb_fields.next().unwrap();
         assert_eq!(key.read_string(), String::from("name"));
         assert_eq!(value.read_string().unwrap(), String::from("bbb"));
 
-        let mut ccc = values[1].1.read_object().unwrap();
-        let (key, _, value) = ccc.next_field().unwrap();
+        let ccc = values.values().nth(1).unwrap().1.read_object().unwrap();
+        let mut ccc_fields = ccc.fields();
+        let (key, _, value) = ccc_fields.next().unwrap();
         assert_eq!(key.read_string(), String::from("name"));
         assert_eq!(value.read_string().unwrap(), String::from("ccc"));
 
-        let mut ddd = army_values[1].1.read_object().unwrap();
+        let ddd = army_values[1].1.read_object().unwrap();
         assert_eq!(ddd.fields_len(), 2);
 
-        let (key, values) = ddd.next_fields().unwrap();
+        let mut ddd_groups = ddd.field_groups();
+        let (key, values) = ddd_groups.next().unwrap();
         assert_eq!(key.read_string(), String::from("name"));
         assert_eq!(values.len(), 1);
-        assert_eq!(values[0].1.read_string().unwrap(), String::from("ddd"));
+        assert_eq!(
+            values.values().nth(0).unwrap().1.read_string().unwrap(),
+            String::from("ddd")
+        );
 
-        let (key, values) = ddd.next_fields().unwrap();
+        let (key, values) = ddd_groups.next().unwrap();
         assert_eq!(key.read_string(), String::from("unit"));
         assert_eq!(values.len(), 1);
 
-        let mut eee = values[0].1.read_object().unwrap();
-        let (key, _, value) = eee.next_field().unwrap();
+        let eee = values.values().nth(0).unwrap().1.read_object().unwrap();
+        let mut eee_fields = eee.fields();
+        let (key, _, value) = eee_fields.next().unwrap();
         assert_eq!(key.read_string(), String::from("name"));
         assert_eq!(value.read_string().unwrap(), String::from("eee"));
     }
@@ -734,10 +1098,10 @@ mod tests {
     fn text_reader_read_fields_consume() {
         let data = b"name=aaa name=bbb core=123 name=ccc name=ddd";
         let tape = TextTape::from_slice(data).unwrap();
-        let mut reader = tape.windows1252_reader();
+        let reader = tape.windows1252_reader();
         let mut count = 0;
-        while let Some((_key, mut entries)) = reader.next_fields() {
-            for (_i, (_op, value)) in entries.drain(..).enumerate() {
+        for (_key, entries) in reader.field_groups() {
+            for (_i, (_op, value)) in entries.values().enumerate() {
                 count += value.read_scalar().map(|_| 1).unwrap_or(0);
             }
         }
@@ -753,21 +1117,23 @@ mod tests {
         }"#;
 
         let tape = TextTape::from_slice(data).unwrap();
-        let mut reader = tape.windows1252_reader();
-        let (key, _op, value) = reader.next_field().unwrap();
+        let reader = tape.windows1252_reader();
+        let mut iter = reader.fields();
+        let (key, _op, value) = iter.next().unwrap();
         assert_eq!(key.read_str(), "brittany_area");
 
         let mut keys = vec![];
-        let mut brittany = value.read_object().unwrap();
-        while let Some((key, _op, _value)) = brittany.next_field() {
-            keys.push(key.read_str());
+        let brittany = value.read_object().unwrap();
+        let mut fields = brittany.fields();
+        while let Some((key, _op, _value)) = fields.next() {
+            keys.push(key.read_str())
         }
 
         assert_eq!(keys, vec![String::from("color"),]);
 
         let mut values = vec![];
-        let mut trailer = brittany.at_trailer().unwrap();
-        while let Some(value) = trailer.next_value() {
+        let trailer = fields.at_trailer().unwrap();
+        for value in trailer.values() {
             let nv = value.token();
             values.push((*nv).clone());
         }
@@ -792,17 +1158,19 @@ mod tests {
         }"#;
 
         let tape = TextTape::from_slice(data).unwrap();
-        let mut reader = tape.windows1252_reader();
-        let (key, _op, value) = reader.next_field().unwrap();
+        let reader = tape.windows1252_reader();
+        let mut iter = reader.fields();
+        let (key, _op, value) = iter.next().unwrap();
         assert_eq!(key.read_str(), "brittany_area");
 
-        let mut brittany = value.read_object().unwrap();
-        brittany.next_fields().unwrap();
-        assert!(brittany.next_fields().is_none());
+        let brittany = value.read_object().unwrap();
+        let mut field_groups = brittany.field_groups();
+        field_groups.next().unwrap();
+        assert!(field_groups.next().is_none());
 
         let mut values = vec![];
-        let mut trailer = brittany.at_trailer().unwrap();
-        while let Some(value) = trailer.next_value() {
+        let trailer = field_groups.at_trailer().unwrap();
+        for value in trailer.values() {
             let nv = value.token();
             values.push((*nv).clone());
         }
@@ -820,63 +1188,84 @@ mod tests {
     }
 
     #[test]
+    fn text_trailer_size_hints() {
+        let data = br#"brittany_area = { #5
+            color = { 118  99  151 }
+            color = { 118  99  151 }
+            169 170 171 172 4384
+        }"#;
+
+        let tape = TextTape::from_slice(data).unwrap();
+        let reader = tape.windows1252_reader();
+        let (_key, _op, brittany) = reader.fields().next().unwrap();
+        let brittany_reader = brittany.read_object().unwrap();
+
+        let mut fields = brittany_reader.fields();
+        let (lower_bound, upper_bound) = fields.size_hint();
+        assert_eq!(lower_bound, brittany_reader.fields_len());
+        assert_eq!(lower_bound, 2);
+        assert!(upper_bound.is_none() || upper_bound == Some(7));
+
+        let _ = fields.next();
+        let (lower_bound, upper_bound) = fields.size_hint();
+        assert_eq!(lower_bound, 1);
+        assert!(upper_bound.is_none() || upper_bound == Some(6));
+
+        let mut groups = brittany_reader.field_groups();
+        let (lower_bound, upper_bound) = groups.size_hint();
+        assert_eq!(lower_bound, 1);
+        assert!(upper_bound.is_none() || upper_bound == Some(6));
+
+        let _ = groups.next();
+        let (lower_bound, upper_bound) = groups.size_hint();
+        assert_eq!(lower_bound, 0);
+        assert!(upper_bound.is_none() || upper_bound == Some(5));
+    }
+
+    #[test]
     fn text_reader_empty_container() {
         let data = b"active_idea_groups={ }";
         let tape = TextTape::from_slice(data).unwrap();
-        let mut reader = tape.windows1252_reader();
-        let (key, _op, value) = reader.next_field().unwrap();
+        let reader = tape.windows1252_reader();
+        let mut iter = reader.fields();
+        let (key, _op, value) = iter.next().unwrap();
         assert_eq!(key.read_str(), "active_idea_groups");
 
-        let mut empty_array = value.read_array().unwrap();
-        assert_eq!(0, empty_array.values_len());
-        assert!(empty_array.next_value().is_none());
+        let empty_array = value.read_array().unwrap();
+        assert_eq!(0, empty_array.len());
+        assert!(empty_array.values().next().is_none());
 
-        let mut empty_object = value.read_object().unwrap();
+        let empty_object = value.read_object().unwrap();
+        let mut empty_object_iter = empty_object.fields();
         assert_eq!(0, empty_object.fields_len());
-        assert!(empty_object.next_field().is_none());
-        assert!(empty_object.at_trailer().is_none());
+        assert!(empty_object_iter.next().is_none());
+        assert!(empty_object_iter.at_trailer().is_none());
     }
 
     #[test]
     fn text_reader_header() {
         let data = b"color = rgb { 10 20 30 }";
         let tape = TextTape::from_slice(data).unwrap();
-        let mut reader = tape.windows1252_reader();
-        let (key, _op, value) = reader.next_field().unwrap();
+        let reader = tape.windows1252_reader();
+        let mut iter = reader.fields();
+        let (key, _op, value) = iter.next().unwrap();
         assert_eq!(key.read_str(), "color");
 
-        let mut header_array = value.read_array().unwrap();
-        let rgb = header_array.next_value().unwrap();
+        let header_array = value.read_array().unwrap();
+        let mut values = header_array.values();
+        let rgb = values.next().unwrap();
         assert_eq!(rgb.read_str().unwrap(), "rgb");
 
-        let vals = header_array.next_value().unwrap();
-        let mut s = vals.read_array().unwrap();
+        let vals = values.next().unwrap();
+        let s = vals.read_array().unwrap();
+        let svals = s.values();
 
-        let r = s
-            .next_value()
-            .unwrap()
-            .read_scalar()
-            .unwrap()
-            .to_u64()
-            .unwrap();
-        let g = s
-            .next_value()
-            .unwrap()
-            .read_scalar()
-            .unwrap()
-            .to_u64()
-            .unwrap();
-        let b = s
-            .next_value()
-            .unwrap()
-            .read_scalar()
-            .unwrap()
-            .to_u64()
-            .unwrap();
+        let colors = svals
+            .map(|x| x.read_scalar().unwrap())
+            .map(|x| x.to_u64().unwrap())
+            .collect::<Vec<u64>>();
 
-        assert_eq!(r, 10);
-        assert_eq!(g, 20);
-        assert_eq!(b, 30);
+        assert_eq!(colors, vec![10, 20, 30]);
     }
 
     #[test]

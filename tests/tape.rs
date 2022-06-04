@@ -1,4 +1,4 @@
-use jomini::{BinaryTape, Operator, Scalar, TextTape, TextToken};
+use jomini::{text::Operator, BinaryTape, Scalar, TextTape, TextToken};
 
 #[test]
 fn reject_bin_obj_in_hidden_obj() {

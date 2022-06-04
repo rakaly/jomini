@@ -1,5 +1,5 @@
 #![no_main]
-use jomini::{ArrayReader, Encoding, ObjectReader, TextToken, ValueReader};
+use jomini::{Encoding, TextToken, text::{ArrayReader, ObjectReader, ValueReader}};
 use libfuzzer_sys::fuzz_target;
 use serde::Deserialize;
 
@@ -54,32 +54,32 @@ where
     }
 }
 
-fn iterate_array<E>(mut reader: ArrayReader<E>)
+fn iterate_array<E>(reader: ArrayReader<E>)
 where
     E: crate::Encoding + Clone,
 {
-    while let Some(value) = reader.next_value() {
+    for value in reader.values() {
         read_value(value)
     }
 }
 
-fn iterate_object<E>(mut reader: ObjectReader<E>)
+fn iterate_object<E>(reader: ObjectReader<E>)
 where
     E: crate::Encoding + Clone,
 {
-    let mut fields_reader = reader.clone();
-    while let Some((_key, entries)) = fields_reader.next_fields() {
-        for (_op, value) in entries {
+    for (_key, entries) in reader.field_groups() {
+        for (_op, value) in entries.values() {
             read_value(value);
         }
     }
 
-    while let Some((key, _op, value)) = reader.next_field() {
+    let mut fields = reader.fields();
+    for (key, _op, value) in fields.by_ref() {
         let _ = key.read_str();
         read_value(value);
     }
 
-    if let Some(trailer) = reader.at_trailer() {
+    if let Some(trailer) = fields.at_trailer() {
         iterate_array(trailer);
     }
 }
