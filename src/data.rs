@@ -277,7 +277,7 @@ pub(crate) const COMMENT: u8 = 8;
 
 #[inline]
 pub(crate) fn is_whitespace(b: u8) -> bool {
-    CHARACTER_CLASS[usize::from(b)] == WHITESPACE
+    b.is_ascii_whitespace()
 }
 
 #[inline]
