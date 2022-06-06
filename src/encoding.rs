@@ -108,25 +108,29 @@ impl Encoding for Utf8Encoding {
 }
 
 #[inline]
+fn trim_trailing_index(d: &[u8]) -> usize {
+    d.iter()
+        .rev()
+        .position(|x| !is_whitespace(*x))
+        .unwrap_or(d.len())
+}
+
+#[inline]
 fn trim_trailing_whitepsace(d: &[u8]) -> &[u8] {
-    // First we check if there is trailing whitespace and if there is, we trim it down.
-    // This branch won't normally be taken, so it should be considered cheap
-    if !d.is_empty() && is_whitespace(d[d.len() - 1]) {
-        let ind = d
-            .iter()
-            .rev()
-            .position(|x| !is_whitespace(*x))
-            .unwrap_or(d.len());
-        &d[0..d.len() - ind]
-    } else {
-        d
-    }
+    &d[..d.len() - trim_trailing_index(d)]
+}
+
+#[inline]
+fn trim_trailing_ascii_whitespace(original_data: &[u8], s: &mut String) {
+    // truncate the string's inner vector to remove any whitespace.
+    // We know this is safe as we only care about ascii whitespace.
+    let ind = trim_trailing_index(original_data);
+    let inner = unsafe { s.as_mut_vec() };
+    inner.truncate(inner.len() - ind);
 }
 
 #[inline]
 pub(crate) fn decode_windows1252(d: &[u8]) -> Cow<str> {
-    let d = trim_trailing_whitepsace(d);
-
     // Then we iterate through the data in 8 byte chunks and ensure that each chunk
     // is contained of ascii characters with no escape characters
     let mut chunk_iter = d.chunks_exact(8);
@@ -150,6 +154,8 @@ pub(crate) fn decode_windows1252(d: &[u8]) -> Cow<str> {
         offset += 1;
     }
 
+    let d = trim_trailing_whitepsace(d);
+
     // This is safe as we just checked that the data is ascii and ascii is a subset of utf8
     debug_assert!(std::str::from_utf8(d).is_ok());
     let s = unsafe { std::str::from_utf8_unchecked(d) };
@@ -158,20 +164,23 @@ pub(crate) fn decode_windows1252(d: &[u8]) -> Cow<str> {
 
 fn windows_1252_create(d: &[u8], offset: usize) -> String {
     let (upto, rest) = d.split_at(offset);
-    let mut result = String::with_capacity(d.len());
+
+    // size estimate: all remaining characters need translation
+    let size_estimate = offset + (d.len() - offset) * 2;
+    let mut result = String::with_capacity(size_estimate);
     let head = unsafe { std::str::from_utf8_unchecked(upto) };
     result.push_str(head);
+
     for &c in rest.iter().filter(|&x| *x != b'\\') {
         result.push(WINDOWS_1252[c as usize]);
     }
 
+    trim_trailing_ascii_whitespace(d, &mut result);
     result
 }
 
 #[inline]
 pub(crate) fn decode_utf8(d: &[u8]) -> Cow<str> {
-    let d = trim_trailing_whitepsace(d);
-
     // Then we iterate through the data in 8 byte chunks and ensure that each chunk
     // has no escape characters
     let mut chunk_iter = d.chunks_exact(8);
@@ -198,6 +207,8 @@ pub(crate) fn decode_utf8(d: &[u8]) -> Cow<str> {
         offset += 1;
     }
 
+    let d = trim_trailing_whitepsace(d);
+
     // Most the strings we'll be decoding are ascii, so we have an ascii fast path. If we don't
     // detect any non-ascii characters then we can immediately create the borrowed string without
     // validation. This causes the string benchmarks to be 2-3x faster on ascii inputs (with ~5%
@@ -214,14 +225,19 @@ pub(crate) fn decode_utf8(d: &[u8]) -> Cow<str> {
 
 fn utf8_create(d: &[u8], offset: usize) -> String {
     let (upto, rest) = d.split_at(offset);
-    let mut result = Vec::with_capacity(d.len());
+
+    // size estimate: all remaining characters need translation
+    let size_estimate = offset + (d.len() - offset) * 2;
+    let mut result = Vec::with_capacity(size_estimate);
     result.extend_from_slice(upto);
     for &c in rest.iter().filter(|&x| *x != b'\\') {
         result.push(c);
     }
 
-    String::from_utf8(result)
-        .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned())
+    let mut result = String::from_utf8(result)
+        .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned());
+    trim_trailing_ascii_whitespace(d, &mut result);
+    result
 }
 
 #[cfg(test)]
@@ -230,8 +246,26 @@ mod tests {
 
     #[test]
     fn scalar_string_trim_end_newlines() {
+        assert_eq!(Windows1252Encoding::decode(b""), "");
         assert_eq!(Windows1252Encoding::decode(b"new\n"), "new");
         assert_eq!(Windows1252Encoding::decode(b"\t"), "");
+        assert_eq!(
+            Windows1252Encoding::decode(b"new \\\"Captain\\\" \n"),
+            r#"new "Captain""#
+        );
+        assert_eq!(Windows1252Encoding::decode(b"new\xF8 "), "newø")
+    }
+
+    #[test]
+    fn scalar_string_trim_end_newlines_utf8() {
+        assert_eq!(Utf8Encoding::decode(b""), "");
+        assert_eq!(Utf8Encoding::decode(b"new\n"), "new");
+        assert_eq!(Utf8Encoding::decode(b"\t"), "");
+        assert_eq!(
+            Utf8Encoding::decode(b"new \\\"Captain\\\" \n"),
+            r#"new "Captain""#
+        );
+        assert_eq!(Utf8Encoding::decode("newø ".as_bytes()), "newø")
     }
 
     #[test]
