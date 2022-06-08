@@ -1701,6 +1701,20 @@ mod tests {
     }
 
     #[test]
+    fn test_parameter_syntax_with_values() {
+        // the new syntax to pass parameters to script values is explained in
+        // stellaris: common/script_values/00_script_values.txt
+        let data = b"mult = value:job_weights_research_modifier|JOB|head_researcher|";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"mult")),
+                TextToken::Unquoted(Scalar::new(b"value:job_weights_research_modifier|JOB|head_researcher|")),
+            ]
+        );
+    }
+
+    #[test]
     fn test_variables() {
         let data = b"@planet_standard_scale = 11";
 
