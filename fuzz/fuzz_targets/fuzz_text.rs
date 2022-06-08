@@ -25,13 +25,20 @@ struct Stat {
     localization: Option<String>,
 }
 
+static mut GROUPED: bool = false;
+
 fn read_value<E>(value: ValueReader<E>)
 where
     E: crate::Encoding + Clone,
 {
     match value.token() {
         TextToken::Object(_) | TextToken::HiddenObject(_) => {
-            iterate_object(value.read_object().unwrap());
+            let obj = value.read_object().unwrap();
+            if unsafe { GROUPED } {
+                iterate_object2(obj);
+            } else {
+                iterate_object(obj);
+            }
         }
         TextToken::Array(_) => {
             iterate_array(value.read_array().unwrap());
@@ -67,16 +74,26 @@ fn iterate_object<E>(reader: ObjectReader<E>)
 where
     E: crate::Encoding + Clone,
 {
-    for (_key, entries) in reader.field_groups() {
-        for (_op, value) in entries.values() {
-            read_value(value);
-        }
-    }
-
     let mut fields = reader.fields();
     for (key, _op, value) in fields.by_ref() {
         let _ = key.read_str();
         read_value(value);
+    }
+
+    if let Some(trailer) = fields.at_trailer() {
+        iterate_array(trailer);
+    }
+}
+
+fn iterate_object2<E>(reader: ObjectReader<E>)
+where
+    E: crate::Encoding + Clone,
+{
+    let mut fields = reader.field_groups();
+    for (_key, entries) in fields.by_ref() {
+        for (_op, value) in entries.values() {
+            read_value(value);
+        }
     }
 
     if let Some(trailer) = fields.at_trailer() {
@@ -110,6 +127,9 @@ fuzz_target!(|data: &[u8]| {
         }
 
         iterate_object(tape.windows1252_reader());
+
+        unsafe { GROUPED = true; }
+        iterate_object2(tape.windows1252_reader());
         jomini::TextDeserializer::from_windows1252_tape(&tape)
     });
 });
