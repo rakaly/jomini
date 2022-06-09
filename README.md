@@ -143,6 +143,18 @@ for (key, _op, value) in reader.fields() {
 }
 ```
 
+The mid-level API also provides the excellent utility of converting the
+plaintext Clausewitz format to JSON when the `json` feature is enabled.
+
+```rust
+use jomini::TextTape;
+
+let tape = TextTape::from_slice(b"foo=bar")?;
+let reader = tape.windows1252_reader();
+let actual = reader.json().to_string()?;
+assert_eq!(actual, r#"{"foo":"bar"}"#);
+```
+
 ## One Level Lower
 
 At the lowest layer, one can interact with the raw data directly via `TextTape`

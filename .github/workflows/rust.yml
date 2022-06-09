@@ -66,11 +66,13 @@ jobs:
         echo "TARGET=--target ${{ matrix.target }}" >> $GITHUB_ENV
     - name: Build
       run: ${{ env.CARGO }} build --all --verbose $TARGET
-    - name: Run tests
+    - name: Run default features tests
       run: ${{ env.CARGO }} test --all --verbose $TARGET
     - name: Run no-default-feature tests
       run: ${{ env.CARGO }} test --no-default-features --all --verbose $TARGET
-      
+    - name: Run json tests
+      run: ${{ env.CARGO }} test --features json --all --verbose $TARGET
+
     - name: Compile benchmarks
       if: matrix.build == 'stable'
       run: cargo bench --verbose --no-run $TARGET

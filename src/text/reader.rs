@@ -6,6 +6,8 @@ use std::{
     collections::{hash_map::Entry, HashMap},
 };
 
+use super::fnv::FnvBuildHasher;
+
 pub type KeyValue<'data, 'tokens, E> = (
     ScalarReader<'data, E>,
     Option<Operator>,
@@ -328,7 +330,7 @@ where
 /// # }
 /// ```
 pub struct FieldGroupsIter<'data, 'tokens, E> {
-    key_indices: HashMap<&'data [u8], Vec<OpValue<'data, 'tokens, E>>>,
+    key_indices: HashMap<&'data [u8], Vec<OpValue<'data, 'tokens, E>>, FnvBuildHasher>,
     fields: FieldsIter<'data, 'tokens, E>,
 }
 
@@ -337,7 +339,10 @@ where
     E: Encoding + Clone,
 {
     fn new(reader: &ObjectReader<'data, 'tokens, E>) -> Self {
-        let mut key_indices = HashMap::with_capacity(reader.fields_len());
+        // Using the fnv hasher improved throughput of the eu4 json benchmark
+        // by over 15%.
+        let mut key_indices =
+            HashMap::with_capacity_and_hasher(reader.fields_len(), FnvBuildHasher::default());
         for (key, op, val) in reader.fields() {
             let entry = key_indices.entry(key.read_scalar().as_bytes());
 
@@ -572,6 +577,22 @@ where
         }
     }
 
+    /// Return the number of tokens contained within the object
+    ///
+    /// ```
+    /// use jomini::TextTape;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let tape = TextTape::from_slice(b"obj={1} foo=bar")?;
+    /// let reader = tape.windows1252_reader();
+    /// assert_eq!(reader.tokens_len(), 6);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn tokens_len(&self) -> usize {
+        self.end_ind - self.start_ind
+    }
+
     /// Return the number of key value pairs that the object contains.
     /// Does not count the object trailer if present
     pub fn fields_len(&self) -> usize {
@@ -755,6 +776,30 @@ where
             }),
         }
     }
+
+    /// Return the number of tokens the value encompases
+    ///
+    /// ```
+    /// use jomini::TextTape;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let tape = TextTape::from_slice(b"obj={1 {foo=bar} 3}")?;
+    /// let reader = tape.windows1252_reader();
+    /// let mut fields = reader.fields();
+    /// let (_, _, first_value) = fields.next().unwrap();
+    /// assert_eq!(first_value.tokens_len(), 6);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[inline]
+    pub fn tokens_len(&self) -> usize {
+        match self.tokens[self.value_ind] {
+            TextToken::Array(end) | TextToken::Object(end) | TextToken::HiddenObject(end) => {
+                end - self.value_ind - 1
+            }
+            _ => 1,
+        }
+    }
 }
 
 /// An iterator over the values of an array
@@ -856,6 +901,26 @@ where
     #[inline]
     pub fn len(&self) -> usize {
         values_len(self.tokens, self.start_ind, self.end_ind)
+    }
+
+    /// Return the number of tokens contained within the object
+    ///
+    /// ```
+    /// use jomini::TextTape;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let tape = TextTape::from_slice(b"obj={1 {foo=bar} 3}")?;
+    /// let reader = tape.windows1252_reader();
+    /// let mut fields = reader.fields();
+    /// let (_, _, first_value) = fields.next().unwrap();
+    /// let array = first_value.read_array()?;
+    /// assert_eq!(array.tokens_len(), 6);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[inline]
+    pub fn tokens_len(&self) -> usize {
+        self.end_ind - self.start_ind
     }
 }
 
