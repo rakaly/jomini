@@ -75,7 +75,7 @@ Below is an example that defines a sample binary format and uses a hashmap token
 
 ```rust
 # #[cfg(feature = "derive")] {
-use jomini::{BinaryDeserializer, BinaryFlavor, Encoding, JominiDeserialize, Windows1252Encoding};
+use jomini::{BinaryDeserializer, Encoding, JominiDeserialize, Windows1252Encoding};
 use std::{borrow::Cow, collections::HashMap};
 
 #[derive(JominiDeserialize, PartialEq, Debug)]
@@ -86,7 +86,7 @@ struct MyStruct {
 #[derive(Debug, Default)]
 pub struct BinaryTestFlavor;
 
-impl BinaryFlavor for BinaryTestFlavor {
+impl jomini::binary::BinaryFlavor for BinaryTestFlavor {
     fn visit_f32(&self, data: [u8; 4]) -> f32 {
         f32::from_le_bytes(data)
     }
@@ -229,7 +229,7 @@ assert_eq!(&out, b"hello=world\nfoo=bar");
 ```
 */
 #![warn(missing_docs)]
-mod binary;
+pub mod binary;
 pub mod common;
 mod copyless;
 mod data;
@@ -243,8 +243,11 @@ mod scalar;
 pub mod text;
 pub(crate) mod util;
 
-pub use self::binary::*;
-pub use self::data::Rgb;
+pub use self::binary::{BinaryTape, BinaryToken};
+
+#[cfg(feature = "derive")]
+pub use self::binary::BinaryDeserializer;
+
 pub use self::encoding::*;
 pub use self::errors::*;
 pub use self::scalar::{Scalar, ScalarError};

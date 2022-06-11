@@ -1709,7 +1709,9 @@ mod tests {
             parse(&data[..]).unwrap().token_tape,
             vec![
                 TextToken::Unquoted(Scalar::new(b"mult")),
-                TextToken::Unquoted(Scalar::new(b"value:job_weights_research_modifier|JOB|head_researcher|")),
+                TextToken::Unquoted(Scalar::new(
+                    b"value:job_weights_research_modifier|JOB|head_researcher|"
+                )),
             ]
         );
     }

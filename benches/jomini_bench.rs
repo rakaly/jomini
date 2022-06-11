@@ -1,7 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use jomini::{
-    common::Date, BinaryDeserializer, BinaryFlavor, BinaryTape, BinaryTapeParser, Encoding, Scalar,
-    TextDeserializer, TextTape, Utf8Encoding, Windows1252Encoding,
+    binary::{BinaryFlavor, BinaryTapeParser},
+    common::Date,
+    BinaryDeserializer, BinaryTape, Encoding, Scalar, TextDeserializer, TextTape, Utf8Encoding,
+    Windows1252Encoding,
 };
 use std::{borrow::Cow, collections::HashMap};
 
@@ -280,7 +282,9 @@ pub fn json_benchmark(c: &mut Criterion) {
         b.iter(|| {
             tape.windows1252_reader()
                 .json()
-                .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::KeyValuePairs))
+                .with_options(
+                    JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::KeyValuePairs),
+                )
                 .to_string()
                 .unwrap()
         })
@@ -326,7 +330,9 @@ pub fn json_benchmark(c: &mut Criterion) {
         b.iter(|| {
             tape.windows1252_reader()
                 .json()
-                .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::KeyValuePairs))
+                .with_options(
+                    JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::KeyValuePairs),
+                )
                 .to_string()
                 .unwrap()
         })

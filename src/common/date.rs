@@ -1,7 +1,7 @@
 use crate::scalar::{to_i64_t, to_u64_t};
 use std::cmp::Ordering;
 use std::convert::TryFrom;
-use std::fmt::{Debug, Display, self};
+use std::fmt::{self, Debug, Display};
 use std::str::FromStr;
 
 /// A date error.
