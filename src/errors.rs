@@ -171,22 +171,6 @@ impl serde::de::Error for DeserializeError {
     }
 }
 
-/// A date error.
-#[derive(Debug, PartialEq)]
-pub struct DateError;
-
-impl std::error::Error for DateError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
-    }
-}
-
-impl std::fmt::Display for DateError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "unable to decode date")
-    }
-}
-
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         Error::new(ErrorKind::Io(error))

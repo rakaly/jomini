@@ -1,9 +1,24 @@
 use crate::scalar::{to_i64_t, to_u64_t};
-use crate::DateError;
 use std::cmp::Ordering;
 use std::convert::TryFrom;
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug, Display, self};
 use std::str::FromStr;
+
+/// A date error.
+#[derive(Debug, PartialEq)]
+pub struct DateError;
+
+impl std::error::Error for DateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+
+impl std::fmt::Display for DateError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "unable to decode date")
+    }
+}
 
 const DAYS_PER_MONTH: [u8; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
