@@ -1,16 +1,3 @@
-/// Extracted color info
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Rgb {
-    /// Red channel
-    pub r: u32,
-
-    /// Green channel
-    pub g: u32,
-
-    /// Blue channel
-    pub b: u32,
-}
-
 pub(crate) static WINDOWS_1252: [char; 256] = [
     0 as char,
     1 as char,

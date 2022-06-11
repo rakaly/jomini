@@ -1,8 +1,9 @@
 use crate::{
+    binary::Rgb,
     copyless::VecHelper,
     util::{get_split, le_u32},
+    Error, ErrorKind, Scalar,
 };
-use crate::{Error, ErrorKind, Rgb, Scalar};
 
 /// Represents any valid binary value
 #[derive(Debug, Clone, PartialEq)]

@@ -1,5 +1,5 @@
 #![no_main]
-use jomini::{BinaryFlavor, Encoding, Windows1252Encoding};
+use jomini::{binary::BinaryFlavor, Encoding, Windows1252Encoding};
 use libfuzzer_sys::fuzz_target;
 use serde::Deserialize;
 use std::{borrow::Cow, collections::HashMap};

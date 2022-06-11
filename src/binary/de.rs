@@ -1,6 +1,7 @@
 use crate::{
-    de::ColorSequence, BinaryFlavor, BinaryTape, BinaryToken, DeserializeError,
-    DeserializeErrorKind, Error, FailedResolveStrategy, TokenResolver,
+    binary::{BinaryFlavor, FailedResolveStrategy, TokenResolver},
+    de::ColorSequence,
+    BinaryTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
@@ -13,7 +14,7 @@ use std::borrow::Cow;
 /// The example below demonstrates multiple ways to deserialize data
 ///
 /// ```
-/// use jomini::{BinaryDeserializer, BinaryFlavor, Encoding, JominiDeserialize, Windows1252Encoding};
+/// use jomini::{BinaryDeserializer, Encoding, JominiDeserialize, Windows1252Encoding};
 /// use serde::Deserialize;
 /// use std::{borrow::Cow, collections::HashMap};
 ///
@@ -39,7 +40,7 @@ use std::borrow::Cow;
 /// #[derive(Debug, Default)]
 /// pub struct BinaryTestFlavor;
 ///
-/// impl BinaryFlavor for BinaryTestFlavor {
+/// impl jomini::binary::BinaryFlavor for BinaryTestFlavor {
 ///     fn visit_f32(&self, data: [u8; 4]) -> f32 {
 ///         f32::from_le_bytes(data)
 ///     }

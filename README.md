@@ -73,7 +73,7 @@ Implementors be warned, not only does each Paradox game have a different binary 
 Below is an example that defines a sample binary format and uses a hashmap token lookup.
 
 ```rust
-use jomini::{BinaryDeserializer, BinaryFlavor, Encoding, JominiDeserialize, Windows1252Encoding};
+use jomini::{BinaryDeserializer, Encoding, JominiDeserialize, Windows1252Encoding};
 use std::{borrow::Cow, collections::HashMap};
 
 #[derive(JominiDeserialize, PartialEq, Debug)]
@@ -84,7 +84,7 @@ struct MyStruct {
 #[derive(Debug, Default)]
 pub struct BinaryTestFlavor;
 
-impl BinaryFlavor for BinaryTestFlavor {
+impl jomini::binary::BinaryFlavor for BinaryTestFlavor {
     fn visit_f32(&self, data: [u8; 4]) -> f32 {
         f32::from_le_bytes(data)
     }

@@ -1,7 +1,9 @@
 #![cfg(feature = "derive")]
 
 use jomini::common::PdsDate;
-use jomini::{BinaryDeserializer, BinaryFlavor, Encoding, TextDeserializer, Windows1252Encoding};
+use jomini::{
+    binary::BinaryFlavor, BinaryDeserializer, Encoding, TextDeserializer, Windows1252Encoding,
+};
 use serde::{
     de::{self, Visitor},
     Deserialize, Deserializer,
