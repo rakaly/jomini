@@ -226,16 +226,18 @@ where
     }
 
     /// Output JSON to the given writer
-    pub fn to_writer<W>(self, writer: W) -> Result<(), serde_json::Error>
+    pub fn to_writer<W>(self, writer: W) -> Result<(), std::io::Error>
     where
         W: std::io::Write,
     {
         let obj = SerObject::new(self.reader, self.options.duplicate_keys);
-        if self.options.pretty {
+        let result = if self.options.pretty {
             serde_json::to_writer_pretty(writer, &obj)
         } else {
             serde_json::to_writer(writer, &obj)
-        }
+        };
+
+        result.map_err(|e| e.into())
     }
 
     /// Output JSON to vec that contains UTF-8 data
