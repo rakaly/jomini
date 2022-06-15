@@ -16,7 +16,7 @@
 //!
 //! let actual = reader.json()
 //!     .with_options(options)
-//!     .to_string()?;
+//!     .to_string();
 //! assert_eq!(actual, r#"{"core":"a","core":"b"}"#);
 //! # Ok(())
 //! # }
@@ -130,7 +130,7 @@ pub enum DuplicateKeyMode {
     ///
     /// let actual = reader.json()
     ///     .with_options(options)
-    ///     .to_string()?;
+    ///     .to_string();
     /// assert_eq!(actual, r#"{"a":{"b":1},"c":{"b":[1,2]}}"#);
     /// # Ok(())
     /// # }
@@ -157,7 +157,7 @@ pub enum DuplicateKeyMode {
     ///
     /// let actual = reader.json()
     ///     .with_options(JsonOptions::new())
-    ///     .to_string()?;
+    ///     .to_string();
     /// assert_eq!(actual, r#"{"a":{"b":1},"c":{"b":1,"b":2}}"#);
     /// # Ok(())
     /// # }
@@ -187,7 +187,7 @@ pub enum DuplicateKeyMode {
     ///
     /// let actual = reader.json()
     ///     .with_options(options)
-    ///     .to_string()?;
+    ///     .to_string();
     /// assert_eq!(actual, r#"{"type":"obj","val":[["c",0],["b",{"type":"array","val":[1,2]}]]}"#);
     /// # Ok(())
     /// # }
@@ -239,19 +239,26 @@ where
     }
 
     /// Output JSON to vec that contains UTF-8 data
-    pub fn to_vec(self) -> Result<Vec<u8>, serde_json::Error> {
+    pub fn to_vec(self) -> Vec<u8> {
         let mut out =
             Vec::with_capacity(self.reader.tokens_len() * self.options.output_len_factor());
-        self.to_writer(&mut out)?;
-        Ok(out)
+
+        // Since we control the writer (and writing to a vec shouldn't fail) and
+        // the type that is being serialized, any error that arises from here
+        // would be a programmer error and doesn't need to propagate
+        if let Err(e) = self.to_writer(&mut out) {
+            panic!("failed to serialize json to vector: {}", e)
+        } else {
+            out
+        }
     }
 
     /// Output JSON to a string
-    pub fn to_string(self) -> Result<String, serde_json::Error> {
-        let out = self.to_vec()?;
+    pub fn to_string(self) -> String {
+        let out = self.to_vec();
 
         // From serde_json source: "we don't generate invalid utf-8"
-        Ok(unsafe { String::from_utf8_unchecked(out) })
+        unsafe { String::from_utf8_unchecked(out) }
     }
 }
 
@@ -746,7 +753,7 @@ mod tests {
     fn serialize_with(data: &[u8], options: JsonOptions) -> String {
         let tape = TextTape::from_slice(data).unwrap();
         let reader = tape.windows1252_reader();
-        reader.json().with_options(options).to_string().unwrap()
+        reader.json().with_options(options).to_string()
     }
 
     fn serialize(data: &[u8]) -> String {

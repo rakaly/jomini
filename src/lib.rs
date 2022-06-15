@@ -160,7 +160,7 @@ use jomini::TextTape;
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 let tape = TextTape::from_slice(b"foo=bar")?;
 let reader = tape.windows1252_reader();
-let actual = reader.json().to_string()?;
+let actual = reader.json().to_string();
 assert_eq!(actual, r#"{"foo":"bar"}"#);
 # Ok(())
 # }

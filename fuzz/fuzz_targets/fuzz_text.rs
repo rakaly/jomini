@@ -127,7 +127,7 @@ fuzz_target!(|data: &[u8]| {
         }
 
         #[cfg(feature = "json")]
-        tape.windows1252_reader().json().to_string().unwrap();
+        tape.windows1252_reader().json().to_string();
 
         iterate_object(tape.windows1252_reader());
 

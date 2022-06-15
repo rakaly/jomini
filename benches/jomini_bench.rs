@@ -244,10 +244,10 @@ pub fn json_benchmark(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("json");
 
-    let bytes = tape.windows1252_reader().json().to_string().unwrap().len();
+    let bytes = tape.windows1252_reader().json().to_string().len();
     group.throughput(Throughput::Bytes(bytes as u64));
     group.bench_function(BenchmarkId::new("preserve", "eu4"), |b| {
-        b.iter(|| tape.windows1252_reader().json().to_string().unwrap())
+        b.iter(|| tape.windows1252_reader().json().to_string())
     });
 
     let bytes = tape
@@ -255,7 +255,6 @@ pub fn json_benchmark(c: &mut Criterion) {
         .json()
         .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::Group))
         .to_string()
-        .unwrap()
         .len();
 
     group.throughput(Throughput::Bytes(bytes as u64));
@@ -265,7 +264,6 @@ pub fn json_benchmark(c: &mut Criterion) {
                 .json()
                 .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::Group))
                 .to_string()
-                .unwrap()
         })
     });
 
@@ -274,7 +272,6 @@ pub fn json_benchmark(c: &mut Criterion) {
         .json()
         .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::KeyValuePairs))
         .to_string()
-        .unwrap()
         .len();
 
     group.throughput(Throughput::Bytes(bytes as u64));
@@ -286,16 +283,15 @@ pub fn json_benchmark(c: &mut Criterion) {
                     JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::KeyValuePairs),
                 )
                 .to_string()
-                .unwrap()
         })
     });
 
     let data = &CK3_TXT[..];
     let tape = TextTape::from_slice(data).unwrap();
-    let bytes = tape.windows1252_reader().json().to_string().unwrap().len();
+    let bytes = tape.windows1252_reader().json().to_string().len();
     group.throughput(Throughput::Bytes(bytes as u64));
     group.bench_function(BenchmarkId::new("preserve", "ck3"), |b| {
-        b.iter(|| tape.windows1252_reader().json().to_string().unwrap())
+        b.iter(|| tape.windows1252_reader().json().to_string())
     });
 
     let bytes = tape
@@ -303,7 +299,6 @@ pub fn json_benchmark(c: &mut Criterion) {
         .json()
         .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::Group))
         .to_string()
-        .unwrap()
         .len();
 
     group.throughput(Throughput::Bytes(bytes as u64));
@@ -313,7 +308,6 @@ pub fn json_benchmark(c: &mut Criterion) {
                 .json()
                 .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::Group))
                 .to_string()
-                .unwrap()
         })
     });
 
@@ -322,7 +316,6 @@ pub fn json_benchmark(c: &mut Criterion) {
         .json()
         .with_options(JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::KeyValuePairs))
         .to_string()
-        .unwrap()
         .len();
 
     group.throughput(Throughput::Bytes(bytes as u64));
@@ -334,7 +327,6 @@ pub fn json_benchmark(c: &mut Criterion) {
                     JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::KeyValuePairs),
                 )
                 .to_string()
-                .unwrap()
         })
     });
 
