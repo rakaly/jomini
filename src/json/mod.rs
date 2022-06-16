@@ -256,6 +256,7 @@ where
     }
 
     /// Output JSON to a string
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(self) -> String {
         let out = self.to_vec();
 
