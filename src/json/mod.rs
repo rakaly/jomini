@@ -35,7 +35,7 @@
 //! let mut fields = reader.fields();
 //! let (_key, _op, value) = fields.next().unwrap();
 //! let array = value.read_array()?;
-//! let actual = array.json().to_string()?;
+//! let actual = array.json().to_string();
 //! let expected = r#"[1,2,3,4]"#;
 //! assert_eq!(&actual, expected);
 //! # Ok(())
@@ -209,6 +209,39 @@ pub enum DuplicateKeyMode {
     KeyValuePairs,
 }
 
+fn writer_json<W, S>(writer: W, pretty: bool, ser: S) -> Result<(), std::io::Error>
+where
+    W: std::io::Write,
+    S: serde::Serialize,
+{
+    let result = if pretty {
+        serde_json::to_writer_pretty(writer, &ser)
+    } else {
+        serde_json::to_writer(writer, &ser)
+    };
+
+    result.map_err(|e| e.into())
+}
+
+fn vec_json<F>(mut out: Vec<u8>, write_fn: F) -> Vec<u8>
+where
+    F: FnOnce(&mut Vec<u8>) -> Result<(), std::io::Error>,
+{
+    // Since we control the writer (and writing to a vec shouldn't fail) and
+    // the type that is being serialized, any error that arises from here
+    // would be a programmer error and doesn't need to propagate
+    if let Err(e) = write_fn(&mut out) {
+        panic!("failed to serialize json to vector: {}", e)
+    } else {
+        out
+    }
+}
+
+fn string_json(json: Vec<u8>) -> String {
+    // From serde_json source: "we don't generate invalid utf-8"
+    unsafe { String::from_utf8_unchecked(json) }
+}
+
 /// Creates JSON from an object reader
 pub struct JsonObjectBuilder<'data, 'tokens, E> {
     reader: ObjectReader<'data, 'tokens, E>,
@@ -231,37 +264,19 @@ where
         W: std::io::Write,
     {
         let obj = SerObject::new(self.reader, self.options.duplicate_keys);
-        let result = if self.options.pretty {
-            serde_json::to_writer_pretty(writer, &obj)
-        } else {
-            serde_json::to_writer(writer, &obj)
-        };
-
-        result.map_err(|e| e.into())
+        writer_json(writer, self.options.pretty, &obj)
     }
 
     /// Output JSON to vec that contains UTF-8 data
     pub fn to_vec(self) -> Vec<u8> {
-        let mut out =
-            Vec::with_capacity(self.reader.tokens_len() * self.options.output_len_factor());
-
-        // Since we control the writer (and writing to a vec shouldn't fail) and
-        // the type that is being serialized, any error that arises from here
-        // would be a programmer error and doesn't need to propagate
-        if let Err(e) = self.to_writer(&mut out) {
-            panic!("failed to serialize json to vector: {}", e)
-        } else {
-            out
-        }
+        let out = Vec::with_capacity(self.reader.tokens_len() * self.options.output_len_factor());
+        vec_json(out, |x| self.to_writer(x))
     }
 
     /// Output JSON to a string
     #[allow(clippy::inherent_to_string)]
     pub fn to_string(self) -> String {
-        let out = self.to_vec();
-
-        // From serde_json source: "we don't generate invalid utf-8"
-        unsafe { String::from_utf8_unchecked(out) }
+        string_json(self.to_vec())
     }
 }
 
@@ -295,7 +310,7 @@ where
     }
 
     /// Output JSON to the given writer
-    pub fn to_writer<W>(self, writer: W) -> Result<(), serde_json::Error>
+    pub fn to_writer<W>(self, writer: W) -> Result<(), std::io::Error>
     where
         W: std::io::Write,
     {
@@ -303,27 +318,19 @@ where
             reader: self.reader,
             mode: self.options.duplicate_keys,
         };
-        if self.options.pretty {
-            serde_json::to_writer_pretty(writer, &obj)
-        } else {
-            serde_json::to_writer(writer, &obj)
-        }
+        writer_json(writer, self.options.pretty, &obj)
     }
 
     /// Output JSON to vec that contains UTF-8 data
-    pub fn to_vec(self) -> Result<Vec<u8>, serde_json::Error> {
-        let mut out =
-            Vec::with_capacity(self.reader.tokens_len() * self.options.output_len_factor());
-        self.to_writer(&mut out)?;
-        Ok(out)
+    pub fn to_vec(self) -> Vec<u8> {
+        let out = Vec::with_capacity(self.reader.tokens_len() * self.options.output_len_factor());
+        vec_json(out, |x| self.to_writer(x))
     }
 
     /// Output JSON to a string
-    pub fn to_string(self) -> Result<String, serde_json::Error> {
-        let out = self.to_vec()?;
-
-        // From serde_json source: "we don't generate invalid utf-8"
-        Ok(unsafe { String::from_utf8_unchecked(out) })
+    #[allow(clippy::inherent_to_string)]
+    pub fn to_string(self) -> String {
+        string_json(self.to_vec())
     }
 }
 
@@ -357,7 +364,7 @@ where
     }
 
     /// Output JSON to the given writer
-    pub fn to_writer<W>(self, writer: W) -> Result<(), serde_json::Error>
+    pub fn to_writer<W>(self, writer: W) -> Result<(), std::io::Error>
     where
         W: std::io::Write,
     {
@@ -365,27 +372,19 @@ where
             reader: &self.reader,
             mode: self.options.duplicate_keys,
         };
-        if self.options.pretty {
-            serde_json::to_writer_pretty(writer, &obj)
-        } else {
-            serde_json::to_writer(writer, &obj)
-        }
+        writer_json(writer, self.options.pretty, &obj)
     }
 
     /// Output JSON to vec that contains UTF-8 data
-    pub fn to_vec(self) -> Result<Vec<u8>, serde_json::Error> {
-        let mut out =
-            Vec::with_capacity(self.reader.tokens_len() * self.options.output_len_factor());
-        self.to_writer(&mut out)?;
-        Ok(out)
+    pub fn to_vec(self) -> Vec<u8> {
+        let out = Vec::with_capacity(self.reader.tokens_len() * self.options.output_len_factor());
+        vec_json(out, |x| self.to_writer(x))
     }
 
     /// Output JSON to a string
-    pub fn to_string(self) -> Result<String, serde_json::Error> {
-        let out = self.to_vec()?;
-
-        // From serde_json source: "we don't generate invalid utf-8"
-        Ok(unsafe { String::from_utf8_unchecked(out) })
+    #[allow(clippy::inherent_to_string)]
+    pub fn to_string(self) -> String {
+        string_json(self.to_vec())
     }
 }
 
@@ -942,7 +941,7 @@ mod tests {
         let reader = tape.windows1252_reader();
         let mut fields = reader.fields();
         let (_key, _op, value) = fields.next().unwrap();
-        let actual = value.json().to_string().unwrap();
+        let actual = value.json().to_string();
         let expected = r#"{"num":1}"#;
         assert_eq!(&actual, expected);
     }
@@ -954,7 +953,7 @@ mod tests {
         let mut fields = reader.fields();
         let (_key, _op, value) = fields.next().unwrap();
         let array = value.read_array().unwrap();
-        let actual = array.json().to_string().unwrap();
+        let actual = array.json().to_string();
         let expected = r#"[1,2,3,4]"#;
         assert_eq!(&actual, expected);
     }
@@ -965,7 +964,7 @@ mod tests {
         let reader = tape.windows1252_reader();
         let mut fields = reader.fields();
         let (_key, _op, value) = fields.next().unwrap();
-        let actual = value.json().to_string().unwrap();
+        let actual = value.json().to_string();
         let expected = r#"1"#;
         assert_eq!(&actual, expected);
     }

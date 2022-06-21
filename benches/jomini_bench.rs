@@ -233,7 +233,7 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
 }
 
 #[cfg(not(feature = "json"))]
-pub fn json_benchmark(c: &mut Criterion) {}
+pub fn json_benchmark(_c: &mut Criterion) {}
 
 #[cfg(feature = "json")]
 pub fn json_benchmark(c: &mut Criterion) {
