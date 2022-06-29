@@ -1,3 +1,22 @@
+## v0.19.0 - 2022-06-28
+
+First some performance news, text decoding throughput has increased by up to
+50%. This is benificial to those who are deserializing lots of strings.
+
+A new feature flag has been added: `json`. When the json feature flag is
+enabled, the mid level text readers gains a new `json()` function that will
+assist in the conversion to json. There's several knobs to adjust, including how
+to handle duplicate keys and if to generate pretty printed json. See [PR
+#95](https://github.com/rakaly/jomini/pull/95) for more info.
+
+The mid level text reader API sees a major overhaul. Iteration of containers
+(arrays and objects) are now decoupled from reading. See [PR
+#92](https://github.com/rakaly/jomini/pull/92) for more info.
+
+The last breaking change is the organization of modules. Instead of clogging up
+the root namespace, `jomini::{binary,text}` now house secondary and
+complementary APIs, so this may require updating some imports.
+
 ## v0.18.1 - 2022-04-15
 
 - Fix x86 heap buffer overflow on text parsing
