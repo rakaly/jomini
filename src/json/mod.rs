@@ -53,7 +53,7 @@ use serde::{
 use std::ops::Deref;
 
 /// Customizes the JSON output
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JsonOptions {
     /// Controls if the JSON should be pretty printed
     pretty: bool,
@@ -263,8 +263,7 @@ where
     where
         W: std::io::Write,
     {
-        let obj = SerObject::new(self.reader, self.options.duplicate_keys);
-        writer_json(writer, self.options.pretty, &obj)
+        writer_json(writer, self.options.pretty, &self)
     }
 
     /// Output JSON to vec that contains UTF-8 data
@@ -314,11 +313,7 @@ where
     where
         W: std::io::Write,
     {
-        let obj = SerArray {
-            reader: self.reader,
-            mode: self.options.duplicate_keys,
-        };
-        writer_json(writer, self.options.pretty, &obj)
+        writer_json(writer, self.options.pretty, &self)
     }
 
     /// Output JSON to vec that contains UTF-8 data
@@ -368,11 +363,7 @@ where
     where
         W: std::io::Write,
     {
-        let obj = SerValue {
-            reader: &self.reader,
-            mode: self.options.duplicate_keys,
-        };
-        writer_json(writer, self.options.pretty, &obj)
+        writer_json(writer, self.options.pretty, &self)
     }
 
     /// Output JSON to vec that contains UTF-8 data
@@ -441,12 +432,7 @@ where
     s.serialize_str(&result)
 }
 
-pub(crate) struct SerValue<'data, 'tokens, 'reader, E> {
-    reader: &'reader ValueReader<'data, 'tokens, E>,
-    mode: DuplicateKeyMode,
-}
-
-impl<'data, 'tokens, 'reader, E> Serialize for SerValue<'data, 'tokens, 'reader, E>
+impl<'data, 'tokens, E> Serialize for JsonValueBuilder<'data, 'tokens, E>
 where
     E: Encoding + Clone,
 {
@@ -456,23 +442,21 @@ where
     {
         match self.reader.token() {
             TextToken::Quoted(_) | TextToken::Unquoted(_) => {
-                serialize_scalar(self.reader, serializer)
+                serialize_scalar(&self.reader, serializer)
             }
             TextToken::Array(_) => {
                 let array_reader = self.reader.read_array().unwrap();
-                let seq = SerArray {
-                    reader: array_reader,
-                    mode: self.mode,
-                };
-                seq.serialize(serializer)
+                array_reader
+                    .json()
+                    .with_options(self.options)
+                    .serialize(serializer)
             }
             TextToken::Object(_) | TextToken::HiddenObject(_) => {
                 let object_reader = self.reader.read_object().unwrap();
-                let map = SerObject {
-                    reader: object_reader,
-                    mode: self.mode,
-                };
-                map.serialize(serializer)
+                object_reader
+                    .json()
+                    .with_options(self.options)
+                    .serialize(serializer)
             }
             TextToken::Header(_) => {
                 let arr = self.reader.read_array().unwrap();
@@ -483,10 +467,7 @@ where
                 let mut map = serializer.serialize_map(None)?;
                 map.serialize_entry(
                     &key_reader.read_str().unwrap(),
-                    &SerValue {
-                        reader: &value_reader,
-                        mode: self.mode,
-                    },
+                    &value_reader.json().with_options(self.options),
                 )?;
                 map.end()
             }
@@ -498,21 +479,7 @@ where
     }
 }
 
-pub(crate) struct SerObject<'data, 'tokens, E> {
-    reader: ObjectReader<'data, 'tokens, E>,
-    mode: DuplicateKeyMode,
-}
-
-impl<'data, 'tokens, E> SerObject<'data, 'tokens, E>
-where
-    E: Encoding + Clone,
-{
-    pub fn new(reader: ObjectReader<'data, 'tokens, E>, mode: DuplicateKeyMode) -> Self {
-        SerObject { reader, mode }
-    }
-}
-
-impl<'data, 'tokens, E> Serialize for SerObject<'data, 'tokens, E>
+impl<'data, 'tokens, E> Serialize for JsonObjectBuilder<'data, 'tokens, E>
 where
     E: Encoding + Clone,
 {
@@ -520,7 +487,7 @@ where
     where
         S: Serializer,
     {
-        match self.mode {
+        match self.options.duplicate_keys {
             DuplicateKeyMode::Group => {
                 let mut field_groups = self.reader.field_groups();
                 let mut map = serializer.serialize_map(None)?;
@@ -531,7 +498,7 @@ where
                             let v = OperatorValue {
                                 operator: op,
                                 value: val,
-                                mode: self.mode,
+                                options: self.options,
                             };
                             map.serialize_entry(&KeyScalarWrapper { reader: key }, &v)?;
                         }
@@ -541,7 +508,7 @@ where
                                 .map(|(op, val)| OperatorValue {
                                     operator: *op,
                                     value: val.clone(),
-                                    mode: self.mode,
+                                    options: self.options,
                                 })
                                 .collect();
                             map.serialize_entry(&KeyScalarWrapper { reader: key }, &values)?;
@@ -550,11 +517,7 @@ where
                 }
 
                 if let Some(trailer) = field_groups.at_trailer() {
-                    let seq = SerArray {
-                        reader: trailer,
-                        mode: self.mode,
-                    };
-                    map.serialize_entry("trailer", &seq)?;
+                    map.serialize_entry("trailer", &trailer.json().with_options(self.options))?;
                 }
 
                 map.end()
@@ -566,17 +529,13 @@ where
                     let v = OperatorValue {
                         operator: op,
                         value: val,
-                        mode: self.mode,
+                        options: self.options,
                     };
                     map.serialize_entry(&KeyScalarWrapper { reader: key }, &v)?;
                 }
 
                 if let Some(trailer) = fields.at_trailer() {
-                    let seq = SerArray {
-                        reader: trailer,
-                        mode: self.mode,
-                    };
-                    map.serialize_entry("trailer", &seq)?;
+                    map.serialize_entry("trailer", &trailer.json().with_options(self.options))?;
                 }
 
                 map.end()
@@ -588,7 +547,7 @@ where
                     "val",
                     &SerTapeTyped {
                         reader: self.reader.clone(),
-                        mode: self.mode,
+                        options: self.options,
                     },
                 )?;
                 map.end()
@@ -600,7 +559,7 @@ where
 pub(crate) struct OperatorValue<'data, 'tokens, E> {
     operator: Option<Operator>,
     value: ValueReader<'data, 'tokens, E>,
-    mode: DuplicateKeyMode,
+    options: JsonOptions,
 }
 
 impl<'data, 'tokens, E> Serialize for OperatorValue<'data, 'tokens, E>
@@ -614,28 +573,20 @@ where
         if let Some(op) = self.operator {
             let mut map = serializer.serialize_map(None)?;
             let reader = &self.value;
-            map.serialize_entry(
-                op.name(),
-                &SerValue {
-                    reader,
-                    mode: self.mode,
-                },
-            )?;
+            map.serialize_entry(op.name(), &reader.json().with_options(self.options))?;
             map.end()
         } else {
-            let reader = &self.value;
-            let vs = SerValue {
-                reader,
-                mode: self.mode,
-            };
-            vs.serialize(serializer)
+            self.value
+                .json()
+                .with_options(self.options)
+                .serialize(serializer)
         }
     }
 }
 
 pub(crate) struct InnerSerArray<'data, 'tokens, E> {
     reader: ArrayReader<'data, 'tokens, E>,
-    mode: DuplicateKeyMode,
+    options: JsonOptions,
 }
 
 impl<'data, 'tokens, E> Serialize for InnerSerArray<'data, 'tokens, E>
@@ -651,7 +602,7 @@ where
             let v = OperatorValue {
                 operator: None,
                 value,
-                mode: self.mode,
+                options: self.options,
             };
             seq.serialize_element(&v)?;
         }
@@ -660,12 +611,7 @@ where
     }
 }
 
-pub(crate) struct SerArray<'data, 'tokens, E> {
-    reader: ArrayReader<'data, 'tokens, E>,
-    mode: DuplicateKeyMode,
-}
-
-impl<'data, 'tokens, E> Serialize for SerArray<'data, 'tokens, E>
+impl<'data, 'tokens, E> Serialize for JsonArrayBuilder<'data, 'tokens, E>
 where
     E: Encoding + Clone,
 {
@@ -675,10 +621,10 @@ where
     {
         let inner = InnerSerArray {
             reader: self.reader.clone(),
-            mode: self.mode,
+            options: self.options,
         };
 
-        if self.mode != DuplicateKeyMode::KeyValuePairs {
+        if self.options.duplicate_keys != DuplicateKeyMode::KeyValuePairs {
             inner.serialize(serializer)
         } else {
             let mut map = serializer.serialize_map(None)?;
@@ -691,7 +637,7 @@ where
 
 pub(crate) struct SerTapeTyped<'data, 'tokens, E> {
     reader: ObjectReader<'data, 'tokens, E>,
-    mode: DuplicateKeyMode,
+    options: JsonOptions,
 }
 
 impl<'data, 'tokens, E> Serialize for SerTapeTyped<'data, 'tokens, E>
@@ -708,7 +654,7 @@ where
             let v = OperatorValue {
                 operator: op,
                 value: val,
-                mode: self.mode,
+                options: self.options,
             };
             seq.serialize_element(&(KeyScalarWrapper { reader: key }, &v))?;
         }
@@ -716,7 +662,7 @@ where
         if let Some(trailer) = fields.at_trailer() {
             let trailer_array = InnerSerArray {
                 reader: trailer,
-                mode: self.mode,
+                options: self.options,
             };
 
             seq.serialize_element(&trailer_array)?;
@@ -750,7 +696,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TextTape;
+    use crate::{TextTape, Windows1252Encoding};
 
     fn serialize_with(data: &[u8], options: JsonOptions) -> String {
         let tape = TextTape::from_slice(data).unwrap();
@@ -966,6 +912,28 @@ mod tests {
         let (_key, _op, value) = fields.next().unwrap();
         let actual = value.json().to_string();
         let expected = r#"1"#;
+        assert_eq!(&actual, expected);
+    }
+
+    #[test]
+    fn test_builder_serialization() {
+        #[derive(Serialize)]
+        struct MyStruct<'a, 'b> {
+            bar: JsonValueBuilder<'a, 'b, Windows1252Encoding>,
+            qux: JsonValueBuilder<'a, 'b, Windows1252Encoding>,
+        }
+
+        let tape = TextTape::from_slice(b"bar={num=1} qux={num=2}").unwrap();
+        let reader = tape.windows1252_reader();
+        let mut fields = reader.fields();
+        let (_key, _op, value) = fields.next().unwrap();
+        let bar = value.json();
+
+        let (_key, _op, value) = fields.next().unwrap();
+        let qux = value.json();
+
+        let actual = serde_json::to_string(&MyStruct { bar, qux }).unwrap();
+        let expected = r#"{"bar":{"num":1},"qux":{"num":2}}"#;
         assert_eq!(&actual, expected);
     }
 }
