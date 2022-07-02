@@ -8,10 +8,11 @@ use std::borrow::Cow;
 
 /// A structure to deserialize binary data into Rust values.
 ///
-/// By default, if a token is unable to be resolved then it will be ignored by the default.
-/// Construct a custom instance through the `builder` method to tweak this behavior.
+/// By default, if a token is unable to be resolved then it will be ignored by
+/// the default. Construct a custom instance through the `builder` method to
+/// tweak this behavior.
 ///
-/// The example below demonstrates multiple ways to deserialize data
+/// The example below demonstrates how to deserialize data
 ///
 /// ```
 /// use jomini::{BinaryDeserializer, Encoding, JominiDeserialize, Windows1252Encoding};
@@ -20,21 +21,8 @@ use std::borrow::Cow;
 ///
 /// #[derive(Debug, Clone, Deserialize, PartialEq)]
 /// pub struct StructA {
-///   #[serde(flatten)]
-///   b: StructB,
-///
-///   #[serde(flatten)]
-///   c: StructC,
-/// }
-///
-/// #[derive(Debug, Clone, Deserialize, PartialEq)]
-/// pub struct StructB {
 ///   field1: String,
-/// }
-///
-/// #[derive(Debug, Clone, Deserialize, PartialEq)]
-/// pub struct StructC {
-///   field2: String,
+///   field2: i32
 /// }
 ///
 /// #[derive(Debug, Default)]
@@ -58,31 +46,29 @@ use std::borrow::Cow;
 ///
 /// let data = [
 ///    0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47,
-///    0x83, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x48,
+///    0x83, 0x2d, 0x01, 0x00, 0x0c, 0x00, 0x59, 0x00, 0x00, 0x00,
 /// ];
 ///
 /// let mut map = HashMap::new();
 /// map.insert(0x2d82, String::from("field1"));
 /// map.insert(0x2d83, String::from("field2"));
 ///
-/// // the data can be parsed and deserialized in one step
-///
 /// let a: StructA = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
 ///     .from_slice(&data[..], &map)?;
 /// assert_eq!(a, StructA {
-///   b: StructB { field1: "ENG".to_string() },
-///   c: StructC { field2: "ENH".to_string() },
+///   field1: "ENG".to_string(),
+///   field2: 89,
 /// });
 ///
-/// // or split into two steps, whatever is appropriate.
-/// let tape = jomini::BinaryTape::from_slice(&data[..])?;
-/// let deserializer = BinaryDeserializer::builder_flavor(BinaryTestFlavor);
-/// let b: StructB = deserializer.from_tape(&tape, &map)?;
-/// let c: StructC = deserializer.from_tape(&tape, &map)?;
-/// assert_eq!(b, StructB { field1: "ENG".to_string() });
-/// assert_eq!(c, StructC { field2: "ENH".to_string() });
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
+///
+/// It is not recommended to use the [`flatten` serde attribute][0], as then it
+/// would be difficult to reuse the same struct for binary and text
+/// deserialization. See [TextDeserializer](crate::TextDeserializer) for more
+/// info
+///
+/// [0]: https://serde.rs/attr-flatten.html
 pub struct BinaryDeserializer;
 
 impl BinaryDeserializer {

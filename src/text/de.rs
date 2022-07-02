@@ -9,10 +9,11 @@ use std::borrow::Cow;
 
 /// A structure to deserialize text data into Rust values.
 ///
-/// By default, if a token is unable to be resolved then it will be ignored by the default.
-/// Construct a custom instance through the `builder` method to tweak this behavior.
+/// By default, if a token is unable to be resolved then it will be ignored by
+/// the default. Construct a custom instance through the `builder` method to
+/// tweak this behavior.
 ///
-/// The example below demonstrates multiple ways to deserialize data
+/// The example below demonstrates how to deserialize data
 ///
 /// ```
 /// use jomini::{TextDeserializer, TextTape};
@@ -20,12 +21,26 @@ use std::borrow::Cow;
 ///
 /// #[derive(Debug, Clone, Deserialize, PartialEq)]
 /// pub struct StructA {
-///   #[serde(flatten)]
-///   b: StructB,
-///
-///   #[serde(flatten)]
-///   c: StructC,
+///   field1: String,
+///   field2: i32,
 /// }
+///
+/// let data = b"field1=ENG field2=2";
+/// let a: StructA = TextDeserializer::from_windows1252_slice(&data[..])?;
+/// assert_eq!(a, StructA {
+///   field1: "ENG".to_string(),
+///   field2: 2,
+/// });
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// Since the Clausewitz text format is not self describing, one should not use
+/// the [`flatten` serde attribute][0], as [flattened structs won't type
+/// cast][1], and instead prefer to deserialize in two steps:
+///
+/// ```
+/// use jomini::{TextDeserializer, TextTape};
+/// use serde::Deserialize;
 ///
 /// #[derive(Debug, Clone, Deserialize, PartialEq)]
 /// pub struct StructB {
@@ -34,26 +49,20 @@ use std::borrow::Cow;
 ///
 /// #[derive(Debug, Clone, Deserialize, PartialEq)]
 /// pub struct StructC {
-///   field2: String,
+///   field2: i32,
 /// }
 ///
-/// let data = b"field1=ENG field2=ENH";
-///
-/// // the data can be parsed and deserialized in one step
-/// let a: StructA = TextDeserializer::from_windows1252_slice(&data[..])?;
-/// assert_eq!(a, StructA {
-///   b: StructB { field1: "ENG".to_string() },
-///   c: StructC { field2: "ENH".to_string() },
-/// });
-///
-/// // or split into two steps, whatever is appropriate.
+/// let data = b"field1=ENG field2=2";
 /// let tape = TextTape::from_slice(&data[..])?;
 /// let b: StructB = TextDeserializer::from_windows1252_tape(&tape)?;
 /// let c: StructC = TextDeserializer::from_windows1252_tape(&tape)?;
 /// assert_eq!(b, StructB { field1: "ENG".to_string() });
-/// assert_eq!(c, StructC { field2: "ENH".to_string() });
+/// assert_eq!(c, StructC { field2: 2 });
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
+///
+/// [0]: https://serde.rs/attr-flatten.html
+/// [1]: https://github.com/serde-rs/serde/issues/1529
 pub struct TextDeserializer;
 
 impl TextDeserializer {
