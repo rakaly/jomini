@@ -1,3 +1,9 @@
+## v0.19.1 - 2022-07-02
+
+- Advise against using the `flatten` serde attribute in documentation
+- Fix stack overflow in case someone uses `flatten` on a struct with input that
+  contains a header (eg: `color = rgb { 10 10 10 }`)
+
 ## v0.19.0 - 2022-06-28
 
 First some performance news, text decoding throughput has increased by up to
