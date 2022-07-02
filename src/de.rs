@@ -14,7 +14,7 @@ impl ColorSequence {
     }
 }
 
-impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut ColorSequence {
+impl<'de, 'r> de::Deserializer<'de> for &'r mut ColorSequence {
     type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -35,7 +35,7 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut ColorSequence {
     }
 }
 
-impl<'b, 'de> SeqAccess<'de> for ColorSequence {
+impl<'de> SeqAccess<'de> for ColorSequence {
     type Error = DeserializeError;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
@@ -72,7 +72,7 @@ impl InnerColorSequence {
     }
 }
 
-impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut InnerColorSequence {
+impl<'de, 'r> de::Deserializer<'de> for &'r mut InnerColorSequence {
     type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -89,7 +89,7 @@ impl<'b, 'de, 'r> de::Deserializer<'de> for &'r mut InnerColorSequence {
     }
 }
 
-impl<'b, 'de> SeqAccess<'de> for InnerColorSequence {
+impl<'de> SeqAccess<'de> for InnerColorSequence {
     type Error = DeserializeError;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
