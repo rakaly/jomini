@@ -153,13 +153,24 @@ where
     where
         V: Visitor<'de>,
     {
-        match &self.readers {
+        match &mut self.readers {
             Reader::Scalar(x) => visit_str!(x.read_str(), visitor),
             Reader::Value(x) => match x.token() {
                 TextToken::Quoted(s) | TextToken::Unquoted(s) => {
                     visit_str!(x.decode(s.as_bytes()), visitor)
                 }
-                TextToken::Header(_) | TextToken::Array(_) => self.deserialize_seq(visitor),
+                TextToken::Header(_) => {
+                    // This is a bit of a hack to avoid overflows on flattened
+                    // structs, which already have poor deserialization support,
+                    // but this at least allows for forward progress in the
+                    // cases where flattened structs can be used.
+                    if matches!(x.next(), Some(TextToken::Object(_))) {
+                        self.deserialize_map(visitor)
+                    } else {
+                        self.deserialize_seq(visitor)
+                    }
+                }
+                TextToken::Array(_) => self.deserialize_seq(visitor),
                 TextToken::Object(_) | TextToken::HiddenObject(_) => self.deserialize_map(visitor),
                 _ => Err(DeserializeError {
                     kind: DeserializeErrorKind::Unsupported(String::from(

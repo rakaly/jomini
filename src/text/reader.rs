@@ -667,6 +667,11 @@ impl<'data, 'tokens, E> ValueReader<'data, 'tokens, E> {
     pub fn token(&self) -> &TextToken<'data> {
         &self.tokens[self.value_ind]
     }
+
+    pub(crate) fn next(&mut self) -> Option<&TextToken<'data>> {
+        self.value_ind += 1;
+        self.tokens.get(self.value_ind)
+    }
 }
 
 impl<'data, 'tokens, E> Encoding for ValueReader<'data, 'tokens, E>

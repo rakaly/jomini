@@ -347,3 +347,39 @@ fn test_binary_timeout() {
         .from_slice::<_, Meta>(&data[..], &hash)
         .is_err());
 }
+
+#[test]
+fn test_flatten_overflow() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct MyStruct2 {
+        a: String,
+    }
+
+    #[derive(Deserialize, Debug)]
+    struct MyStruct {
+        #[serde(flatten)]
+        meta: MyStruct2,
+    }
+
+    let data = b"a=b d=e {c d}";
+    let txt_out: MyStruct = TextDeserializer::from_windows1252_slice(&data[..]).unwrap();
+    assert_eq!(txt_out.meta.a, String::from("b"));
+}
+
+#[test]
+fn test_flatten_overflow2() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct MyStruct2 {
+        a: String,
+    }
+
+    #[derive(Deserialize, Debug)]
+    struct MyStruct {
+        #[serde(flatten)]
+        meta: MyStruct2,
+    }
+
+    let data = b"a=b d=e {c<d}";
+    let txt_out: MyStruct = TextDeserializer::from_windows1252_slice(&data[..]).unwrap();
+    assert_eq!(txt_out.meta.a, String::from("b"));
+}
