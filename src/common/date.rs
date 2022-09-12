@@ -5,7 +5,7 @@ use std::fmt::{self, Debug, Display};
 use std::str::FromStr;
 
 /// A date error.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DateError;
 
 impl std::error::Error for DateError {

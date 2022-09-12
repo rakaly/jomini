@@ -50,7 +50,7 @@ impl error::Error for ScalarError {
 /// assert_eq!(v1.to_f64(), Ok(10.0));
 /// assert!(v1.to_bool().is_err());
 /// ```
-#[derive(PartialEq, Copy, Clone)]
+#[derive(PartialEq, Eq, Copy, Clone)]
 pub struct Scalar<'a> {
     data: &'a [u8],
 }
@@ -202,8 +202,8 @@ fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
                 .map(|x| -x)
                 .map_err(|_| ScalarError::Overflow)?;
             let result = val as f64;
-
-            if val < -9007199254740991 || val > 9007199254740991 {
+            let upper = 9007199254740991i64;
+            if !(-upper..=upper).contains(&val) {
                 Err(ScalarError::PrecisionLoss(result))
             } else {
                 Ok(result)
