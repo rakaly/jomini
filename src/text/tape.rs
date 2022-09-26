@@ -6,7 +6,7 @@ use crate::{
 use crate::{Error, ErrorKind, Scalar};
 
 /// Represents a valid text value
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextToken<'a> {
     /// Index of the `TextToken::End` that signifies this array's termination
     Array(usize),
@@ -1058,7 +1058,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
         }
 
         let (scalar, data) = split_at_scalar(data);
-        if !matches!(data.get(0), Some(&x) if x == b']') {
+        if !matches!(data.first(), Some(&x) if x == b']') {
             return Err(Error::new(ErrorKind::InvalidSyntax {
                 offset: self.offset(data),
                 msg: String::from("expected end of parameter name"),

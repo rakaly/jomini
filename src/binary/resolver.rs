@@ -53,7 +53,7 @@ impl<T: TokenResolver + ?Sized> TokenResolver for Box<T> {
 }
 
 /// Customize how the deserializer reacts when a token can't be resolved
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum FailedResolveStrategy {
     /// Stop parsing and return an error
     Error,

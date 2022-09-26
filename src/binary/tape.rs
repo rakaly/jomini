@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// Represents any valid binary value
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinaryToken<'a> {
     /// Index of the `BinaryToken::End` that signifies this array's termination
     Array(usize),
@@ -178,7 +178,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
     #[inline]
     fn parse_bool(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = data.get(0).map(|&x| x != 0).ok_or_else(Error::eof)?;
+        let val = data.first().map(|&x| x != 0).ok_or_else(Error::eof)?;
         self.token_tape.alloc().init(BinaryToken::Bool(val));
         Ok(&data[1..])
     }
