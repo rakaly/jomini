@@ -22,16 +22,7 @@ pub enum TextToken<'a> {
     /// - Array trailers (eg: `a = {10} 0 1 2`)
     Object(usize),
 
-    /// Index of the `TextToken::End` that signifies this objects's termination
-    ///
-    /// A hidden object occurs where the first element is part of an array:
-    ///
-    /// ```ignore
-    /// a = { 10 a=b c=d}
-    /// ```
-    ///
-    /// In the above example, a and c would be part of the hidden object
-    HiddenObject(usize),
+    MixedContainer,
 
     /// Extracted unquoted scalar value
     Unquoted(Scalar<'a>),
@@ -172,7 +163,6 @@ enum ParseState {
     ObjectValue,
     ArrayValue,
     ParseOpen,
-    FirstValue,
 }
 
 /// I'm not smart enough to figure out the behavior of handling escape sequences when
@@ -498,75 +488,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
         rest
     }
 
-    #[inline]
-    fn parse_key_value_separator(&mut self, d: &'a [u8]) -> &'a [u8] {
-        // Most key values are separated by an equal sign but there are some fields like
-        // map_area_data that does not have a separator.
-        //
-        // ```
-        // map_area_data{
-        //   brittany_area={
-        //   # ...
-        // ```
-        //
-        // Additionally it's possible for there to be heterogenus objects:
-        //
-        // ```
-        // brittany_area = { color = { 10 10 10 } 100 200 300 }
-        // ```
-        //
-        // These are especially tricky, but essentially this function's job is to skip the equal
-        // token (the 99.9% typical case) if possible.
-        let range = d.as_ptr_range();
-        let mut cur = range.start;
-        if unsafe { *cur } != b'=' {
-            return self.parse_key_value_separator_unlikely(d);
-        }
-
-        cur = unsafe { cur.add(1) };
-        if cur == range.end {
-            self.parse_key_value_separator_unlikely(d)
-        } else if unsafe { *cur } != b'=' {
-            &d[1..]
-        } else {
-            self.parse_key_value_separator_unlikely(d)
-        }
-    }
-
-    #[inline(never)]
-    fn parse_key_value_separator_unlikely(&mut self, d: &'a [u8]) -> &'a [u8] {
-        if d[0] == b'<' {
-            if d.get(1).map_or(false, |c| *c == b'=') {
-                self.token_tape
-                    .push(TextToken::Operator(Operator::LessThanEqual));
-                &d[2..]
-            } else {
-                self.token_tape
-                    .push(TextToken::Operator(Operator::LessThan));
-                &d[1..]
-            }
-        } else if d[0] == b'>' {
-            if d.get(1).map_or(false, |c| *c == b'=') {
-                self.token_tape
-                    .push(TextToken::Operator(Operator::GreaterThanEqual));
-                &d[2..]
-            } else {
-                self.token_tape
-                    .push(TextToken::Operator(Operator::GreaterThan));
-                &d[1..]
-            }
-        } else if d[0] == b'!' && d.get(1).map_or(false, |c| *c == b'=') {
-            self.token_tape
-                .push(TextToken::Operator(Operator::NotEqual));
-            &d[2..]
-        } else if d[0] == b'=' && d.get(1).map_or(false, |c| *c == b'=') {
-            self.token_tape.push(TextToken::Operator(Operator::Exact));
-            &d[2..]
-        } else {
-            d
-        }
-    }
-
     /// Clear previously parsed data and parse the given data
     #[inline]
     pub fn parse(&mut self) -> Result<(), Error> {
@@ -578,20 +499,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
             data = &data[3..];
         }
 
-        // This variable keeps track of outer array when we're parsing a hidden object.
-        // A hidden object textually looks like:
-        //     levels={ 10 0=2 1=2 }
-        // which we will translate into
-        //     levels={ 10 { 0=2 1=2 } }
-        // with the help of this variable. As when we'll only see one END token to signify
-        // both the end of the array and object, but we'll produce two TextToken::End.
-        let mut array_ind_of_hidden_obj = None;
-
-        // Records if an object key does not have an operator for detecting objecty trailers:
-        // brittany_area = { color = { 10 10 10 } 100 200 300 }
-        let mut lack_operator = false;
-        let mut in_trailer = false;
-
+        let mut mixed_mode = false;
         let mut parent_ind = 0;
         loop {
             let d = match self.skip_ws_t(data) {
@@ -648,40 +556,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             }
 
                             self.token_tape.push(TextToken::End(parent_ind));
-                            if let Some(array_ind) = array_ind_of_hidden_obj.take() {
-                                self.token_tape[parent_ind] = TextToken::HiddenObject(end_idx);
-
-                                let end_idx = self.token_tape.len();
-                                self.token_tape.push(TextToken::End(array_ind));
-
-                                // Grab the grand parent from the outer array. Even though the logic should
-                                // be more strict (ie: throwing an error when if the parent array index doesn't exist,
-                                // or if the parent doesn't exist), but since hidden objects are such a rather rare
-                                // occurrence, it's better to be flexible
-                                let grand_ind =
-                                    if let Some(parent) = self.token_tape.get_mut(array_ind) {
-                                        let grand_ind = match parent {
-                                            TextToken::Array(x) => *x,
-                                            _ => 0,
-                                        };
-                                        *parent = TextToken::Array(end_idx);
-                                        grand_ind
-                                    } else {
-                                        0
-                                    };
-
-                                state = match self.token_tape.get(grand_ind) {
-                                    Some(TextToken::Array(_x)) => ParseState::ArrayValue,
-                                    Some(TextToken::Object(_x)) => ParseState::Key,
-                                    _ => ParseState::Key,
-                                };
-                                parent_ind = grand_ind;
-                            } else {
-                                self.token_tape[parent_ind] = TextToken::Object(end_idx);
-                                parent_ind = grand_ind;
-                            }
-
+                            self.token_tape[parent_ind] = TextToken::Object(end_idx);
+                            parent_ind = grand_ind;
                             data = &data[1..];
+                            mixed_mode = false;
                         }
 
                         // Empty object or token header
@@ -694,12 +572,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
                             if let Some(last) = self.token_tape.last_mut() {
                                 if let TextToken::Unquoted(header) = last {
-                                    if array_ind_of_hidden_obj.is_none() {
-                                        *last = TextToken::Header(*header);
-                                        self.token_tape.push(TextToken::Array(0));
-                                        state = ParseState::ParseOpen;
-                                        continue;
-                                    }
+                                    *last = TextToken::Header(*header);
+                                    self.token_tape.push(TextToken::Array(0));
+                                    state = ParseState::ParseOpen;
+                                    continue;
                                 }
                             }
 
@@ -715,7 +591,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                 &mut parent_ind,
                                 &mut state,
                                 false,
-                                array_ind_of_hidden_obj.is_some(),
                             )?;
                         }
 
@@ -735,84 +610,79 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         }
                     }
                 }
-                ParseState::KeyValueSeparator => {
-                    let new_data = self.parse_key_value_separator(data);
-                    lack_operator = new_data.len() == data.len();
-                    data = new_data;
-                    state = ParseState::ObjectValue;
-                }
+                ParseState::KeyValueSeparator => match data {
+                    [b'<', b'=', ..] => {
+                        self.token_tape
+                            .push(TextToken::Operator(Operator::LessThanEqual));
+                        data = &data[2..];
+                        state = ParseState::ObjectValue;
+                    }
+                    [b'<', ..] => {
+                        self.token_tape
+                            .push(TextToken::Operator(Operator::LessThan));
+                        data = &data[1..];
+                        state = ParseState::ObjectValue;
+                    }
+                    [b'>', b'=', ..] => {
+                        self.token_tape
+                            .push(TextToken::Operator(Operator::GreaterThanEqual));
+                        data = &data[2..];
+                        state = ParseState::ObjectValue;
+                    }
+                    [b'>', ..] => {
+                        self.token_tape
+                            .push(TextToken::Operator(Operator::GreaterThan));
+                        data = &data[1..];
+                        state = ParseState::ObjectValue;
+                    }
+                    [b'!', b'=', ..] => {
+                        self.token_tape
+                            .push(TextToken::Operator(Operator::NotEqual));
+                        data = &data[2..];
+                        state = ParseState::ObjectValue;
+                    }
+                    [b'=', b'=', ..] => {
+                        self.token_tape.push(TextToken::Operator(Operator::Exact));
+                        data = &data[2..];
+                        state = ParseState::ObjectValue;
+                    }
+                    [b'=', ..] if mixed_mode => {
+                        self.token_tape.push(TextToken::Operator(Operator::Equal));
+                        data = &data[1..];
+                    }
+                    [b'=', ..] => {
+                        data = &data[1..];
+                        state = ParseState::ObjectValue;
+                    }
+                    [b'{', ..] => {
+                        state = ParseState::ObjectValue;
+                    }
+                    [b'}', ..] => {
+                        self.token_tape
+                            .insert(self.token_tape.len() - 1, TextToken::MixedContainer);
+                        state = ParseState::ArrayValue;
+                        mixed_mode = true;
+                    }
+                    _ => {
+                        self.token_tape
+                            .insert(self.token_tape.len() - 1, TextToken::MixedContainer);
+                        state = ParseState::ArrayValue;
+                        mixed_mode = true;
+                    }
+                },
                 ParseState::ObjectValue => {
                     match data[0] {
                         b'{' => {
-                            if let Some(array_ind) = array_ind_of_hidden_obj.take() {
-                                // before we error, we should check if we previously parsed an empty array
-                                // `history={{} 1444.11.11={core=AAA}}`
-                                // so we're going to go back up the stack until we see our parent object
-                                // and ensure that everything along the way is an empty array
-
-                                let mut start = self.token_tape.len() - 3;
-                                while start > array_ind {
-                                    match self.token_tape[start] {
-                                        TextToken::End(x) if x == start - 1 => {
-                                            start -= 2;
-                                        }
-                                        _ => {
-                                            return Err(Error::new(ErrorKind::InvalidSyntax {
-                                                offset: self.offset(data) - 2,
-                                                msg: String::from(
-                                                    "header values inside a hidden object are unsupported",
-                                                ),
-                                            }));
-                                        }
-                                    }
-                                }
-
-                                let empty_objects_to_remove = self.token_tape.len() - 2 - array_ind;
-
-                                let grand_ind = match self.token_tape[array_ind] {
-                                    TextToken::Array(x) => x,
-                                    _ => 0,
-                                };
-
-                                for _ in 0..empty_objects_to_remove {
-                                    self.token_tape.remove(self.token_tape.len() - 3);
-                                }
-
-                                parent_ind = array_ind;
-                                self.token_tape[parent_ind] = TextToken::Object(grand_ind);
-                            }
-
                             self.token_tape.push(TextToken::Array(0));
                             state = ParseState::ParseOpen;
                             data = &data[1..];
                         }
 
                         b'}' => {
-                            // Encountering a `}` for an object value has never been encountered in the wild
-                            // but it makes sense to interpret it as an array trailer of one element long.
-                            if parent_ind == 0 {
-                                return Err(Error::new(ErrorKind::StackEmpty {
-                                    offset: self.offset(data),
-                                }));
-                            }
-
-                            let ind = self.token_tape.len() - 1;
-                            if array_ind_of_hidden_obj.is_some()
-                                || !matches!(
-                                    self.token_tape[ind],
-                                    TextToken::Unquoted(_) | TextToken::Quoted(_)
-                                )
-                            {
-                                return Err(Error::new(ErrorKind::InvalidSyntax {
-                                    msg: String::from("complex trailers are not supported"),
-                                    offset: self.offset(data),
-                                }));
-                            }
-
-                            self.token_tape.insert(ind, TextToken::Array(parent_ind));
-                            parent_ind = ind;
-                            state = ParseState::ArrayValue;
-                            in_trailer = true;
+                            return Err(Error::new(ErrorKind::InvalidSyntax {
+                                msg: String::from("encountered '}' for object value"),
+                                offset: self.offset(data),
+                            }));
                         }
 
                         b'"' => {
@@ -824,26 +694,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             state = ParseState::Key;
                         }
                         _ => {
-                            if lack_operator && parent_ind != 0 {
-                                if array_ind_of_hidden_obj.is_some() {
-                                    return Err(Error::new(ErrorKind::InvalidSyntax {
-                                        msg: String::from("complex trailers are not supported"),
-                                        offset: self.offset(data),
-                                    }));
-                                }
-
-                                let ind = self.token_tape.len() - 1;
-                                self.token_tape.insert(ind, TextToken::Array(parent_ind));
-                                parent_ind = ind;
-                                state = ParseState::ArrayValue;
-                                in_trailer = true;
-                            } else {
-                                data = self.parse_scalar(data);
-                                state = ParseState::Key;
-                            }
+                            data = self.parse_scalar(data);
+                            state = ParseState::Key;
                         }
                     }
-                    lack_operator = false;
                 }
                 ParseState::ParseOpen => {
                     match data[0] {
@@ -859,122 +713,118 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             self.token_tape[ind] = TextToken::Array(ind + 1);
                             self.token_tape.push(TextToken::End(ind));
                             data = &data[1..];
+                            continue;
                         }
 
                         // start of a parameter definition
                         b'[' => {
+                            if mixed_mode {
+                                return Err(Error::new(ErrorKind::InvalidSyntax {
+                                    msg: String::from("mixed object and array container not expected"),
+                                    offset: self.offset(data),
+                                }));
+                            }
+
                             data = self.parse_parameter_definition(
                                 data,
                                 &mut parent_ind,
                                 &mut state,
                                 true,
-                                array_ind_of_hidden_obj.is_some(),
                             )?;
+                            continue;
                         }
 
-                        // array of objects or another array
+                        // array of objects, another array
                         b'{' => {
+                            let scratch = self.skip_ws_t(&data[1..]).ok_or_else(Error::eof)?;
+                            if scratch[0] == b'}' {
+                                data = &scratch[1..];
+                                continue;
+                            }
+
+                            if mixed_mode {
+                                return Err(Error::new(ErrorKind::InvalidSyntax {
+                                    msg: String::from("mixed object and array container not expected"),
+                                    offset: self.offset(data),
+                                }));
+                            }
+
                             let ind = self.token_tape.len() - 1;
                             self.token_tape[ind] = TextToken::Array(parent_ind);
                             parent_ind = ind;
                             state = ParseState::ArrayValue;
+                            continue;
                         }
                         b'"' => {
                             data = self.parse_quote_scalar(data)?;
-                            state = ParseState::FirstValue;
                         }
                         b'@' => {
                             data = self.parse_variable(data)?;
-                            state = ParseState::FirstValue;
                         }
                         _ => {
                             data = self.parse_scalar(data);
-                            state = ParseState::FirstValue;
+                        }
+                    }
+
+                    if mixed_mode {
+                        return Err(Error::new(ErrorKind::InvalidSyntax {
+                            msg: String::from("mixed object and array container not expected"),
+                            offset: self.offset(data),
+                        }));
+                    }
+
+                    data = self.skip_ws_t(data).ok_or_else(Error::eof)?;
+                    match data[0] {
+                        b'=' | b'>' | b'<' => {
+                            let ind = self.token_tape.len() - 2;
+                            self.token_tape[ind] = TextToken::Object(parent_ind);
+                            parent_ind = ind;
+                            state = ParseState::KeyValueSeparator;
+                        }
+                        _ => {
+                            let ind = self.token_tape.len() - 2;
+                            self.token_tape[ind] = TextToken::Array(parent_ind);
+                            parent_ind = ind;
+                            state = ParseState::ArrayValue;
                         }
                     }
                 }
-                ParseState::FirstValue => match data[0] {
-                    b'=' | b'>' | b'<' => {
-                        let ind = self.token_tape.len() - 2;
-                        self.token_tape[ind] = TextToken::Object(parent_ind);
-                        parent_ind = ind;
-                        state = ParseState::KeyValueSeparator;
-                    }
-                    _ => {
-                        let ind = self.token_tape.len() - 2;
-                        self.token_tape[ind] = TextToken::Array(parent_ind);
-                        parent_ind = ind;
-                        state = ParseState::ArrayValue;
-                    }
-                },
                 ParseState::ArrayValue => match data[0] {
                     b'{' => {
-                        if in_trailer {
-                            return Err(Error::new(ErrorKind::InvalidSyntax {
-                                msg: String::from("complex trailers are not supported"),
-                                offset: self.offset(data) - 1,
-                            }));
-                        }
-
                         self.token_tape.push(TextToken::Array(0));
                         state = ParseState::ParseOpen;
                         data = &data[1..];
                     }
                     b'}' => {
-                        if in_trailer {
-                            let parent_obj_ind = if let Some(TextToken::Array(x)) =
-                                self.token_tape.get(parent_ind)
-                            {
-                                *x
-                            } else {
-                                panic!("expected array");
-                            };
+                        let (grand_ind, is_array) = match self.token_tape.get(parent_ind) {
+                            Some(TextToken::Array(x)) => (*x, true),
+                            Some(TextToken::Object(x)) => (*x, false),
+                            _ => (0, false),
+                        };
 
-                            let grand_ind = match self.token_tape.get(parent_obj_ind) {
-                                Some(TextToken::Array(x)) => *x,
-                                Some(TextToken::Object(x)) => *x,
-                                _ => 0,
-                            };
+                        state = match self.token_tape.get(grand_ind) {
+                            Some(TextToken::Array(_x)) => ParseState::ArrayValue,
+                            Some(TextToken::Object(_x)) => ParseState::Key,
+                            _ => ParseState::Key,
+                        };
 
-                            state = match self.token_tape.get(grand_ind) {
-                                Some(TextToken::Array(_x)) => ParseState::ArrayValue,
-                                Some(TextToken::Object(_x)) => ParseState::Key,
-                                _ => ParseState::Key,
-                            };
-
-                            let end_idx = self.token_tape.len();
-                            self.token_tape[parent_ind] = TextToken::Array(end_idx);
-                            self.token_tape[parent_obj_ind] = TextToken::Object(end_idx + 1);
-                            self.token_tape.push(TextToken::End(parent_ind));
-                            self.token_tape.push(TextToken::End(parent_obj_ind));
-                            parent_ind = grand_ind;
-                            in_trailer = false;
-                        } else {
-                            let grand_ind = match self.token_tape.get(parent_ind) {
-                                Some(TextToken::Array(x)) => *x,
-                                Some(TextToken::Object(x)) => *x,
-                                _ => 0,
-                            };
-
-                            state = match self.token_tape.get(grand_ind) {
-                                Some(TextToken::Array(_x)) => ParseState::ArrayValue,
-                                Some(TextToken::Object(_x)) => ParseState::Key,
-                                _ => ParseState::Key,
-                            };
-
-                            if parent_ind == 0 && grand_ind == 0 {
-                                return Err(Error::new(ErrorKind::StackEmpty {
-                                    offset: self.offset(data),
-                                }));
-                            }
-
-                            let end_idx = self.token_tape.len();
-                            self.token_tape[parent_ind] = TextToken::Array(end_idx);
-                            self.token_tape.push(TextToken::End(parent_ind));
-                            parent_ind = grand_ind;
+                        if parent_ind == 0 && grand_ind == 0 {
+                            return Err(Error::new(ErrorKind::StackEmpty {
+                                offset: self.offset(data),
+                            }));
                         }
 
+                        let end_idx = self.token_tape.len();
+                        self.token_tape[parent_ind] = if is_array {
+                            TextToken::Array(end_idx)
+                        } else {
+                            TextToken::Object(end_idx)
+                        };
+
+                        self.token_tape.push(TextToken::End(parent_ind));
+                        parent_ind = grand_ind;
                         data = &data[1..];
+                        mixed_mode = false;
                     }
                     b'"' => {
                         data = self.parse_quote_scalar(data)?;
@@ -984,30 +834,61 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         data = self.parse_variable(data)?;
                         state = ParseState::ArrayValue;
                     }
-                    b'=' => {
-                        // CK3 introduced hidden object inside lists so we work around it by trying to
-                        // make the object explicit, but we first check to see if we have any prior
-                        // array values
-                        if self.token_tape.len() - parent_ind <= 1
-                            || matches!(
-                                self.token_tape[self.token_tape.len() - 1],
-                                TextToken::End(_)
-                            )
-                            || in_trailer
-                        {
-                            return Err(Error::new(ErrorKind::InvalidSyntax {
-                                msg: String::from("hidden object must start with a key"),
-                                offset: self.offset(data) - 1,
-                            }));
+                    b'<' | b'>' | b'!' | b'=' => {
+                        if !mixed_mode {
+                            if self.token_tape.last().and_then(|x| x.as_scalar()).is_some() {
+                                self.token_tape
+                                    .insert(self.token_tape.len() - 1, TextToken::MixedContainer);
+                                mixed_mode = true;
+                            } else {
+                                return Err(Error::new(ErrorKind::InvalidSyntax {
+                                    msg: String::from("expected a scalar to precede an operator"),
+                                    offset: self.offset(data) - 1,
+                                }));
+                            }
                         }
 
-                        let hidden_object = TextToken::Object(parent_ind);
-                        array_ind_of_hidden_obj = Some(parent_ind);
-                        parent_ind = self.token_tape.len() - 1;
-                        self.token_tape
-                            .insert(self.token_tape.len() - 1, hidden_object);
-                        state = ParseState::ObjectValue;
-                        data = &data[1..];
+                        match data {
+                            [b'<', b'=', ..] => {
+                                self.token_tape
+                                    .push(TextToken::Operator(Operator::LessThanEqual));
+                                data = &data[2..];
+                            }
+                            [b'<', ..] => {
+                                self.token_tape
+                                    .push(TextToken::Operator(Operator::LessThan));
+                                data = &data[1..];
+                            }
+                            [b'>', b'=', ..] => {
+                                self.token_tape
+                                    .push(TextToken::Operator(Operator::GreaterThanEqual));
+                                data = &data[2..];
+                            }
+                            [b'>', ..] => {
+                                self.token_tape
+                                    .push(TextToken::Operator(Operator::GreaterThan));
+                                data = &data[1..];
+                            }
+                            [b'!', b'=', ..] => {
+                                self.token_tape
+                                    .push(TextToken::Operator(Operator::NotEqual));
+                                data = &data[2..];
+                            }
+                            [b'=', b'=', ..] => {
+                                self.token_tape.push(TextToken::Operator(Operator::Exact));
+                                data = &data[2..];
+                            }
+                            [b'=', ..] => {
+                                self.token_tape.push(TextToken::Operator(Operator::Equal));
+                                data = &data[1..];
+                            }
+                            _ => {
+                                return Err(Error::new(ErrorKind::InvalidSyntax {
+                                    msg: String::from("unrecognized operator"),
+                                    offset: self.offset(data) - 1,
+                                }));
+                            }
+                        }
                     }
                     _ => {
                         data = self.parse_scalar(data);
@@ -1024,15 +905,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
         parent_ind: &mut usize,
         state: &mut ParseState,
         initial: bool,
-        inside_hidden_object: bool,
     ) -> Result<&'a [u8], Error> {
-        if inside_hidden_object {
-            return Err(Error::new(ErrorKind::InvalidSyntax {
-                offset: self.offset(data),
-                msg: String::from("parameter definitions inside hidden objects are not allowed"),
-            }));
-        }
-
         if !matches!(data.get(1), Some(&x) if x == b'[') {
             return Err(Error::new(ErrorKind::InvalidSyntax {
                 offset: self.offset(data),
@@ -1400,22 +1273,26 @@ mod tests {
             parse(&data[..]).unwrap().token_tape,
             vec![
                 TextToken::Unquoted(Scalar::new(b"dlc002")),
-                TextToken::Object(17),
+                TextToken::Object(21),
                 TextToken::Unquoted(Scalar::new(b"name")),
                 TextToken::Quoted(Scalar::new(b"Arachnoid Portrait Pack")),
                 TextToken::Unquoted(Scalar::new(b"steam_id")),
                 TextToken::Quoted(Scalar::new(b"447680")),
                 TextToken::Unquoted(Scalar::new(b"gog_store_id")),
                 TextToken::Quoted(Scalar::new(b"")),
+                TextToken::MixedContainer,
                 TextToken::Unquoted(Scalar::new(b"paradoxplaza_store_url")),
                 TextToken::Quoted(Scalar::new(b"")),
                 TextToken::Unquoted(Scalar::new(b"category")),
+                TextToken::Operator(Operator::Equal),
                 TextToken::Quoted(Scalar::new(b"content_pack")),
                 TextToken::Unquoted(Scalar::new(b"show")),
+                TextToken::Operator(Operator::Equal),
                 TextToken::Unquoted(Scalar::new(b"no")),
                 TextToken::Unquoted(Scalar::new(b"recommendations")),
-                TextToken::Array(16),
-                TextToken::End(15),
+                TextToken::Operator(Operator::Equal),
+                TextToken::Array(20),
+                TextToken::End(19),
                 TextToken::End(1),
             ]
         );
@@ -1554,62 +1431,6 @@ mod tests {
                 TextToken::Unquoted(Scalar::new(b"name")),
                 TextToken::Unquoted(Scalar::new(b"def")),
                 TextToken::End(6),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_object_array_trailer() {
-        let data = br#"brittany_area = { #5
-            color = { 118  99  151 }
-            169 170 171 172 4384
-        }"#;
-
-        assert_eq!(
-            parse(&data[..]).unwrap().token_tape,
-            vec![
-                TextToken::Unquoted(Scalar::new(b"brittany_area")),
-                TextToken::Object(15),
-                TextToken::Unquoted(Scalar::new(b"color")),
-                TextToken::Array(7),
-                TextToken::Unquoted(Scalar::new(b"118")),
-                TextToken::Unquoted(Scalar::new(b"99")),
-                TextToken::Unquoted(Scalar::new(b"151")),
-                TextToken::End(3),
-                TextToken::Array(14),
-                TextToken::Unquoted(Scalar::new(b"169")),
-                TextToken::Unquoted(Scalar::new(b"170")),
-                TextToken::Unquoted(Scalar::new(b"171")),
-                TextToken::Unquoted(Scalar::new(b"172")),
-                TextToken::Unquoted(Scalar::new(b"4384")),
-                TextToken::End(8),
-                TextToken::End(1),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_object_array_trailer_single_element() {
-        let data = br#"brittany_area = { #5
-            color = { 118  99  151 }
-            169
-        }"#;
-
-        assert_eq!(
-            parse(&data[..]).unwrap().token_tape,
-            vec![
-                TextToken::Unquoted(Scalar::new(b"brittany_area")),
-                TextToken::Object(11),
-                TextToken::Unquoted(Scalar::new(b"color")),
-                TextToken::Array(7),
-                TextToken::Unquoted(Scalar::new(b"118")),
-                TextToken::Unquoted(Scalar::new(b"99")),
-                TextToken::Unquoted(Scalar::new(b"151")),
-                TextToken::End(3),
-                TextToken::Array(10),
-                TextToken::Unquoted(Scalar::new(b"169")),
-                TextToken::End(8),
-                TextToken::End(1),
             ]
         );
     }
@@ -1988,70 +1809,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_heterogenous_list() {
-        let data = b"levels={ 10 0=2 1=2 } foo={bar=qux}";
-        assert_eq!(
-            parse(&data[..]).unwrap().token_tape,
-            vec![
-                TextToken::Unquoted(Scalar::new(b"levels")),
-                TextToken::Array(9),
-                TextToken::Unquoted(Scalar::new(b"10")),
-                TextToken::HiddenObject(8),
-                TextToken::Unquoted(Scalar::new(b"0")),
-                TextToken::Unquoted(Scalar::new(b"2")),
-                TextToken::Unquoted(Scalar::new(b"1")),
-                TextToken::Unquoted(Scalar::new(b"2")),
-                TextToken::End(3),
-                TextToken::End(1),
-                TextToken::Unquoted(Scalar::new(b"foo")),
-                TextToken::Object(14),
-                TextToken::Unquoted(Scalar::new(b"bar")),
-                TextToken::Unquoted(Scalar::new(b"qux")),
-                TextToken::End(11),
-            ]
-        );
-    }
+    // #[test]
+    // fn test_hidden_object_needs_key() {
+    //     let data = b"a{{}=}";
+    //     assert!(parse(&data[..]).is_err());
+    // }
+
+    // #[test]
+    // fn test_objects_in_hidden_objects_not_supported() {
+    //     let data = b"u{1 a={0=1}";
+    //     assert!(parse(&data[..]).is_err());
+    // }
+
+    // #[test]
+    // fn test_hidden_objects_with_headers_not_supported() {
+    //     let data = b"s{{c d=a{b=}}";
+    //     assert!(TextTape::from_slice(&data[..]).is_err());
+    // }
 
     #[test]
-    fn test_hidden_object() {
-        let data = b"16778374={ levels={ 10 0=2 1=2 } }";
-
-        assert_eq!(
-            parse(&data[..]).unwrap().token_tape,
-            vec![
-                TextToken::Unquoted(Scalar::new(b"16778374")),
-                TextToken::Object(12),
-                TextToken::Unquoted(Scalar::new(b"levels")),
-                TextToken::Array(11),
-                TextToken::Unquoted(Scalar::new(b"10")),
-                TextToken::HiddenObject(10),
-                TextToken::Unquoted(Scalar::new(b"0")),
-                TextToken::Unquoted(Scalar::new(b"2")),
-                TextToken::Unquoted(Scalar::new(b"1")),
-                TextToken::Unquoted(Scalar::new(b"2")),
-                TextToken::End(5),
-                TextToken::End(3),
-                TextToken::End(1),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_hidden_object_needs_key() {
-        let data = b"a{{}=}";
-        assert!(parse(&data[..]).is_err());
-    }
-
-    #[test]
-    fn test_objects_in_hidden_objects_not_supported() {
-        let data = b"u{1 a={0=1}";
-        assert!(parse(&data[..]).is_err());
-    }
-
-    #[test]
-    fn test_hidden_objects_with_headers_not_supported() {
-        let data = b"s{{c d=a{b=}}";
+    fn test_operator_early_eof() {
+        let data = b"a{b=}";
         assert!(TextTape::from_slice(&data[..]).is_err());
     }
 
@@ -2168,7 +1946,7 @@ mod tests {
 
     #[test]
     fn test_extraneous_closing_bracket2() {
-        let data = b"a{} b r}";
+        let data = b"a{} b=r}";
         assert_eq!(
             parse(&data[..]).unwrap().token_tape,
             vec![
@@ -2183,7 +1961,7 @@ mod tests {
 
     #[test]
     fn test_extraneous_closing_bracket3() {
-        let data = b"a c}}";
+        let data = b"a=c}}";
         assert_eq!(
             parse(&data[..]).unwrap().token_tape,
             vec![
@@ -2245,27 +2023,6 @@ mod tests {
             vec![
                 TextToken::Unquoted(Scalar::new(b"jean_jaur\xe8s")),
                 TextToken::Unquoted(Scalar::new(b"bar")),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_trailer_in_object_array() {
-        let data = b"a {{b=c d c}}";
-        assert_eq!(
-            parse(&data[..]).unwrap().token_tape,
-            vec![
-                TextToken::Unquoted(Scalar::new(b"a")),
-                TextToken::Array(10),
-                TextToken::Object(9),
-                TextToken::Unquoted(Scalar::new(b"b")),
-                TextToken::Unquoted(Scalar::new(b"c")),
-                TextToken::Array(8),
-                TextToken::Unquoted(Scalar::new(b"d")),
-                TextToken::Unquoted(Scalar::new(b"c")),
-                TextToken::End(5),
-                TextToken::End(2),
-                TextToken::End(1)
             ]
         );
     }
@@ -2398,46 +2155,247 @@ mod tests {
     }
 
     #[test]
+    fn test_mixed_container_1() {
+        let data = b"levels={a=b 10}";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"levels")),
+                TextToken::Object(6),
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::MixedContainer,
+                TextToken::Unquoted(Scalar::new(b"10")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mixed_container_2() {
+        let data = b"levels={a=b 10 20}";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"levels")),
+                TextToken::Object(7),
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::MixedContainer,
+                TextToken::Unquoted(Scalar::new(b"10")),
+                TextToken::Unquoted(Scalar::new(b"20")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mixed_container_3() {
+        let data = b"levels={a=b 10 c=d}";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"levels")),
+                TextToken::Object(9),
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::MixedContainer,
+                TextToken::Unquoted(Scalar::new(b"10")),
+                TextToken::Unquoted(Scalar::new(b"c")),
+                TextToken::Operator(Operator::Equal),
+                TextToken::Unquoted(Scalar::new(b"d")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mixed_container_4() {
+        let data = b"levels={a=b 10 c=d 20}";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"levels")),
+                TextToken::Object(10),
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::MixedContainer,
+                TextToken::Unquoted(Scalar::new(b"10")),
+                TextToken::Unquoted(Scalar::new(b"c")),
+                TextToken::Operator(Operator::Equal),
+                TextToken::Unquoted(Scalar::new(b"d")),
+                TextToken::Unquoted(Scalar::new(b"20")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mixed_container_5() {
+        let data = b"16778374={ levels={ 10 0=2 1=2 } }";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"16778374")),
+                TextToken::Object(13),
+                TextToken::Unquoted(Scalar::new(b"levels")),
+                TextToken::Array(12),
+                TextToken::Unquoted(Scalar::new(b"10")),
+                TextToken::MixedContainer,
+                TextToken::Unquoted(Scalar::new(b"0")),
+                TextToken::Operator(Operator::Equal),
+                TextToken::Unquoted(Scalar::new(b"2")),
+                TextToken::Unquoted(Scalar::new(b"1")),
+                TextToken::Operator(Operator::Equal),
+                TextToken::Unquoted(Scalar::new(b"2")),
+                TextToken::End(3),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mixed_container_6() {
+        let data = b"levels={ 10 0=2 1=2 } foo={bar=qux}";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"levels")),
+                TextToken::Array(10),
+                TextToken::Unquoted(Scalar::new(b"10")),
+                TextToken::MixedContainer,
+                TextToken::Unquoted(Scalar::new(b"0")),
+                TextToken::Operator(Operator::Equal),
+                TextToken::Unquoted(Scalar::new(b"2")),
+                TextToken::Unquoted(Scalar::new(b"1")),
+                TextToken::Operator(Operator::Equal),
+                TextToken::Unquoted(Scalar::new(b"2")),
+                TextToken::End(1),
+                TextToken::Unquoted(Scalar::new(b"foo")),
+                TextToken::Object(15),
+                TextToken::Unquoted(Scalar::new(b"bar")),
+                TextToken::Unquoted(Scalar::new(b"qux")),
+                TextToken::End(12),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mixed_container_7() {
+        let data = br#"brittany_area = { #5
+            color = { 118  99  151 }
+            169 170 171 172 4384
+        }"#;
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"brittany_area")),
+                TextToken::Object(14),
+                TextToken::Unquoted(Scalar::new(b"color")),
+                TextToken::Array(7),
+                TextToken::Unquoted(Scalar::new(b"118")),
+                TextToken::Unquoted(Scalar::new(b"99")),
+                TextToken::Unquoted(Scalar::new(b"151")),
+                TextToken::End(3),
+                TextToken::MixedContainer,
+                TextToken::Unquoted(Scalar::new(b"169")),
+                TextToken::Unquoted(Scalar::new(b"170")),
+                TextToken::Unquoted(Scalar::new(b"171")),
+                TextToken::Unquoted(Scalar::new(b"172")),
+                TextToken::Unquoted(Scalar::new(b"4384")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mixed_container_8() {
+        let data = br#"brittany_area = { #5
+            color = { 118  99  151 }
+            169
+        }"#;
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"brittany_area")),
+                TextToken::Object(10),
+                TextToken::Unquoted(Scalar::new(b"color")),
+                TextToken::Array(7),
+                TextToken::Unquoted(Scalar::new(b"118")),
+                TextToken::Unquoted(Scalar::new(b"99")),
+                TextToken::Unquoted(Scalar::new(b"151")),
+                TextToken::End(3),
+                TextToken::MixedContainer,
+                TextToken::Unquoted(Scalar::new(b"169")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mixed_container_9() {
+        let data = b"a {{b=c d c}}";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Array(9),
+                TextToken::Object(8),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::Unquoted(Scalar::new(b"c")),
+                TextToken::MixedContainer,
+                TextToken::Unquoted(Scalar::new(b"d")),
+                TextToken::Unquoted(Scalar::new(b"c")),
+                TextToken::End(2),
+                TextToken::End(1)
+            ]
+        );
+    }
+
+    #[test]
     fn test_parameter_eof() {
         let data = b"[[";
         TextTape::from_slice(data).unwrap_err();
     }
 
-    #[test]
-    fn test_deny_parameter_in_hidden_object() {
-        let data = b"s{a b=c[[a]}";
-        TextTape::from_slice(data).unwrap_err();
-    }
+    // #[test]
+    // fn test_deny_parameter_in_hidden_object() {
+    //     let data = b"s{a b=c[[a]}";
+    //     TextTape::from_slice(data).unwrap_err();
+    // }
 
-    #[test]
-    fn deny_complex_trailer() {
-        let data = b"a{b=c a d {t}}";
-        TextTape::from_slice(data).unwrap_err();
-    }
+    // #[test]
+    // fn deny_complex_trailer() {
+    //     let data = b"a{b=c a d {t}}";
+    //     TextTape::from_slice(data).unwrap_err();
+    // }
 
-    #[test]
-    fn deny_complex_trailer2() {
-        let data = b"s{{b=c<:d=}=}}";
-        TextTape::from_slice(data).unwrap_err();
-    }
+    // #[test]
+    // fn deny_complex_trailer2() {
+    //     let data = b"s{{b=c<:d=}=}}";
+    //     TextTape::from_slice(data).unwrap_err();
+    // }
 
-    #[test]
-    fn deny_complex_trailer3() {
-        let data = b"a{c=d b>}";
-        TextTape::from_slice(data).unwrap_err();
-    }
+    // #[test]
+    // fn deny_complex_trailer3() {
+    //     let data = b"a{c=d b>}";
+    //     TextTape::from_slice(data).unwrap_err();
+    // }
 
-    #[test]
-    fn deny_trailer_inside_hidden_object() {
-        let data = b"k{a=a { ta { b } a=z=aP } } } a }";
-        let err = TextTape::from_slice(data).unwrap_err();
-        match err.kind() {
-            ErrorKind::InvalidSyntax { offset, .. } => {
-                assert_eq!(*offset, 21);
-            }
-            _ => assert!(false),
-        }
-    }
+    // #[test]
+    // fn deny_trailer_inside_hidden_object() {
+    //     let data = b"k{a=a { ta { b } a=z=aP } } } a }";
+    //     let err = TextTape::from_slice(data).unwrap_err();
+    //     match err.kind() {
+    //         ErrorKind::InvalidSyntax { offset, .. } => {
+    //             assert_eq!(*offset, 21);
+    //         }
+    //         _ => assert!(false),
+    //     }
+    // }
 
     #[test]
     fn incomplete_object_fail_to_parse() {

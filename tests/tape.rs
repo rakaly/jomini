@@ -1,16 +1,4 @@
-use jomini::{text::Operator, BinaryTape, Scalar, TextTape, TextToken};
-
-#[test]
-fn reject_bin_obj_in_hidden_obj() {
-    let data = include_bytes!("./fixtures/nested-hidden-obj.bin");
-    assert!(BinaryTape::from_slice(&data[..]).is_err());
-}
-
-#[test]
-fn reject_txt_obj_in_hidden_obj() {
-    let data = include_bytes!("./fixtures/nested-hidden-obj.txt");
-    assert!(TextTape::from_slice(&data[..]).is_err());
-}
+use jomini::{text::Operator, Scalar, TextTape, TextToken};
 
 #[test]
 fn test_greater_than_operator() {

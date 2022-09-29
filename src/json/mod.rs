@@ -444,6 +444,7 @@ where
             TextToken::Quoted(_) | TextToken::Unquoted(_) => {
                 serialize_scalar(&self.reader, serializer)
             }
+            TextToken::MixedContainer { .. } => todo!(),
             TextToken::Array(_) => {
                 let array_reader = self.reader.read_array().unwrap();
                 array_reader
@@ -451,7 +452,7 @@ where
                     .with_options(self.options)
                     .serialize(serializer)
             }
-            TextToken::Object(_) | TextToken::HiddenObject(_) => {
+            TextToken::Object(_) => {
                 let object_reader = self.reader.read_object().unwrap();
                 object_reader
                     .json()
@@ -516,10 +517,6 @@ where
                     }
                 }
 
-                if let Some(trailer) = field_groups.at_trailer() {
-                    map.serialize_entry("trailer", &trailer.json().with_options(self.options))?;
-                }
-
                 map.end()
             }
             DuplicateKeyMode::Preserve => {
@@ -532,10 +529,6 @@ where
                         options: self.options,
                     };
                     map.serialize_entry(&KeyScalarWrapper { reader: key }, &v)?;
-                }
-
-                if let Some(trailer) = fields.at_trailer() {
-                    map.serialize_entry("trailer", &trailer.json().with_options(self.options))?;
                 }
 
                 map.end()
@@ -657,15 +650,6 @@ where
                 options: self.options,
             };
             seq.serialize_element(&(KeyScalarWrapper { reader: key }, &v))?;
-        }
-
-        if let Some(trailer) = fields.at_trailer() {
-            let trailer_array = InnerSerArray {
-                reader: trailer,
-                options: self.options,
-            };
-
-            seq.serialize_element(&trailer_array)?;
         }
 
         seq.end()

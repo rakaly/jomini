@@ -32,7 +32,7 @@ where
     E: crate::Encoding + Clone,
 {
     match value.token() {
-        TextToken::Object(_) | TextToken::HiddenObject(_) => {
+        TextToken::Object(_) => {
             let obj = value.read_object().unwrap();
             if unsafe { GROUPED } {
                 iterate_object2(obj);
@@ -44,7 +44,8 @@ where
             iterate_array(value.read_array().unwrap());
         }
         TextToken::End(_) => panic!("end!?"),
-        TextToken::Operator(_) => panic!("end!?"),
+        TextToken::Operator(_) => {},
+        TextToken::MixedContainer => {},
         TextToken::Unquoted(x)
         | TextToken::Quoted(x)
         | TextToken::Header(x)
@@ -79,10 +80,6 @@ where
         let _ = key.read_str();
         read_value(value);
     }
-
-    if let Some(trailer) = fields.at_trailer() {
-        iterate_array(trailer);
-    }
 }
 
 fn iterate_object2<E>(reader: ObjectReader<E>)
@@ -95,10 +92,6 @@ where
             read_value(value);
         }
     }
-
-    if let Some(trailer) = fields.at_trailer() {
-        iterate_array(trailer);
-    }
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -108,18 +101,17 @@ fuzz_target!(|data: &[u8]| {
             match token {
                 TextToken::Array(ind)
                 | TextToken::Object(ind)
-                | TextToken::HiddenObject(ind)
                 | TextToken::End(ind)
                     if *ind == 0 =>
                 {
                     panic!("zero ind encountered");
                 }
-                TextToken::Array(ind) | TextToken::Object(ind) | TextToken::HiddenObject(ind) => {
-                    match tokens[*ind] {
+                TextToken::Array(ind) | TextToken::Object(ind) => {
+                    match &tokens[*ind] {
                         TextToken::End(ind2) => {
-                            assert_eq!(ind2, i)
+                            assert_eq!(*ind2, i)
                         }
-                        _ => panic!("expected end"),
+                        x => panic!("expected end not {:?}", x),
                     }
                 }
                 _ => {}

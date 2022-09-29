@@ -18,6 +18,7 @@ pub struct TextWriter<W> {
     indent_char: u8,
     indent_factor: u8,
     needs_line_terminator: bool,
+    mixed_mode: bool,
 }
 
 /// Construct a customized text writer
@@ -102,13 +103,6 @@ where
         Ok(())
     }
 
-    /// Write the start of a hidden object (eg: `data = { 10 a=b }`)
-    pub fn write_hidden_object_start(&mut self) -> Result<(), Error> {
-        self.mode = DepthMode::Object;
-        self.state = WriteState::HiddenObjectKey;
-        Ok(())
-    }
-
     /// Write out the start of an array
     pub fn write_array_start(&mut self) -> Result<(), Error> {
         self.write_preamble()?;
@@ -142,6 +136,7 @@ where
 
         self.writer.write_all(b"}")?;
         self.needs_line_terminator = true;
+        self.mixed_mode = false;
         Ok(())
     }
 
@@ -182,8 +177,12 @@ where
     /// # }
     /// ```
     pub fn write_operator(&mut self, data: Operator) -> Result<(), Error> {
-        write!(self.writer, " {} ", data)?;
-        self.state = WriteState::ObjectValue;
+        if !self.mixed_mode {
+            write!(self.writer, " {} ", data)?;
+            self.state = WriteState::ObjectValue;
+        } else {
+            write!(self.writer, " {}", data)?;
+        }
         Ok(())
     }
 
@@ -485,6 +484,12 @@ where
         Ok(())
     }
 
+    /// Enter mixed mode for writing a container that is a list and an object
+    pub fn start_mixed_mode(&mut self) {
+        self.mode = DepthMode::Array;
+        self.mixed_mode = true;
+    }
+
     /// Writes a text tape
     ///
     /// Formatting is not preserved.
@@ -583,11 +588,7 @@ where
         match value.token() {
             TextToken::Array(_) => self.write_array(value.read_array().unwrap())?,
             TextToken::Object(_) => self.write_object(value.read_object().unwrap())?,
-            TextToken::HiddenObject(_) => {
-                let obj = value.read_object().unwrap();
-                self.write_hidden_object_start()?;
-                self.write_object_core(obj)?;
-            }
+            TextToken::MixedContainer => self.start_mixed_mode(),
             TextToken::Unquoted(x) => {
                 self.write_unquoted(x.as_bytes())?;
             }
@@ -596,7 +597,10 @@ where
             }
             TextToken::Parameter(_) => unreachable!(),
             TextToken::UndefinedParameter(_) => unreachable!(),
-            TextToken::Operator(_) => unreachable!(),
+            TextToken::Operator(op) => {
+                self.writer.write_all(&b" "[..])?;
+                self.writer.write_all(op.symbol().as_bytes())?;
+            }
             TextToken::End(_) => unreachable!(),
             TextToken::Header(x) => {
                 let arr = value.read_array().unwrap();
@@ -671,6 +675,7 @@ impl TextWriterBuilder {
             indent_char: self.indent_char,
             indent_factor: self.indent_factor,
             needs_line_terminator: false,
+            mixed_mode: false,
         }
     }
 }
@@ -983,17 +988,19 @@ mod tests {
         writer.write_unquoted(b"data")?;
         writer.write_array_start()?;
         writer.write_unquoted(b"10")?;
-        writer.write_hidden_object_start()?;
+        writer.start_mixed_mode();
         writer.write_unquoted(b"d")?;
+        writer.write_operator(Operator::Equal)?;
         writer.write_unquoted(b"e")?;
         writer.write_unquoted(b"f")?;
+        writer.write_operator(Operator::Equal)?;
         writer.write_unquoted(b"g")?;
         writer.write_end()?;
         writer.write_unquoted(b"a")?;
         writer.write_unquoted(b"b")?;
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
-            "data={\n  10 d=e f=g\n}\na=b"
+            "data={\n  10 d = e f = g\n}\na=b"
         );
         Ok(())
     }
@@ -1085,13 +1092,13 @@ mod tests {
     }
 
     #[test]
-    fn write_hidden_object_tape() -> Result<(), Box<dyn Error>> {
+    fn write_mixed_container_tape() -> Result<(), Box<dyn Error>> {
         let data = b"vals={1 a=b d=f}";
         let tape = TextTape::from_slice(data)?;
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "vals={\n  1 a=b d=f\n}");
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "vals={\n  1 a = b d = f\n}");
         Ok(())
     }
 
@@ -1145,17 +1152,6 @@ mod tests {
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
         assert_eq!(std::str::from_utf8(&out).unwrap(), "a=\"\"");
-        Ok(())
-    }
-
-    #[test]
-    fn write_empty_quoted_tape2() -> Result<(), Box<dyn Error>> {
-        let data = b"\"\"a";
-        let tape = TextTape::from_slice(data)?;
-        let mut out: Vec<u8> = Vec::new();
-        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
-        writer.write_tape(&tape)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "\"\"=a");
         Ok(())
     }
 

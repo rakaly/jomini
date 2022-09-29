@@ -171,7 +171,7 @@ where
                     }
                 }
                 TextToken::Array(_) => self.deserialize_seq(visitor),
-                TextToken::Object(_) | TextToken::HiddenObject(_) => self.deserialize_map(visitor),
+                TextToken::Object(_) => self.deserialize_map(visitor),
                 _ => Err(DeserializeError {
                     kind: DeserializeErrorKind::Unsupported(String::from(
                         "unsupported value reader token",
@@ -476,7 +476,6 @@ struct MapAccess<'a, 'de, 'tokens, E> {
     de: &'a mut InternalDeserializer<'de, 'tokens, E>,
     fields: FieldsIter<'de, 'tokens, E>,
     value: Option<ValueReader<'de, 'tokens, E>>,
-    at_trailer: bool,
 }
 
 impl<'a, 'de: 'a, 'tokens, E> MapAccess<'a, 'de, 'tokens, E>
@@ -491,7 +490,6 @@ where
             de,
             fields: reader.fields(),
             value: None,
-            at_trailer: false,
         }
     }
 }
@@ -512,9 +510,6 @@ where
             let res = seed.deserialize(&mut *self.de).map(Some);
             let _ = std::mem::replace(&mut self.de.readers, old);
             res
-        } else if !self.at_trailer && self.fields.at_trailer().is_some() {
-            self.at_trailer = true;
-            seed.deserialize(TrailerKeyDeserializer).map(Some)
         } else {
             Ok(None)
         }
@@ -524,19 +519,11 @@ where
     where
         V: DeserializeSeed<'de>,
     {
-        if !self.at_trailer {
-            let r = self.value.take().unwrap();
-            let old = std::mem::replace(&mut self.de.readers, Reader::Value(r));
-            let res = seed.deserialize(&mut *self.de);
-            let _ = std::mem::replace(&mut self.de.readers, old);
-            res
-        } else {
-            let trailer = self.fields.at_trailer().unwrap();
-            let old = std::mem::replace(&mut self.de.readers, Reader::Array(trailer));
-            let res = seed.deserialize(&mut *self.de);
-            let _ = std::mem::replace(&mut self.de.readers, old);
-            res
-        }
+        let r = self.value.take().unwrap();
+        let old = std::mem::replace(&mut self.de.readers, Reader::Value(r));
+        let res = seed.deserialize(&mut *self.de);
+        let _ = std::mem::replace(&mut self.de.readers, old);
+        res
     }
 
     fn size_hint(&self) -> Option<usize> {
@@ -657,24 +644,6 @@ where
             fields,
             visitor
         ))
-    }
-}
-
-struct TrailerKeyDeserializer;
-
-impl<'de> de::Deserializer<'de> for TrailerKeyDeserializer {
-    type Error = DeserializeError;
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_borrowed_str("trailer")
-    }
-
-    serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier ignored_any
     }
 }
 
@@ -1322,22 +1291,6 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialize_mixed_object_array() {
-        let data = br#"brittany_area = { #5
-            color = { 118  99  151 }
-            169 170 171 172 4384
-        }"#;
-
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
-        assert_eq!(actual.brittany_area, vec![169, 170, 171, 172, 4384]);
-
-        #[derive(Deserialize, Debug, PartialEq)]
-        struct MyStruct {
-            brittany_area: Vec<u16>,
-        }
-    }
-
-    #[test]
     fn test_deserialize_mixed_object_into_object() {
         let data = br#"brittany_area = { #5
             color = { 118  99  151 }
@@ -1350,7 +1303,6 @@ mod tests {
             actual.brittany_area,
             MyArea {
                 color: vec![118, 99, 151],
-                trailer: vec![169, 170, 171, 172, 4384],
             }
         );
 
@@ -1358,7 +1310,6 @@ mod tests {
             actual.another_area,
             MyArea {
                 color: Vec::new(),
-                trailer: vec![100],
             }
         );
 
@@ -1372,7 +1323,6 @@ mod tests {
         struct MyArea {
             #[serde(default)]
             color: Vec<u8>,
-            trailer: Vec<u16>,
         }
     }
 

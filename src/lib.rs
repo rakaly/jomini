@@ -228,7 +228,6 @@ assert_eq!(&out, b"hello=world\nfoo=bar");
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 */
-#![warn(missing_docs)]
 pub mod binary;
 pub mod common;
 mod copyless;

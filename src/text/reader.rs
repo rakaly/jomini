@@ -1,3 +1,4 @@
+use super::fnv::FnvBuildHasher;
 use crate::{
     text::Operator, DeserializeError, DeserializeErrorKind, Encoding, Scalar, TextTape, TextToken,
 };
@@ -5,8 +6,6 @@ use std::{
     borrow::Cow,
     collections::{hash_map::Entry, HashMap},
 };
-
-use super::fnv::FnvBuildHasher;
 
 pub type KeyValue<'data, 'tokens, E> = (
     ScalarReader<'data, E>,
@@ -21,8 +20,8 @@ pub type KeyValues<'data, 'tokens, E> = (ScalarReader<'data, E>, GroupEntry<'dat
 #[inline]
 fn next_idx_header(tokens: &[TextToken], idx: usize) -> usize {
     match tokens[idx] {
-        TextToken::Array(x) | TextToken::Object(x) | TextToken::HiddenObject(x) => x + 1,
-        TextToken::Operator(_) => idx + 2,
+        TextToken::Array(x) | TextToken::Object(x) => x + 1,
+        TextToken::Operator(_) | TextToken::MixedContainer => idx + 2,
         _ => idx + 1,
     }
 }
@@ -32,9 +31,17 @@ fn next_idx_header(tokens: &[TextToken], idx: usize) -> usize {
 #[inline]
 fn next_idx(tokens: &[TextToken], idx: usize) -> usize {
     match tokens[idx] {
-        TextToken::Array(x) | TextToken::Object(x) | TextToken::HiddenObject(x) => x + 1,
+        TextToken::Array(x) | TextToken::Object(x) => x + 1,
         TextToken::Operator(_) => next_idx(tokens, idx + 1),
         TextToken::Header(_) => next_idx_header(tokens, idx + 1),
+        _ => idx + 1,
+    }
+}
+
+#[inline]
+fn next_idx_values(tokens: &[TextToken], idx: usize) -> usize {
+    match tokens[idx] {
+        TextToken::Array(x) | TextToken::Object(x) => x + 1,
         _ => idx + 1,
     }
 }
@@ -45,7 +52,7 @@ fn fields_len(tokens: &[TextToken], start_ind: usize, end_ind: usize) -> usize {
     let mut count = 0;
     while ind < end_ind {
         let key_ind = ind;
-        if let TextToken::Array(_) = tokens[key_ind] {
+        if tokens[key_ind] == TextToken::MixedContainer {
             return count;
         }
 
@@ -65,38 +72,11 @@ pub fn values_len(tokens: &[TextToken], start_ind: usize, end_ind: usize) -> usi
     let mut count = 0;
     let mut ind = start_ind;
     while ind < end_ind {
-        ind = next_idx_header(tokens, ind);
+        ind = next_idx_values(tokens, ind);
         count += 1;
     }
 
     count
-}
-
-#[inline]
-fn at_trailer<'data, 'tokens, E>(
-    tokens: &'tokens [TextToken<'data>],
-    encoding: &E,
-    token_ind: usize,
-) -> Option<ArrayReader<'data, 'tokens, E>>
-where
-    E: Encoding + Clone,
-{
-    if let Some(TextToken::Array(ind)) = tokens.get(token_ind) {
-        // trailers must be at least one element in length, else we're just reading
-        // an object as an array
-        if *ind != token_ind + 1 {
-            Some(ArrayReader {
-                tokens,
-                start_ind: token_ind + 1,
-                end_ind: *ind,
-                encoding: encoding.clone(),
-            })
-        } else {
-            None
-        }
-    } else {
-        None
-    }
 }
 
 type OpValue<'data, 'tokens, E> = (Option<Operator>, ValueReader<'data, 'tokens, E>);
@@ -363,11 +343,6 @@ where
             fields,
         }
     }
-
-    /// See [the other `at_trailer` documentation](crate::text::FieldsIter::at_trailer)
-    pub fn at_trailer(&self) -> Option<ArrayReader<'data, 'tokens, E>> {
-        self.fields.at_trailer()
-    }
 }
 
 impl<'data, 'tokens, E> Iterator for FieldGroupsIter<'data, 'tokens, E>
@@ -459,37 +434,6 @@ where
             encoding: reader.encoding.clone(),
         }
     }
-
-    /// Exposes the object trailer at the end of the object if it exists. It is
-    /// the responsibility of the caller to make sure they have exhausted the
-    /// iterator before calling this method, as the any trailer would be at the
-    /// end of the object. An object trailer is looks like:
-    ///
-    /// ```
-    /// use jomini::TextTape;
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let data = b"brittany_area = { color = { 10 10 10 } 100 200 300 }";
-    /// let tape = TextTape::from_slice(data)?;
-    /// let reader = tape.windows1252_reader();
-    /// let mut root_fields = reader.fields();
-    /// let (_brittany, _op, brittany_val) = root_fields.next().unwrap();
-    /// let mut brittany_fields = brittany_val.read_object()?.fields();
-    ///
-    /// // consume iterator
-    /// brittany_fields.by_ref().for_each(drop);
-    ///
-    /// let trailer = brittany_fields.at_trailer().map(|array| {
-    ///     array.values()
-    ///         .filter_map(|value| value.read_str().ok())
-    ///         .collect()
-    /// });
-    /// assert_eq!(trailer, Some(vec!["100".into(), "200".into(), "300".into()]));
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn at_trailer(&self) -> Option<ArrayReader<'data, 'tokens, E>> {
-        at_trailer(self.tokens, &self.encoding, self.token_ind)
-    }
 }
 
 impl<'data, 'tokens, E> Iterator for FieldsIter<'data, 'tokens, E>
@@ -510,13 +454,13 @@ where
             | TextToken::Unquoted(x)
             | TextToken::Parameter(x)
             | TextToken::UndefinedParameter(x) => x,
-            TextToken::Array(_) => {
+            TextToken::MixedContainer => {
                 return None;
             }
             _ => {
                 // this is a broken invariant, so we safely recover by saying the object
                 // has no more fields
-                debug_assert!(false, "All keys should be scalars or have a trailer");
+                debug_assert!(false, "All keys should be scalars, not {:?}", &token);
                 return None;
             }
         };
@@ -531,12 +475,6 @@ where
             TextToken::Operator(x) => (Some(x), key_ind + 2),
             _ => (None, key_ind + 1),
         };
-
-        // When reading an mixed object (a = { b = { c } 10 10 10 })
-        // there is an uneven number of keys and values so we drop the last "field"
-        if value_ind >= self.end_ind {
-            return None;
-        }
 
         let value_reader = ValueReader {
             value_ind,
@@ -594,7 +532,6 @@ where
     }
 
     /// Return the number of key value pairs that the object contains.
-    /// Does not count the object trailer if present
     pub fn fields_len(&self) -> usize {
         fields_len(self.tokens, self.start_ind, self.end_ind)
     }
@@ -688,25 +625,33 @@ impl<'data, 'tokens, E> ValueReader<'data, 'tokens, E>
 where
     E: Encoding + Clone,
 {
+    fn raw_str(&self) -> Option<Cow<'data, str>> {
+        match self.tokens[self.value_ind] {
+            TextToken::Header(s)
+            | TextToken::Unquoted(s)
+            | TextToken::Quoted(s)
+            | TextToken::Parameter(s)
+            | TextToken::UndefinedParameter(s) => Some(self.encoding.decode(s.as_bytes())),
+            TextToken::Operator(s) => Some(Cow::Borrowed(s.symbol())),
+            _ => None,
+        }
+    }
+
     /// Interpret the current value as string
     #[inline]
     pub fn read_str(&self) -> Result<Cow<'data, str>, DeserializeError> {
-        self.tokens[self.value_ind]
-            .as_scalar()
-            .map(|x| self.encoding.decode(x.as_bytes()))
-            .ok_or_else(|| DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from("not a scalar")),
-            })
+        self.raw_str().ok_or_else(|| DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from("not a string")),
+        })
     }
 
     /// Interpret the current value as string
     #[inline]
     pub fn read_string(&self) -> Result<String, DeserializeError> {
-        self.tokens[self.value_ind]
-            .as_scalar()
-            .map(|x| self.encoding.decode(x.as_bytes()).into_owned())
+        self.raw_str()
+            .map(String::from)
             .ok_or_else(|| DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from("not a scalar")),
+                kind: DeserializeErrorKind::Unsupported(String::from("not a string")),
             })
     }
 
@@ -724,20 +669,20 @@ where
     #[inline]
     pub fn read_object(&self) -> Result<ObjectReader<'data, 'tokens, E>, DeserializeError> {
         match self.tokens[self.value_ind] {
-            TextToken::Object(ind) | TextToken::HiddenObject(ind) => Ok(ObjectReader {
+            TextToken::Object(ind) => Ok(ObjectReader {
                 tokens: self.tokens,
                 start_ind: self.value_ind + 1,
                 end_ind: ind,
                 encoding: self.encoding.clone(),
             }),
 
-            // An array can be an object if it is empty or interpreted as an object with only a trailer
-            TextToken::Array(ind) => Ok(ObjectReader {
+            TextToken::Array { .. } => Ok(ObjectReader {
                 tokens: self.tokens,
-                start_ind: self.value_ind,
-                end_ind: ind,
+                start_ind: self.value_ind + 1,
+                end_ind: self.value_ind + 1,
                 encoding: self.encoding.clone(),
             }),
+
             _ => Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from("not an object")),
             }),
@@ -748,25 +693,12 @@ where
     #[inline]
     pub fn read_array(&self) -> Result<ArrayReader<'data, 'tokens, E>, DeserializeError> {
         match self.tokens[self.value_ind] {
-            TextToken::Array(ind) => Ok(ArrayReader {
+            TextToken::Array(ind) | TextToken::Object(ind) => Ok(ArrayReader {
                 tokens: self.tokens,
                 start_ind: self.value_ind + 1,
                 end_ind: ind,
                 encoding: self.encoding.clone(),
             }),
-
-            // An object can be an array when it has a trailer at the end
-            TextToken::Object(_) => {
-                let obj = self.read_object().unwrap();
-                let mut fields = obj.fields();
-                fields.by_ref().for_each(drop);
-                Ok(fields.at_trailer().unwrap_or_else(|| ArrayReader {
-                    tokens: self.tokens,
-                    start_ind: 0,
-                    end_ind: 0,
-                    encoding: self.encoding.clone(),
-                }))
-            }
 
             // A header can be seen as a two element array
             TextToken::Header(_) => Ok(ArrayReader {
@@ -799,9 +731,7 @@ where
     #[inline]
     pub fn tokens_len(&self) -> usize {
         match self.tokens[self.value_ind] {
-            TextToken::Array(end) | TextToken::Object(end) | TextToken::HiddenObject(end) => {
-                end - self.value_ind - 1
-            }
+            TextToken::Array(end) | TextToken::Object(end) => end - self.value_ind - 1,
             _ => 1,
         }
     }
@@ -859,7 +789,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         if self.token_ind < self.end_ind {
             let value_ind = self.token_ind;
-            self.token_ind = next_idx_header(self.tokens, self.token_ind);
+            self.token_ind = next_idx_values(self.tokens, self.token_ind);
             Some(ValueReader {
                 value_ind,
                 tokens: self.tokens,
@@ -938,14 +868,17 @@ mod tests {
         E: crate::Encoding + Clone,
     {
         match value.token() {
-            TextToken::Object(_) | TextToken::HiddenObject(_) => {
+            TextToken::Object(_) => {
                 iterate_object(value.read_object().unwrap());
+                iterate_array(value.read_array().unwrap());
             }
             TextToken::Array(_) => {
+                iterate_object(value.read_object().unwrap());
                 iterate_array(value.read_array().unwrap());
             }
             TextToken::End(_) => panic!("end!?"),
-            TextToken::Operator(_) => panic!("end!?"),
+            TextToken::Operator(_) => {},
+            TextToken::MixedContainer => {},
             TextToken::Unquoted(_)
             | TextToken::Quoted(_)
             | TextToken::Header(_)
@@ -979,10 +912,6 @@ mod tests {
         for (key, _op, value) in fields.by_ref() {
             let _ = key.read_str();
             read_value(value);
-        }
-
-        if let Some(trailer) = fields.at_trailer() {
-            iterate_array(trailer);
         }
     }
 
@@ -1039,39 +968,6 @@ mod tests {
         assert!(values.next().is_none());
         assert_eq!(value1, String::from("bar"));
         assert_eq!(value2, String::from("qux"));
-    }
-
-    #[test]
-    fn text_reader_hidden_object() {
-        let data = b"levels={10 0=1 0=2}";
-        let tape = TextTape::from_slice(data).unwrap();
-        let reader = tape.windows1252_reader();
-
-        assert_eq!(reader.fields_len(), 1);
-        let mut iter = reader.fields();
-        let (key, _op, value) = iter.next().unwrap();
-        assert_eq!(key.read_string(), String::from("levels"));
-
-        let nested = value.read_array().unwrap();
-        assert_eq!(nested.len(), 2);
-
-        let mut values = nested.values();
-        let value1 = values.next().unwrap().read_string().unwrap();
-        assert_eq!(value1, String::from("10"));
-
-        let hidden = values.next().unwrap().read_object().unwrap();
-        assert_eq!(hidden.fields_len(), 2);
-        let mut hidden_iter = hidden.fields();
-        let (key, _op, value) = hidden_iter.next().unwrap();
-        assert_eq!(key.read_string(), String::from("0"));
-        assert_eq!(value.read_string().unwrap(), String::from("1"));
-
-        let (key, _op, value) = hidden_iter.next().unwrap();
-        assert_eq!(key.read_string(), String::from("0"));
-        assert_eq!(value.read_string().unwrap(), String::from("2"));
-
-        assert!(hidden_iter.next().is_none());
-        assert!(values.next().is_none());
     }
 
     #[test]
@@ -1180,7 +1076,50 @@ mod tests {
     }
 
     #[test]
-    fn text_reader_mixed_object() {
+    fn text_reader_mixed_object_1() {
+        let data = b"levels={10 0=1 0=2}";
+        let tape = TextTape::from_slice(data).unwrap();
+        let reader = tape.windows1252_reader();
+
+        assert_eq!(reader.fields_len(), 1);
+        let mut iter = reader.fields();
+        let (key, _op, value) = iter.next().unwrap();
+        assert_eq!(key.read_string(), String::from("levels"));
+
+        let nested = value.read_array().unwrap();
+        assert_eq!(nested.len(), 8);
+
+        assert_eq!(
+            nested.values().nth(3).unwrap().token(),
+            &TextToken::Operator(Operator::Equal)
+        );
+        assert_eq!(
+            nested.values().nth(6).unwrap().token(),
+            &TextToken::Operator(Operator::Equal)
+        );
+
+        let values = nested
+            .values()
+            .filter(|x| x.token() != &TextToken::MixedContainer)
+            .map(|x| x.read_string().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            values.as_slice(),
+            &[
+                String::from("10"),
+                String::from("0"),
+                String::from("="),
+                String::from("1"),
+                String::from("0"),
+                String::from("="),
+                String::from("2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn text_reader_mixed_object_2() {
         let data = br#"brittany_area = { #5
             color = { 118  99  151 }
             169 170 171 172 4384
@@ -1199,66 +1138,43 @@ mod tests {
             keys.push(key.read_str())
         }
 
-        assert_eq!(keys, vec![String::from("color"),]);
+        assert_eq!(keys, vec![String::from("color")]);
 
-        let mut values = vec![];
-        let trailer = fields.at_trailer().unwrap();
-        for value in trailer.values() {
-            let nv = value.token();
-            values.push((*nv).clone());
-        }
+        let nested = value.read_array().unwrap();
+        assert_eq!(nested.len(), 8);
 
+        let mut values = nested.values();
         assert_eq!(
-            values,
-            vec![
-                TextToken::Unquoted(Scalar::new(b"169")),
-                TextToken::Unquoted(Scalar::new(b"170")),
-                TextToken::Unquoted(Scalar::new(b"171")),
-                TextToken::Unquoted(Scalar::new(b"172")),
-                TextToken::Unquoted(Scalar::new(b"4384")),
-            ]
+            values.next().unwrap().token(),
+            &TextToken::Unquoted(Scalar::new(b"color"))
         );
+        assert_eq!(values.next().unwrap().token(), &TextToken::Array(7));
+        assert_eq!(values.next().unwrap().token(), &TextToken::MixedContainer);
+        assert_eq!(
+            values.next().unwrap().token(),
+            &TextToken::Unquoted(Scalar::new(b"169"))
+        );
+        assert_eq!(
+            values.next().unwrap().token(),
+            &TextToken::Unquoted(Scalar::new(b"170"))
+        );
+        assert_eq!(
+            values.next().unwrap().token(),
+            &TextToken::Unquoted(Scalar::new(b"171"))
+        );
+        assert_eq!(
+            values.next().unwrap().token(),
+            &TextToken::Unquoted(Scalar::new(b"172"))
+        );
+        assert_eq!(
+            values.next().unwrap().token(),
+            &TextToken::Unquoted(Scalar::new(b"4384"))
+        );
+        assert!(values.next().is_none());
     }
 
     #[test]
-    fn text_reader_mixed_object_fields() {
-        let data = br#"brittany_area = { #5
-            color = { 118  99  151 }
-            169 170 171 172 4384
-        }"#;
-
-        let tape = TextTape::from_slice(data).unwrap();
-        let reader = tape.windows1252_reader();
-        let mut iter = reader.fields();
-        let (key, _op, value) = iter.next().unwrap();
-        assert_eq!(key.read_str(), "brittany_area");
-
-        let brittany = value.read_object().unwrap();
-        let mut field_groups = brittany.field_groups();
-        field_groups.next().unwrap();
-        assert!(field_groups.next().is_none());
-
-        let mut values = vec![];
-        let trailer = field_groups.at_trailer().unwrap();
-        for value in trailer.values() {
-            let nv = value.token();
-            values.push((*nv).clone());
-        }
-
-        assert_eq!(
-            values,
-            vec![
-                TextToken::Unquoted(Scalar::new(b"169")),
-                TextToken::Unquoted(Scalar::new(b"170")),
-                TextToken::Unquoted(Scalar::new(b"171")),
-                TextToken::Unquoted(Scalar::new(b"172")),
-                TextToken::Unquoted(Scalar::new(b"4384")),
-            ]
-        );
-    }
-
-    #[test]
-    fn text_trailer_size_hints() {
+    fn text_reader_mixed_object_3() {
         let data = br#"brittany_area = { #5
             color = { 118  99  151 }
             color = { 118  99  151 }
@@ -1293,6 +1209,54 @@ mod tests {
     }
 
     #[test]
+    fn text_reader_mixed_object_4() {
+        let data = br#"levels={a=b 10 c=d 20}"#;
+
+        let tape = TextTape::from_slice(data).unwrap();
+        let reader = tape.windows1252_reader();
+
+        assert_eq!(reader.fields_len(), 1);
+        let mut iter = reader.fields();
+        let (key, _op, value) = iter.next().unwrap();
+        assert_eq!(key.read_string(), String::from("levels"));
+
+        let nested = value.read_array().unwrap();
+        assert_eq!(nested.len(), 8);
+
+        let mut values = nested.values();
+        assert_eq!(
+            values.next().unwrap().token(),
+            &TextToken::Unquoted(Scalar::new(b"a"))
+        );
+        assert_eq!(
+            values.next().unwrap().token(),
+            &TextToken::Unquoted(Scalar::new(b"b"))
+        );
+        assert_eq!(values.next().unwrap().token(), &TextToken::MixedContainer);
+        assert_eq!(
+            values.next().unwrap().token(),
+            &TextToken::Unquoted(Scalar::new(b"10"))
+        );
+        assert_eq!(
+            values.next().unwrap().token(),
+            &TextToken::Unquoted(Scalar::new(b"c"))
+        );
+        assert_eq!(
+            values.next().unwrap().token(),
+            &TextToken::Operator(Operator::Equal)
+        );
+        assert_eq!(
+            values.next().unwrap().token(),
+            &TextToken::Unquoted(Scalar::new(b"d"))
+        );
+        assert_eq!(
+            values.next().unwrap().token(),
+            &TextToken::Unquoted(Scalar::new(b"20"))
+        );
+        assert!(values.next().is_none());
+    }
+
+    #[test]
     fn text_reader_empty_container() {
         let data = b"active_idea_groups={ }";
         let tape = TextTape::from_slice(data).unwrap();
@@ -1309,7 +1273,6 @@ mod tests {
         let mut empty_object_iter = empty_object.fields();
         assert_eq!(0, empty_object.fields_len());
         assert!(empty_object_iter.next().is_none());
-        assert!(empty_object_iter.at_trailer().is_none());
     }
 
     #[test]
@@ -1390,13 +1353,38 @@ mod tests {
         }
     }
 
-    // Investigate why this test case is so slow
+    #[test]
+    fn text_reader_regression() {
+        let data = b"a={b{}=2}";
+        if let Ok(tape) = TextTape::from_slice(data) {
+            let reader = tape.windows1252_reader();
+            iterate_object(reader);
+        }
+    }
+
+    #[test]
+    fn text_reader_regression2() {
+        let data = b"r={c=d=@{y=u}";
+        if let Ok(tape) = TextTape::from_slice(data) {
+            let reader = tape.windows1252_reader();
+            iterate_object(reader);
+        }
+    }
+
+    #[test]
+    fn text_reader_regression3() {
+        let data = b"a={{t c=d = b}}";
+        if let Ok(tape) = TextTape::from_slice(data) {
+            let reader = tape.windows1252_reader();
+            iterate_object(reader);
+        }
+    }
+
     // #[test]
-    // fn text_reader_oom() {
-    //     let data = b"w{w={w={w={a={w={w={.=w={W={={w={w={a={w={w={.=w={W={w={w={b=}.{B{6={b={w={w={.b=}}}ws!=}}}}={=b}}=}}}}={w=}}}}}w={w={b=}.{B{6={b={w={w={.b=}}}ws!=}}}}={=b}}=}}}}={w=}}}}}";
+    // fn text_reader_regression4() {
+    //     let data = include_bytes!("/home/nick/projects/jomini/fuzz/artifacts/fuzz_text/crash-a14643c9a89c0f4ab665815c99a07b15de3544a5");
+    //     // let data = b"a={{ b c == == = d e=f}}";
     //     if let Ok(tape) = TextTape::from_slice(data) {
-    //         dbg!(&tape);
-    //         assert!(false);
     //         let reader = tape.windows1252_reader();
     //         iterate_object(reader);
     //     }
