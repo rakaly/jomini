@@ -18,6 +18,7 @@ pub struct TextWriter<W> {
     indent_char: u8,
     indent_factor: u8,
     needs_line_terminator: bool,
+    mixed_mode: MixedMode,
 }
 
 /// Construct a customized text writer
@@ -46,6 +47,13 @@ enum DepthMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MixedMode {
+    Disabled,
+    Started,
+    Keyed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WriteState {
     Error = 0,
     Key = 1,
@@ -54,11 +62,9 @@ enum WriteState {
     ArrayValue = 4,
     ArrayValueFirst = 5,
     FirstKey = 6,
-    HiddenObjectKey = 7,
-    HiddenObjectValue = 8,
 }
 
-const WRITE_STATE_NEXT: [WriteState; 9] = [
+const WRITE_STATE_NEXT: [WriteState; 7] = [
     WriteState::Error,
     WriteState::KeyValueSeparator,
     WriteState::Key,
@@ -66,8 +72,6 @@ const WRITE_STATE_NEXT: [WriteState; 9] = [
     WriteState::ArrayValue,
     WriteState::ArrayValue,
     WriteState::KeyValueSeparator,
-    WriteState::HiddenObjectValue,
-    WriteState::HiddenObjectKey,
 ];
 
 impl<W> TextWriter<W>
@@ -86,9 +90,7 @@ where
 
     /// Returns true if the next write event would be a key
     pub fn expecting_key(&self) -> bool {
-        self.state == WriteState::Key
-            || self.state == WriteState::FirstKey
-            || self.state == WriteState::HiddenObjectKey
+        self.state == WriteState::Key || self.state == WriteState::FirstKey
     }
 
     /// Write out the start of an object
@@ -99,13 +101,6 @@ where
         self.needs_line_terminator = true;
         self.mode = DepthMode::Object;
         self.state = WriteState::FirstKey;
-        Ok(())
-    }
-
-    /// Write the start of a hidden object (eg: `data = { 10 a=b }`)
-    pub fn write_hidden_object_start(&mut self) -> Result<(), Error> {
-        self.mode = DepthMode::Object;
-        self.state = WriteState::HiddenObjectKey;
         Ok(())
     }
 
@@ -142,6 +137,7 @@ where
 
         self.writer.write_all(b"}")?;
         self.needs_line_terminator = true;
+        self.mixed_mode = MixedMode::Disabled;
         Ok(())
     }
 
@@ -182,8 +178,13 @@ where
     /// # }
     /// ```
     pub fn write_operator(&mut self, data: Operator) -> Result<(), Error> {
-        write!(self.writer, " {} ", data)?;
-        self.state = WriteState::ObjectValue;
+        if self.mixed_mode == MixedMode::Disabled {
+            write!(self.writer, " {} ", data)?;
+            self.state = WriteState::ObjectValue;
+        } else {
+            write!(self.writer, "{}", data)?;
+            self.mixed_mode = MixedMode::Keyed;
+        }
         Ok(())
     }
 
@@ -447,17 +448,16 @@ where
             WriteState::ArrayValue => {
                 if just_wrote_line_terminator {
                     self.write_indent()?;
+                } else if self.mixed_mode == MixedMode::Keyed {
+                    self.mixed_mode = MixedMode::Started;
                 } else {
                     self.writer.write_all(b" ")?;
                 }
             }
-            WriteState::HiddenObjectKey => {
-                self.writer.write_all(b" ")?;
-            }
             WriteState::Key => {
                 self.write_indent()?;
             }
-            WriteState::KeyValueSeparator | WriteState::HiddenObjectValue => {
+            WriteState::KeyValueSeparator => {
                 self.writer.write_all(b"=")?;
             }
             WriteState::ArrayValueFirst | WriteState::FirstKey => {
@@ -483,6 +483,12 @@ where
         }
 
         Ok(())
+    }
+
+    /// Enter mixed mode for writing a container that is a list and an object
+    pub fn start_mixed_mode(&mut self) {
+        self.mode = DepthMode::Array;
+        self.mixed_mode = MixedMode::Started;
     }
 
     /// Writes a text tape
@@ -581,13 +587,9 @@ where
         R: Encoding + Clone,
     {
         match value.token() {
-            TextToken::Array(_) => self.write_array(value.read_array().unwrap())?,
-            TextToken::Object(_) => self.write_object(value.read_object().unwrap())?,
-            TextToken::HiddenObject(_) => {
-                let obj = value.read_object().unwrap();
-                self.write_hidden_object_start()?;
-                self.write_object_core(obj)?;
-            }
+            TextToken::Array { .. } => self.write_array(value.read_array().unwrap())?,
+            TextToken::Object { .. } => self.write_object(value.read_object().unwrap())?,
+            TextToken::MixedContainer => self.start_mixed_mode(),
             TextToken::Unquoted(x) => {
                 self.write_unquoted(x.as_bytes())?;
             }
@@ -596,7 +598,14 @@ where
             }
             TextToken::Parameter(_) => unreachable!(),
             TextToken::UndefinedParameter(_) => unreachable!(),
-            TextToken::Operator(_) => unreachable!(),
+            TextToken::Operator(op) => {
+                if self.mixed_mode == MixedMode::Disabled {
+                    self.writer.write_all(&b" "[..])?;
+                } else {
+                    self.mixed_mode = MixedMode::Keyed;
+                }
+                self.writer.write_all(op.symbol().as_bytes())?;
+            }
             TextToken::End(_) => unreachable!(),
             TextToken::Header(x) => {
                 let arr = value.read_array().unwrap();
@@ -671,6 +680,7 @@ impl TextWriterBuilder {
             indent_char: self.indent_char,
             indent_factor: self.indent_factor,
             needs_line_terminator: false,
+            mixed_mode: MixedMode::Disabled,
         }
     }
 }
@@ -977,16 +987,18 @@ mod tests {
     }
 
     #[test]
-    fn write_hidden_object() -> Result<(), Box<dyn Error>> {
+    fn write_mixed_container_1() -> Result<(), Box<dyn Error>> {
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_unquoted(b"data")?;
         writer.write_array_start()?;
         writer.write_unquoted(b"10")?;
-        writer.write_hidden_object_start()?;
+        writer.start_mixed_mode();
         writer.write_unquoted(b"d")?;
+        writer.write_operator(Operator::Equal)?;
         writer.write_unquoted(b"e")?;
         writer.write_unquoted(b"f")?;
+        writer.write_operator(Operator::Equal)?;
         writer.write_unquoted(b"g")?;
         writer.write_end()?;
         writer.write_unquoted(b"a")?;
@@ -1085,13 +1097,33 @@ mod tests {
     }
 
     #[test]
-    fn write_hidden_object_tape() -> Result<(), Box<dyn Error>> {
+    fn write_mixed_container_tape() -> Result<(), Box<dyn Error>> {
         let data = b"vals={1 a=b d=f}";
         let tape = TextTape::from_slice(data)?;
         let mut out: Vec<u8> = Vec::new();
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
         assert_eq!(std::str::from_utf8(&out).unwrap(), "vals={\n  1 a=b d=f\n}");
+        Ok(())
+    }
+
+    #[test]
+    fn write_mixed_container_tape_2() -> Result<(), Box<dyn Error>> {
+        let data = br"on_actions = {
+            faith_holy_order_land_acquisition_pulse
+            delay = { days = { 5 10 }}
+            faith_heresy_events_pulse
+            delay = { days = { 15 20 }}
+            faith_fervor_events_pulse
+          }";
+        let tape = TextTape::from_slice(data)?;
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_tape(&tape)?;
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "on_actions={\n  faith_holy_order_land_acquisition_pulse delay={\n    days={\n      5 10\n    }\n  }\n  faith_heresy_events_pulse delay = {\n    days={\n      15 20\n    }\n  }\n  faith_fervor_events_pulse\n}"
+        );
         Ok(())
     }
 
@@ -1145,17 +1177,6 @@ mod tests {
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
         assert_eq!(std::str::from_utf8(&out).unwrap(), "a=\"\"");
-        Ok(())
-    }
-
-    #[test]
-    fn write_empty_quoted_tape2() -> Result<(), Box<dyn Error>> {
-        let data = b"\"\"a";
-        let tape = TextTape::from_slice(data)?;
-        let mut out: Vec<u8> = Vec::new();
-        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
-        writer.write_tape(&tape)?;
-        assert_eq!(std::str::from_utf8(&out).unwrap(), "\"\"=a");
         Ok(())
     }
 

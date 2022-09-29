@@ -10,6 +10,8 @@ impl Error {
         Error(Box::new(kind))
     }
 
+    #[inline(never)]
+    #[cold]
     pub(crate) fn eof() -> Error {
         Self::new(ErrorKind::Eof)
     }

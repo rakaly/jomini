@@ -68,20 +68,21 @@ fuzz_target!(|data: &[u8]| {
             match token {
                 jomini::BinaryToken::Array(ind)
                 | jomini::BinaryToken::Object(ind)
-                | jomini::BinaryToken::HiddenObject(ind)
                 | jomini::BinaryToken::End(ind)
                     if *ind == 0 =>
                 {
                     panic!("zero ind encountered");
                 }
-                jomini::BinaryToken::Array(ind)
-                | jomini::BinaryToken::Object(ind)
-                | jomini::BinaryToken::HiddenObject(ind) => match tokens[*ind] {
-                    jomini::BinaryToken::End(ind2) => {
-                        assert_eq!(ind2, i)
+                jomini::BinaryToken::MixedContainer => {}
+                jomini::BinaryToken::Equal => {}
+                jomini::BinaryToken::Array(ind) | jomini::BinaryToken::Object(ind) => {
+                    match tokens[*ind] {
+                        jomini::BinaryToken::End(ind2) => {
+                            assert_eq!(ind2, i)
+                        }
+                        _ => panic!("expected end"),
                     }
-                    _ => panic!("expected end"),
-                },
+                }
                 _ => {}
             }
         }

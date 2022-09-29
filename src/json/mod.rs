@@ -444,14 +444,14 @@ where
             TextToken::Quoted(_) | TextToken::Unquoted(_) => {
                 serialize_scalar(&self.reader, serializer)
             }
-            TextToken::Array(_) => {
+            TextToken::Array { .. } => {
                 let array_reader = self.reader.read_array().unwrap();
                 array_reader
                     .json()
                     .with_options(self.options)
                     .serialize(serializer)
             }
-            TextToken::Object(_) | TextToken::HiddenObject(_) => {
+            TextToken::Object { .. } => {
                 let object_reader = self.reader.read_object().unwrap();
                 object_reader
                     .json()
@@ -474,7 +474,8 @@ where
             TextToken::End(_)
             | TextToken::Operator(_)
             | TextToken::Parameter(_)
-            | TextToken::UndefinedParameter(_) => serializer.serialize_none(),
+            | TextToken::UndefinedParameter(_)
+            | TextToken::MixedContainer => serializer.serialize_none(),
         }
     }
 }
@@ -516,8 +517,15 @@ where
                     }
                 }
 
-                if let Some(trailer) = field_groups.at_trailer() {
-                    map.serialize_entry("trailer", &trailer.json().with_options(self.options))?;
+                let rest = field_groups.remainder();
+                if !rest.is_empty() {
+                    map.serialize_entry(
+                        "remainder",
+                        &InnerSerArray {
+                            reader: rest,
+                            options: self.options,
+                        },
+                    )?;
                 }
 
                 map.end()
@@ -534,8 +542,15 @@ where
                     map.serialize_entry(&KeyScalarWrapper { reader: key }, &v)?;
                 }
 
-                if let Some(trailer) = fields.at_trailer() {
-                    map.serialize_entry("trailer", &trailer.json().with_options(self.options))?;
+                let remainder = fields.remainder();
+                if !remainder.is_empty() {
+                    map.serialize_entry(
+                        "remainder",
+                        &InnerSerArray {
+                            reader: remainder,
+                            options: self.options,
+                        },
+                    )?;
                 }
 
                 map.end()
@@ -598,13 +613,48 @@ where
         S: Serializer,
     {
         let mut seq = serializer.serialize_seq(None)?;
-        for value in self.reader.values() {
+        let mut iter = self.reader.values();
+        let mut window = [iter.next(), iter.next(), iter.next()];
+
+        loop {
+            let first_val = match &window[0] {
+                Some(x) => x,
+                None => break,
+            };
+
+            if first_val.token() == &TextToken::MixedContainer {
+                window.swap(1, 0);
+                window.swap(2, 1);
+                window[2] = iter.next();
+                continue;
+            }
+
+            if let Some(op_reader) = &window[1] {
+                if let TextToken::Operator(op) = op_reader.token() {
+                    if let Some(value) = &window[2] {
+                        seq.serialize_element(&SingleObject {
+                            key: first_val.clone(),
+                            op: *op,
+                            value: value.clone(),
+                            options: self.options,
+                        })?;
+
+                        window = [iter.next(), iter.next(), iter.next()];
+                        continue;
+                    }
+                }
+            }
+
             let v = OperatorValue {
                 operator: None,
-                value,
+                value: first_val.clone(),
                 options: self.options,
             };
             seq.serialize_element(&v)?;
+
+            window.swap(1, 0);
+            window.swap(2, 1);
+            window[2] = iter.next();
         }
 
         seq.end()
@@ -635,6 +685,45 @@ where
     }
 }
 
+pub(crate) struct SingleObject<'data, 'tokens, E> {
+    key: ValueReader<'data, 'tokens, E>,
+    op: Operator,
+    value: ValueReader<'data, 'tokens, E>,
+    options: JsonOptions,
+}
+
+impl<'data, 'tokens, E> Serialize for SingleObject<'data, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        let op = if self.op == Operator::Equal {
+            None
+        } else {
+            Some(self.op)
+        };
+
+        let value = OperatorValue {
+            operator: op,
+            value: self.value.clone(),
+            options: self.options,
+        };
+
+        if let Ok(x) = self.key.read_str() {
+            map.serialize_key(&x)?;
+        } else {
+            map.serialize_key("__invalid_key")?;
+        }
+
+        map.serialize_value(&value)?;
+        map.end()
+    }
+}
+
 pub(crate) struct SerTapeTyped<'data, 'tokens, E> {
     reader: ObjectReader<'data, 'tokens, E>,
     options: JsonOptions,
@@ -659,9 +748,10 @@ where
             seq.serialize_element(&(KeyScalarWrapper { reader: key }, &v))?;
         }
 
-        if let Some(trailer) = fields.at_trailer() {
+        let remainder = fields.remainder();
+        if !remainder.is_empty() {
             let trailer_array = InnerSerArray {
-                reader: trailer,
+                reader: remainder,
                 options: self.options,
             };
 
@@ -823,14 +913,14 @@ mod tests {
     }
 
     #[test]
-    fn test_object_trailers() {
+    fn test_mixed_container_1() {
         let json = serialize(b"area = { color = { 10 } 1 2 }");
-        let expected = r#"{"area":{"color":[10],"trailer":[1,2]}}"#;
+        let expected = r#"{"area":{"color":[10],"remainder":[1,2]}}"#;
         assert_eq!(&json, expected);
     }
 
     #[test]
-    fn test_object_trailers_group() {
+    fn test_mixed_container_2() {
         let json = serialize_with(
             b"area = { color = { 10 } 1 2 }",
             JsonOptions {
@@ -838,12 +928,12 @@ mod tests {
                 ..JsonOptions::default()
             },
         );
-        let expected = r#"{"area":{"color":[10],"trailer":[1,2]}}"#;
+        let expected = r#"{"area":{"color":[10],"remainder":[1,2]}}"#;
         assert_eq!(&json, expected);
     }
 
     #[test]
-    fn test_object_trailers_typed() {
+    fn test_mixed_container_3() {
         let json = serialize_with(
             b"area = { color = { 10 } 1 2 }",
             JsonOptions {
@@ -852,6 +942,35 @@ mod tests {
             },
         );
         let expected = r#"{"type":"obj","val":[["area",{"type":"obj","val":[["color",{"type":"array","val":[10]}],[1,2]]}]]}"#;
+        assert_eq!(&json, expected);
+    }
+
+    #[test]
+    fn test_mixed_container_4() {
+        let json = serialize(b"levels={ 10 0=2 1=2 }");
+        let expected = r#"{"levels":[10,{"0":2},{"1":2}]}"#;
+        assert_eq!(&json, expected);
+    }
+
+    #[test]
+    fn test_mixed_container_5() {
+        let json = serialize(b"mixed={ a=b 10 c=d 20 }");
+        let expected = r#"{"mixed":{"a":"b","remainder":[10,{"c":"d"},20]}}"#;
+        assert_eq!(&json, expected);
+    }
+
+    #[test]
+    fn test_mixed_container_10() {
+        let json = serialize(
+            br"on_actions = {
+            faith_holy_order_land_acquisition_pulse
+            delay = { days = { 5 10 }}
+            faith_heresy_events_pulse
+            delay = { days = { 15 20 }}
+            faith_fervor_events_pulse
+          }",
+        );
+        let expected = r#"{"on_actions":["faith_holy_order_land_acquisition_pulse",{"delay":{"days":[5,10]}},"faith_heresy_events_pulse",{"delay":{"days":[15,20]}},"faith_fervor_events_pulse"]}"#;
         assert_eq!(&json, expected);
     }
 

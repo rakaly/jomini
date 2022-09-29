@@ -28,11 +28,13 @@ derive = ["serde", "jomini_derive"]
 json = ["serde", "serde_json"]
 
 [dev-dependencies]
+attohttpc = { version = "0.23", features = ["tls-vendored"] }
 encoding_rs = "0.8"
 criterion = "0.3"
 quickcheck = "1"
 quickcheck_macros = "1"
 serde = { version = "1", features = ["derive"] }
+flate2 = "1"
 
 [[bin]]
 name = "json"

@@ -23,22 +23,42 @@ pub enum Operator {
 
     /// A `==` token
     Exact,
+
+    /// A `=` token
+    Equal,
 }
 
 impl Display for Operator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            Operator::LessThan => f.write_str("<"),
-            Operator::GreaterThan => f.write_str(">"),
-            Operator::LessThanEqual => f.write_str("<="),
-            Operator::GreaterThanEqual => f.write_str(">="),
-            Operator::NotEqual => f.write_str("!="),
-            Operator::Exact => f.write_str("=="),
-        }
+        f.write_str(self.symbol())
     }
 }
 
 impl Operator {
+    /// Returns the name of the operator using only letters
+    ///
+    /// ```
+    /// use jomini::text::Operator;
+    /// assert_eq!(Operator::LessThan.symbol(), "<");
+    /// assert_eq!(Operator::LessThanEqual.symbol(), "<=");
+    /// assert_eq!(Operator::GreaterThan.symbol(), ">");
+    /// assert_eq!(Operator::GreaterThanEqual.symbol(), ">=");
+    /// assert_eq!(Operator::Exact.symbol(), "==");
+    /// assert_eq!(Operator::NotEqual.symbol(), "!=");
+    /// assert_eq!(Operator::Equal.symbol(), "=");
+    /// ```
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            Operator::LessThan => "<",
+            Operator::LessThanEqual => "<=",
+            Operator::GreaterThan => ">",
+            Operator::GreaterThanEqual => ">=",
+            Operator::Exact => "==",
+            Operator::Equal => "=",
+            Operator::NotEqual => "!=",
+        }
+    }
+
     /// Returns the name of the operator using only letters
     ///
     /// ```
@@ -49,6 +69,7 @@ impl Operator {
     /// assert_eq!(Operator::GreaterThanEqual.name(), "GREATER_THAN_EQUAL");
     /// assert_eq!(Operator::Exact.name(), "EXACT");
     /// assert_eq!(Operator::NotEqual.name(), "NOT_EQUAL");
+    /// assert_eq!(Operator::Equal.name(), "EQUAL");
     /// ```
     pub fn name(&self) -> &'static str {
         match self {
@@ -57,6 +78,7 @@ impl Operator {
             Operator::GreaterThan => "GREATER_THAN",
             Operator::GreaterThanEqual => "GREATER_THAN_EQUAL",
             Operator::Exact => "EXACT",
+            Operator::Equal => "EQUAL",
             Operator::NotEqual => "NOT_EQUAL",
         }
     }
