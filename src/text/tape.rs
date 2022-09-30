@@ -610,7 +610,46 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         }
                     }
                 }
-                ParseState::KeyValueSeparator => match data {
+                ParseState::KeyValueSeparator => {
+                    if data[0] == b'=' {
+                        let old_data = data;
+                        data = self.skip_ws_t(&data[1..]).ok_or_else(Error::eof)?;
+
+                        match data[0] {
+                            b'{' => {
+                                self.token_tape.push(TextToken::Array(0));
+                                state = ParseState::ParseOpen;
+                                data = &data[1..];
+                            }
+    
+                            b'}' => {
+                                return Err(Error::new(ErrorKind::InvalidSyntax {
+                                    msg: String::from("encountered '}' for object value"),
+                                    offset: self.offset(data),
+                                }));
+                            }
+    
+                            b'"' => {
+                                data = self.parse_quote_scalar(data)?;
+                                state = ParseState::Key;
+                            }
+                            b'@' => {
+                                data = self.parse_variable(data)?;
+                                state = ParseState::Key;
+                            }
+                            b'=' => {
+
+                            }
+                            _ => {
+                                data = self.parse_scalar(data);
+                                state = ParseState::Key;
+                            }
+                        }
+                    } else {
+
+                    }
+                }
+                    ParseState::KeyValueSeparator => match data {
                     [b'<', b'=', ..] => {
                         self.token_tape
                             .push(TextToken::Operator(Operator::LessThanEqual));
