@@ -160,7 +160,6 @@ impl<'a> TextTape<'a> {
 enum ParseState {
     Key,
     KeyValueSeparator,
-    ObjectValue,
     ArrayValue,
     ParseOpen,
 }
@@ -532,6 +531,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
             };
 
             data = d;
+            dbg!(data, &state, &self.token_tape);
             match state {
                 ParseState::Key => {
                     match data[0] {
@@ -611,131 +611,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     }
                 }
                 ParseState::KeyValueSeparator => {
-                    if data[0] == b'=' {
-                        let old_data = data;
+                    if !mixed_mode && data[0] == b'=' {
                         data = self.skip_ws_t(&data[1..]).ok_or_else(Error::eof)?;
-
-                        match data[0] {
-                            b'{' => {
-                                self.token_tape.push(TextToken::Array(0));
-                                state = ParseState::ParseOpen;
-                                data = &data[1..];
-                            }
-    
-                            b'}' => {
-                                return Err(Error::new(ErrorKind::InvalidSyntax {
-                                    msg: String::from("encountered '}' for object value"),
-                                    offset: self.offset(data),
-                                }));
-                            }
-    
-                            b'"' => {
-                                data = self.parse_quote_scalar(data)?;
-                                state = ParseState::Key;
-                            }
-                            b'@' => {
-                                data = self.parse_variable(data)?;
-                                state = ParseState::Key;
-                            }
-                            b'=' => {
-
-                            }
-                            _ => {
-                                data = self.parse_scalar(data);
-                                state = ParseState::Key;
-                            }
-                        }
+                        (data, state) = self.parse_object_value(data, false)?;
                     } else {
-
-                    }
-                }
-                    ParseState::KeyValueSeparator => match data {
-                    [b'<', b'=', ..] => {
-                        self.token_tape
-                            .push(TextToken::Operator(Operator::LessThanEqual));
-                        data = &data[2..];
-                        state = ParseState::ObjectValue;
-                    }
-                    [b'<', ..] => {
-                        self.token_tape
-                            .push(TextToken::Operator(Operator::LessThan));
-                        data = &data[1..];
-                        state = ParseState::ObjectValue;
-                    }
-                    [b'>', b'=', ..] => {
-                        self.token_tape
-                            .push(TextToken::Operator(Operator::GreaterThanEqual));
-                        data = &data[2..];
-                        state = ParseState::ObjectValue;
-                    }
-                    [b'>', ..] => {
-                        self.token_tape
-                            .push(TextToken::Operator(Operator::GreaterThan));
-                        data = &data[1..];
-                        state = ParseState::ObjectValue;
-                    }
-                    [b'!', b'=', ..] => {
-                        self.token_tape
-                            .push(TextToken::Operator(Operator::NotEqual));
-                        data = &data[2..];
-                        state = ParseState::ObjectValue;
-                    }
-                    [b'=', b'=', ..] => {
-                        self.token_tape.push(TextToken::Operator(Operator::Exact));
-                        data = &data[2..];
-                        state = ParseState::ObjectValue;
-                    }
-                    [b'=', ..] if mixed_mode => {
-                        self.token_tape.push(TextToken::Operator(Operator::Equal));
-                        data = &data[1..];
-                    }
-                    [b'=', ..] => {
-                        data = &data[1..];
-                        state = ParseState::ObjectValue;
-                    }
-                    [b'{', ..] => {
-                        state = ParseState::ObjectValue;
-                    }
-                    [b'}', ..] => {
-                        self.token_tape
-                            .insert(self.token_tape.len() - 1, TextToken::MixedContainer);
-                        state = ParseState::ArrayValue;
-                        mixed_mode = true;
-                    }
-                    _ => {
-                        self.token_tape
-                            .insert(self.token_tape.len() - 1, TextToken::MixedContainer);
-                        state = ParseState::ArrayValue;
-                        mixed_mode = true;
-                    }
-                },
-                ParseState::ObjectValue => {
-                    match data[0] {
-                        b'{' => {
-                            self.token_tape.push(TextToken::Array(0));
-                            state = ParseState::ParseOpen;
-                            data = &data[1..];
-                        }
-
-                        b'}' => {
-                            return Err(Error::new(ErrorKind::InvalidSyntax {
-                                msg: String::from("encountered '}' for object value"),
-                                offset: self.offset(data),
-                            }));
-                        }
-
-                        b'"' => {
-                            data = self.parse_quote_scalar(data)?;
-                            state = ParseState::Key;
-                        }
-                        b'@' => {
-                            data = self.parse_variable(data)?;
-                            state = ParseState::Key;
-                        }
-                        _ => {
-                            data = self.parse_scalar(data);
-                            state = ParseState::Key;
-                        }
+                        data = self.parse_operator(data, &mut state, &mut mixed_mode, &mut parent_ind)?;
                     }
                 }
                 ParseState::ParseOpen => {
@@ -792,6 +672,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             self.token_tape[ind] = TextToken::Array(parent_ind);
                             parent_ind = ind;
                             state = ParseState::ArrayValue;
+                            data = scratch;
                             continue;
                         }
                         b'"' => {
@@ -863,6 +744,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         self.token_tape.push(TextToken::End(parent_ind));
                         parent_ind = grand_ind;
                         data = &data[1..];
+                        dbg!(parent_ind, grand_ind);
                         mixed_mode = false;
                     }
                     b'"' => {
@@ -874,66 +756,164 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         state = ParseState::ArrayValue;
                     }
                     b'<' | b'>' | b'!' | b'=' => {
-                        if !mixed_mode {
-                            if self.token_tape.last().and_then(|x| x.as_scalar()).is_some() {
-                                self.token_tape
-                                    .insert(self.token_tape.len() - 1, TextToken::MixedContainer);
-                                mixed_mode = true;
-                            } else {
-                                return Err(Error::new(ErrorKind::InvalidSyntax {
-                                    msg: String::from("expected a scalar to precede an operator"),
-                                    offset: self.offset(data) - 1,
-                                }));
-                            }
-                        }
-
-                        match data {
-                            [b'<', b'=', ..] => {
-                                self.token_tape
-                                    .push(TextToken::Operator(Operator::LessThanEqual));
-                                data = &data[2..];
-                            }
-                            [b'<', ..] => {
-                                self.token_tape
-                                    .push(TextToken::Operator(Operator::LessThan));
-                                data = &data[1..];
-                            }
-                            [b'>', b'=', ..] => {
-                                self.token_tape
-                                    .push(TextToken::Operator(Operator::GreaterThanEqual));
-                                data = &data[2..];
-                            }
-                            [b'>', ..] => {
-                                self.token_tape
-                                    .push(TextToken::Operator(Operator::GreaterThan));
-                                data = &data[1..];
-                            }
-                            [b'!', b'=', ..] => {
-                                self.token_tape
-                                    .push(TextToken::Operator(Operator::NotEqual));
-                                data = &data[2..];
-                            }
-                            [b'=', b'=', ..] => {
-                                self.token_tape.push(TextToken::Operator(Operator::Exact));
-                                data = &data[2..];
-                            }
-                            [b'=', ..] => {
-                                self.token_tape.push(TextToken::Operator(Operator::Equal));
-                                data = &data[1..];
-                            }
-                            _ => {
-                                return Err(Error::new(ErrorKind::InvalidSyntax {
-                                    msg: String::from("unrecognized operator"),
-                                    offset: self.offset(data) - 1,
-                                }));
-                            }
-                        }
+                        data = self.parse_array_operator(&mut mixed_mode, data)?;
                     }
                     _ => {
                         data = self.parse_scalar(data);
                         state = ParseState::ArrayValue;
                     }
                 },
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn parse_array_operator(&mut self, mixed_mode: &mut bool, data: &'a [u8]) -> Result<&'a [u8], Error> {
+        if !*mixed_mode {
+            if self.token_tape.last().and_then(|x| x.as_scalar()).is_some() {
+                self.token_tape
+                    .insert(self.token_tape.len() - 1, TextToken::MixedContainer);
+                *mixed_mode = true;
+            } else {
+                return Err(Error::new(ErrorKind::InvalidSyntax {
+                    msg: String::from("expected a scalar to precede an operator"),
+                    offset: self.offset(data) - 1,
+                }));
+            }
+        }
+        match data {
+            [b'<', b'=', ..] => {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::LessThanEqual));
+                Ok(&data[2..])
+            }
+            [b'<', ..] => {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::LessThan));
+                Ok(&data[1..])
+            }
+            [b'>', b'=', ..] => {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::GreaterThanEqual));
+                Ok(&data[2..])
+            }
+            [b'>', ..] => {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::GreaterThan));
+                Ok(&data[1..])
+            }
+            [b'!', b'=', ..] => {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::NotEqual));
+                Ok(&data[2..])
+            }
+            [b'=', b'=', ..] => {
+                self.token_tape.push(TextToken::Operator(Operator::Exact));
+                Ok(&data[2..])
+            }
+            [b'=', ..] => {
+                self.token_tape.push(TextToken::Operator(Operator::Equal));
+                Ok(&data[1..])
+            }
+            _ => {
+                return Err(Error::new(ErrorKind::InvalidSyntax {
+                    msg: String::from("unrecognized operator"),
+                    offset: self.offset(data) - 1,
+                }));
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn parse_operator(&mut self, mut data: &'a [u8], state: &mut ParseState, mixed_mode: &mut bool, parent_ind: &mut usize) -> Result<&'a [u8], Error> {
+        match data {
+            [b'<', b'=', ..] => {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::LessThanEqual));
+                data = &data[2..];
+            }
+            [b'<', ..] => {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::LessThan));
+                data = &data[1..];
+            }
+            [b'>', b'=', ..] => {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::GreaterThanEqual));
+                data = &data[2..];
+            }
+            [b'>', ..] => {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::GreaterThan));
+                data = &data[1..];
+            }
+            [b'!', b'=', ..] => {
+                self.token_tape
+                    .push(TextToken::Operator(Operator::NotEqual));
+                data = &data[2..];
+            }
+            [b'=', b'=', ..] => {
+                self.token_tape.push(TextToken::Operator(Operator::Exact));
+                data = &data[2..];
+            }
+            [b'=', ..] if *mixed_mode => {
+                self.token_tape.push(TextToken::Operator(Operator::Equal));
+                data = &data[1..];
+            }
+            [b'=', ..] => {
+                data = &data[1..];
+            }
+            [b'{', ..] => {
+                self.token_tape.push(TextToken::Array(0));
+                *parent_ind = self.token_tape.len();
+                *state = ParseState::ParseOpen;
+                return Ok(&data);
+            }
+            [b'}', ..] => {
+                self.token_tape
+                    .insert(self.token_tape.len() - 1, TextToken::MixedContainer);
+                *state = ParseState::ArrayValue;
+                *mixed_mode = true;
+                return Ok(data);
+            }
+            _ => {
+                self.token_tape
+                    .insert(self.token_tape.len() - 1, TextToken::MixedContainer);
+                *state = ParseState::ArrayValue;
+                *mixed_mode = true;
+                return Ok(data);
+            }
+        };
+        
+        let data = self.skip_ws_t(data).ok_or_else(Error::eof)?;
+        let (nd, nstate) = self.parse_object_value(data, true)?;
+        *state = nstate;
+        Ok(nd)
+    }
+
+    #[inline]
+    fn parse_object_value(&mut self, data: &'a [u8], known_operator: bool) -> Result<(&'a [u8], ParseState), Error> {
+        match data[0] {
+            b'{' => {
+                self.token_tape.push(TextToken::Array(0));
+                Ok((&data[1..], ParseState::ParseOpen))
+            }
+            b'"' => {
+                let nd = self.parse_quote_scalar(data)?;
+                Ok((nd, ParseState::Key))
+            }
+            b'@' => {
+                let nd = self.parse_variable(data)?;
+                Ok((nd, ParseState::Key))
+            }
+            b'=' if !known_operator => {
+                self.token_tape.push(TextToken::Operator(Operator::Exact));
+                let nd = self.skip_ws_t(&data[1..]).ok_or_else(Error::eof)?;
+                self.parse_object_value(nd, true)
+            }
+            _ => {
+                let nd = self.parse_scalar(data);
+                Ok((nd, ParseState::Key))
             }
         }
     }
