@@ -34,7 +34,7 @@ quickcheck = "1"
 quickcheck_macros = "1"
 serde = { version = "1", features = ["derive"] }
 
-[[example]]
+[[bin]]
 name = "json"
 required-features = ["json"]
 
