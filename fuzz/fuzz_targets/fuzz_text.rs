@@ -1,5 +1,8 @@
 #![no_main]
-use jomini::{Encoding, TextToken, text::{ArrayReader, ObjectReader, ValueReader}};
+use jomini::{
+    text::{ArrayReader, ObjectReader, ValueReader},
+    Encoding, TextToken,
+};
 use libfuzzer_sys::fuzz_target;
 use serde::Deserialize;
 
@@ -32,7 +35,7 @@ where
     E: crate::Encoding + Clone,
 {
     match value.token() {
-        TextToken::Object(_) | TextToken::HiddenObject(_) => {
+        TextToken::Object {..} => {
             let obj = value.read_object().unwrap();
             if unsafe { GROUPED } {
                 iterate_object2(obj);
@@ -40,11 +43,12 @@ where
                 iterate_object(obj);
             }
         }
-        TextToken::Array(_) => {
+        TextToken::Array {..} => {
             iterate_array(value.read_array().unwrap());
         }
         TextToken::End(_) => panic!("end!?"),
-        TextToken::Operator(_) => panic!("end!?"),
+        TextToken::Operator(_) => {}
+        TextToken::MixedContainer => {}
         TextToken::Unquoted(x)
         | TextToken::Quoted(x)
         | TextToken::Header(x)
@@ -79,10 +83,6 @@ where
         let _ = key.read_str();
         read_value(value);
     }
-
-    if let Some(trailer) = fields.at_trailer() {
-        iterate_array(trailer);
-    }
 }
 
 fn iterate_object2<E>(reader: ObjectReader<E>)
@@ -95,10 +95,6 @@ where
             read_value(value);
         }
     }
-
-    if let Some(trailer) = fields.at_trailer() {
-        iterate_array(trailer);
-    }
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -106,22 +102,17 @@ fuzz_target!(|data: &[u8]| {
         let tokens = tape.tokens();
         for (i, token) in tokens.iter().enumerate() {
             match token {
-                TextToken::Array(ind)
-                | TextToken::Object(ind)
-                | TextToken::HiddenObject(ind)
-                | TextToken::End(ind)
+                TextToken::Array { end: ind, .. } | TextToken::Object{ end: ind, .. } | TextToken::End(ind)
                     if *ind == 0 =>
                 {
                     panic!("zero ind encountered");
                 }
-                TextToken::Array(ind) | TextToken::Object(ind) | TextToken::HiddenObject(ind) => {
-                    match tokens[*ind] {
-                        TextToken::End(ind2) => {
-                            assert_eq!(ind2, i)
-                        }
-                        _ => panic!("expected end"),
+                TextToken::Array { end: ind, .. } | TextToken::Object{ end: ind, .. } => match &tokens[*ind] {
+                    TextToken::End(ind2) => {
+                        assert_eq!(*ind2, i)
                     }
-                }
+                    x => panic!("expected end not {:?}", x),
+                },
                 _ => {}
             }
         }
@@ -131,7 +122,9 @@ fuzz_target!(|data: &[u8]| {
 
         iterate_object(tape.windows1252_reader());
 
-        unsafe { GROUPED = true; }
+        unsafe {
+            GROUPED = true;
+        }
         iterate_object2(tape.windows1252_reader());
         jomini::TextDeserializer::from_windows1252_tape(&tape)
     });

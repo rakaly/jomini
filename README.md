@@ -214,37 +214,9 @@ assert_eq!(&out, b"hello=world\nfoo=bar");
 
 ## Unsupported Syntax
 
-Due to the nature of Clausewitz being closed source, this library can never guarantee compatibility with Clausewitz. There is no specification of what valid input looks like, and we only have examples that have been [collected in the wild](https://pdx.tools/blog/a-tour-of-pds-clausewitz-syntax). From what we do know, Clausewitz is recklessly flexible: allowing each game object to potentially define its own unique syntax. It is technically possible for us to support these fringe edge cases in search for perfection, but achieving that goal would sacrifice either ergonomics or performance: two pillars that are a must for save game parsing. Until a suitable solution is presented, a workaround would be to preprocess the unique syntax into a more recognizable format.
+Due to the nature of Clausewitz being closed source, this library can never guarantee compatibility with Clausewitz. There is no specification of what valid input looks like, and we only have examples that have been [collected in the wild](https://pdx.tools/blog/a-tour-of-pds-clausewitz-syntax). From what we do know, Clausewitz is recklessly flexible: allowing each game object to potentially define its own unique syntax.
 
-The good news is that unsupported syntax is typically isolated in a handful of game files.
-
-Known unsupported syntax:
-
-- ```
-    simple_cross_flag = {
-        pattern = list "christian_emblems_list"
-        color1 = list "normal_colors"
-    }
-  ```
-
-  Above is an example of an unmarked list found in CK3. Typically lists are use brackets (`{`, `}`) but those are conspicuously missing here.
-
-- ```
-    on_actions = {
-        faith_holy_order_land_acquisition_pulse
-        delay = { days = { 5 10 }}
-        faith_heresy_events_pulse
-        delay = { days = { 15 20 }}
-        faith_fervor_events_pulse
-    }
-  ```
-
-  Alternating value and key value pairs. Makes one wish they used a bit more of a self describing format. We can parse objects or lists that occur at the end of a container, but are unable to repeatedly switch between the two formats.
-
-- ```
-  pride_of_the_fleet = yes definition definition = heavy_cruiser
-  ```
-  In this instance, the first `definition` should be skipped, but skipping an unrecognized or duplicate field is not consistent across game objects, as we can see from the previous examples where one shouldn't skip fields like this.
+We can only do our best and add support for new syntax as it is encountered.
 
 ## Benchmarks
 

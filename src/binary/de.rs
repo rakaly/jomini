@@ -241,7 +241,7 @@ impl<'c, 'de, 'a, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> MapAccess<'de>
 
             self.value_ind = self.tape_idx + 1;
             let next_key = match self.tokens[self.value_ind] {
-                BinaryToken::Array(x) | BinaryToken::Object(x) | BinaryToken::HiddenObject(x) => x,
+                BinaryToken::Array(x) | BinaryToken::Object(x) => x,
                 _ => self.value_ind,
             };
 
@@ -296,11 +296,11 @@ fn visit_key<
     match tokens[tape_idx] {
         BinaryToken::Object(_)
         | BinaryToken::Array(_)
-        | BinaryToken::HiddenObject(_)
         | BinaryToken::End(_)
         | BinaryToken::Rgb(_) => Err(DeserializeError {
             kind: DeserializeErrorKind::Unsupported(String::from("unable to deserialize key type")),
         }),
+        BinaryToken::MixedContainer | BinaryToken::Equal => visitor.visit_unit(),
         BinaryToken::Bool(x) => visitor.visit_bool(x),
         BinaryToken::U32(x) => visitor.visit_u32(x),
         BinaryToken::U64(x) => visitor.visit_u64(x),
@@ -372,7 +372,7 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializ
                 end_idx: *x,
             }),
             BinaryToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
-            BinaryToken::Object(x) | BinaryToken::HiddenObject(x) => {
+            BinaryToken::Object(x) => {
                 visitor.visit_map(BinaryMap::new(self.config, self.tokens, idx + 1, *x))
             }
             BinaryToken::End(_x) => Err(DeserializeError {
@@ -468,7 +468,7 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializ
     {
         let idx = self.value_ind;
         match &self.tokens[idx] {
-            BinaryToken::Object(x) | BinaryToken::HiddenObject(x) => {
+            BinaryToken::Object(x) => {
                 visitor.visit_map(BinaryMap::new(self.config, self.tokens, idx + 1, *x))
             }
 
@@ -509,9 +509,12 @@ impl<'b, 'de, 'r, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializ
         V: Visitor<'de>,
     {
         match &self.tokens[self.de_idx] {
-            BinaryToken::Object(x) | BinaryToken::HiddenObject(x) => visitor.visit_map(
-                BinaryMap::new(self.config, self.tokens, self.de_idx + 1, *x),
-            ),
+            BinaryToken::Object(x) => visitor.visit_map(BinaryMap::new(
+                self.config,
+                self.tokens,
+                self.de_idx + 1,
+                *x,
+            )),
             BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
                 config: self.config,
                 tokens: self.tokens,
@@ -548,7 +551,7 @@ impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> SeqAccess<'de>
             Ok(None)
         } else {
             let next_key = match self.tokens[self.idx] {
-                BinaryToken::Array(x) | BinaryToken::Object(x) | BinaryToken::HiddenObject(x) => x,
+                BinaryToken::Array(x) | BinaryToken::Object(x) => x,
                 _ => self.idx,
             };
 
@@ -574,9 +577,7 @@ fn object_len(tokens: &[BinaryToken], mut key_idx: usize) -> usize {
 
         let val_ind = key_idx + 1;
         key_idx = match tokens.get(val_ind) {
-            Some(BinaryToken::Array(x))
-            | Some(BinaryToken::Object(x))
-            | Some(BinaryToken::HiddenObject(x)) => x + 1,
+            Some(BinaryToken::Array(x)) | Some(BinaryToken::Object(x)) => x + 1,
             _ => val_ind + 1,
         };
 
@@ -592,7 +593,7 @@ fn array_len(tokens: &[BinaryToken], mut val_ind: usize) -> usize {
 
     while let Some(val) = tokens.get(val_ind) {
         val_ind = match val {
-            BinaryToken::Array(x) | BinaryToken::Object(x) | BinaryToken::HiddenObject(x) => x + 1,
+            BinaryToken::Array(x) | BinaryToken::Object(x) => x + 1,
             BinaryToken::End(_) => return count,
             _ => val_ind + 1,
         };

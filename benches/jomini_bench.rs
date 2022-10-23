@@ -1,15 +1,17 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{
+    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode, Throughput,
+};
+use flate2::read::GzDecoder;
 use jomini::{
     binary::{BinaryFlavor, BinaryTapeParser},
     common::Date,
     BinaryDeserializer, BinaryTape, Encoding, Scalar, TextDeserializer, TextTape, Utf8Encoding,
     Windows1252Encoding,
 };
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::HashMap, io::Read};
 
 const METADATA_BIN: &'static [u8] = include_bytes!("../tests/fixtures/meta.bin");
 const METADATA_TXT: &'static [u8] = include_bytes!("../tests/fixtures/meta.txt");
-const CK3_BIN: &'static [u8] = include_bytes!("../tests/fixtures/ck3-header.bin");
 const CK3_TXT: &'static [u8] = include_bytes!("../tests/fixtures/ck3-header.txt");
 
 pub fn windows1252_benchmark(c: &mut Criterion) {
@@ -139,65 +141,31 @@ pub fn text_deserialize_benchmark(c: &mut Criterion) {
 }
 
 pub fn binary_parse_benchmark(c: &mut Criterion) {
-    let data = &METADATA_BIN["EU4bin".len()..];
+    // For the binary parse benchmarks we actually benchmark against a real
+    // world corpus of save files. Previously it was only against the binary
+    // metadata section of saves, but found out that improvements in benchmarks
+    // didn't translate to world world change.
+
+    let eu4_data = request("jomini/eu4-bin");
     let mut group = c.benchmark_group("parse");
-    group.throughput(Throughput::Bytes(data.len() as u64));
+    group.throughput(Throughput::Bytes(eu4_data.len() as u64));
+    group.sampling_mode(SamplingMode::Flat);
     group.bench_function(BenchmarkId::new("binary", "eu4"), |b| {
         let mut tape = BinaryTape::default();
-        b.iter(move || {
+        b.iter(|| {
             BinaryTapeParser
-                .parse_slice_into_tape(&data[..], &mut tape)
+                .parse_slice_into_tape(eu4_data.as_slice(), &mut tape)
                 .unwrap();
         })
     });
 
-    let data = &CK3_BIN[..];
-    group.throughput(Throughput::Bytes(data.len() as u64));
+    let ck3_data = request("jomini/ck3-bin");
+    group.throughput(Throughput::Bytes(ck3_data.len() as u64));
     group.bench_function(BenchmarkId::new("binary", "ck3"), |b| {
         let mut tape = BinaryTape::default();
-        b.iter(move || {
+        b.iter(|| {
             BinaryTapeParser
-                .parse_slice_into_tape(&data[..], &mut tape)
-                .unwrap();
-        })
-    });
-
-    let mut f32_data_v = Vec::new();
-    for _ in 0..10000 {
-        f32_data_v.extend_from_slice(&0x000du16.to_le_bytes());
-        f32_data_v.extend_from_slice(&0x0001u32.to_le_bytes());
-        f32_data_v.extend_from_slice(&0x0001u16.to_le_bytes());
-        f32_data_v.extend_from_slice(&0x000du16.to_le_bytes());
-        f32_data_v.extend_from_slice(&0x0002u32.to_le_bytes());
-    }
-
-    let f32_data = f32_data_v.as_slice();
-    group.throughput(Throughput::Bytes(f32_data.len() as u64));
-    group.bench_function(BenchmarkId::new("binary", "f32"), |b| {
-        let mut tape = BinaryTape::default();
-        b.iter(move || {
-            BinaryTapeParser
-                .parse_slice_into_tape(&f32_data[..], &mut tape)
-                .unwrap();
-        })
-    });
-
-    let mut f64_data_v = Vec::new();
-    for _ in 0..10000 {
-        f64_data_v.extend_from_slice(&0x0167u16.to_le_bytes());
-        f64_data_v.extend_from_slice(&0x0001u64.to_le_bytes());
-        f64_data_v.extend_from_slice(&0x0001u16.to_le_bytes());
-        f64_data_v.extend_from_slice(&0x0167u16.to_le_bytes());
-        f64_data_v.extend_from_slice(&0x0002u64.to_le_bytes());
-    }
-
-    let f64_data = f64_data_v.as_slice();
-    group.throughput(Throughput::Bytes(f64_data.len() as u64));
-    group.bench_function(BenchmarkId::new("binary", "f64"), |b| {
-        let mut tape = BinaryTape::default();
-        b.iter(move || {
-            BinaryTapeParser
-                .parse_slice_into_tape(&f64_data[..], &mut tape)
+                .parse_slice_into_tape(&ck3_data[..], &mut tape)
                 .unwrap();
         })
     });
@@ -334,7 +302,7 @@ pub fn json_benchmark(c: &mut Criterion) {
 }
 
 pub fn date_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("eu4date-parse");
+    let mut group = c.benchmark_group("date");
     group.bench_function("valid-date", |b| {
         b.iter(|| Date::parse("1444.11.11").unwrap())
     });
@@ -364,3 +332,37 @@ criterion_group!(
     json_benchmark,
 );
 criterion_main!(benches);
+
+pub fn request<S: AsRef<str>>(input: S) -> Vec<u8> {
+    use std::fs;
+    use std::path::Path;
+
+    let reffed = input.as_ref();
+    let cache = Path::new("assets").join("saves").join(reffed);
+    if cache.exists() {
+        println!("cache hit: {}", reffed);
+        fs::read(cache).unwrap()
+    } else {
+        println!("cache miss: {}", reffed);
+        let url = format!(
+            "https://eu4saves-test-cases.s3.us-west-002.backblazeb2.com/{}.gz",
+            reffed
+        );
+        let resp = attohttpc::get(&url).send().unwrap();
+
+        if !resp.is_success() {
+            panic!("expected a 200 code from s3");
+        } else {
+            let raw_data = resp.bytes().unwrap();
+
+            let mut data = Vec::new();
+            GzDecoder::new(raw_data.as_slice())
+                .read_to_end(&mut data)
+                .unwrap();
+
+            std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+            std::fs::write(&cache, &data).unwrap();
+            data
+        }
+    }
+}
