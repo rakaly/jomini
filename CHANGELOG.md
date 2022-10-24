@@ -1,3 +1,33 @@
+## v0.20.0 - 2022-10-23
+
+Esoteric text syntax where a container is both an array and an object is supported:
+
+```
+on_actions = {
+  faith_holy_order_land_acquisition_pulse
+  delay = { days = { 5 10 }}
+  faith_heresy_events_pulse
+  delay = { days = { 15 20 }}
+  faith_fervor_events_pulse
+}
+```
+
+The above can now be parsed. When converted to JSON it will be translated into:
+
+```json
+{
+  "on_actions": [
+    "faith_holy_order_land_acquisition_pulse",
+    { "delay": { "days": [5, 10] } },
+    "faith_heresy_events_pulse",
+    { "delay": { "days": [15, 20] } },
+    "faith_fervor_events_pulse"
+  ]
+}
+```
+
+This required a rework of the low level parsers, both binary and text -- but the high level deserialization should remain the same. The mid-level API also remains mostly the same outside of the `trailer` property getting renamed to `remaining`
+
 ## v0.19.1 - 2022-07-02
 
 - Advise against using the `flatten` serde attribute in documentation
