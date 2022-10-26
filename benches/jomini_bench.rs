@@ -146,29 +146,21 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     // metadata section of saves, but found out that improvements in benchmarks
     // didn't translate to world world change.
 
-    let eu4_data = request("jomini/eu4-bin");
     let mut group = c.benchmark_group("parse");
-    group.throughput(Throughput::Bytes(eu4_data.len() as u64));
-    group.sampling_mode(SamplingMode::Flat);
-    group.bench_function(BenchmarkId::new("binary", "eu4"), |b| {
-        let mut tape = BinaryTape::default();
-        b.iter(|| {
-            BinaryTapeParser
-                .parse_slice_into_tape(eu4_data.as_slice(), &mut tape)
-                .unwrap();
-        })
-    });
 
-    let ck3_data = request("jomini/ck3-bin");
-    group.throughput(Throughput::Bytes(ck3_data.len() as u64));
-    group.bench_function(BenchmarkId::new("binary", "ck3"), |b| {
-        let mut tape = BinaryTape::default();
-        b.iter(|| {
-            BinaryTapeParser
-                .parse_slice_into_tape(&ck3_data[..], &mut tape)
-                .unwrap();
-        })
-    });
+    for game in &["eu4", "ck3", "v3"] {
+        let data = request(&format!("jomini/{game}-bin"));
+        group.throughput(Throughput::Bytes(data.len() as u64));
+        group.sampling_mode(SamplingMode::Flat);
+        group.bench_function(BenchmarkId::new("binary", game), |b| {
+            let mut tape = BinaryTape::default();
+            b.iter(|| {
+                BinaryTapeParser
+                    .parse_slice_into_tape(data.as_slice(), &mut tape)
+                    .unwrap();
+            })
+        });
+    }
 
     group.finish();
 }
