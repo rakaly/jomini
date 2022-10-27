@@ -40,62 +40,68 @@ pub trait PdsDate {
     fn iso_8601(&self) -> PdsDateFormatter;
 }
 
+/// Controls the output format of a date
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateFormat {
+    /// ISO-8601 format
+    Iso8601,
+
+    /// Y.M.D[.H] where month, day, and hour don't have zero padding
+    DotShort,
+
+    /// Y.M.D[.H] where month, day, and hour are zero padded to two digits
+    DotWide,
+}
+
 /// A temporary object which can be used as an argument to `format!`.
 ///
 /// Used to avoid a needless intermediate allocation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PdsDateFormatter {
     raw: RawDate,
-    full_width: bool,
-    iso: bool,
+    format: DateFormat,
+}
+
+impl PdsDateFormatter {
+    /// Creates new formatter with a given date and desired format
+    pub fn new(raw: RawDate, format: DateFormat) -> Self {
+        Self { raw, format }
+    }
 }
 
 impl Display for PdsDateFormatter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.iso {
+        if self.format == DateFormat::Iso8601 {
+            write!(
+                f,
+                "{:04}-{:02}-{:02}",
+                self.raw.year(),
+                self.raw.month(),
+                self.raw.day(),
+            )?;
+
             if self.raw.has_hour() {
-                write!(
-                    f,
-                    "{:04}-{:02}-{:02}T{:02}",
-                    self.raw.year(),
-                    self.raw.month(),
-                    self.raw.day(),
-                    self.raw.hour() - 1
-                )
+                write!(f, "T{:02}", self.raw.hour() - 1)
             } else {
-                write!(
-                    f,
-                    "{:04}-{:02}-{:02}",
-                    self.raw.year(),
-                    self.raw.month(),
-                    self.raw.day(),
-                )
+                Ok(())
             }
-        } else if self.raw.has_hour() {
-            write!(
-                f,
-                "{}.{}.{}.{}",
-                self.raw.year(),
-                self.raw.month(),
-                self.raw.day(),
-                self.raw.hour()
-            )
-        } else if !self.full_width {
-            write!(
-                f,
-                "{}.{}.{}",
-                self.raw.year(),
-                self.raw.month(),
-                self.raw.day(),
-            )
         } else {
+            let fmt = self.format;
+            let width = if fmt == DateFormat::DotWide { 2 } else { 0 };
             write!(
                 f,
-                "{}.{:02}.{:02}",
+                "{}.{:03$}.{:03$}",
                 self.raw.year(),
                 self.raw.month(),
                 self.raw.day(),
-            )
+                width,
+            )?;
+
+            if self.raw.has_hour() {
+                write!(f, ".{:01$}", self.raw.hour(), width)
+            } else {
+                Ok(())
+            }
         }
     }
 }
@@ -330,19 +336,11 @@ impl PdsDate for RawDate {
     }
 
     fn game_fmt(&self) -> PdsDateFormatter {
-        PdsDateFormatter {
-            raw: *self,
-            full_width: false,
-            iso: false,
-        }
+        PdsDateFormatter::new(*self, DateFormat::DotShort)
     }
 
     fn iso_8601(&self) -> PdsDateFormatter {
-        PdsDateFormatter {
-            raw: *self,
-            full_width: false,
-            iso: true,
-        }
+        PdsDateFormatter::new(*self, DateFormat::Iso8601)
     }
 }
 
@@ -570,11 +568,7 @@ impl PdsDate for Date {
     /// assert_eq!(date.iso_8601().to_string(), String::from("1400-01-02"));
     /// ```
     fn iso_8601(&self) -> PdsDateFormatter {
-        PdsDateFormatter {
-            raw: self.raw,
-            full_width: false,
-            iso: true,
-        }
+        PdsDateFormatter::new(self.raw, DateFormat::Iso8601)
     }
 
     /// Formats a date in the game format: Y.M.D
@@ -585,11 +579,7 @@ impl PdsDate for Date {
     /// assert_eq!(date.game_fmt().to_string(), String::from("1400.1.2"));
     /// ```
     fn game_fmt(&self) -> PdsDateFormatter {
-        PdsDateFormatter {
-            raw: self.raw,
-            full_width: false,
-            iso: false,
-        }
+        PdsDateFormatter::new(self.raw, DateFormat::DotShort)
     }
 }
 
@@ -774,11 +764,7 @@ impl PdsDate for DateHour {
     /// assert_eq!(String::from("1936-01-02T11"), date.iso_8601().to_string());
     /// ```
     fn iso_8601(&self) -> PdsDateFormatter {
-        PdsDateFormatter {
-            raw: self.raw,
-            full_width: false,
-            iso: true,
-        }
+        PdsDateFormatter::new(self.raw, DateFormat::Iso8601)
     }
 
     /// Return the date in the game format
@@ -789,11 +775,7 @@ impl PdsDate for DateHour {
     /// assert_eq!(String::from("1936.1.2.12"), date.game_fmt().to_string());
     /// ```
     fn game_fmt(&self) -> PdsDateFormatter {
-        PdsDateFormatter {
-            raw: self.raw,
-            full_width: false,
-            iso: false,
-        }
+        PdsDateFormatter::new(self.raw, DateFormat::DotShort)
     }
 }
 
@@ -919,11 +901,7 @@ impl PdsDate for UniformDate {
     /// assert_eq!(date.iso_8601().to_string(), String::from("1400-01-02"));
     /// ```
     fn iso_8601(&self) -> PdsDateFormatter {
-        PdsDateFormatter {
-            raw: self.raw,
-            full_width: false,
-            iso: true,
-        }
+        PdsDateFormatter::new(self.raw, DateFormat::Iso8601)
     }
 
     /// Formats a date in the game format: Y.MM.DD
@@ -934,11 +912,7 @@ impl PdsDate for UniformDate {
     /// assert_eq!(date.game_fmt().to_string(), String::from("1400.01.02"));
     /// ```
     fn game_fmt(&self) -> PdsDateFormatter {
-        PdsDateFormatter {
-            raw: self.raw,
-            full_width: true,
-            iso: false,
-        }
+        PdsDateFormatter::new(self.raw, DateFormat::DotWide)
     }
 }
 
