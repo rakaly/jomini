@@ -184,20 +184,23 @@ impl ExpandedRawDate {
 /// It may or may not have an hour component.
 ///
 /// Paradox games do not follow any traditional calendar and instead view the
-/// world on simpler terms: that every year should be treated as a non-leap year.
+/// world on simpler terms: that every year should be treated as a non-leap
+/// year.
 ///
 /// Years can be negative but can't be zero.
 ///
 /// An hour component is considered present if it is non-zero. This means that
 /// games with hours run on a non-traditional clock from 1-24 instead of the
-/// traditional 24 hour clock (0-23).
+/// traditional 24 hour clock (0-23). An exception is Victoria 3, which has day
+/// cycle of (0, 6, 12, 18) hours, but remains consistent in omitting the hour
+/// when it is zero.
 ///
 /// A raw date has very minimal validation and can support any calendar system
 /// as it holds abitrary values for year, month, day, and hours
 ///
 /// It is typically recommended to use one of the specialized types: [Date],
-/// [DateHour], or [UniformDate] as date formats aren't variable within a
-/// game and have less pitfalls.
+/// [DateHour], or [UniformDate] as date formats aren't variable within a game
+/// and have less pitfalls.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RawDate {
     year: i16,
@@ -239,6 +242,20 @@ impl Ord for RawDate {
 impl RawDate {
     fn from_expanded(data: ExpandedRawDate) -> Option<Self> {
         Self::from_ymdh_opt(data.year, data.month, data.day, data.hour)
+    }
+
+    /// Creates a raw date from a binary integer
+    ///
+    /// ```
+    /// use jomini::common::{RawDate, PdsDate};
+    /// let date = RawDate::from_binary(56379360).unwrap();
+    /// assert_eq!(date.iso_8601().to_string(), String::from("1436-01-01"));
+    ///
+    /// let date2 = RawDate::from_binary(60759371).unwrap();
+    /// assert_eq!(date2.iso_8601().to_string(), String::from("1936-01-01T10"));
+    /// ```
+    pub fn from_binary(s: i32) -> Option<Self> {
+        ExpandedRawDate::from_binary(s).and_then(Self::from_expanded)
     }
 
     /// Create a raw date from individual components.
