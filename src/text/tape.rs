@@ -2694,11 +2694,14 @@ mod tests {
             color1 = list normal_colors
           }";
 
-          assert_eq!(
+        assert_eq!(
             parse(&data[..]).unwrap().token_tape,
             vec![
                 TextToken::Unquoted(Scalar::new(b"simple_cross_flag")),
-                TextToken::Object { end: 10, mixed: true },
+                TextToken::Object {
+                    end: 10,
+                    mixed: true
+                },
                 TextToken::Unquoted(Scalar::new(b"pattern")),
                 TextToken::Unquoted(Scalar::new(b"list")),
                 TextToken::MixedContainer,
@@ -2709,7 +2712,7 @@ mod tests {
                 TextToken::Unquoted(Scalar::new(b"normal_colors")),
                 TextToken::End(1)
             ]
-          );
+        );
     }
 
     #[test]
