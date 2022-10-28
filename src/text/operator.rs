@@ -83,3 +83,38 @@ impl Operator {
         }
     }
 }
+
+#[cfg(feature = "derive")]
+impl<'de> serde::Deserialize<'de> for Operator {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct OperatorVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for OperatorVisitor {
+            type Value = Operator;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an operator")
+            }
+
+            fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match v {
+                    "<" => Ok(Operator::LessThan),
+                    "<=" => Ok(Operator::LessThanEqual),
+                    ">" => Ok(Operator::GreaterThan),
+                    ">=" => Ok(Operator::GreaterThanEqual),
+                    "==" => Ok(Operator::Exact),
+                    "=" => Ok(Operator::Equal),
+                    "!=" => Ok(Operator::NotEqual),
+                    _ => Err(E::custom("did not receive a known operator")),
+                }
+            }
+        }
+        deserializer.deserialize_str(OperatorVisitor)
+    }
+}

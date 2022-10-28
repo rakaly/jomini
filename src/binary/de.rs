@@ -136,11 +136,11 @@ where
             encoding: &self.flavor,
         };
 
-        let mut deserializer = RootDeserializer {
+        let deserializer = RootDeserializer {
             tokens: tape.tokens(),
             config: &config,
         };
-        Ok(T::deserialize(&mut deserializer)?)
+        Ok(T::deserialize(deserializer)?)
     }
 }
 
@@ -155,8 +155,8 @@ struct RootDeserializer<'b, 'a: 'b, 'res: 'a, RES, E> {
     config: &'b BinaryConfig<'res, RES, E>,
 }
 
-impl<'b, 'de, 'r, 'res, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
-    for &'r mut RootDeserializer<'b, 'de, 'res, RES, E>
+impl<'b, 'de, 'res, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
+    for RootDeserializer<'b, 'de, 'res, RES, E>
 {
     type Error = DeserializeError;
 

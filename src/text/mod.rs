@@ -16,7 +16,7 @@ mod tape;
 mod writer;
 
 #[cfg(feature = "derive")]
-pub use self::de::TextDeserializer;
+pub use self::de::{Property, TextDeserializer};
 pub use self::operator::*;
 pub use self::reader::{
     ArrayReader, FieldGroupsIter, FieldsIter, GroupEntry, GroupEntryIter, ObjectReader, Reader,

@@ -26,12 +26,16 @@ Below is a demonstration on parsing plaintext data using jomini tools.
 
 ```rust
 # #[cfg(feature = "derive")] {
-use jomini::{JominiDeserialize, TextDeserializer};
+use jomini::{
+    text::{Operator, Property},
+    JominiDeserialize, TextDeserializer,
+};
 
 #[derive(JominiDeserialize, PartialEq, Debug)]
 pub struct Model {
     human: bool,
     first: Option<u16>,
+    third: Property<u16>,
     #[jomini(alias = "forth")]
     fourth: u16,
     #[jomini(alias = "core", duplicated)]
@@ -41,6 +45,7 @@ pub struct Model {
 
 let data = br#"
     human = yes
+    third < 5
     forth = 10
     core = "HAB"
     names = { "Johan" "Frederick" }
@@ -50,6 +55,7 @@ let data = br#"
 let expected = Model {
     human: true,
     first: None,
+    third: Property::new(Operator::LessThan, 5),
     fourth: 10,
     cores: vec!["HAB".to_string(), "FRA".to_string()],
     names: vec!["Johan".to_string(), "Frederick".to_string()],

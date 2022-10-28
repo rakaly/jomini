@@ -1,11 +1,118 @@
 use super::reader::ValuesIter;
 use crate::{
-    text::{FieldsIter, ObjectReader, Reader, ValueReader},
+    text::{ArrayReader, FieldsIter, ObjectReader, Operator, Reader, ScalarReader, ValueReader},
     DeserializeError, DeserializeErrorKind, Encoding, Error, TextTape, TextToken, Utf8Encoding,
     Windows1252Encoding,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, Visitor};
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    fmt::{self, Debug},
+};
+
+/// Represents the field value that contains an operator
+///
+/// A `Property` is a specially marked type that signals to the deserializer to
+/// preserve operators.
+///
+/// ```
+/// use jomini::{
+///     text::{Operator, Property},
+///     JominiDeserialize, TextDeserializer,
+/// };
+/// use serde::Deserialize;
+///
+/// let data = b"modifier = { abc=yes factor=2 num > 2 }";
+/// let actual: MyStruct = TextDeserializer::from_windows1252_slice(&data[..])?;
+/// assert_eq!(
+///     actual,
+///     MyStruct {
+///         modifier: Modifier {
+///             abc: true,
+///             factor: Property::new(Operator::Equal, 2),
+///             num: Property::new(Operator::GreaterThan, 2)
+///         }
+///     }
+/// );
+///
+/// #[derive(Deserialize, Debug, PartialEq)]
+/// struct Modifier {
+///     abc: bool,
+///     factor: Property<u8>,
+///     num: Property<u8>,
+/// }
+///
+/// #[derive(Deserialize, Debug, PartialEq)]
+/// struct MyStruct {
+///     modifier: Modifier,
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(serde::Deserialize)]
+#[serde(rename = "_internal_jomini_property")]
+pub struct Property<T> {
+    operator: Operator,
+    value: T,
+}
+
+impl<T> fmt::Debug for Property<T>
+where
+    T: Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Property")
+            .field("operator", &self.operator)
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
+impl<T> PartialEq for Property<T>
+where
+    T: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.operator == other.operator && self.value == other.value
+    }
+}
+
+impl<T> Eq for Property<T> where T: Eq {}
+
+impl<T> Clone for Property<T>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            operator: self.operator,
+            value: self.value.clone(),
+        }
+    }
+}
+
+impl<T> Copy for Property<T> where T: Copy {}
+
+impl<T> Property<T> {
+    /// Creates a new property
+    pub fn new(operator: Operator, value: T) -> Self {
+        Property { operator, value }
+    }
+
+    /// Return the present operator in the property
+    pub fn operator(&self) -> Operator {
+        self.operator
+    }
+
+    /// Return a reference to the value
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    /// Convert the property into the value
+    pub fn into_value(self) -> T {
+        self.value
+    }
+}
 
 /// A structure to deserialize text data into Rust values.
 ///
@@ -110,27 +217,62 @@ impl TextDeserializer {
         T: Deserialize<'a>,
         E: Encoding + Clone,
     {
-        let reader = Reader::Object(ObjectReader::new(tape, encoding));
-        let mut root = InternalDeserializer { readers: reader };
-        Ok(T::deserialize(&mut root)?)
+        let config = DeserializationConfig;
+        let reader = ObjectReader::new(tape, encoding);
+        let root = RootDeserializer { reader, config };
+        Ok(T::deserialize(root)?)
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DeserializationConfig;
 
 #[derive(Debug)]
-struct InternalDeserializer<'de, 'tokens, E> {
-    readers: Reader<'de, 'tokens, E>,
+struct RootDeserializer<'de, 'tokens, E> {
+    reader: ObjectReader<'de, 'tokens, E>,
+    config: DeserializationConfig,
 }
 
-impl<'de, 'tokens, E> InternalDeserializer<'de, 'tokens, E>
+impl<'de, 'tokens, E> de::Deserializer<'de> for RootDeserializer<'de, 'tokens, E>
 where
-    E: Clone,
+    E: Encoding + Clone,
 {
-    fn reader(&self) -> Reader<'de, 'tokens, E> {
-        self.readers.clone()
+    type Error = DeserializeError;
+
+    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "root deserializer can only work with key value pairs",
+            )),
+        })
     }
 
-    fn reader_ref(&self) -> &Reader<'de, 'tokens, E> {
-        &self.readers
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_map(MapAccess::new(self.reader, self.config))
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_map(visitor)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct enum ignored_any identifier
     }
 }
 
@@ -143,43 +285,165 @@ macro_rules! visit_str {
     };
 }
 
-impl<'a, 'de, 'tokens, E> de::Deserializer<'de> for &'a mut InternalDeserializer<'de, 'tokens, E>
+struct MapAccess<'de, 'tokens, E> {
+    fields: FieldsIter<'de, 'tokens, E>,
+    config: DeserializationConfig,
+    value: Option<OperatorValue<'de, 'tokens, E>>,
+    at_remainder: bool,
+}
+
+impl<'de, 'tokens, E> MapAccess<'de, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    fn new(reader: ObjectReader<'de, 'tokens, E>, config: DeserializationConfig) -> Self {
+        MapAccess {
+            fields: reader.fields(),
+            config,
+            value: None,
+            at_remainder: false,
+        }
+    }
+}
+
+impl<'de, 'tokens, E> de::MapAccess<'de> for MapAccess<'de, 'tokens, E>
 where
     E: Encoding + Clone,
 {
     type Error = DeserializeError;
 
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: DeserializeSeed<'de>,
+    {
+        if let Some((key, op, value)) = self.fields.next() {
+            self.value = Some(OperatorValue {
+                operator: op.unwrap_or(Operator::Equal),
+                value,
+            });
+
+            seed.deserialize(ValueDeserializer {
+                kind: ValueKind::Scalar(key),
+                config: self.config,
+            })
+            .map(Some)
+        } else if !self.at_remainder && !self.fields.remainder().is_empty() {
+            self.at_remainder = true;
+            seed.deserialize(StaticDeserializer("remainder")).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        if !self.at_remainder {
+            let value = self.value.take().unwrap();
+            seed.deserialize(ValueDeserializer {
+                kind: ValueKind::OperatorValue(value),
+                config: self.config,
+            })
+        } else {
+            let remainder = self.fields.remainder();
+            seed.deserialize(ValueDeserializer {
+                kind: ValueKind::Array(remainder),
+                config: self.config,
+            })
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        let (lower, upper) = self.fields.size_hint();
+        Some(upper.unwrap_or(lower))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OperatorValue<'data, 'tokens, E> {
+    operator: Operator,
+    value: ValueReader<'data, 'tokens, E>,
+}
+
+#[derive(Debug, Clone)]
+enum ValueKind<'data, 'tokens, E> {
+    OperatorValue(OperatorValue<'data, 'tokens, E>),
+    Value(ValueReader<'data, 'tokens, E>),
+    Scalar(ScalarReader<'data, E>),
+    Array(ArrayReader<'data, 'tokens, E>),
+}
+
+struct ValueDeserializer<'de, 'tokens, E> {
+    kind: ValueKind<'de, 'tokens, E>,
+    config: DeserializationConfig,
+}
+
+impl<'de, 'tokens, E> ValueDeserializer<'de, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    fn reader(&self) -> Reader<'de, 'tokens, E> {
+        match self.kind.clone() {
+            ValueKind::OperatorValue(x) => Reader::Value(x.value),
+            ValueKind::Value(x) => Reader::Value(x),
+            ValueKind::Scalar(x) => Reader::Scalar(x),
+            ValueKind::Array(x) => Reader::Array(x),
+        }
+    }
+
+    fn value_reader(&self) -> Option<ValueReader<'de, 'tokens, E>> {
+        match self.kind.clone() {
+            ValueKind::OperatorValue(x) => Some(x.value),
+            ValueKind::Value(x) => Some(x),
+            _ => None,
+        }
+    }
+}
+
+macro_rules! deserialize_any_value {
+    ($self: expr, $x: expr, $visitor: expr) => {
+        match $x.token() {
+            TextToken::Quoted(s) | TextToken::Unquoted(s) => {
+                visit_str!($x.decode(s.as_bytes()), $visitor)
+            }
+            TextToken::Header(_) => {
+                // This is a bit of a hack to avoid overflows on flattened
+                // structs, which already have poor deserialization support,
+                // but this at least allows for forward progress in the
+                // cases where flattened structs can be used.
+                if matches!($x.next(), Some(TextToken::Object { .. })) {
+                    $self.deserialize_map($visitor)
+                } else {
+                    $self.deserialize_seq($visitor)
+                }
+            }
+            TextToken::Array { .. } => $self.deserialize_seq($visitor),
+            TextToken::Object { .. } => $self.deserialize_map($visitor),
+            _ => Err(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "unsupported value reader token",
+                )),
+            }),
+        }
+    };
+}
+
+impl<'de, 'tokens, E> de::Deserializer<'de> for ValueDeserializer<'de, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    type Error = DeserializeError;
+
+    fn deserialize_any<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        match &mut self.readers {
-            Reader::Scalar(x) => visit_str!(x.read_str(), visitor),
-            Reader::Value(x) => match x.token() {
-                TextToken::Quoted(s) | TextToken::Unquoted(s) => {
-                    visit_str!(x.decode(s.as_bytes()), visitor)
-                }
-                TextToken::Header(_) => {
-                    // This is a bit of a hack to avoid overflows on flattened
-                    // structs, which already have poor deserialization support,
-                    // but this at least allows for forward progress in the
-                    // cases where flattened structs can be used.
-                    if matches!(x.next(), Some(TextToken::Object { .. })) {
-                        self.deserialize_map(visitor)
-                    } else {
-                        self.deserialize_seq(visitor)
-                    }
-                }
-                TextToken::Array { .. } => self.deserialize_seq(visitor),
-                TextToken::Object { .. } => self.deserialize_map(visitor),
-                _ => Err(DeserializeError {
-                    kind: DeserializeErrorKind::Unsupported(String::from(
-                        "unsupported value reader token",
-                    )),
-                }),
-            },
-            Reader::Object(_) => self.deserialize_map(visitor),
-            Reader::Array(_) => self.deserialize_seq(visitor),
+        match &mut self.kind {
+            ValueKind::OperatorValue(x) => deserialize_any_value!(self, x.value, visitor),
+            ValueKind::Value(x) => deserialize_any_value!(self, x, visitor),
+            ValueKind::Scalar(x) => visit_str!(x.read_str(), visitor),
+            ValueKind::Array(_) => self.deserialize_seq(visitor),
         }
     }
 
@@ -194,21 +458,21 @@ where
     where
         V: Visitor<'de>,
     {
-        visit_str!(self.reader_ref().read_str()?, visitor)
+        visit_str!(self.reader().read_str()?, visitor)
     }
 
     fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_borrowed_bytes(self.reader_ref().read_scalar()?.as_bytes())
+        visitor.visit_borrowed_bytes(self.reader().read_scalar()?.as_bytes())
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_byte_buf(self.reader_ref().read_scalar()?.as_bytes().to_vec())
+        visitor.visit_byte_buf(self.reader().read_scalar()?.as_bytes().to_vec())
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -222,14 +486,14 @@ where
     where
         V: Visitor<'de>,
     {
-        visitor.visit_string(self.reader_ref().read_string()?)
+        visitor.visit_string(self.reader().read_string()?)
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_bool(self.reader_ref().read_scalar()?.to_bool()?)
+        visitor.visit_bool(self.reader().read_scalar()?.to_bool()?)
     }
 
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -257,7 +521,7 @@ where
     where
         V: Visitor<'de>,
     {
-        visitor.visit_i64(self.reader_ref().read_scalar()?.to_i64()?)
+        visitor.visit_i64(self.reader().read_scalar()?.to_i64()?)
     }
 
     fn deserialize_i128<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -292,7 +556,7 @@ where
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u64(self.reader_ref().read_scalar()?.to_u64()?)
+        visitor.visit_u64(self.reader().read_scalar()?.to_u64()?)
     }
 
     fn deserialize_u128<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -306,7 +570,7 @@ where
     where
         V: Visitor<'de>,
     {
-        visitor.visit_f64(self.reader_ref().read_scalar()?.to_f64()?)
+        visitor.visit_f64(self.reader().read_scalar()?.to_f64()?)
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -320,20 +584,15 @@ where
     where
         V: Visitor<'de>,
     {
-        match self.reader() {
-            Reader::Object(x) => {
-                let map = MapAccess::new(self, x);
-                visitor.visit_map(map)
-            }
-            Reader::Value(x) => {
-                let map = MapAccess::new(self, x.read_object()?);
-                visitor.visit_map(map)
-            }
-            _ => Err(DeserializeError {
+        if let Some(x) = self.value_reader() {
+            let map = MapAccess::new(x.read_object()?, self.config);
+            visitor.visit_map(map)
+        } else {
+            Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "can only deserialize an object as a map",
                 )),
-            }),
+            })
         }
     }
 
@@ -344,14 +603,14 @@ where
         match self.reader() {
             Reader::Value(x) => {
                 let map = SeqAccess {
-                    de: self,
+                    config: self.config,
                     values: x.read_array()?.values(),
                 };
                 visitor.visit_seq(map)
             }
             Reader::Array(x) => {
                 let map = SeqAccess {
-                    de: self,
+                    config: self.config,
                     values: x.values(),
                 };
                 visitor.visit_seq(map)
@@ -362,18 +621,6 @@ where
                 )),
             }),
         }
-    }
-
-    fn deserialize_struct<V>(
-        self,
-        _name: &'static str,
-        _fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_map(visitor)
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -467,36 +714,40 @@ where
 
         visitor.visit_enum(VariantAccess {
             values: tmp.values(),
-            de: self,
+            config: self.config,
         })
     }
-}
 
-struct MapAccess<'a, 'de, 'tokens, E> {
-    de: &'a mut InternalDeserializer<'de, 'tokens, E>,
-    fields: FieldsIter<'de, 'tokens, E>,
-    value: Option<ValueReader<'de, 'tokens, E>>,
-    at_remainder: bool,
-}
-
-impl<'a, 'de: 'a, 'tokens, E> MapAccess<'a, 'de, 'tokens, E>
-where
-    E: Encoding + Clone,
-{
-    fn new(
-        de: &'a mut InternalDeserializer<'de, 'tokens, E>,
-        reader: ObjectReader<'de, 'tokens, E>,
-    ) -> Self {
-        MapAccess {
-            de,
-            fields: reader.fields(),
-            value: None,
-            at_remainder: false,
+    fn deserialize_struct<V>(
+        self,
+        name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if name == "_internal_jomini_property" {
+            if let ValueKind::OperatorValue(x) = self.kind {
+                return visitor.visit_map(PropertyMap {
+                    value: x.clone(),
+                    config: self.config,
+                    state: 0,
+                });
+            }
         }
+
+        self.deserialize_map(visitor)
     }
 }
 
-impl<'a, 'de: 'a, 'tokens, E> de::MapAccess<'de> for MapAccess<'a, 'de, 'tokens, E>
+struct PropertyMap<'de, 'tokens, E> {
+    value: OperatorValue<'de, 'tokens, E>,
+    config: DeserializationConfig,
+    state: usize,
+}
+
+impl<'de, 'tokens, E> de::MapAccess<'de> for PropertyMap<'de, 'tokens, E>
 where
     E: Encoding + Clone,
 {
@@ -506,17 +757,10 @@ where
     where
         K: DeserializeSeed<'de>,
     {
-        if let Some((key, _op, value)) = self.fields.next() {
-            self.value = Some(value);
-            let old = std::mem::replace(&mut self.de.readers, Reader::Scalar(key));
-            let res = seed.deserialize(&mut *self.de).map(Some);
-            let _ = std::mem::replace(&mut self.de.readers, old);
-            res
-        } else if !self.at_remainder && !self.fields.remainder().is_empty() {
-            self.at_remainder = true;
-            seed.deserialize(RemainderKeyDeserializer).map(Some)
-        } else {
-            Ok(None)
+        match self.state {
+            0 => seed.deserialize(StaticDeserializer("operator")).map(Some),
+            1 => seed.deserialize(StaticDeserializer("value")).map(Some),
+            _ => Ok(None),
         }
     }
 
@@ -524,33 +768,25 @@ where
     where
         V: DeserializeSeed<'de>,
     {
-        if !self.at_remainder {
-            let r = self.value.take().unwrap();
-            let old = std::mem::replace(&mut self.de.readers, Reader::Value(r));
-            let res = seed.deserialize(&mut *self.de);
-            let _ = std::mem::replace(&mut self.de.readers, old);
-            res
+        let old_state = self.state;
+        self.state += 1;
+        if old_state == 0 {
+            seed.deserialize(OperatorDeserializer(self.value.operator))
         } else {
-            let remainder = self.fields.remainder();
-            let old = std::mem::replace(&mut self.de.readers, Reader::Array(remainder));
-            let res = seed.deserialize(&mut *self.de);
-            let _ = std::mem::replace(&mut self.de.readers, old);
-            res
+            seed.deserialize(ValueDeserializer {
+                kind: ValueKind::Value(self.value.value.clone()),
+                config: self.config,
+            })
         }
-    }
-
-    fn size_hint(&self) -> Option<usize> {
-        let (lower, upper) = self.fields.size_hint();
-        Some(upper.unwrap_or(lower))
     }
 }
 
-struct SeqAccess<'a, 'de, 'tokens, E> {
-    de: &'a mut InternalDeserializer<'de, 'tokens, E>,
+struct SeqAccess<'de, 'tokens, E> {
+    config: DeserializationConfig,
     values: ValuesIter<'de, 'tokens, E>,
 }
 
-impl<'a, 'de: 'a, 'tokens, E> de::SeqAccess<'de> for SeqAccess<'a, 'de, 'tokens, E>
+impl<'de, 'tokens, E> de::SeqAccess<'de> for SeqAccess<'de, 'tokens, E>
 where
     E: Encoding + Clone,
 {
@@ -561,10 +797,11 @@ where
         T: DeserializeSeed<'de>,
     {
         if let Some(x) = self.values.next() {
-            let old = std::mem::replace(&mut self.de.readers, Reader::Value(x));
-            let res = seed.deserialize(&mut *self.de).map(Some);
-            let _ = std::mem::replace(&mut self.de.readers, old);
-            res
+            seed.deserialize(ValueDeserializer {
+                config: self.config,
+                kind: ValueKind::Value(x),
+            })
+            .map(Some)
         } else {
             Ok(None)
         }
@@ -576,31 +813,37 @@ where
     }
 }
 
-struct VariantAccess<'a, 'de, 'tokens, E> {
-    de: &'a mut InternalDeserializer<'de, 'tokens, E>,
+struct VariantAccess<'de, 'tokens, E> {
+    config: DeserializationConfig,
     values: ValuesIter<'de, 'tokens, E>,
 }
 
-// There probably is a way to type this out, but I'm a bit tired this
-// morning so a macro it is
-macro_rules! enum_access {
-    ($self:expr, $fun:expr) => {
-        if let Some(x) = $self.values.next() {
-            let old = std::mem::replace(&mut $self.de.readers, Reader::Value(x));
-            let val = $fun()?;
-            let _ = std::mem::replace(&mut $self.de.readers, old);
-            Ok(val)
-        } else {
-            Err(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from(
-                    "unexpected value for enum variant seed",
-                )),
-            })
-        }
-    };
+impl<'de, 'tokens, E> VariantAccess<'de, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    fn next_value(&mut self) -> Result<ValueKind<'de, 'tokens, E>, DeserializeError> {
+        let val = self.values.next().ok_or_else(|| DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unexpected none for enum variant seed",
+            )),
+        })?;
+
+        Ok(ValueKind::Value(val))
+    }
+
+    fn next_deserializer(
+        &mut self,
+    ) -> Result<ValueDeserializer<'de, 'tokens, E>, DeserializeError> {
+        let value = self.next_value()?;
+        Ok(ValueDeserializer {
+            kind: value,
+            config: self.config,
+        })
+    }
 }
 
-impl<'a, 'de: 'a, 'tokens, E> de::EnumAccess<'de> for VariantAccess<'a, 'de, 'tokens, E>
+impl<'de, 'tokens, E> de::EnumAccess<'de> for VariantAccess<'de, 'tokens, E>
 where
     E: Encoding + Clone,
 {
@@ -611,36 +854,33 @@ where
     where
         V: de::DeserializeSeed<'de>,
     {
-        let val = enum_access!(self, || seed.deserialize(&mut *self.de))?;
+        let val = seed.deserialize(self.next_deserializer()?)?;
         Ok((val, self))
     }
 }
 
-impl<'a, 'de: 'a, 'tokens, E> de::VariantAccess<'de> for VariantAccess<'a, 'de, 'tokens, E>
+impl<'de, 'tokens, E> de::VariantAccess<'de> for VariantAccess<'de, 'tokens, E>
 where
     E: Encoding + Clone,
 {
     type Error = DeserializeError;
 
     fn unit_variant(mut self) -> Result<(), Self::Error> {
-        enum_access!(self, || de::Deserialize::deserialize(&mut *self.de))
+        de::Deserialize::deserialize(self.next_deserializer()?)
     }
 
     fn newtype_variant_seed<T>(mut self, seed: T) -> Result<T::Value, Self::Error>
     where
         T: de::DeserializeSeed<'de>,
     {
-        enum_access!(self, || seed.deserialize(&mut *self.de))
+        seed.deserialize(self.next_deserializer()?)
     }
 
     fn tuple_variant<V>(mut self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        enum_access!(self, || de::Deserializer::deserialize_seq(
-            &mut *self.de,
-            visitor
-        ))
+        de::Deserializer::deserialize_seq(self.next_deserializer()?, visitor)
     }
 
     fn struct_variant<V>(
@@ -651,24 +891,37 @@ where
     where
         V: de::Visitor<'de>,
     {
-        enum_access!(self, || de::Deserializer::deserialize_struct(
-            &mut *self.de,
-            "",
-            fields,
-            visitor
-        ))
+        de::Deserializer::deserialize_struct(self.next_deserializer()?, "", fields, visitor)
     }
 }
 
-struct RemainderKeyDeserializer;
+struct StaticDeserializer(&'static str);
 
-impl<'de> de::Deserializer<'de> for RemainderKeyDeserializer {
+impl<'de> de::Deserializer<'de> for StaticDeserializer {
     type Error = DeserializeError;
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_borrowed_str("remainder")
+        visitor.visit_borrowed_str(self.0)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+struct OperatorDeserializer(Operator);
+
+impl<'de> de::Deserializer<'de> for OperatorDeserializer {
+    type Error = DeserializeError;
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_borrowed_str(self.0.symbol())
     }
 
     serde::forward_to_deserialize_any! {
@@ -1610,6 +1863,51 @@ mod tests {
         #[derive(Deserialize, Debug, PartialEq)]
         struct MyStruct {
             pop_happiness: f64,
+        }
+    }
+
+    #[test]
+    fn test_deserialize_operator() {
+        let data = b"num_cities < 0.10";
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                num_cities: Property::new(Operator::LessThan, 0.1)
+            }
+        );
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            num_cities: Property<f64>,
+        }
+    }
+
+    #[test]
+    fn test_deserialize_operator2() {
+        let data = b"modifier = { factor = 2 num_communications > 2 }";
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                modifier: Modifier {
+                    factor: 2,
+                    num_communications: Property::new(Operator::GreaterThan, 2)
+                }
+            }
+        );
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct Modifier {
+            factor: i32,
+            num_communications: Property<u8>,
+        }
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            modifier: Modifier,
         }
     }
 }
