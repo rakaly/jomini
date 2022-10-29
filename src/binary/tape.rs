@@ -286,32 +286,27 @@ impl<'a, 'b> ParserState<'a, 'b> {
                 }
 
                 OPEN => {
-                    if state == ParseState::Key {
-                        if self.token_tape.is_empty() {
-                            return Err(self.open_empty_err(data));
-                        }
-
+                    if state != ParseState::Key {
+                        let ind = self.token_tape.len();
+                        grand_ind = parent_ind;
+                        self.token_tape.alloc().init(BinaryToken::Array(parent_ind));
+                        parent_ind = ind;
+                        state = ParseState::OpenFirst;
+                        data = d;
+                    } else if self.token_tape.is_empty() {
+                        return Err(self.open_empty_err(data));
+                    } else {
                         // Skip empty containers if they occur in the key
                         // position eg: `a={b=c {} d=1}`. These occur in every
                         // EU4 save, even in 1.34.
-                        if let Some((nd, b)) = self.parse_next_id_opt(d) {
-                            if b == END {
-                                data = nd;
-                                continue;
+                        match self.parse_next_id_opt(d) {
+                            Some((nd, b)) if b == END => {
+                                data = nd
                             }
+                            Some(_) => return Err(self.empty_object_err(data)),
+                            None => return Err(Error::eof())
                         }
-
-                        // No test case or save reaches here, so I'm unsure of
-                        // the desired behavior. Perhaps an opportunity for optimization
-                        // unreachable!()
                     }
-
-                    let ind = self.token_tape.len();
-                    grand_ind = parent_ind;
-                    self.token_tape.alloc().init(BinaryToken::Array(parent_ind));
-                    parent_ind = ind;
-                    state = ParseState::OpenFirst;
-                    data = d;
                 }
                 END => {
                     // Skip extraneous end tokens in the root object
@@ -478,6 +473,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
     fn equal_key_error(&mut self, data: &[u8]) -> Error {
         Error::new(ErrorKind::InvalidSyntax {
             msg: String::from("EQUAL not valid for a key"),
+            offset: self.offset(data),
+        })
+    }
+
+    #[inline(never)]
+    #[cold]
+    fn empty_object_err(&mut self, data: &[u8]) -> Error {
+        Error::new(ErrorKind::InvalidSyntax {
+            msg: String::from("expected an empty object"),
             offset: self.offset(data),
         })
     }
