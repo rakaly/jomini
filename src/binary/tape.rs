@@ -307,12 +307,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     }
                 }
                 END => {
-                    // Skip extraneous end tokens in the root object
-                    if parent_ind == 0 {
-                        data = d;
-                        continue;
-                    }
-
                     match state {
                         ParseState::KeyValueSeparator => {
                             // `a={b=c 10}`
@@ -328,12 +322,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     // Update the container token with now discovered location
                     // of when the container ends
                     let end_idx = self.token_tape.len();
-                    let parent_elem = self.token_tape.get_mut(parent_ind).ok_or_else(Error::eof)?;
-                    *parent_elem = if let BinaryToken::Array(_) = parent_elem {
-                        BinaryToken::Array(end_idx)
-                    } else {
-                        BinaryToken::Object(end_idx)
-                    };
+                    match self.token_tape.get_mut(parent_ind) {
+                        Some(x @ BinaryToken::Array(_)) => *x = BinaryToken::Array(end_idx),
+                        Some(x @ BinaryToken::Object(_)) => *x = BinaryToken::Object(end_idx),
+                        _ => return Err(self.end_location_error(data)),
+                    }
 
                     // And restore state based on the next ancestor
                     let (ngrand, nstate) = match self.token_tape.get(grand_ind) {
@@ -465,6 +458,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
     fn equal_key_error(&mut self, data: &[u8]) -> Error {
         Error::new(ErrorKind::InvalidSyntax {
             msg: String::from("EQUAL not valid for a key"),
+            offset: self.offset(data),
+        })
+    }
+
+    #[inline(never)]
+    #[cold]
+    fn end_location_error(&mut self, data: &[u8]) -> Error {
+        Error::new(ErrorKind::InvalidSyntax {
+            msg: String::from("END token must be accompanies by an array or object token"),
             offset: self.offset(data),
         })
     }
