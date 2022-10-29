@@ -300,11 +300,9 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         // position eg: `a={b=c {} d=1}`. These occur in every
                         // EU4 save, even in 1.34.
                         match self.parse_next_id_opt(d) {
-                            Some((nd, b)) if b == END => {
-                                data = nd
-                            }
+                            Some((nd, b)) if b == END => data = nd,
                             Some(_) => return Err(self.empty_object_err(data)),
-                            None => return Err(Error::eof())
+                            None => return Err(Error::eof()),
                         }
                     }
                 }
@@ -361,18 +359,12 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         state = ParseState::ObjectValue;
                     } else if state == ParseState::OpenSecond {
                         data = d;
-                        let elem = self.token_tape.get_mut(parent_ind).ok_or_else(Error::eof)?;
+                        let elem = unsafe { self.token_tape.get_unchecked_mut(parent_ind) };
                         *elem = BinaryToken::Object(grand_ind);
                         state = ParseState::ObjectValue;
                     } else if state == ParseState::ArrayValue {
-                        let last = match self.token_tape.last() {
-                            Some(x) => x,
-                            None => {
-                                debug_assert!(false, "impossible for token tape to be empty here");
-                                unsafe { std::hint::unreachable_unchecked() };
-                            }
-                        };
-
+                        self.token_tape.reserve(2);
+                        let last = unsafe { self.token_tape.pop().unwrap_unchecked() };
                         if matches!(last, BinaryToken::Array(_) | BinaryToken::End(_)) {
                             return Err(self.equal_in_array_err(data));
                         }
@@ -380,37 +372,37 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         // before we enter mixed mode, let's make sure we're not
                         // proceeded by only empty objects eg: `a={{} {} c=d}`. Only
                         // found in a smattering of EU4 saves
-                        let all_empty_objects = self
+                        let mut pairs = self
                             .token_tape
                             .get(parent_ind + 1..)
                             .unwrap_or_default()
-                            .chunks_exact(2)
-                            .all(|tokens| {
-                                if let BinaryToken::Array(x) = tokens[0] {
-                                    if let BinaryToken::End(y) = tokens[1] {
-                                        return x == y + 1;
-                                    }
-                                }
-                                false
+                            .chunks_exact(2);
+
+                        let only_empties = pairs.len() > 0
+                            && pairs.all(|tokens| {
+                                matches!(tokens, [BinaryToken::Array(x), BinaryToken::End(y)] if *x == y + 1)
                             });
 
-                        if all_empty_objects {
-                            if let Some(stashed) = self.token_tape.pop() {
-                                self.token_tape.truncate(parent_ind);
-                                self.token_tape.alloc().init(BinaryToken::Object(grand_ind));
-                                self.token_tape.alloc().init(stashed);
-                                data = d;
-                                state = ParseState::ObjectValue;
-                                continue;
-                            }
-                        }
-
-                        if !mixed_mode {
-                            self.mixed_insert1();
+                        data = d;
+                        let ptr = self.token_tape.as_mut_ptr();
+                        if only_empties {
+                            unsafe { ptr.add(parent_ind).write(BinaryToken::Object(grand_ind)) };
+                            unsafe { ptr.add(parent_ind + 1).write(last) };
+                            unsafe { self.token_tape.set_len(parent_ind + 2) }
+                            state = ParseState::ObjectValue;
+                        } else if mixed_mode {
+                            let len = self.token_tape.len();
+                            unsafe { ptr.add(len).write(last) };
+                            unsafe { ptr.add(len + 1).write(BinaryToken::Equal) };
+                            unsafe { self.token_tape.set_len(len + 2) }
+                        } else {
+                            let len = self.token_tape.len();
+                            unsafe { ptr.add(len).write(BinaryToken::MixedContainer) };
+                            unsafe { ptr.add(len + 1).write(last) };
+                            unsafe { ptr.add(len + 2).write(BinaryToken::Equal) };
+                            unsafe { self.token_tape.set_len(len + 3) }
                             mixed_mode = true;
                         }
-                        self.token_tape.alloc().init(BinaryToken::Equal);
-                        data = d;
                     } else {
                         return Err(self.equal_key_error(data));
                     }
