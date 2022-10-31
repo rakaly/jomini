@@ -227,13 +227,23 @@ impl<'a, 'b> ParserState<'a, 'b> {
         unsafe { core::mem::transmute(state_num) }
     }
 
+    #[inline]
+    unsafe fn set_parent_to_object(&mut self, parent_ind: usize) {
+        let x = self.token_tape.get_unchecked_mut(parent_ind);
+        if let BinaryToken::Array(end) = x {
+            *x = BinaryToken::Object(*end)
+        } else {
+            debug_assert!(false, "expected an array to be present");
+            core::hint::unreachable_unchecked();
+        }
+    }
+
     fn parse(&mut self) -> Result<(), Error> {
         let mut data = self.data;
         let mut state = ParseState::Key;
 
-        // tape index of the (grand-)parent container
+        // tape index of the parent container
         let mut parent_ind = 0;
-        let mut grand_ind = 0;
 
         // Whether the current parent container is both an object and array.
         // Unlike the text format, we only support one level of a mixed
@@ -288,7 +298,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
                 OPEN => {
                     if state != ParseState::Key {
                         let ind = self.token_tape.len();
-                        grand_ind = parent_ind;
                         self.token_tape.alloc().init(BinaryToken::Array(parent_ind));
                         parent_ind = ind;
                         state = ParseState::OpenFirst;
@@ -322,23 +331,29 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     // Update the container token with now discovered location
                     // of when the container ends
                     let end_idx = self.token_tape.len();
-                    match self.token_tape.get_mut(parent_ind) {
-                        Some(x @ BinaryToken::Array(_)) => *x = BinaryToken::Array(end_idx),
-                        Some(x @ BinaryToken::Object(_)) => *x = BinaryToken::Object(end_idx),
+                    let grand_ind;
+                    match self.token_tape.get(parent_ind) {
+                        Some(BinaryToken::Array(end)) => {
+                            grand_ind = *end;
+                            self.token_tape[parent_ind] = BinaryToken::Array(end_idx)
+                        }
+                        Some(BinaryToken::Object(end)) => {
+                            grand_ind = *end;
+                            self.token_tape[parent_ind] = BinaryToken::Object(end_idx)
+                        }
                         _ => return Err(self.end_location_error(data)),
                     }
 
                     // And restore state based on the next ancestor
-                    let (ngrand, nstate) = match self.token_tape.get(grand_ind) {
-                        Some(BinaryToken::Array(x)) => (*x, ParseState::ArrayValue),
-                        Some(BinaryToken::Object(x)) => (*x, ParseState::Key),
-                        _ => (0, ParseState::Key),
+                    let nstate = match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                        BinaryToken::Array(_) => ParseState::ArrayValue,
+                        BinaryToken::Object(_) => ParseState::Key,
+                        _ => ParseState::Key,
                     };
 
                     state = nstate;
                     self.token_tape.alloc().init(BinaryToken::End(parent_ind));
                     parent_ind = grand_ind;
-                    grand_ind = ngrand;
                     mixed_mode = false;
                     data = d;
                 }
@@ -352,8 +367,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         state = ParseState::ObjectValue;
                     } else if state == ParseState::OpenSecond {
                         data = d;
-                        let elem = unsafe { self.token_tape.get_unchecked_mut(parent_ind) };
-                        *elem = BinaryToken::Object(grand_ind);
+                        unsafe { self.set_parent_to_object(parent_ind) }
                         state = ParseState::ObjectValue;
                     } else if state == ParseState::ArrayValue {
                         self.token_tape.reserve(2);
@@ -379,7 +393,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         data = d;
                         let ptr = self.token_tape.as_mut_ptr();
                         if only_empties {
-                            unsafe { ptr.add(parent_ind).write(BinaryToken::Object(grand_ind)) };
+                            unsafe { self.set_parent_to_object(parent_ind) }
                             unsafe { ptr.add(parent_ind + 1).write(last) };
                             unsafe { self.token_tape.set_len(parent_ind + 2) }
                             state = ParseState::ObjectValue;
