@@ -114,12 +114,18 @@ struct ParserState<'a, 'b> {
 #[repr(u8)]
 enum ParseState {
     ArrayValue = 0,
-    ObjectValue = 1,
-    Key = 2,
-    KeyValueSeparator = 4,
+
+    // Whether the current parent container is both an object and array.
+    // Unlike the text format, we only support one level of a mixed
+    // container for performance.
+    ArrayValueMixed = 2,
+
+    ObjectValue = 4,
+    Key = 8,
+    KeyValueSeparator = 16,
 
     // Need to convert current object into an array
-    ObjectToArray = 8,
+    ObjectToArray = 32,
 
     // Start of a container, TBD if array or object
     OpenFirst = 64,
@@ -223,8 +229,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
     #[inline(always)]
     fn next_state(state: ParseState) -> ParseState {
-        let state_num = (state as u8).wrapping_mul(2);
-        unsafe { core::mem::transmute(state_num) }
+        let num = state as u8;
+        let offset = num & 2;
+        let next = num.wrapping_mul(2) - offset;
+        unsafe { core::mem::transmute(next) }
     }
 
     #[inline]
@@ -245,19 +253,13 @@ impl<'a, 'b> ParserState<'a, 'b> {
         // tape index of the parent container
         let mut parent_ind = 0;
 
-        // Whether the current parent container is both an object and array.
-        // Unlike the text format, we only support one level of a mixed
-        // container for performance.
-        let mut mixed_mode = false;
-
         while let Some((d, token_id)) = self.parse_next_id_opt(data) {
             if state == ParseState::ObjectToArray {
                 // This branch should never be taken on any save. It represents
                 // `area = {a=b 10 20}`, which only happens in the text format.
                 // Instead of trapping it and erroring, we just switch to mixed
                 // mode like we do for the text format.
-                mixed_mode = true;
-                state = ParseState::ArrayValue;
+                state = ParseState::ArrayValueMixed;
                 self.mixed_insert2();
             }
 
@@ -354,7 +356,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     state = nstate;
                     self.token_tape.alloc().init(BinaryToken::End(parent_ind));
                     parent_ind = grand_ind;
-                    mixed_mode = false;
                     data = d;
                 }
                 RGB => {
@@ -362,13 +363,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     state = Self::next_state(state);
                 }
                 EQUAL => {
+                    data = d;
                     if state == ParseState::KeyValueSeparator {
-                        data = d;
                         state = ParseState::ObjectValue;
+                        continue; // prevents turning this into jump table
                     } else if state == ParseState::OpenSecond {
-                        data = d;
                         unsafe { self.set_parent_to_object(parent_ind) }
                         state = ParseState::ObjectValue;
+                    } else if state == ParseState::ArrayValueMixed {
+                        self.token_tape.alloc().init(BinaryToken::Equal);
                     } else if state == ParseState::ArrayValue {
                         self.token_tape.reserve(2);
                         let last = unsafe { self.token_tape.pop().unwrap_unchecked() };
@@ -390,25 +393,19 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                 matches!(tokens, [BinaryToken::Array(x), BinaryToken::End(y)] if *x == y + 1)
                             });
 
-                        data = d;
                         let ptr = self.token_tape.as_mut_ptr();
                         if only_empties {
                             unsafe { self.set_parent_to_object(parent_ind) }
                             unsafe { ptr.add(parent_ind + 1).write(last) };
                             unsafe { self.token_tape.set_len(parent_ind + 2) }
                             state = ParseState::ObjectValue;
-                        } else if mixed_mode {
-                            let len = self.token_tape.len();
-                            unsafe { ptr.add(len).write(last) };
-                            unsafe { ptr.add(len + 1).write(BinaryToken::Equal) };
-                            unsafe { self.token_tape.set_len(len + 2) }
                         } else {
                             let len = self.token_tape.len();
                             unsafe { ptr.add(len).write(BinaryToken::MixedContainer) };
                             unsafe { ptr.add(len + 1).write(last) };
                             unsafe { ptr.add(len + 2).write(BinaryToken::Equal) };
                             unsafe { self.token_tape.set_len(len + 3) }
-                            mixed_mode = true;
+                            state = ParseState::ArrayValueMixed;
                         }
                     } else {
                         return Err(self.equal_key_error(data));
@@ -572,7 +569,7 @@ mod tests {
         let err = BinaryTape::from_slice(&data[..]).unwrap_err();
         match err.kind() {
             ErrorKind::InvalidSyntax { offset, .. } => {
-                assert_eq!(*offset, 6);
+                assert_eq!(*offset, 8);
             }
             _ => assert!(false),
         }
@@ -581,7 +578,7 @@ mod tests {
         let err = BinaryTape::from_slice(&data2[..]).unwrap_err();
         match err.kind() {
             ErrorKind::InvalidSyntax { offset, .. } => {
-                assert_eq!(*offset, 4);
+                assert_eq!(*offset, 6);
             }
             _ => assert!(false),
         }
