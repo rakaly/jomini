@@ -311,7 +311,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         // position eg: `a={b=c {} d=1}`. These occur in every
                         // EU4 save, even in 1.34.
                         match self.parse_next_id_opt(d).ok_or_else(Error::eof)? {
-                            (nd, b) if b == END => data = nd,
+                            (nd, END) => data = nd,
                             _ => return Err(self.empty_object_err(data)),
                         }
                     }
