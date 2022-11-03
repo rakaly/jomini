@@ -637,6 +637,7 @@ impl<'data, 'tokens, E> ValueReader<'data, 'tokens, E> {
         &self.tokens[self.value_ind]
     }
 
+    #[cfg(feature = "derive")]
     pub(crate) fn next(&mut self) -> Option<&TextToken<'data>> {
         self.value_ind += 1;
         self.tokens.get(self.value_ind)
