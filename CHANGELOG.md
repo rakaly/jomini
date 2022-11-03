@@ -1,3 +1,10 @@
+## v0.20.1 - 2022-11-02
+
+- Add `Property<T>` for plaintext deserialization that will capture field operators
+- Expose `PdsDateFormatter` constructor for external date wrappers
+- Expose `RawDate::from_binary`
+- Up to 20% thoughput increase in binary parsing
+
 ## v0.20.0 - 2022-10-23
 
 Esoteric text syntax where a container is both an array and an object is supported:
