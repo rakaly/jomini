@@ -24,7 +24,7 @@ jomini_derive = { path = "jomini_derive", version = "^0.2.2", optional = true }
 
 [features]
 default = ["derive"]
-derive = ["serde", "jomini_derive"]
+derive = ["serde/derive", "jomini_derive"]
 json = ["serde", "serde_json"]
 
 [dev-dependencies]
@@ -33,7 +33,6 @@ encoding_rs = "0.8"
 criterion = "0.3"
 quickcheck = "1"
 quickcheck_macros = "1"
-serde = { version = "1", features = ["derive"] }
 flate2 = "1"
 
 [[bin]]
