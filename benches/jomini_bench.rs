@@ -160,6 +160,17 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
                     .unwrap();
             })
         });
+
+        if *game == "eu4" {
+            group.bench_function(BenchmarkId::new("binary", "eu4-2"), |b| {
+                let mut tape = BinaryTape::default();
+                b.iter(|| {
+                    BinaryTapeParser
+                        .parse_eu4_slice_into_tape(data.as_slice(), &mut tape)
+                        .unwrap();
+                })
+            });
+        }
     }
 
     group.finish();
