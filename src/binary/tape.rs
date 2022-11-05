@@ -664,7 +664,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     data = d;
                     if state == ParseState::KeyValueSeparator {
                         state = ParseState::ObjectValue;
-                        continue; // hack to prevent jump table. 10-14% perf
+                        continue;
                     } else if state == ParseState::ArrayValueMixed {
                         self.token_tape.alloc().init(BinaryToken::Equal);
                     } else if state == ParseState::ArrayValue {
