@@ -91,7 +91,11 @@ impl BinaryTapeParser {
         let token_tape = &mut tape.token_tape;
         token_tape.clear();
 
-        token_tape.reserve(data.len() / 5);
+        token_tape.reserve((data.len() / 5).max(10));
+
+        // Write to the first element so we can assume it is initialized
+        unsafe { token_tape.as_mut_ptr().write(BinaryToken::Equal) };
+
         let mut state = ParserState {
             parent_ind: 0,
             data,
@@ -99,7 +103,7 @@ impl BinaryTapeParser {
             token_tape,
         };
 
-        parse_object_key(&mut state)?;
+        parse_object_key::<false>(&mut state)?;
         Ok(())
     }
 }
@@ -123,67 +127,107 @@ fn parse_next_id<'a>(state: &mut ParserState) -> Option<u16> {
 }
 
 #[inline]
-fn parse_object_key(state: &mut ParserState) -> Result<(), Error> {
+fn parse_next_id_opt<'a, 'b>(state: &ParserState<'a, 'b>) -> Option<(&'a [u8], u16)> {
+    match get_split::<2>(state.data) {
+        Some((head, rest)) => Some((rest, u16::from_le_bytes(head))),
+        _ => None,
+    }
+}
+
+#[inline]
+fn is_token<const IS_EU4: bool>(token_id: u16) -> bool {
+    if IS_EU4 {
+        // masks out F64
+        (token_id & 0xFF7E) > UNQUOTED_STRING || token_id == 0xb
+    } else {
+        let is_low_token = matches!(token_id, 0xb | 0x15 | 0x16);
+        (token_id > UNQUOTED_STRING && matches!(token_id, F64 | RGB | U64)) || is_low_token
+    }
+}
+
+#[inline]
+fn parse_object_key<const IS_EU4: bool>(state: &mut ParserState) -> Result<(), Error> {
     match parse_next_id(state) {
-        Some(U32) => parse_u32(state).and_then(|_| parse_object_equal(state)),
-        Some(U64) => parse_u64(state).and_then(|_| parse_object_equal(state)),
-        Some(I32) => parse_i32(state).and_then(|_| parse_object_equal(state)),
-        Some(BOOL) => parse_bool(state).and_then(|_| parse_object_equal(state)),
-        Some(QUOTED_STRING) => parse_quoted(state).and_then(|_| parse_object_equal(state)),
-        Some(UNQUOTED_STRING) => parse_unquoted(state).and_then(|_| parse_object_equal(state)),
-        Some(F32) => parse_f32(state).and_then(|_| parse_object_equal(state)),
-        Some(F64) => parse_f64(state).and_then(|_| parse_object_equal(state)),
-        Some(RGB) => Err(equal_key_error(state)),
-        Some(OPEN) => {
-            if state.token_tape.is_empty() {
-                Err(open_empty_err(state))
+        Some(token_id) => {
+            if is_token::<IS_EU4>(token_id) {
+                state.token_tape.alloc().init(BinaryToken::Token(token_id));
+                parse_object_equal::<IS_EU4>(state)
+            } else if token_id == END {
+                parse_end::<IS_EU4>(state)
             } else {
-                // Skip empty containers, eg: `a={b=c {} d=1}`. These occur in
-                // every EU4 save, even in 1.34.
-                match parse_next_id(state) {
-                    Some(END) => parse_object_key(state),
-                    Some(_) => Err(empty_object_err(state)),
-                    None => Err(Error::eof()),
-                }
+                parse_object_key_cold::<IS_EU4>(token_id, state)
             }
-        }
-        Some(END) => parse_end(state),
-        Some(EQUAL) => Err(equal_key_error(state)),
-        Some(token) => {
-            state.token_tape.alloc().init(BinaryToken::Token(token));
-            parse_object_equal(state)
         }
         None if state.parent_ind == 0 => Ok(()),
         None => Err(Error::eof()),
     }
 }
 
-#[inline]
-fn parse_end(state: &mut ParserState) -> Result<(), Error> {
+fn parse_object_key_cold<const IS_EU4: bool>(
+    token_id: u16,
+    state: &mut ParserState,
+) -> Result<(), Error> {
+    if token_id <= UNQUOTED_STRING {
+        if token_id > 0xb && token_id <= QUOTED_STRING {
+            if token_id == I32 {
+                parse_i32(state).and_then(|_| parse_object_equal::<IS_EU4>(state))
+            } else if token_id == F32 {
+                parse_f32(state).and_then(|_| parse_object_equal::<IS_EU4>(state))
+            } else if token_id == QUOTED_STRING {
+                parse_quoted(state).and_then(|_| parse_object_equal::<IS_EU4>(state))
+            } else {
+                parse_bool(state).and_then(|_| parse_object_equal::<IS_EU4>(state))
+            }
+        } else if token_id == UNQUOTED_STRING {
+            parse_unquoted(state).and_then(|_| parse_object_equal::<IS_EU4>(state))
+        } else if token_id == U32 {
+            parse_u32(state).and_then(|_| parse_object_equal::<IS_EU4>(state))
+        } else if token_id == OPEN {
+            if state.token_tape.is_empty() {
+                Err(open_empty_err(state))
+            } else {
+                // Skip empty containers, eg: `a={b=c {} d=1}`. These occur in
+                // every EU4 save, even in 1.34.
+                match parse_next_id(state) {
+                    Some(END) => parse_object_equal::<IS_EU4>(state),
+                    Some(_) => Err(empty_object_err(state)),
+                    None => Err(Error::eof()),
+                }
+            }
+        } else if matches!(token_id, 0xb | 0x15 | 0x16) {
+            state.token_tape.alloc().init(BinaryToken::Token(token_id));
+            parse_object_equal::<IS_EU4>(state)
+        } else {
+            Err(unknown_token(state))
+        }
+    } else {
+        match token_id {
+            U64 if !IS_EU4 => parse_u64(state).and_then(|_| parse_object_equal::<IS_EU4>(state)),
+            F64 => parse_f64(state).and_then(|_| parse_object_equal::<IS_EU4>(state)),
+            RGB if !IS_EU4 => parse_rgb(state).and_then(|_| parse_object_equal::<IS_EU4>(state)),
+            x => {
+                state.token_tape.alloc().init(BinaryToken::Token(x));
+                parse_object_equal::<IS_EU4>(state)
+            }
+        }
+    }
+}
+
+// Not inlining this gives a nice perf boost
+fn parse_end<const IS_EU4: bool>(state: &mut ParserState) -> Result<(), Error> {
     // Update the container token with now discovered location
     // of when the container ends
     let end_idx = state.token_tape.len();
-    match state.token_tape.get_mut(state.parent_ind) {
-        Some(BinaryToken::Array(end)) => {
+    match unsafe { state.token_tape.get_unchecked_mut(state.parent_ind) } {
+        BinaryToken::Array(end) | BinaryToken::Object(end) => {
             let grand_ind = *end;
             *end = end_idx;
             let val = BinaryToken::End(state.parent_ind);
             state.token_tape.alloc().init(val);
             state.parent_ind = grand_ind;
             match unsafe { state.token_tape.get_unchecked(grand_ind) } {
-                BinaryToken::Array(_) => parse_array_val(state),
-                _ => parse_object_key(state),
-            }
-        }
-        Some(BinaryToken::Object(end)) => {
-            let grand_ind = *end;
-            *end = end_idx;
-            let val = BinaryToken::End(state.parent_ind);
-            state.token_tape.alloc().init(val);
-            state.parent_ind = grand_ind;
-            match unsafe { state.token_tape.get_unchecked(grand_ind) } {
-                BinaryToken::Array(_) => parse_array_val(state),
-                _ => parse_object_key(state),
+                BinaryToken::Array(_) => parse_array_val::<IS_EU4>(state),
+                _ => parse_object_key::<IS_EU4>(state),
             }
         }
         _ => Err(end_location_error(state)),
@@ -191,95 +235,184 @@ fn parse_end(state: &mut ParserState) -> Result<(), Error> {
 }
 
 #[inline]
-fn parse_object_equal(state: &mut ParserState) -> Result<(), Error> {
-    let next = parse_next_id(state);
-    if Some(EQUAL) == next {
-        parse_object_val(state)
+fn parse_object_equal<const IS_EU4: bool>(state: &mut ParserState) -> Result<(), Error> {
+    let next = parse_next_id(state).ok_or_else(Error::eof)?;
+    if next == EQUAL {
+        parse_object_val::<IS_EU4>(state)
     } else {
-        match next {
-            Some(U32) => parse_u32(state).and_then(|_| parse_object_mixed(state)),
-            Some(U64) => parse_u64(state).and_then(|_| parse_object_mixed(state)),
-            Some(I32) => parse_i32(state).and_then(|_| parse_object_mixed(state)),
-            Some(BOOL) => parse_bool(state).and_then(|_| parse_object_mixed(state)),
-            Some(QUOTED_STRING) => parse_quoted(state).and_then(|_| parse_object_mixed(state)),
-            Some(UNQUOTED_STRING) => parse_unquoted(state).and_then(|_| parse_object_mixed(state)),
-            Some(F32) => parse_f32(state).and_then(|_| parse_object_mixed(state)),
-            Some(F64) => parse_f64(state).and_then(|_| parse_object_mixed(state)),
-            Some(RGB) => parse_rgb(state).and_then(|_| parse_object_mixed(state)),
-            Some(OPEN) => {
-                let ind = state.token_tape.len();
-                let val = BinaryToken::Array(state.parent_ind);
-                state.token_tape.alloc().init(val);
-                state.parent_ind = ind;
-                parse_open1(state)
-            },
-            Some(END) => {
-                 // `a={b=c 10}`
-                let ind = state.token_tape.len();
-                state.token_tape.alloc().init(BinaryToken::MixedContainer);
-                state.token_tape.swap(ind, ind - 1);
-                parse_end(state)
-            },
-            Some(EQUAL) => Err(equal_key_error(state)),
-            Some(token) => {
-                state.token_tape.alloc().init(BinaryToken::Token(token));
-                parse_object_mixed(state)
-            }
-            None => Err(Error::eof()),
-        }
+        parse_object_equal_cold::<IS_EU4>(next, state)
     }
 }
 
-#[inline]
-fn parse_object_val(state: &mut ParserState) -> Result<(), Error> {
-    match parse_next_id(state) {
-        Some(U32) => parse_u32(state).and_then(|_| parse_object_key(state)),
-        Some(U64) => parse_u64(state).and_then(|_| parse_object_key(state)),
-        Some(I32) => parse_i32(state).and_then(|_| parse_object_key(state)),
-        Some(BOOL) => parse_bool(state).and_then(|_| parse_object_key(state)),
-        Some(QUOTED_STRING) => parse_quoted(state).and_then(|_| parse_object_key(state)),
-        Some(UNQUOTED_STRING) => parse_unquoted(state).and_then(|_| parse_object_key(state)),
-        Some(F32) => parse_f32(state).and_then(|_| parse_object_key(state)),
-        Some(F64) => parse_f64(state).and_then(|_| parse_object_key(state)),
-        Some(RGB) => parse_rgb(state).and_then(|_| parse_object_key(state)),
-        Some(OPEN) => {
+#[cold]
+fn parse_object_equal_cold<const IS_EU4: bool>(
+    next: u16,
+    state: &mut ParserState,
+) -> Result<(), Error> {
+    match next {
+        U32 => parse_u32(state).and_then(|_| parse_object_mixed::<IS_EU4>(state)),
+        U64 if !IS_EU4 => parse_u64(state).and_then(|_| parse_object_mixed::<IS_EU4>(state)),
+        I32 => parse_i32(state).and_then(|_| parse_object_mixed::<IS_EU4>(state)),
+        BOOL => parse_bool(state).and_then(|_| parse_object_mixed::<IS_EU4>(state)),
+        QUOTED_STRING => parse_quoted(state).and_then(|_| parse_object_mixed::<IS_EU4>(state)),
+        UNQUOTED_STRING => parse_unquoted(state).and_then(|_| parse_object_mixed::<IS_EU4>(state)),
+        F32 => parse_f32(state).and_then(|_| parse_object_mixed::<IS_EU4>(state)),
+        F64 => parse_f64(state).and_then(|_| parse_object_mixed::<IS_EU4>(state)),
+        RGB if !IS_EU4 => parse_rgb(state).and_then(|_| parse_object_mixed::<IS_EU4>(state)),
+        OPEN => {
             let ind = state.token_tape.len();
             let val = BinaryToken::Array(state.parent_ind);
             state.token_tape.alloc().init(val);
             state.parent_ind = ind;
-            parse_open1(state)
+            parse_open1::<IS_EU4>(state)
         }
-        Some(END) => Err(end_valid_err(state)),
-        Some(EQUAL) => Err(equal_key_error(state)),
-        Some(token) => {
+        END => {
+            // `a={b=c 10}`
+            let ind = state.token_tape.len();
+            state.token_tape.alloc().init(BinaryToken::MixedContainer);
+            state.token_tape.swap(ind, ind - 1);
+            parse_end::<IS_EU4>(state)
+        }
+        EQUAL => Err(equal_key_error(state)),
+        token => {
             state.token_tape.alloc().init(BinaryToken::Token(token));
-            parse_object_key(state)
+            parse_object_mixed::<IS_EU4>(state)
         }
-        None => Err(Error::eof()),
     }
 }
 
 #[inline]
-fn parse_array_val(state: &mut ParserState) -> Result<(), Error> {
-    match parse_next_id(state) {
-        Some(U32) => parse_u32(state).and_then(|_| parse_array_val(state)),
-        Some(U64) => parse_u64(state).and_then(|_| parse_array_val(state)),
-        Some(I32) => parse_i32(state).and_then(|_| parse_array_val(state)),
-        Some(BOOL) => parse_bool(state).and_then(|_| parse_array_val(state)),
-        Some(QUOTED_STRING) => parse_quoted(state).and_then(|_| parse_array_val(state)),
-        Some(UNQUOTED_STRING) => parse_unquoted(state).and_then(|_| parse_array_val(state)),
-        Some(F32) => parse_f32(state).and_then(|_| parse_array_val(state)),
-        Some(F64) => parse_f64(state).and_then(|_| parse_array_val(state)),
-        Some(RGB) => parse_rgb(state).and_then(|_| parse_array_val(state)),
-        Some(OPEN) => {
+fn parse_object_val<const IS_EU4: bool>(state: &mut ParserState) -> Result<(), Error> {
+    let token_id = parse_next_id(state).ok_or_else(Error::eof)?;
+    if token_id <= UNQUOTED_STRING {
+        if token_id == OPEN {
             let ind = state.token_tape.len();
             let val = BinaryToken::Array(state.parent_ind);
             state.token_tape.alloc().init(val);
             state.parent_ind = ind;
-            parse_open1(state)
+            parse_open1::<IS_EU4>(state)
+        } else if token_id > 0xb && token_id <= QUOTED_STRING {
+            if token_id == I32 {
+                parse_i32(state).and_then(|_| parse_object_key::<IS_EU4>(state))
+            } else if token_id == F32 {
+                parse_f32(state).and_then(|_| parse_object_key::<IS_EU4>(state))
+            } else if token_id == QUOTED_STRING {
+                parse_quoted(state).and_then(|_| parse_object_key::<IS_EU4>(state))
+            } else {
+                parse_bool(state).and_then(|_| parse_object_key::<IS_EU4>(state))
+            }
+        } else if token_id == UNQUOTED_STRING {
+            parse_unquoted(state).and_then(|_| parse_object_key::<IS_EU4>(state))
+        } else if token_id == U32 {
+            parse_u32(state).and_then(|_| parse_object_key::<IS_EU4>(state))
+        } else if matches!(token_id, 0xb | 0x15 | 0x16) {
+            state.token_tape.alloc().init(BinaryToken::Token(token_id));
+            parse_object_key::<IS_EU4>(state)
+        } else {
+            Err(unknown_token(state))
         }
-        Some(END) => parse_end(state),
-        Some(EQUAL) => {
+    } else {
+        match token_id {
+            U64 if !IS_EU4 => parse_u64(state).and_then(|_| parse_object_key::<IS_EU4>(state)),
+            F64 => parse_f64(state).and_then(|_| parse_object_key::<IS_EU4>(state)),
+            RGB if !IS_EU4 => parse_rgb(state).and_then(|_| parse_object_key::<IS_EU4>(state)),
+            x => {
+                state.token_tape.alloc().init(BinaryToken::Token(x));
+                parse_object_key::<IS_EU4>(state)
+            }
+        }
+    }
+}
+
+macro_rules! parse_array_val_typed {
+    ($name:ident, $token:expr, $fn:expr) => {
+        #[inline]
+        fn $name<const IS_EU4: bool>(state: &mut ParserState) -> Result<(), Error> {
+            let token_id = parse_next_id(state).ok_or_else(Error::eof)?;
+            if token_id == $token {
+                $fn(state).and_then(|_| $name::<IS_EU4>(state))
+            } else if token_id == END {
+                parse_end::<IS_EU4>(state)
+            } else {
+                parse_array_val_token::<IS_EU4>(token_id, state)
+            }
+        }
+    };
+}
+
+parse_array_val_typed!(parse_u32_array, U32, parse_u32);
+parse_array_val_typed!(parse_i32_array, I32, parse_i32);
+parse_array_val_typed!(parse_u64_array, U64, parse_u64);
+parse_array_val_typed!(parse_f32_array, F32, parse_f32);
+parse_array_val_typed!(parse_f64_array, F64, parse_f64);
+parse_array_val_typed!(parse_quoted_array, QUOTED_STRING, parse_quoted);
+parse_array_val_typed!(parse_unquoted_array, UNQUOTED_STRING, parse_unquoted);
+parse_array_val_typed!(parse_bool_array, BOOL, parse_bool);
+
+#[cold]
+fn parse_array_val_token<const IS_EU4: bool>(
+    token_id: u16,
+    state: &mut ParserState,
+) -> Result<(), Error> {
+    match token_id {
+        U32 => parse_u32(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        U64 if !IS_EU4 => parse_u64(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        I32 => parse_i32(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        BOOL => parse_bool(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        QUOTED_STRING => parse_quoted(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        UNQUOTED_STRING => parse_unquoted(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        F32 => parse_f32(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        F64 => parse_f64(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        RGB if !IS_EU4 => parse_rgb(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        OPEN => {
+            let ind = state.token_tape.len();
+            state
+                .token_tape
+                .alloc()
+                .init(BinaryToken::Array(state.parent_ind));
+            state.parent_ind = ind;
+            parse_open1::<IS_EU4>(state)
+        }
+        END => parse_end::<IS_EU4>(state),
+        EQUAL => {
+            state.token_tape.reserve(2);
+            let last = unsafe { state.token_tape.pop().unwrap_unchecked() };
+            let ptr = state.token_tape.as_mut_ptr();
+            let len = state.token_tape.len();
+            unsafe { ptr.add(len).write(BinaryToken::MixedContainer) };
+            unsafe { ptr.add(len + 1).write(last) };
+            unsafe { ptr.add(len + 2).write(BinaryToken::Equal) };
+            unsafe { state.token_tape.set_len(len + 3) }
+            parse_array_mixed::<IS_EU4>(state)
+        }
+        token => {
+            state.token_tape.alloc().init(BinaryToken::Token(token));
+            parse_array_val::<IS_EU4>(state)
+        }
+    }
+}
+
+#[inline]
+fn parse_array_val<const IS_EU4: bool>(state: &mut ParserState) -> Result<(), Error> {
+    match parse_next_id(state).ok_or_else(Error::eof)? {
+        U32 => parse_u32(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        U64 if !IS_EU4 => parse_u64(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        I32 => parse_i32(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        BOOL => parse_bool(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        QUOTED_STRING => parse_quoted(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        UNQUOTED_STRING => parse_unquoted(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        F32 => parse_f32(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        F64 => parse_f64(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        RGB if !IS_EU4 => parse_rgb(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        OPEN => {
+            let ind = state.token_tape.len();
+            let val = BinaryToken::Array(state.parent_ind);
+            state.token_tape.alloc().init(val);
+            state.parent_ind = ind;
+            parse_open1::<IS_EU4>(state)
+        }
+        END => parse_end::<IS_EU4>(state),
+        EQUAL => {
             state.token_tape.reserve(2);
             let last = unsafe { state.token_tape.pop().unwrap_unchecked() };
             if matches!(last, BinaryToken::Array(_) | BinaryToken::End(_)) {
@@ -304,102 +437,120 @@ fn parse_array_val(state: &mut ParserState) -> Result<(), Error> {
                     unsafe { set_parent_to_object(state) }
                     unsafe { ptr.add(state.parent_ind + 1).write(last) };
                     unsafe { state.token_tape.set_len(state.parent_ind + 2) }
-                    parse_object_val(state)
+                    parse_object_val::<IS_EU4>(state)
                 } else {
                     let len = state.token_tape.len();
                     unsafe { ptr.add(len).write(BinaryToken::MixedContainer) };
                     unsafe { ptr.add(len + 1).write(last) };
                     unsafe { ptr.add(len + 2).write(BinaryToken::Equal) };
                     unsafe { state.token_tape.set_len(len + 3) }
-                    parse_array_mixed(state)
+                    parse_array_mixed::<IS_EU4>(state)
                 }
             }
         }
-        Some(token) => {
+        token => {
             state.token_tape.alloc().init(BinaryToken::Token(token));
-            parse_array_val(state)
+            parse_array_val::<IS_EU4>(state)
         }
-        None => Err(Error::eof()),
     }
 }
 
 #[inline]
-fn parse_open1(state: &mut ParserState) -> Result<(), Error> {
-    match parse_next_id(state) {
-        Some(U32) => parse_u32(state).and_then(|_| parse_open2(state)),
-        Some(U64) => parse_u64(state).and_then(|_| parse_open2(state)),
-        Some(I32) => parse_i32(state).and_then(|_| parse_open2(state)),
-        Some(BOOL) => parse_bool(state).and_then(|_| parse_open2(state)),
-        Some(QUOTED_STRING) => parse_quoted(state).and_then(|_| parse_open2(state)),
-        Some(UNQUOTED_STRING) => parse_unquoted(state).and_then(|_| parse_open2(state)),
-        Some(F32) => parse_f32(state).and_then(|_| parse_open2(state)),
-        Some(F64) => parse_f64(state).and_then(|_| parse_open2(state)),
-        Some(RGB) => parse_rgb(state).and_then(|_| parse_open2(state)),
-        Some(OPEN) => {
+fn parse_open1<const IS_EU4: bool>(state: &mut ParserState) -> Result<(), Error> {
+    match parse_next_id(state).ok_or_else(Error::eof)? {
+        U32 => parse_u32(state).and_then(|_| parse_open2::<IS_EU4>(state)),
+        U64 if !IS_EU4 => parse_u64(state).and_then(|_| parse_open2::<IS_EU4>(state)),
+        I32 => parse_i32(state).and_then(|_| parse_open2::<IS_EU4>(state)),
+        BOOL => parse_bool(state).and_then(|_| parse_open2::<IS_EU4>(state)),
+        QUOTED_STRING => parse_quoted(state).and_then(|_| parse_open2::<IS_EU4>(state)),
+        UNQUOTED_STRING => parse_unquoted(state).and_then(|_| parse_open2::<IS_EU4>(state)),
+        F32 => parse_f32(state).and_then(|_| parse_open2::<IS_EU4>(state)),
+        F64 => parse_f64(state).and_then(|_| parse_open2::<IS_EU4>(state)),
+        RGB if !IS_EU4 => parse_rgb(state).and_then(|_| parse_open2::<IS_EU4>(state)),
+        OPEN => {
             let ind = state.token_tape.len();
             state
                 .token_tape
                 .alloc()
                 .init(BinaryToken::Array(state.parent_ind));
             state.parent_ind = ind;
-            parse_open1(state)
+            parse_open1::<IS_EU4>(state)
         }
-        Some(END) => parse_end(state),
-        Some(EQUAL) => Err(equal_key_error(state)),
-        Some(token) => {
+        END => parse_end::<IS_EU4>(state),
+        EQUAL => Err(equal_key_error(state)),
+        token => {
             state.token_tape.alloc().init(BinaryToken::Token(token));
-            parse_open2(state)
+            parse_open2_token::<IS_EU4>(state)
         }
-        None => Err(Error::eof()),
     }
 }
 
 #[inline]
-fn parse_open2(state: &mut ParserState) -> Result<(), Error> {
-    match parse_next_id(state) {
-        Some(U32) => parse_u32(state).and_then(|_| parse_array_val(state)),
-        Some(U64) => parse_u64(state).and_then(|_| parse_array_val(state)),
-        Some(I32) => parse_i32(state).and_then(|_| parse_array_val(state)),
-        Some(BOOL) => parse_bool(state).and_then(|_| parse_array_val(state)),
-        Some(QUOTED_STRING) => parse_quoted(state).and_then(|_| parse_array_val(state)),
-        Some(UNQUOTED_STRING) => parse_unquoted(state).and_then(|_| parse_array_val(state)),
-        Some(F32) => parse_f32(state).and_then(|_| parse_array_val(state)),
-        Some(F64) => parse_f64(state).and_then(|_| parse_array_val(state)),
-        Some(RGB) => parse_rgb(state).and_then(|_| parse_array_val(state)),
-        Some(OPEN) => {
+fn parse_open2_token<const IS_EU4: bool>(state: &mut ParserState) -> Result<(), Error> {
+    let (data, token_id) = parse_next_id_opt(state).ok_or_else(Error::eof)?;
+    if token_id == EQUAL {
+        state.data = data;
+        unsafe { set_parent_to_object(state) };
+        parse_object_val::<IS_EU4>(state)
+    } else {
+        parse_open2_cold::<IS_EU4>(state)
+    }
+}
+
+#[cold]
+fn parse_open2_cold<const IS_EU4: bool>(state: &mut ParserState) -> Result<(), Error> {
+    parse_open2::<IS_EU4>(state)
+}
+
+#[inline]
+fn parse_open2<const IS_EU4: bool>(state: &mut ParserState) -> Result<(), Error> {
+    match parse_next_id(state).ok_or_else(Error::eof)? {
+        U32 => parse_u32(state).and_then(|_| parse_u32_array::<IS_EU4>(state)),
+        U64 if !IS_EU4 => parse_u64(state).and_then(|_| parse_u64_array::<IS_EU4>(state)),
+        I32 => parse_i32(state).and_then(|_| parse_i32_array::<IS_EU4>(state)),
+        BOOL => parse_bool(state).and_then(|_| parse_bool_array::<IS_EU4>(state)),
+        QUOTED_STRING => parse_quoted(state).and_then(|_| parse_quoted_array::<IS_EU4>(state)),
+        UNQUOTED_STRING => {
+            parse_unquoted(state).and_then(|_| parse_unquoted_array::<IS_EU4>(state))
+        }
+        F32 => parse_f32(state).and_then(|_| parse_f32_array::<IS_EU4>(state)),
+        F64 => parse_f64(state).and_then(|_| parse_f64_array::<IS_EU4>(state)),
+        RGB if !IS_EU4 => parse_rgb(state).and_then(|_| parse_array_val::<IS_EU4>(state)),
+        OPEN => {
             let ind = state.token_tape.len();
             state
                 .token_tape
                 .alloc()
                 .init(BinaryToken::Array(state.parent_ind));
             state.parent_ind = ind;
-            parse_open1(state)
+            parse_open1::<IS_EU4>(state)
         }
-        Some(END) => parse_end(state),
-        Some(EQUAL) => {
+        END => parse_end::<IS_EU4>(state),
+        EQUAL => {
             unsafe { set_parent_to_object(state) };
-            parse_object_val(state)
-        },
-        Some(token) => {
-            state.token_tape.alloc().init(BinaryToken::Token(token));
-            parse_array_val(state)
+            parse_object_val::<IS_EU4>(state)
         }
-        None => Err(Error::eof()),
+        token => {
+            state.token_tape.alloc().init(BinaryToken::Token(token));
+            parse_array_val::<IS_EU4>(state)
+        }
     }
 }
 
 #[inline]
-fn parse_array_mixed(state: &mut ParserState) -> Result<(), Error> {
+fn parse_array_mixed<const IS_EU4: bool>(state: &mut ParserState) -> Result<(), Error> {
     match parse_next_id(state) {
-        Some(U32) => parse_u32(state).and_then(|_| parse_array_mixed(state)),
-        Some(U64) => parse_u64(state).and_then(|_| parse_array_mixed(state)),
-        Some(I32) => parse_i32(state).and_then(|_| parse_array_mixed(state)),
-        Some(BOOL) => parse_bool(state).and_then(|_| parse_array_mixed(state)),
-        Some(QUOTED_STRING) => parse_quoted(state).and_then(|_| parse_array_mixed(state)),
-        Some(UNQUOTED_STRING) => parse_unquoted(state).and_then(|_| parse_array_mixed(state)),
-        Some(F32) => parse_f32(state).and_then(|_| parse_array_mixed(state)),
-        Some(F64) => parse_f64(state).and_then(|_| parse_array_mixed(state)),
-        Some(RGB) => parse_rgb(state).and_then(|_| parse_array_mixed(state)),
+        Some(U32) => parse_u32(state).and_then(|_| parse_array_mixed::<IS_EU4>(state)),
+        Some(U64) => parse_u64(state).and_then(|_| parse_array_mixed::<IS_EU4>(state)),
+        Some(I32) => parse_i32(state).and_then(|_| parse_array_mixed::<IS_EU4>(state)),
+        Some(BOOL) => parse_bool(state).and_then(|_| parse_array_mixed::<IS_EU4>(state)),
+        Some(QUOTED_STRING) => parse_quoted(state).and_then(|_| parse_array_mixed::<IS_EU4>(state)),
+        Some(UNQUOTED_STRING) => {
+            parse_unquoted(state).and_then(|_| parse_array_mixed::<IS_EU4>(state))
+        }
+        Some(F32) => parse_f32(state).and_then(|_| parse_array_mixed::<IS_EU4>(state)),
+        Some(F64) => parse_f64(state).and_then(|_| parse_array_mixed::<IS_EU4>(state)),
+        Some(RGB) => parse_rgb(state).and_then(|_| parse_array_mixed::<IS_EU4>(state)),
         Some(OPEN) => {
             let ind = state.token_tape.len();
             state
@@ -407,23 +558,23 @@ fn parse_array_mixed(state: &mut ParserState) -> Result<(), Error> {
                 .alloc()
                 .init(BinaryToken::Array(state.parent_ind));
             state.parent_ind = ind;
-            parse_open1(state)
+            parse_open1::<IS_EU4>(state)
         }
-        Some(END) => parse_end(state),
+        Some(END) => parse_end::<IS_EU4>(state),
         Some(EQUAL) => {
             state.token_tape.alloc().init(BinaryToken::Equal);
-            parse_array_mixed(state)
+            parse_array_mixed::<IS_EU4>(state)
         }
         Some(token) => {
             state.token_tape.alloc().init(BinaryToken::Token(token));
-            parse_array_mixed(state)
+            parse_array_mixed::<IS_EU4>(state)
         }
         None => Err(Error::eof()),
     }
 }
 
 #[cold]
-fn parse_object_mixed(state: &mut ParserState) -> Result<(), Error> {
+fn parse_object_mixed<const IS_EU4: bool>(state: &mut ParserState) -> Result<(), Error> {
     if state.parent_ind == 0 {
         Err(Error::eof())
     } else {
@@ -431,7 +582,7 @@ fn parse_object_mixed(state: &mut ParserState) -> Result<(), Error> {
         state.token_tape.alloc().init(BinaryToken::MixedContainer);
         state.token_tape.swap(len, len - 2);
         state.token_tape.swap(len - 1, len);
-        parse_array_mixed(state)
+        parse_array_mixed::<IS_EU4>(state)
     }
 }
 
@@ -584,6 +735,15 @@ fn parse_rgb(state: &mut ParserState) -> Result<(), Error> {
 
 #[inline(never)]
 #[cold]
+fn unknown_token(state: &ParserState) -> Error {
+    Error::new(ErrorKind::InvalidSyntax {
+        msg: String::from("a token in bad range detected"),
+        offset: offset(state),
+    })
+}
+
+#[inline(never)]
+#[cold]
 fn equal_key_error(state: &ParserState) -> Error {
     Error::new(ErrorKind::InvalidSyntax {
         msg: String::from("EQUAL not valid for a key"),
@@ -675,7 +835,7 @@ mod ignore {
 
         #[inline]
         fn parse_next_id_opt(&mut self, data: &'a [u8]) -> Option<(&'a [u8], u16)> {
-            get_split::<2>(data).map(|(head, rest)| (rest, u16::from_le_bytes(head)))
+            get_split::<2>(state).map(|(head, rest)| (rest, u16::from_le_bytes(head)))
         }
 
         #[inline]
