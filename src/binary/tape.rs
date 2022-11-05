@@ -57,16 +57,17 @@ pub enum BinaryToken<'a> {
     Rgb(Rgb),
 }
 
-const END: u16 = 0x0004;
-const OPEN: u16 = 0x0003;
 const EQUAL: u16 = 0x0001;
-const U32: u16 = 0x0014;
-const U64: u16 = 0x029c;
+const OPEN: u16 = 0x0003;
+const END: u16 = 0x0004;
 const I32: u16 = 0x000c;
+const F32: u16 = 0x000d;
 const BOOL: u16 = 0x000e;
 const QUOTED_STRING: u16 = 0x000f;
+const U32: u16 = 0x0014;
 const UNQUOTED_STRING: u16 = 0x0017;
-const F32: u16 = 0x000d;
+
+const U64: u16 = 0x029c;
 const F64: u16 = 0x0167;
 const RGB: u16 = 0x0243;
 
@@ -75,6 +76,30 @@ const RGB: u16 = 0x0243;
 pub struct BinaryTapeParser;
 
 impl BinaryTapeParser {
+    /// Parse the binary format into the given tape.
+    fn parse_slice_into_tape_full<'a, const IS_EU4: bool>(
+        self,
+        data: &'a [u8],
+        tape: &mut BinaryTape<'a>,
+    ) -> Result<(), Error> {
+        let token_tape = &mut tape.token_tape;
+        token_tape.clear();
+
+        token_tape.reserve((data.len() / 5).max(10));
+
+        // Write to the first element so we can assume it is initialized
+        unsafe { token_tape.as_mut_ptr().write(BinaryToken::Equal) };
+
+        let mut state = ParserState {
+            data,
+            original_length: data.len(),
+            token_tape,
+        };
+
+        state.parse::<IS_EU4>()?;
+        Ok(())
+    }
+
     /// Parse the binary format return the data tape
     pub fn parse_slice(self, data: &[u8]) -> Result<BinaryTape, Error> {
         let mut res = BinaryTape::default();
@@ -88,18 +113,19 @@ impl BinaryTapeParser {
         data: &'a [u8],
         tape: &mut BinaryTape<'a>,
     ) -> Result<(), Error> {
-        let token_tape = &mut tape.token_tape;
-        token_tape.clear();
+        self.parse_slice_into_tape_full::<false>(data, tape)
+    }
 
-        token_tape.reserve(data.len() / 5);
-        let mut state = ParserState {
-            data,
-            original_length: data.len(),
-            token_tape,
-        };
-
-        state.parse()?;
-        Ok(())
+    /// Parse the binary format into the given tape.
+    ///
+    /// The data is assumed to have resemble the more simple EU4 binary format,
+    /// which may allow for optimizations.
+    pub fn parse_eu4_slice_into_tape<'a>(
+        self,
+        data: &'a [u8],
+        tape: &mut BinaryTape<'a>,
+    ) -> Result<(), Error> {
+        self.parse_slice_into_tape_full::<true>(data, tape)
     }
 }
 
@@ -118,21 +144,29 @@ enum ParseState {
     // Whether the current parent container is both an object and array.
     // Unlike the text format, we only support one level of a mixed
     // container for performance.
-    ArrayValueMixed = 2,
+    ArrayValueMixed = 1,
 
-    ObjectValue = 4,
-    Key = 8,
-    KeyValueSeparator = 16,
-
-    // Need to convert current object into an array
-    ObjectToArray = 32,
-
-    // Start of a container, TBD if array or object
-    OpenFirst = 64,
-
-    // First scalar read after container start, still TBD if array or object
-    OpenSecond = 128,
+    ObjectValue = 2,
+    Key = 3,
+    KeyValueSeparator = 4,
 }
+
+const _: () = assert!(
+    ParserState::next_state(ParseState::ArrayValue) == ParseState::ArrayValue as u8,
+    "State transition incorrect"
+);
+const _: () = assert!(
+    ParserState::next_state(ParseState::ArrayValueMixed) == ParseState::ArrayValueMixed as u8,
+    "State transition incorrect"
+);
+const _: () = assert!(
+    ParserState::next_state(ParseState::ObjectValue) == ParseState::Key as u8,
+    "State transition incorrect"
+);
+const _: () = assert!(
+    ParserState::next_state(ParseState::Key) == ParseState::KeyValueSeparator as u8,
+    "State transition incorrect"
+);
 
 impl<'a, 'b> ParserState<'a, 'b> {
     fn offset(&self, data: &[u8]) -> usize {
@@ -142,6 +176,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
     #[inline]
     fn parse_next_id_opt(&mut self, data: &'a [u8]) -> Option<(&'a [u8], u16)> {
         get_split::<2>(data).map(|(head, rest)| (rest, u16::from_le_bytes(head)))
+    }
+
+    #[inline]
+    fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], u16), Error> {
+        self.parse_next_id_opt(data).ok_or_else(Error::eof)
     }
 
     #[inline]
@@ -228,11 +267,20 @@ impl<'a, 'b> ParserState<'a, 'b> {
     }
 
     #[inline(always)]
-    fn next_state(state: ParseState) -> ParseState {
+    const fn next_state(state: ParseState) -> u8 {
         let num = state as u8;
-        let offset = num & 2;
-        let next = num.wrapping_mul(2) - offset;
-        unsafe { core::mem::transmute(next) }
+        let offset1 = num >> 1;
+        num + offset1
+    }
+
+    #[inline(always)]
+    fn next_scalar_state(&mut self, state: ParseState) -> ParseState {
+        if state == ParseState::KeyValueSeparator {
+            self.mixed_insert2()
+        } else {
+            let new_state = Self::next_state(state);
+            unsafe { core::mem::transmute(new_state) }
+        }
     }
 
     #[inline]
@@ -246,7 +294,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
         }
     }
 
-    fn parse(&mut self) -> Result<(), Error> {
+    fn parse<const IS_EU4: bool>(&mut self) -> Result<(), Error> {
         let mut data = self.data;
         let mut state = ParseState::Key;
 
@@ -254,56 +302,381 @@ impl<'a, 'b> ParserState<'a, 'b> {
         let mut parent_ind = 0;
 
         while let Some((d, token_id)) = self.parse_next_id_opt(data) {
-            if state == ParseState::ObjectToArray {
-                // This branch should never be taken on any save. It represents
-                // `area = {a=b 10 20}`, which only happens in the text format.
-                // Instead of trapping it and erroring, we just switch to mixed
-                // mode like we do for the text format.
-                state = ParseState::ArrayValueMixed;
-                self.mixed_insert2();
-            }
-
+            // a switch statement that is dense up until 0x17. 5-6% perf
             match token_id {
-                U32 => {
-                    data = self.parse_u32(d)?;
-                    state = Self::next_state(state);
-                }
-                U64 => {
-                    data = self.parse_u64(d)?;
-                    state = Self::next_state(state);
-                }
-                I32 => {
-                    data = self.parse_i32(d)?;
-                    state = Self::next_state(state);
-                }
-                BOOL => {
-                    data = self.parse_bool(d)?;
-                    state = Self::next_state(state);
-                }
-                QUOTED_STRING => {
-                    data = self.parse_quoted_string(d)?;
-                    state = Self::next_state(state);
-                }
-                UNQUOTED_STRING => {
-                    data = self.parse_unquoted_string(d)?;
-                    state = Self::next_state(state);
-                }
-                F32 => {
-                    data = self.parse_f32(d)?;
-                    state = Self::next_state(state);
-                }
-                F64 => {
-                    data = self.parse_f64(d)?;
-                    state = Self::next_state(state);
-                }
+                0x0 => return Err(self.unknown_token(data)),
+                EQUAL => {
+                    data = d;
+                    if state == ParseState::KeyValueSeparator {
+                        state = ParseState::ObjectValue;
+                        continue; // hack to prevent jump table. 10-14% perf
+                    } else if state == ParseState::ArrayValueMixed {
+                        self.token_tape.alloc().init(BinaryToken::Equal);
+                    } else if state == ParseState::ArrayValue {
+                        self.token_tape.reserve(2);
+                        let last = unsafe { self.token_tape.pop().unwrap_unchecked() };
+                        if matches!(last, BinaryToken::Array(_) | BinaryToken::End(_)) {
+                            return Err(self.equal_in_array_err(data));
+                        }
 
+                        // before we enter mixed mode, let's make sure we're not
+                        // proceeded by only empty objects eg: `a={{} {} c=d}`. Only
+                        // found in a smattering of EU4 saves
+                        let mut pairs = self
+                            .token_tape
+                            .get(parent_ind + 1..)
+                            .unwrap_or_default()
+                            .chunks_exact(2);
+
+                        let only_empties = pairs.len() > 0
+                                && pairs.all(|tokens| {
+                                    matches!(tokens, [BinaryToken::Array(x), BinaryToken::End(y)] if *x == y + 1)
+                                });
+
+                        let ptr = self.token_tape.as_mut_ptr();
+                        if only_empties {
+                            unsafe { self.set_parent_to_object(parent_ind) }
+                            unsafe { ptr.add(parent_ind + 1).write(last) };
+                            unsafe { self.token_tape.set_len(parent_ind + 2) }
+                            state = ParseState::ObjectValue;
+                        } else {
+                            let len = self.token_tape.len();
+                            unsafe { ptr.add(len).write(BinaryToken::MixedContainer) };
+                            unsafe { ptr.add(len + 1).write(last) };
+                            unsafe { ptr.add(len + 2).write(BinaryToken::Equal) };
+                            unsafe { self.token_tape.set_len(len + 3) }
+                            state = ParseState::ArrayValueMixed;
+                        }
+                    } else {
+                        return Err(self.equal_key_error(data));
+                    }
+                }
+                0x2 => return Err(self.unknown_token(data)),
                 OPEN => {
                     if state != ParseState::Key {
+                        // Until we encounter an equal token, assume the new container is an array.
+
                         let ind = self.token_tape.len();
                         self.token_tape.alloc().init(BinaryToken::Array(parent_ind));
                         parent_ind = ind;
-                        state = ParseState::OpenFirst;
                         data = d;
+                        state = ParseState::ArrayValue;
+
+                        let mut is_token = false;
+                        let d = match self.parse_next_id(d)? {
+                            (_, EQUAL) => return Err(self.equal_key_error(data)),
+                            (_, OPEN) => continue,
+                            (_, END) => continue,
+                            (d, I32) => self.parse_i32(d)?,
+                            (d, F32) => self.parse_f32(d)?,
+                            (d, BOOL) => self.parse_bool(d)?,
+                            (d, QUOTED_STRING) => self.parse_quoted_string(d)?,
+                            (d, U32) => self.parse_u32(d)?,
+                            (d, UNQUOTED_STRING) => self.parse_unquoted_string(d)?,
+                            (d, U64) if !IS_EU4 => self.parse_u64(d)?,
+                            (d, F64) => self.parse_f64(d)?,
+                            (d, RGB) if !IS_EU4 => self.parse_rgb(d)?,
+                            (d, x) => {
+                                is_token = true;
+                                self.token_tape.alloc().init(BinaryToken::Token(x));
+                                d
+                            }
+                        };
+
+                        let (d2, id2) = self.parse_next_id(d)?;
+
+                        if is_token && id2 == EQUAL {
+                            data = d2;
+                            unsafe { self.set_parent_to_object(parent_ind) }
+                            state = ParseState::ObjectValue;
+                            continue;
+                        }
+
+                        data = d;
+                        match id2 {
+                            EQUAL => {
+                                unsafe { self.set_parent_to_object(parent_ind) }
+                                state = ParseState::ObjectValue;
+                                data = d2;
+                            }
+                            OPEN => continue,
+                            END => continue,
+                            I32 => {
+                                let mut nd = self.parse_i32(d2)?;
+                                loop {
+                                    let (nd2, x) = self.parse_next_id(nd)?;
+                                    if x == I32 {
+                                        nd = self.parse_i32(nd2)?;
+                                    } else if x == END {
+                                        data = nd2;
+                                        let end_idx = self.token_tape.len();
+                                        match unsafe { self.token_tape.get_unchecked_mut(parent_ind) } {
+                                            BinaryToken::Array(end) => {
+                                                let grand_ind = *end;
+                                                *end = end_idx;
+                                                let val = BinaryToken::End(parent_ind);
+                                                self.token_tape.alloc().init(val);
+                                                parent_ind = grand_ind;
+                                                match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                                                    BinaryToken::Array(_) => state = ParseState::ArrayValue,
+                                                    _ => state = ParseState::Key,
+                                                };
+                                            }
+                                            _ => unsafe { core::hint::unreachable_unchecked() },
+                                        }
+                                        break;
+                                    } else {
+                                        data = nd;
+                                        break;
+                                    }
+                                }
+                            }
+                            F32 => {
+                                let mut nd = self.parse_f32(d2)?;
+                                loop {
+                                    let (nd2, x) = self.parse_next_id(nd)?;
+                                    if x == F32 {
+                                        nd = self.parse_f32(nd2)?;
+                                    } else if x == END {
+                                        data = nd2;
+                                        let end_idx = self.token_tape.len();
+                                        match unsafe { self.token_tape.get_unchecked_mut(parent_ind) } {
+                                            BinaryToken::Array(end) => {
+                                                let grand_ind = *end;
+                                                *end = end_idx;
+                                                let val = BinaryToken::End(parent_ind);
+                                                self.token_tape.alloc().init(val);
+                                                parent_ind = grand_ind;
+                                                match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                                                    BinaryToken::Array(_) => state = ParseState::ArrayValue,
+                                                    _ => state = ParseState::Key,
+                                                };
+                                            }
+                                            _ => unsafe { core::hint::unreachable_unchecked() },
+                                        }
+                                        break;
+                                    } else {
+                                        data = nd;
+                                        break;
+                                    }
+                                }
+                            }
+                            BOOL => {
+                                let mut nd = self.parse_bool(d2)?;
+                                loop {
+                                    let (nd2, x) = self.parse_next_id(nd)?;
+                                    if x == BOOL {
+                                        nd = self.parse_bool(nd2)?;
+                                    } else if x == END {
+                                        data = nd2;
+                                        let end_idx = self.token_tape.len();
+                                        match unsafe { self.token_tape.get_unchecked_mut(parent_ind) } {
+                                            BinaryToken::Array(end) => {
+                                                let grand_ind = *end;
+                                                *end = end_idx;
+                                                let val = BinaryToken::End(parent_ind);
+                                                self.token_tape.alloc().init(val);
+                                                parent_ind = grand_ind;
+                                                match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                                                    BinaryToken::Array(_) => state = ParseState::ArrayValue,
+                                                    _ => state = ParseState::Key,
+                                                };
+                                            }
+                                            _ => unsafe { core::hint::unreachable_unchecked() },
+                                        }
+                                        break;
+                                    } else {
+                                        data = nd;
+                                        break;
+                                    }
+                                }
+                            }
+                            QUOTED_STRING => {
+                                let mut nd = self.parse_quoted_string(d2)?;
+                                loop {
+                                    let (nd2, x) = self.parse_next_id(nd)?;
+                                    if x == QUOTED_STRING {
+                                        nd = self.parse_quoted_string(nd2)?;
+                                    } else if x == END {
+                                        data = nd2;
+                                        let end_idx = self.token_tape.len();
+                                        match unsafe { self.token_tape.get_unchecked_mut(parent_ind) } {
+                                            BinaryToken::Array(end) => {
+                                                let grand_ind = *end;
+                                                *end = end_idx;
+                                                let val = BinaryToken::End(parent_ind);
+                                                self.token_tape.alloc().init(val);
+                                                parent_ind = grand_ind;
+                                                match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                                                    BinaryToken::Array(_) => state = ParseState::ArrayValue,
+                                                    _ => state = ParseState::Key,
+                                                };
+                                            }
+                                            _ => unsafe { core::hint::unreachable_unchecked() },
+                                        }
+                                        break;
+                                    } else {
+                                        data = nd;
+                                        break;
+                                    }
+                                }
+                            }
+                            U32 => {
+                                let mut nd = self.parse_u32(d2)?;
+                                loop {
+                                    let (nd2, x) = self.parse_next_id(nd)?;
+                                    if x == U32 {
+                                        nd = self.parse_u32(nd2)?;
+                                    } else if x == END {
+                                        data = nd2;
+                                        let end_idx = self.token_tape.len();
+                                        match unsafe { self.token_tape.get_unchecked_mut(parent_ind) } {
+                                            BinaryToken::Array(end) => {
+                                                let grand_ind = *end;
+                                                *end = end_idx;
+                                                let val = BinaryToken::End(parent_ind);
+                                                self.token_tape.alloc().init(val);
+                                                parent_ind = grand_ind;
+                                                match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                                                    BinaryToken::Array(_) => state = ParseState::ArrayValue,
+                                                    _ => state = ParseState::Key,
+                                                };
+                                            }
+                                            _ => unsafe { core::hint::unreachable_unchecked() },
+                                        }
+                                        break;
+                                    } else {
+                                        data = nd;
+                                        break;
+                                    }
+                                }
+                            }
+                            UNQUOTED_STRING => {
+                                let mut nd = self.parse_unquoted_string(d2)?;
+                                loop {
+                                    let (nd2, x) = self.parse_next_id(nd)?;
+                                    if x == UNQUOTED_STRING {
+                                        nd = self.parse_unquoted_string(nd2)?;
+                                    } else if x == END {
+                                        data = nd2;
+                                        let end_idx = self.token_tape.len();
+                                        match unsafe { self.token_tape.get_unchecked_mut(parent_ind) } {
+                                            BinaryToken::Array(end) => {
+                                                let grand_ind = *end;
+                                                *end = end_idx;
+                                                let val = BinaryToken::End(parent_ind);
+                                                self.token_tape.alloc().init(val);
+                                                parent_ind = grand_ind;
+                                                match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                                                    BinaryToken::Array(_) => state = ParseState::ArrayValue,
+                                                    _ => state = ParseState::Key,
+                                                };
+                                            }
+                                            _ => unsafe { core::hint::unreachable_unchecked() },
+                                        }
+                                        break;
+                                    } else {
+                                        data = nd;
+                                        break;
+                                    }
+                                }
+                            }
+                            U64 if !IS_EU4 => {
+                                let mut nd = self.parse_u64(d2)?;
+                                loop {
+                                    let (nd2, x) = self.parse_next_id(nd)?;
+                                    if x == U64 {
+                                        nd = self.parse_u64(nd2)?;
+                                    } else if x == END {
+                                        data = nd2;
+                                        let end_idx = self.token_tape.len();
+                                        match unsafe { self.token_tape.get_unchecked_mut(parent_ind) } {
+                                            BinaryToken::Array(end) => {
+                                                let grand_ind = *end;
+                                                *end = end_idx;
+                                                let val = BinaryToken::End(parent_ind);
+                                                self.token_tape.alloc().init(val);
+                                                parent_ind = grand_ind;
+                                                match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                                                    BinaryToken::Array(_) => state = ParseState::ArrayValue,
+                                                    _ => state = ParseState::Key,
+                                                };
+                                            }
+                                            _ => unsafe { core::hint::unreachable_unchecked() },
+                                        }
+                                        break;
+                                    } else {
+                                        data = nd;
+                                        break;
+                                    }
+                                }
+                            }
+                            F64 => {
+                                let mut nd = self.parse_f64(d2)?;
+                                loop {
+                                    let (nd2, x) = self.parse_next_id(nd)?;
+                                    if x == F64 {
+                                        nd = self.parse_f64(nd2)?;
+                                    } else if x == END {
+                                        data = nd2;
+                                        let end_idx = self.token_tape.len();
+                                        match unsafe { self.token_tape.get_unchecked_mut(parent_ind) } {
+                                            BinaryToken::Array(end) => {
+                                                let grand_ind = *end;
+                                                *end = end_idx;
+                                                let val = BinaryToken::End(parent_ind);
+                                                self.token_tape.alloc().init(val);
+                                                parent_ind = grand_ind;
+                                                match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                                                    BinaryToken::Array(_) => state = ParseState::ArrayValue,
+                                                    _ => state = ParseState::Key,
+                                                };
+                                            }
+                                            _ => unsafe { core::hint::unreachable_unchecked() },
+                                        }
+                                        break;
+                                    } else {
+                                        data = nd;
+                                        break;
+                                    }
+                                }
+                            }
+                            RGB if !IS_EU4 => {
+                                let mut nd = self.parse_rgb(d2)?;
+                                loop {
+                                    let (nd2, x) = self.parse_next_id(nd)?;
+                                    if x == RGB {
+                                        nd = self.parse_rgb(nd2)?;
+                                    } else if x == END {
+                                        data = nd2;
+                                        let end_idx = self.token_tape.len();
+                                        match unsafe { self.token_tape.get_unchecked_mut(parent_ind) } {
+                                            BinaryToken::Array(end) => {
+                                                let grand_ind = *end;
+                                                *end = end_idx;
+                                                let val = BinaryToken::End(parent_ind);
+                                                self.token_tape.alloc().init(val);
+                                                parent_ind = grand_ind;
+                                                match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                                                    BinaryToken::Array(_) => state = ParseState::ArrayValue,
+                                                    _ => state = ParseState::Key,
+                                                };
+                                            }
+                                            _ => unsafe { core::hint::unreachable_unchecked() },
+                                        }
+                                        break;
+                                    } else {
+                                        data = nd;
+                                        break;
+                                    }
+                                }
+                            }
+                            x => {
+                                self.token_tape.alloc().init(BinaryToken::Token(x));
+                                data = d2;
+                            }
+                        };
+
                     } else if self.token_tape.is_empty() {
                         return Err(self.open_empty_err(data));
                     } else {
@@ -329,91 +702,76 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         _ => {}
                     }
 
-                    // Update the container token with now discovered location
-                    // of when the container ends
-                    let end_idx = self.token_tape.len();
-                    let grand_ind;
-                    match self.token_tape.get(parent_ind) {
-                        Some(BinaryToken::Array(end)) => {
-                            grand_ind = *end;
-                            self.token_tape[parent_ind] = BinaryToken::Array(end_idx)
-                        }
-                        Some(BinaryToken::Object(end)) => {
-                            grand_ind = *end;
-                            self.token_tape[parent_ind] = BinaryToken::Object(end_idx)
-                        }
-                        _ => return Err(self.end_location_error(data)),
-                    }
-
-                    // And restore state based on the next ancestor
-                    let nstate = match unsafe { self.token_tape.get_unchecked(grand_ind) } {
-                        BinaryToken::Array(_) => ParseState::ArrayValue,
-                        BinaryToken::Object(_) => ParseState::Key,
-                        _ => ParseState::Key,
-                    };
-
-                    state = nstate;
-                    self.token_tape.alloc().init(BinaryToken::End(parent_ind));
-                    parent_ind = grand_ind;
+                    state = self
+                        .update_start_container(&mut parent_ind)
+                        .ok_or_else(|| self.end_location_error(data))?;
                     data = d;
                 }
-                RGB => {
+                0x5 => return Err(self.unknown_token(data)),
+                0x6 => return Err(self.unknown_token(data)),
+                0x7 => return Err(self.unknown_token(data)),
+                0x8 => return Err(self.unknown_token(data)),
+                0x9 => return Err(self.unknown_token(data)),
+                0xa => return Err(self.unknown_token(data)),
+                0xb => {
+                    data = d;
+                    self.token_tape.alloc().init(BinaryToken::Token(0xb));
+                    state = self.next_scalar_state(state);
+                }
+                I32 => {
+                    data = self.parse_i32(d)?;
+                    state = self.next_scalar_state(state);
+                }
+                F32 => {
+                    data = self.parse_f32(d)?;
+                    state = self.next_scalar_state(state);
+                }
+                BOOL => {
+                    data = self.parse_bool(d)?;
+                    state = self.next_scalar_state(state);
+                }
+                QUOTED_STRING => {
+                    data = self.parse_quoted_string(d)?;
+                    state = self.next_scalar_state(state);
+                }
+                0x10 => return Err(self.unknown_token(data)),
+                0x11 => return Err(self.unknown_token(data)),
+                0x12 => return Err(self.unknown_token(data)),
+                0x13 => return Err(self.unknown_token(data)),
+                U32 => {
+                    data = self.parse_u32(d)?;
+                    state = self.next_scalar_state(state);
+                }
+                0x15 => {
+                    data = d;
+                    self.token_tape.alloc().init(BinaryToken::Token(0x15));
+                    state = self.next_scalar_state(state);
+                }
+                0x16 => {
+                    data = d;
+                    self.token_tape.alloc().init(BinaryToken::Token(0x16));
+                    state = self.next_scalar_state(state);
+                }
+                UNQUOTED_STRING => {
+                    data = self.parse_unquoted_string(d)?;
+                    state = self.next_scalar_state(state);
+                }
+                U64 if !IS_EU4 => {
+                    data = self.parse_u64(d)?;
+                    state = self.next_scalar_state(state);
+                }
+                F64 => {
+                    data = self.parse_f64(d)?;
+                    state = self.next_scalar_state(state);
+                }
+                RGB if !IS_EU4 => {
                     data = self.parse_rgb(d)?;
-                    state = Self::next_state(state);
-                }
-                EQUAL => {
-                    data = d;
-                    if state == ParseState::KeyValueSeparator {
-                        state = ParseState::ObjectValue;
-                        continue; // prevents turning this into jump table
-                    } else if state == ParseState::OpenSecond {
-                        unsafe { self.set_parent_to_object(parent_ind) }
-                        state = ParseState::ObjectValue;
-                    } else if state == ParseState::ArrayValueMixed {
-                        self.token_tape.alloc().init(BinaryToken::Equal);
-                    } else if state == ParseState::ArrayValue {
-                        self.token_tape.reserve(2);
-                        let last = unsafe { self.token_tape.pop().unwrap_unchecked() };
-                        if matches!(last, BinaryToken::Array(_) | BinaryToken::End(_)) {
-                            return Err(self.equal_in_array_err(data));
-                        }
-
-                        // before we enter mixed mode, let's make sure we're not
-                        // proceeded by only empty objects eg: `a={{} {} c=d}`. Only
-                        // found in a smattering of EU4 saves
-                        let mut pairs = self
-                            .token_tape
-                            .get(parent_ind + 1..)
-                            .unwrap_or_default()
-                            .chunks_exact(2);
-
-                        let only_empties = pairs.len() > 0
-                            && pairs.all(|tokens| {
-                                matches!(tokens, [BinaryToken::Array(x), BinaryToken::End(y)] if *x == y + 1)
-                            });
-
-                        let ptr = self.token_tape.as_mut_ptr();
-                        if only_empties {
-                            unsafe { self.set_parent_to_object(parent_ind) }
-                            unsafe { ptr.add(parent_ind + 1).write(last) };
-                            unsafe { self.token_tape.set_len(parent_ind + 2) }
-                            state = ParseState::ObjectValue;
-                        } else {
-                            let len = self.token_tape.len();
-                            unsafe { ptr.add(len).write(BinaryToken::MixedContainer) };
-                            unsafe { ptr.add(len + 1).write(last) };
-                            unsafe { ptr.add(len + 2).write(BinaryToken::Equal) };
-                            unsafe { self.token_tape.set_len(len + 3) }
-                            state = ParseState::ArrayValueMixed;
-                        }
-                    } else {
-                        return Err(self.equal_key_error(data));
-                    }
+                    state = self.next_scalar_state(state);
                 }
                 x => {
                     data = d;
                     self.token_tape.alloc().init(BinaryToken::Token(x));
-                    state = Self::next_state(state);
+                    state = self.next_scalar_state(state);
                 }
             }
         }
@@ -425,30 +783,53 @@ impl<'a, 'b> ParserState<'a, 'b> {
         }
     }
 
-    #[inline(never)]
-    #[cold]
-    fn mixed_insert2(&mut self) {
-        let stashed1 = match self.token_tape.pop() {
-            Some(x) => x,
-            None => {
-                debug_assert!(false, "empty token tape");
-                return;
+    #[inline]
+    fn update_start_container(&mut self, parent_ind: &mut usize) -> Option<ParseState> {
+        // Update the container token with now discovered location
+        // of when the container ends
+        let end_idx = self.token_tape.len();
+        match unsafe { self.token_tape.get_unchecked_mut(*parent_ind) } {
+            BinaryToken::Array(end) | BinaryToken::Object(end) => {
+                let grand_ind = *end;
+                *end = end_idx;
+                let val = BinaryToken::End(*parent_ind);
+                self.token_tape.alloc().init(val);
+                *parent_ind = grand_ind;
+                match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                    BinaryToken::Array(_) => Some(ParseState::ArrayValue),
+                    _ => Some(ParseState::Key),
+                }
             }
-        };
-
-        let stashed2 = match self.token_tape.pop() {
-            Some(x) => x,
-            None => {
-                debug_assert!(false, "empty token tape");
-                return;
-            }
-        };
-
-        self.token_tape.alloc().init(BinaryToken::MixedContainer);
-        self.token_tape.alloc().init(stashed2);
-        self.token_tape.alloc().init(stashed1);
+            _ => None,
+        }
     }
 
+    #[cold]
+    #[inline(never)]
+    fn mixed_insert2(&mut self) -> ParseState {
+        self.token_tape.reserve(1);
+        let stashed1 = unsafe { self.token_tape.pop().unwrap_unchecked() };
+        match self.token_tape.pop() {
+            Some(stashed2) => {
+                let ptr = self.token_tape.as_mut_ptr();
+                let len = self.token_tape.len();
+                unsafe { ptr.add(len).write(BinaryToken::MixedContainer) };
+                unsafe { ptr.add(len + 1).write(stashed2) };
+                unsafe { ptr.add(len + 2).write(stashed1) };
+                unsafe { self.token_tape.set_len(len + 3) }
+                ParseState::ArrayValueMixed
+            }
+            None => {
+                let ptr = self.token_tape.as_mut_ptr();
+                let len = self.token_tape.len();
+                unsafe { ptr.add(len).write(stashed1) };
+                unsafe { self.token_tape.set_len(len + 1) }
+                ParseState::ObjectValue
+            }
+        }
+    }
+
+    #[cold]
     #[inline(never)]
     fn mixed_insert1(&mut self) {
         let stashed1 = match self.token_tape.pop() {
@@ -486,6 +867,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
     fn empty_object_err(&mut self, data: &[u8]) -> Error {
         Error::new(ErrorKind::InvalidSyntax {
             msg: String::from("expected an empty object"),
+            offset: self.offset(data),
+        })
+    }
+
+    #[inline(never)]
+    #[cold]
+    fn unknown_token(&mut self, data: &[u8]) -> Error {
+        Error::new(ErrorKind::InvalidSyntax {
+            msg: String::from("a token in bad range detected"),
             offset: self.offset(data),
         })
     }
