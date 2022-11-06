@@ -1,3 +1,7 @@
+## v0.20.2 - 2022-11-05
+
+- Include serde derive feature when the `derive` feature is enabled. This fixes compilation issues for users that used jomini deserialization but didn't reference `serde/derive` in their Cargo.toml.
+
 ## v0.20.1 - 2022-11-02
 
 - Add `Property<T>` for plaintext deserialization that will capture field operators
