@@ -145,6 +145,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
     }
 
     #[inline]
+    fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], u16), Error> {
+        self.parse_next_id_opt(data).ok_or_else(Error::eof)
+    }
+
+    #[inline]
     fn parse_u32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let (head, rest) = get_split::<4>(data).ok_or_else(Error::eof)?;
         let val = u32::from_le_bytes(head);
@@ -253,7 +258,219 @@ impl<'a, 'b> ParserState<'a, 'b> {
         // tape index of the parent container
         let mut parent_ind = 0;
 
-        while let Some((d, token_id)) = self.parse_next_id_opt(data) {
+        macro_rules! push_end {
+            () => {
+                let end_idx = self.token_tape.len();
+                let grand_ind;
+                match self.token_tape.get(parent_ind) {
+                    Some(BinaryToken::Array(end)) => {
+                        grand_ind = *end;
+                        self.token_tape[parent_ind] = BinaryToken::Array(end_idx)
+                    }
+                    Some(BinaryToken::Object(end)) => {
+                        grand_ind = *end;
+                        self.token_tape[parent_ind] = BinaryToken::Object(end_idx)
+                    }
+                    _ => return Err(self.end_location_error(data)),
+                }
+
+                // And restore state based on the next ancestor
+                let nstate = match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                    BinaryToken::Array(_) => ParseState::ArrayValue,
+                    BinaryToken::Object(_) => ParseState::Key,
+                    _ => ParseState::Key,
+                };
+
+                state = nstate;
+                self.token_tape.alloc().init(BinaryToken::End(parent_ind));
+                parent_ind = grand_ind;
+            };
+        }
+
+        'outer: while let Some((mut d, mut token_id)) = self.parse_next_id_opt(data) {
+            // This conditional is purely an optimization to parse an entire
+            // <key> = <value> in one iteration of the loop, and can be removed
+            // or ignored to ease understanding. See PR #111 for a breakdown on
+            // field and value frequency.
+            if state == ParseState::Key {
+                if token_id > UNQUOTED_STRING || token_id == 0xb {
+                    // 65-90% of keys are tokens
+                    // 5% of these keys are id (0xb)
+                    if token_id != F64 && token_id != U64 {
+                        self.token_tape.alloc().init(BinaryToken::Token(token_id));
+
+                        let (d2, token_id2) = self.parse_next_id(d)?;
+                        if token_id2 == EQUAL {
+                            let (d3, token_id3) = self.parse_next_id(d2)?;
+                            match token_id3 {
+                                EQUAL | END | RGB => {
+                                    d = d3;
+                                    token_id = token_id3;
+                                    state = ParseState::ObjectValue
+                                }
+                                OPEN => {
+                                    // We could be looking at a primitive array
+                                    // so we should attempt to parse it in one go
+                                    let ind = self.token_tape.len();
+                                    self.token_tape.alloc().init(BinaryToken::Array(parent_ind));
+                                    parent_ind = ind;
+                                    let (d4, token_id4) = self.parse_next_id(d3)?;
+
+                                    macro_rules! parse_array_field {
+                                        ($fn:ident, $token:expr) => {
+                                            let d4 = self.$fn(d4)?;
+                                            let (d5, token_id5) = self.parse_next_id(d4)?;
+
+                                            if token_id5 == $token {
+                                                let mut nd = self.$fn(d5)?;
+                                                loop {
+                                                    let (nd2, x) = self.parse_next_id(nd)?;
+                                                    if x == $token {
+                                                        nd = self.$fn(nd2)?;
+                                                    } else if x == END {
+                                                        data = nd2;
+                                                        let end_idx = self.token_tape.len();
+                                                        match unsafe {
+                                                            self.token_tape
+                                                                .get_unchecked_mut(parent_ind)
+                                                        } {
+                                                            BinaryToken::Array(end) => {
+                                                                let grand_ind = *end;
+                                                                *end = end_idx;
+                                                                let val =
+                                                                    BinaryToken::End(parent_ind);
+                                                                self.token_tape.alloc().init(val);
+                                                                parent_ind = grand_ind;
+                                                                continue 'outer;
+                                                            }
+                                                            _ => unsafe {
+                                                                core::hint::unreachable_unchecked()
+                                                            },
+                                                        }
+                                                    } else {
+                                                        d = nd2;
+                                                        token_id = x;
+                                                        state = ParseState::ArrayValue;
+                                                        break;
+                                                    }
+                                                }
+                                            } else {
+                                                d = d5;
+                                                token_id = token_id5;
+                                                state = ParseState::OpenSecond;
+                                            }
+                                        };
+                                    }
+
+                                    // These three array types cover 99.6% of EU4 arrays
+                                    if token_id4 == I32 {
+                                        parse_array_field!(parse_i32, I32);
+                                    } else if token_id4 == QUOTED_STRING {
+                                        parse_array_field!(parse_quoted_string, QUOTED_STRING);
+                                    } else if token_id4 == F32 {
+                                        parse_array_field!(parse_f32, F32);
+                                    } else {
+                                        d = d4;
+                                        token_id = token_id4;
+                                        state = ParseState::OpenFirst;
+                                    }
+                                }
+                                U32 => {
+                                    data = self.parse_u32(d3)?;
+                                    continue;
+                                }
+                                U64 => {
+                                    data = self.parse_u64(d3)?;
+                                    continue;
+                                }
+                                I32 => {
+                                    data = self.parse_i32(d3)?;
+                                    continue;
+                                }
+                                BOOL => {
+                                    data = self.parse_bool(d3)?;
+                                    continue;
+                                }
+                                QUOTED_STRING => {
+                                    data = self.parse_quoted_string(d3)?;
+                                    continue;
+                                }
+                                UNQUOTED_STRING => {
+                                    data = self.parse_unquoted_string(d3)?;
+                                    continue;
+                                }
+                                F32 => {
+                                    data = self.parse_f32(d3)?;
+                                    continue;
+                                }
+                                F64 => {
+                                    data = self.parse_f64(d3)?;
+                                    continue;
+                                }
+                                x => {
+                                    data = d3;
+                                    self.token_tape.alloc().init(BinaryToken::Token(x));
+                                    continue;
+                                }
+                            }
+                        } else {
+                            d = d2;
+                            token_id = token_id2;
+                            state = ParseState::KeyValueSeparator;
+                        }
+                    }
+                } else if token_id == END {
+                    push_end!();
+                    data = d;
+                    continue;
+                } else if token_id == QUOTED_STRING {
+                    // over 20% of EU4 object keys are quoted strings and they
+                    // nearly always are objects
+                    let d2 = self.parse_quoted_string(d)?;
+                    let (d3, token_id2) = self.parse_next_id(d2)?;
+                    if token_id2 == EQUAL {
+                        let (d4, token_id3) = self.parse_next_id(d3)?;
+
+                        if token_id3 == OPEN {
+                            let ind = self.token_tape.len();
+                            self.token_tape.alloc().init(BinaryToken::Array(parent_ind));
+                            parent_ind = ind;
+                            state = ParseState::OpenFirst;
+                            (d, token_id) = self.parse_next_id(d4)?;
+                        } else {
+                            d = d4;
+                            token_id = token_id3;
+                            state = ParseState::ObjectValue;
+                        }
+                    } else {
+                        d = d3;
+                        token_id = token_id2;
+                        state = ParseState::KeyValueSeparator;
+                    }
+                } else if token_id == I32 {
+                    // 8% of Vic3 and EU4 object keys are i32
+                    // 96% of i32 keys have an i32 value
+                    let d2 = self.parse_i32(d)?;
+                    let (d3, token_id2) = self.parse_next_id(d2)?;
+                    if token_id2 == EQUAL {
+                        let (d4, token_id3) = self.parse_next_id(d3)?;
+
+                        if token_id3 == I32 {
+                            data = self.parse_i32(d4)?;
+                            continue;
+                        } else {
+                            d = d4;
+                            token_id = token_id3;
+                            state = ParseState::ObjectValue;
+                        }
+                    } else {
+                        d = d3;
+                        token_id = token_id2;
+                        state = ParseState::KeyValueSeparator;
+                    }
+                }
+            }
+
             if state == ParseState::ObjectToArray {
                 // This branch should never be taken on any save. It represents
                 // `area = {a=b 10 20}`, which only happens in the text format.
@@ -310,7 +527,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         // Skip empty containers if they occur in the key
                         // position eg: `a={b=c {} d=1}`. These occur in every
                         // EU4 save, even in 1.34.
-                        match self.parse_next_id_opt(d).ok_or_else(Error::eof)? {
+                        match self.parse_next_id(d)? {
                             (nd, END) => data = nd,
                             _ => return Err(self.empty_object_err(data)),
                         }
@@ -331,30 +548,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
                     // Update the container token with now discovered location
                     // of when the container ends
-                    let end_idx = self.token_tape.len();
-                    let grand_ind;
-                    match self.token_tape.get(parent_ind) {
-                        Some(BinaryToken::Array(end)) => {
-                            grand_ind = *end;
-                            self.token_tape[parent_ind] = BinaryToken::Array(end_idx)
-                        }
-                        Some(BinaryToken::Object(end)) => {
-                            grand_ind = *end;
-                            self.token_tape[parent_ind] = BinaryToken::Object(end_idx)
-                        }
-                        _ => return Err(self.end_location_error(data)),
-                    }
-
-                    // And restore state based on the next ancestor
-                    let nstate = match unsafe { self.token_tape.get_unchecked(grand_ind) } {
-                        BinaryToken::Array(_) => ParseState::ArrayValue,
-                        BinaryToken::Object(_) => ParseState::Key,
-                        _ => ParseState::Key,
-                    };
-
-                    state = nstate;
-                    self.token_tape.alloc().init(BinaryToken::End(parent_ind));
-                    parent_ind = grand_ind;
+                    push_end!();
                     data = d;
                 }
                 RGB => {
