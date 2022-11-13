@@ -91,7 +91,10 @@ impl BinaryTapeParser {
         let token_tape = &mut tape.token_tape;
         token_tape.clear();
 
-        token_tape.reserve(data.len() / 5);
+        token_tape.reserve((data.len() / 5).max(10));
+        // Write to the first element so we can assume it is initialized
+        unsafe { token_tape.as_mut_ptr().write(BinaryToken::Equal) };
+
         let mut state = ParserState {
             data,
             original_length: data.len(),
@@ -261,29 +264,20 @@ impl<'a, 'b> ParserState<'a, 'b> {
         macro_rules! push_end {
             () => {
                 let end_idx = self.token_tape.len();
-                let grand_ind;
-                match self.token_tape.get(parent_ind) {
-                    Some(BinaryToken::Array(end)) => {
-                        grand_ind = *end;
-                        self.token_tape[parent_ind] = BinaryToken::Array(end_idx)
-                    }
-                    Some(BinaryToken::Object(end)) => {
-                        grand_ind = *end;
-                        self.token_tape[parent_ind] = BinaryToken::Object(end_idx)
+                match unsafe { self.token_tape.get_unchecked_mut(parent_ind) } {
+                    BinaryToken::Array(end) | BinaryToken::Object(end) => {
+                        let grand_ind = *end;
+                        *end = end_idx;
+                        let val = BinaryToken::End(parent_ind);
+                        self.token_tape.alloc().init(val);
+                        parent_ind = grand_ind;
+                        state = match unsafe { self.token_tape.get_unchecked(grand_ind) } {
+                            BinaryToken::Array(_) => ParseState::ArrayValue,
+                            _ => ParseState::Key,
+                        }
                     }
                     _ => return Err(self.end_location_error(data)),
                 }
-
-                // And restore state based on the next ancestor
-                let nstate = match unsafe { self.token_tape.get_unchecked(grand_ind) } {
-                    BinaryToken::Array(_) => ParseState::ArrayValue,
-                    BinaryToken::Object(_) => ParseState::Key,
-                    _ => ParseState::Key,
-                };
-
-                state = nstate;
-                self.token_tape.alloc().init(BinaryToken::End(parent_ind));
-                parent_ind = grand_ind;
             };
         }
 
@@ -366,6 +360,22 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                     parse_array_field!(parse_quoted_string, QUOTED_STRING);
                                 } else if token_id4 == F32 {
                                     parse_array_field!(parse_f32, F32);
+                                } else if (token_id4 > UNQUOTED_STRING
+                                    && token_id4 != F64
+                                    && token_id4 != U64)
+                                    || token_id4 == 0xb
+                                {
+                                    self.token_tape.alloc().init(BinaryToken::Token(token_id4));
+                                    let (d4, token_id4) = self.parse_next_id(d4)?;
+                                    if token_id4 == EQUAL {
+                                        unsafe { self.set_parent_to_object(parent_ind) };
+                                        state = ParseState::ObjectValue;
+                                        (d, token_id) = self.parse_next_id(d4)?;
+                                    } else {
+                                        d = d4;
+                                        token_id = token_id4;
+                                        state = ParseState::OpenSecond;
+                                    }
                                 } else {
                                     d = d4;
                                     token_id = token_id4;
@@ -396,6 +406,19 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             parent_ind = ind;
                             state = ParseState::OpenFirst;
                             (d, token_id) = self.parse_next_id(d4)?;
+
+                            // Expect an object that follows a quoted string to start with a token
+                            if token_id > UNQUOTED_STRING && token_id != F64 && token_id != U64 {
+                                self.token_tape.alloc().init(BinaryToken::Token(token_id));
+                                (d, token_id) = self.parse_next_id(d)?;
+                                if token_id == EQUAL {
+                                    unsafe { self.set_parent_to_object(parent_ind) };
+                                    state = ParseState::ObjectValue;
+                                    (d, token_id) = self.parse_next_id(d)?;
+                                } else {
+                                    state = ParseState::OpenSecond;
+                                }
+                            }
                         } else {
                             d = d4;
                             token_id = token_id3;
