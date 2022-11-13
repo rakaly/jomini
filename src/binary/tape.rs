@@ -302,115 +302,74 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         let (d2, token_id2) = self.parse_next_id(d)?;
                         if token_id2 == EQUAL {
                             let (d3, token_id3) = self.parse_next_id(d2)?;
-                            match token_id3 {
-                                EQUAL | END | RGB => {
-                                    d = d3;
-                                    token_id = token_id3;
-                                    state = ParseState::ObjectValue
-                                }
-                                OPEN => {
-                                    // We could be looking at a primitive array
-                                    // so we should attempt to parse it in one go
-                                    let ind = self.token_tape.len();
-                                    self.token_tape.alloc().init(BinaryToken::Array(parent_ind));
-                                    parent_ind = ind;
-                                    let (d4, token_id4) = self.parse_next_id(d3)?;
+                            if token_id3 != OPEN {
+                                d = d3;
+                                token_id = token_id3;
+                                state = ParseState::ObjectValue;
+                            } else {
+                                // We could be looking at a primitive array
+                                // so we should attempt to parse it in one go
+                                let ind = self.token_tape.len();
+                                self.token_tape.alloc().init(BinaryToken::Array(parent_ind));
+                                parent_ind = ind;
+                                let (d4, token_id4) = self.parse_next_id(d3)?;
 
-                                    macro_rules! parse_array_field {
-                                        ($fn:ident, $token:expr) => {
-                                            let d4 = self.$fn(d4)?;
-                                            let (d5, token_id5) = self.parse_next_id(d4)?;
+                                macro_rules! parse_array_field {
+                                    ($fn:ident, $token:expr) => {
+                                        let d4 = self.$fn(d4)?;
+                                        let (d5, token_id5) = self.parse_next_id(d4)?;
 
-                                            if token_id5 == $token {
-                                                let mut nd = self.$fn(d5)?;
-                                                loop {
-                                                    let (nd2, x) = self.parse_next_id(nd)?;
-                                                    if x == $token {
-                                                        nd = self.$fn(nd2)?;
-                                                    } else if x == END {
-                                                        data = nd2;
-                                                        let end_idx = self.token_tape.len();
-                                                        match unsafe {
-                                                            self.token_tape
-                                                                .get_unchecked_mut(parent_ind)
-                                                        } {
-                                                            BinaryToken::Array(end) => {
-                                                                let grand_ind = *end;
-                                                                *end = end_idx;
-                                                                let val =
-                                                                    BinaryToken::End(parent_ind);
-                                                                self.token_tape.alloc().init(val);
-                                                                parent_ind = grand_ind;
-                                                                continue 'outer;
-                                                            }
-                                                            _ => unsafe {
-                                                                core::hint::unreachable_unchecked()
-                                                            },
+                                        if token_id5 == $token {
+                                            let mut nd = self.$fn(d5)?;
+                                            loop {
+                                                let (nd2, x) = self.parse_next_id(nd)?;
+                                                if x == $token {
+                                                    nd = self.$fn(nd2)?;
+                                                } else if x == END {
+                                                    data = nd2;
+                                                    let end_idx = self.token_tape.len();
+                                                    match unsafe {
+                                                        self.token_tape
+                                                            .get_unchecked_mut(parent_ind)
+                                                    } {
+                                                        BinaryToken::Array(end) => {
+                                                            let grand_ind = *end;
+                                                            *end = end_idx;
+                                                            let val = BinaryToken::End(parent_ind);
+                                                            self.token_tape.alloc().init(val);
+                                                            parent_ind = grand_ind;
+                                                            continue 'outer;
                                                         }
-                                                    } else {
-                                                        d = nd2;
-                                                        token_id = x;
-                                                        state = ParseState::ArrayValue;
-                                                        break;
+                                                        _ => unsafe {
+                                                            core::hint::unreachable_unchecked()
+                                                        },
                                                     }
+                                                } else {
+                                                    d = nd2;
+                                                    token_id = x;
+                                                    state = ParseState::ArrayValue;
+                                                    break;
                                                 }
-                                            } else {
-                                                d = d5;
-                                                token_id = token_id5;
-                                                state = ParseState::OpenSecond;
                                             }
-                                        };
-                                    }
+                                        } else {
+                                            d = d5;
+                                            token_id = token_id5;
+                                            state = ParseState::OpenSecond;
+                                        }
+                                    };
+                                }
 
-                                    // These three array types cover 99.6% of EU4 arrays
-                                    if token_id4 == I32 {
-                                        parse_array_field!(parse_i32, I32);
-                                    } else if token_id4 == QUOTED_STRING {
-                                        parse_array_field!(parse_quoted_string, QUOTED_STRING);
-                                    } else if token_id4 == F32 {
-                                        parse_array_field!(parse_f32, F32);
-                                    } else {
-                                        d = d4;
-                                        token_id = token_id4;
-                                        state = ParseState::OpenFirst;
-                                    }
-                                }
-                                U32 => {
-                                    data = self.parse_u32(d3)?;
-                                    continue;
-                                }
-                                U64 => {
-                                    data = self.parse_u64(d3)?;
-                                    continue;
-                                }
-                                I32 => {
-                                    data = self.parse_i32(d3)?;
-                                    continue;
-                                }
-                                BOOL => {
-                                    data = self.parse_bool(d3)?;
-                                    continue;
-                                }
-                                QUOTED_STRING => {
-                                    data = self.parse_quoted_string(d3)?;
-                                    continue;
-                                }
-                                UNQUOTED_STRING => {
-                                    data = self.parse_unquoted_string(d3)?;
-                                    continue;
-                                }
-                                F32 => {
-                                    data = self.parse_f32(d3)?;
-                                    continue;
-                                }
-                                F64 => {
-                                    data = self.parse_f64(d3)?;
-                                    continue;
-                                }
-                                x => {
-                                    data = d3;
-                                    self.token_tape.alloc().init(BinaryToken::Token(x));
-                                    continue;
+                                // These three array types cover 99.6% of EU4 arrays
+                                if token_id4 == I32 {
+                                    parse_array_field!(parse_i32, I32);
+                                } else if token_id4 == QUOTED_STRING {
+                                    parse_array_field!(parse_quoted_string, QUOTED_STRING);
+                                } else if token_id4 == F32 {
+                                    parse_array_field!(parse_f32, F32);
+                                } else {
+                                    d = d4;
+                                    token_id = token_id4;
+                                    state = ParseState::OpenFirst;
                                 }
                             }
                         } else {
