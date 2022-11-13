@@ -174,7 +174,13 @@ impl std::fmt::Display for Stats {
     }
 }
 
-fn read_array(keys: &mut Stats, values: &mut Stats, array: &mut Stats, tokens: &[BinaryToken], range: Range<usize>) {
+fn read_array(
+    keys: &mut Stats,
+    values: &mut Stats,
+    array: &mut Stats,
+    tokens: &[BinaryToken],
+    range: Range<usize>,
+) {
     let mut ind = range.start;
     while ind < range.end {
         let token = tokens[ind];
@@ -196,7 +202,13 @@ fn read_array(keys: &mut Stats, values: &mut Stats, array: &mut Stats, tokens: &
     }
 }
 
-fn read_object(keys: &mut Stats, values: &mut Stats, array: &mut Stats, tokens: &[BinaryToken], range: Range<usize>) {
+fn read_object(
+    keys: &mut Stats,
+    values: &mut Stats,
+    array: &mut Stats,
+    tokens: &[BinaryToken],
+    range: Range<usize>,
+) {
     let mut ind = range.start;
     while ind < range.end {
         let token = tokens[ind];
