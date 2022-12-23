@@ -88,6 +88,23 @@ impl BinaryTapeParser {
         data: &'a [u8],
         tape: &mut BinaryTape<'a>,
     ) -> Result<(), Error> {
+        self.parse_slice_into_tape_core::<true>(data, tape)
+    }
+
+    #[cfg(unoptimized_build)]
+    pub fn parse_slice_into_tape_unoptimized<'a>(
+        self,
+        data: &'a [u8],
+        tape: &mut BinaryTape<'a>,
+    ) -> Result<(), Error> {
+        self.parse_slice_into_tape_core::<false>(data, tape)
+    }
+
+    fn parse_slice_into_tape_core<'a, const ENABLE_OPTIMIZATION: bool>(
+        self,
+        data: &'a [u8],
+        tape: &mut BinaryTape<'a>,
+    ) -> Result<(), Error> {
         let token_tape = &mut tape.token_tape;
         token_tape.clear();
 
@@ -101,7 +118,7 @@ impl BinaryTapeParser {
             token_tape,
         };
 
-        state.parse()?;
+        state.parse::<ENABLE_OPTIMIZATION>()?;
         Ok(())
     }
 }
@@ -254,7 +271,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
         }
     }
 
-    fn parse(&mut self) -> Result<(), Error> {
+    fn parse<const ENABLE_OPTIMIZATION: bool>(&mut self) -> Result<(), Error> {
         let mut data = self.data;
         let mut state = ParseState::Key;
 
@@ -286,7 +303,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
             // <key> = <value> in one iteration of the loop, and can be removed
             // or ignored to ease understanding. See PR #111 for a breakdown on
             // field and value frequency.
-            if state == ParseState::Key {
+            if ENABLE_OPTIMIZATION && state == ParseState::Key {
                 if token_id > UNQUOTED_STRING || token_id == 0xb {
                     // 65-90% of keys are tokens
                     // 5% of these keys are id (0xb)
@@ -296,11 +313,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         let (d2, token_id2) = self.parse_next_id(d)?;
                         if token_id2 == EQUAL {
                             let (d3, token_id3) = self.parse_next_id(d2)?;
-                            if token_id3 != OPEN {
-                                d = d3;
-                                token_id = token_id3;
-                                state = ParseState::ObjectValue;
-                            } else {
+                            if token_id3 == I32 {
+                                data = self.parse_i32(d3)?;
+                                continue;
+                            } else if token_id3 == OPEN {
                                 // We could be looking at a primitive array
                                 // so we should attempt to parse it in one go
                                 let ind = self.token_tape.len();
@@ -381,6 +397,16 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                     token_id = token_id4;
                                     state = ParseState::OpenFirst;
                                 }
+                            } else if token_id3 == QUOTED_STRING {
+                                data = self.parse_quoted_string(d3)?;
+                                continue;
+                            } else if token_id3 == F32 {
+                                data = self.parse_f32(d3)?;
+                                continue;
+                            } else {
+                                d = d3;
+                                token_id = token_id3;
+                                state = ParseState::ObjectValue;
                             }
                         } else {
                             d = d2;
@@ -415,6 +441,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                     unsafe { self.set_parent_to_object(parent_ind) };
                                     state = ParseState::ObjectValue;
                                     (d, token_id) = self.parse_next_id(d)?;
+                                    if token_id == BOOL {
+                                        data = self.parse_bool(d)?;
+                                        state = ParseState::Key;
+                                        continue;
+                                    } else if token_id == QUOTED_STRING {
+                                        data = self.parse_quoted_string(d)?;
+                                        state = ParseState::Key;
+                                        continue;
+                                    }
                                 } else {
                                     state = ParseState::OpenSecond;
                                 }
@@ -474,6 +509,24 @@ impl<'a, 'b> ParserState<'a, 'b> {
                 I32 => {
                     data = self.parse_i32(d)?;
                     state = Self::next_state(state);
+
+                    if ENABLE_OPTIMIZATION && state == ParseState::ArrayValue {
+                        let mut nd = data;
+                        loop {
+                            let (nd2, x) = self.parse_next_id(nd)?;
+                            if x == I32 {
+                                nd = self.parse_i32(nd2)?;
+                            } else if x == END {
+                                push_end!();
+                                data = nd2;
+                                break;
+                            } else {
+                                state = ParseState::ArrayValue;
+                                data = nd;
+                                break;
+                            }
+                        }
+                    }
                 }
                 BOOL => {
                     data = self.parse_bool(d)?;

@@ -79,7 +79,7 @@ jobs:
       if: matrix.build == 'nightly'
       run: |
         cargo install cargo-fuzz
-        cargo fuzz build fuzz_binary
+        RUSTFLAGS="--cfg unoptimized_build" cargo fuzz build fuzz_binary
         cargo fuzz build fuzz_scalar_text
         cargo fuzz build fuzz_text
         cargo fuzz build fuzz_date

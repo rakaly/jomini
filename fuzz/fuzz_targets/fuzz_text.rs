@@ -35,7 +35,7 @@ where
     E: crate::Encoding + Clone,
 {
     match value.token() {
-        TextToken::Object {..} => {
+        TextToken::Object { .. } => {
             let obj = value.read_object().unwrap();
             if unsafe { GROUPED } {
                 iterate_object2(obj);
@@ -43,7 +43,7 @@ where
                 iterate_object(obj);
             }
         }
-        TextToken::Array {..} => {
+        TextToken::Array { .. } => {
             iterate_array(value.read_array().unwrap());
         }
         TextToken::End(_) => panic!("end!?"),
@@ -102,17 +102,21 @@ fuzz_target!(|data: &[u8]| {
         let tokens = tape.tokens();
         for (i, token) in tokens.iter().enumerate() {
             match token {
-                TextToken::Array { end: ind, .. } | TextToken::Object{ end: ind, .. } | TextToken::End(ind)
+                TextToken::Array { end: ind, .. }
+                | TextToken::Object { end: ind, .. }
+                | TextToken::End(ind)
                     if *ind == 0 =>
                 {
                     panic!("zero ind encountered");
                 }
-                TextToken::Array { end: ind, .. } | TextToken::Object{ end: ind, .. } => match &tokens[*ind] {
-                    TextToken::End(ind2) => {
-                        assert_eq!(*ind2, i)
+                TextToken::Array { end: ind, .. } | TextToken::Object { end: ind, .. } => {
+                    match &tokens[*ind] {
+                        TextToken::End(ind2) => {
+                            assert_eq!(*ind2, i)
+                        }
+                        x => panic!("expected end not {:?}", x),
                     }
-                    x => panic!("expected end not {:?}", x),
-                },
+                }
                 _ => {}
             }
         }
