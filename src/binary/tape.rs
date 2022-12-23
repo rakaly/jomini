@@ -586,10 +586,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     push_end!();
                     data = d;
                 }
-                RGB => {
-                    data = self.parse_rgb(d)?;
-                    state = Self::next_state(state);
-                }
                 EQUAL => {
                     data = d;
                     if state == ParseState::KeyValueSeparator {
@@ -640,9 +636,14 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     }
                 }
                 x => {
-                    data = d;
-                    self.token_tape.alloc().init(BinaryToken::Token(x));
-                    state = Self::next_state(state);
+                    if x != RGB || state != ParseState::ObjectValue {
+                        data = d;
+                        self.token_tape.alloc().init(BinaryToken::Token(x));
+                        state = Self::next_state(state);
+                    } else {
+                        data = self.parse_rgb(d)?;
+                        state = ParseState::Key;
+                    }
                 }
             }
         }
@@ -1198,6 +1199,16 @@ mod tests {
                     b: 27,
                 })
             ]
+        );
+    }
+
+    #[test]
+    fn test_rgb_no_key() {
+        let data = [0x43, 0x02, 0x01, 0x00, 0xbe, 0x28];
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![BinaryToken::Token(0x0243), BinaryToken::Token(0x28be),]
         );
     }
 
