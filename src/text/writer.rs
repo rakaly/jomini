@@ -236,7 +236,7 @@ where
         let esc_buf = self.scratch.split_off(0);
         let esc = escape(data, esc_buf);
         self.writer.write_all(b"\"")?;
-        self.writer.write_all(&*esc)?;
+        self.writer.write_all(&esc)?;
         self.writer.write_all(b"\"")?;
         self.scratch = esc.buffer();
         self.write_epilogue()?;
