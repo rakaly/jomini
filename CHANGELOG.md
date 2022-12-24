@@ -1,3 +1,8 @@
+## v0.20.3 - 2022-12-24
+
+- Up to a 75% throughput increase in binary parsing performance
+- Disallow binary RGB values outside of object values
+
 ## v0.20.2 - 2022-11-05
 
 - Include serde derive feature when the `derive` feature is enabled. This fixes compilation issues for users that used jomini deserialization but didn't reference `serde/derive` in their Cargo.toml.
