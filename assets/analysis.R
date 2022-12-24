@@ -10,19 +10,17 @@ df <- mutate(df,
 )
 
 byte_rate <- function(l) {
-  paste(scales::number_bytes(l, symbol = "MB", units = "si"), "/s")
+  scales::number_bytes(l, symbol = "MB", units = "si")
 }
 
-ggplot(df) +
-  stat_summary(aes(fn, throughput, fill = as.factor(fn)),
-              position="dodge2",
-              geom = "bar",
-              fun = median) +
+ggplot(df, aes(fn, throughput)) +
+  stat_summary(position="dodge2", geom = "bar", fun = median, fill = "#9e9ac8") +
   scale_y_continuous(labels = byte_rate, breaks = pretty_breaks(10)) +
   expand_limits(y = 0) +
   xlab("File Format") +
-  ylab("Throughput") +
-  ggtitle("Parsing Throughput with Jomini",
+  ylab("Throughput\n(per second)") +
+  ggtitle("Jomini Parsing Throughput",
           subtitle = "Across text and binary formats") +
   guides(fill=guide_legend(title="Function"))
-ggsave('jomini-bench-throughput.png', width = 5, height = 4, dpi = 180)
+
+ggsave('jomini-bench-throughput.png', width = 4, height = 3, dpi = 180)

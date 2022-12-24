@@ -230,7 +230,7 @@ Benchmarks are ran with the following command:
 
 ```
 cargo clean
-cargo bench -- '/ck3'
+cargo bench -- parse
 find ./target -wholename "*/new/raw.csv" -print0 | xargs -0 xsv cat rows > assets/jomini-benchmarks.csv
 ```
 
