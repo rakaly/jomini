@@ -635,15 +635,14 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         return Err(self.equal_key_error(data));
                     }
                 }
+                RGB if state == ParseState::ObjectValue => {
+                    data = self.parse_rgb(d)?;
+                    state = ParseState::Key;
+                }
                 x => {
-                    if x != RGB || state != ParseState::ObjectValue {
-                        data = d;
-                        self.token_tape.alloc().init(BinaryToken::Token(x));
-                        state = Self::next_state(state);
-                    } else {
-                        data = self.parse_rgb(d)?;
-                        state = ParseState::Key;
-                    }
+                    data = d;
+                    self.token_tape.alloc().init(BinaryToken::Token(x));
+                    state = Self::next_state(state);
                 }
             }
         }
