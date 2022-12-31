@@ -100,5 +100,7 @@ fuzz_target!(|data: &[u8]| {
         }
     }
     let _: Result<Meta, _> =
-        jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor).from_tape(&otape, &hash);
+        jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+            .from_tape(&otape, &hash)
+            .deserialize();
 });

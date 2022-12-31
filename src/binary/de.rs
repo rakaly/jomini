@@ -53,8 +53,9 @@ use std::borrow::Cow;
 /// map.insert(0x2d82, String::from("field1"));
 /// map.insert(0x2d83, String::from("field2"));
 ///
-/// let a: StructA = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-///     .from_slice(&data[..], &map)?;
+/// let builder = BinaryDeserializer::builder_flavor(BinaryTestFlavor);
+/// let mut deserializer = builder.from_slice(&data[..], &map)?;
+/// let a: StructA = deserializer.deserialize()?;
 /// assert_eq!(a, StructA {
 ///   field1: "ENG".to_string(),
 ///   field2: 89,
@@ -69,16 +70,14 @@ use std::borrow::Cow;
 /// info
 ///
 /// [0]: https://serde.rs/attr-flatten.html
-pub struct BinaryDeserializer;
+pub struct BinaryDeserializer<'b, 'data: 'b, 'res: 'data, RES, F> {
+    tape: BinaryDeserializerKind<'data, 'b>,
+    config: BinaryConfig<'res, RES, F>,
+}
 
-impl BinaryDeserializer {
-    /// A customized builder for a certain flavor of binary data
-    pub fn builder_flavor<F>(flavor: F) -> BinaryDeserializerBuilder<F>
-    where
-        F: BinaryFlavor,
-    {
-        BinaryDeserializerBuilder::with_flavor(flavor)
-    }
+enum BinaryDeserializerKind<'data, 'b> {
+    Owned(BinaryTape<'data>),
+    Borrowed(&'b BinaryTape<'data>),
 }
 
 /// Build a tweaked binary deserializer
@@ -106,57 +105,97 @@ where
         self
     }
 
-    /// Convenience method for parsing and deserializing binary data in a single step
-    pub fn from_slice<'a, 'b, 'res: 'a, RES, T>(
-        &'b self,
+    /// Convenience method for parsing and building a deserializer
+    pub fn from_slice<'b, 'a, 'res: 'a, RES>(
+        self,
         data: &'a [u8],
         resolver: &'res RES,
-    ) -> Result<T, Error>
+    ) -> Result<BinaryDeserializer<'b, 'a, 'res, RES, F>, Error>
     where
-        T: Deserialize<'a>,
         RES: TokenResolver,
     {
         let tape = BinaryTape::from_slice(data)?;
-        self.from_tape(&tape, resolver)
+        let config = BinaryConfig {
+            resolver,
+            failed_resolve_strategy: self.failed_resolve_strategy,
+            flavor: self.flavor,
+        };
+
+        Ok(BinaryDeserializer {
+            tape: BinaryDeserializerKind::Owned(tape),
+            config,
+        })
     }
 
-    /// Deserialize the given binary tape
-    pub fn from_tape<'a, 'b, 'c, 'res: 'a, RES, T>(
-        &'b self,
-        tape: &'c BinaryTape<'a>,
+    /// Convenience method for parsing and deserializing binary data
+    pub fn deserialize_slice<'b, 'data, 'res: 'data, RES, T>(
+        self,
+        data: &'data [u8],
         resolver: &'res RES,
     ) -> Result<T, Error>
     where
-        T: Deserialize<'a>,
+        T: Deserialize<'data>,
+        RES: TokenResolver,
+    {
+        let deser = self.from_slice(data, resolver)?;
+        deser.deserialize()
+    }
+
+    /// Deserialize the given binary tape
+    pub fn from_tape<'data, 'b, 'res: 'data, RES>(
+        self,
+        tape: &'b BinaryTape<'data>,
+        resolver: &'res RES,
+    ) -> BinaryDeserializer<'b, 'data, 'res, RES, F>
+    where
         RES: TokenResolver,
     {
         let config = BinaryConfig {
             resolver,
             failed_resolve_strategy: self.failed_resolve_strategy,
-            encoding: &self.flavor,
+            flavor: self.flavor,
         };
 
-        let deserializer = RootDeserializer {
-            tokens: tape.tokens(),
-            config: &config,
-        };
-        Ok(T::deserialize(deserializer)?)
+        BinaryDeserializer {
+            tape: BinaryDeserializerKind::Borrowed(tape),
+            config,
+        }
     }
 }
 
-struct BinaryConfig<'res, RES, E> {
+impl<'b, 'de, 'res, RES: TokenResolver, E: BinaryFlavor> BinaryDeserializer<'b, 'de, 'res, RES, E> {
+    /// Deserialize into provided type
+    pub fn deserialize<T>(&self) -> Result<T, Error>
+    where
+        T: Deserialize<'de>,
+    {
+        T::deserialize(self).map_err(|e| e.into())
+    }
+}
+
+impl BinaryDeserializer<'_, '_, '_, (), ()> {
+    /// Constructs a BinaryDeserializerBuilder
+    pub fn builder_flavor<F: BinaryFlavor>(flavor: F) -> BinaryDeserializerBuilder<F> {
+        BinaryDeserializerBuilder::with_flavor(flavor)
+    }
+}
+
+impl<RES, E> BinaryDeserializer<'_, '_, '_, RES, E> {
+    /// Update how the deserializer handles failed token resolution
+    pub fn on_failed_resolve(&mut self, strategy: FailedResolveStrategy) -> &mut Self {
+        self.config.failed_resolve_strategy = strategy;
+        self
+    }
+}
+
+struct BinaryConfig<'res, RES, F> {
     resolver: &'res RES,
     failed_resolve_strategy: FailedResolveStrategy,
-    encoding: E,
+    flavor: F,
 }
 
-struct RootDeserializer<'b, 'a: 'b, 'res: 'a, RES, E> {
-    tokens: &'b [BinaryToken<'a>],
-    config: &'b BinaryConfig<'res, RES, E>,
-}
-
-impl<'b, 'de, 'res, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
-    for RootDeserializer<'b, 'de, 'res, RES, E>
+impl<'a, 'b, 'de, 'res, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
+    for &'a BinaryDeserializer<'b, 'de, 'res, RES, F>
 {
     type Error = DeserializeError;
 
@@ -175,12 +214,15 @@ impl<'b, 'de, 'res, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_map(BinaryMap::new(
-            self.config,
-            self.tokens,
-            0,
-            self.tokens.len(),
-        ))
+        match &self.tape {
+            BinaryDeserializerKind::Owned(x) | &BinaryDeserializerKind::Borrowed(x) => visitor
+                .visit_map(BinaryMap::new(
+                    &self.config,
+                    x.tokens(),
+                    0,
+                    x.tokens().len(),
+                )),
+        }
     }
 
     fn deserialize_struct<V>(
@@ -227,8 +269,8 @@ impl<'c, 'a, 'de, 'res: 'de, RES, E> BinaryMap<'c, 'a, 'de, 'res, RES, E> {
     }
 }
 
-impl<'c, 'de, 'a, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> MapAccess<'de>
-    for BinaryMap<'c, 'a, 'de, 'res, RES, E>
+impl<'c, 'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
+    for BinaryMap<'c, 'a, 'de, 'res, RES, F>
 {
     type Error = DeserializeError;
 
@@ -273,8 +315,8 @@ impl<'c, 'de, 'a, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> MapAccess<'de>
     }
 }
 
-struct KeyDeserializer<'b, 'de: 'b, 'res: 'de, RES, E> {
-    config: &'b BinaryConfig<'res, RES, E>,
+struct KeyDeserializer<'b, 'de: 'b, 'res: 'de, RES, F> {
+    config: &'b BinaryConfig<'res, RES, F>,
     tokens: &'b [BinaryToken<'de>],
     tape_idx: usize,
 }
@@ -285,12 +327,12 @@ fn visit_key<
     'de: 'b,
     'res: 'de,
     RES: TokenResolver,
-    E: BinaryFlavor,
+    F: BinaryFlavor,
     V: Visitor<'de>,
 >(
     tape_idx: usize,
     tokens: &'b [BinaryToken<'de>],
-    config: &'b BinaryConfig<'res, RES, E>,
+    config: &'b BinaryConfig<'res, RES, F>,
     visitor: V,
 ) -> Result<V::Value, DeserializeError> {
     match tokens[tape_idx] {
@@ -306,13 +348,13 @@ fn visit_key<
         BinaryToken::U64(x) => visitor.visit_u64(x),
         BinaryToken::I32(x) => visitor.visit_i32(x),
         BinaryToken::Quoted(x) | BinaryToken::Unquoted(x) => {
-            match config.encoding.decode(x.as_bytes()) {
+            match config.flavor.decode(x.as_bytes()) {
                 Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
                 Cow::Owned(s) => visitor.visit_string(s),
             }
         }
-        BinaryToken::F32(x) => visitor.visit_f32(config.encoding.visit_f32(x)),
-        BinaryToken::F64(x) => visitor.visit_f64(config.encoding.visit_f64(x)),
+        BinaryToken::F32(x) => visitor.visit_f32(config.flavor.visit_f32(x)),
+        BinaryToken::F64(x) => visitor.visit_f64(config.flavor.visit_f64(x)),
         BinaryToken::Token(s) => match config.resolver.resolve(s) {
             Some(id) => visitor.visit_borrowed_str(id),
             None => match config.failed_resolve_strategy {
@@ -646,7 +688,7 @@ mod tests {
     }
 
     fn eu4_builder() -> BinaryDeserializerBuilder<Eu4Flavor> {
-        BinaryDeserializerBuilder::with_flavor(Eu4Flavor::new())
+        BinaryDeserializer::builder_flavor(Eu4Flavor::new())
     }
 
     fn from_slice<'a, 'res: 'a, RES, T>(data: &'a [u8], resolver: &'res RES) -> Result<T, Error>
@@ -654,7 +696,7 @@ mod tests {
         T: Deserialize<'a>,
         RES: TokenResolver,
     {
-        eu4_builder().from_slice(data, resolver)
+        eu4_builder().from_slice(data, resolver)?.deserialize()
     }
 
     #[test]
@@ -1247,9 +1289,10 @@ mod tests {
         }
 
         let map: HashMap<u16, String> = HashMap::new();
-        let actual: Result<MyStruct, _> = eu4_builder()
-            .on_failed_resolve(FailedResolveStrategy::Error)
-            .from_slice(&data[..], &map);
+        let mut builder = eu4_builder();
+        builder.on_failed_resolve(FailedResolveStrategy::Error);
+        let actual: Result<MyStruct, _> =
+            builder.from_slice(&data[..], &map).unwrap().deserialize();
         assert!(actual.is_err());
     }
 
@@ -1260,10 +1303,10 @@ mod tests {
         ];
 
         let map: HashMap<u16, String> = HashMap::new();
-        let actual: HashMap<String, &str> = eu4_builder()
-            .on_failed_resolve(FailedResolveStrategy::Stringify)
-            .from_slice(&data[..], &map)
-            .unwrap();
+        let mut builder = eu4_builder();
+        builder.on_failed_resolve(FailedResolveStrategy::Stringify);
+
+        let actual: HashMap<String, &str> = builder.deserialize_slice(&data[..], &map).unwrap();
         let mut expected = HashMap::new();
         expected.insert(String::from("0x2d82"), "ENG");
         assert_eq!(expected, actual);

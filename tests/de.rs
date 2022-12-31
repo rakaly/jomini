@@ -1,8 +1,7 @@
 #![cfg(feature = "derive")]
 
-use jomini::common::PdsDate;
 use jomini::{
-    binary::BinaryFlavor, BinaryDeserializer, Encoding, TextDeserializer, Windows1252Encoding,
+    binary::BinaryFlavor, common::PdsDate, BinaryDeserializer, Encoding, Windows1252Encoding,
 };
 use serde::{
     de::{self, Visitor},
@@ -61,9 +60,9 @@ fn same_deserializer_for_header_token() {
     let txt_data = b"color = rgb { 110 27 27 }";
 
     let bin_out: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .from_slice(&bin_data[..], &map)
+        .deserialize_slice(&bin_data[..], &map)
         .unwrap();
-    let txt_out: MyStruct = TextDeserializer::from_windows1252_slice(&txt_data[..]).unwrap();
+    let txt_out: MyStruct = jomini::text::de::from_windows1252_slice(&txt_data[..]).unwrap();
     assert_eq!(bin_out, txt_out);
     assert_eq!(
         bin_out,
@@ -225,8 +224,7 @@ impl<'de> Deserialize<'de> for SaveVersion {
 #[test]
 fn test_text_deserialization() {
     let data = include_bytes!("./fixtures/meta.txt");
-    let actual: Meta =
-        jomini::TextDeserializer::from_windows1252_slice(&data["EU4txt".len()..]).unwrap();
+    let actual: Meta = jomini::text::de::from_windows1252_slice(&data["EU4txt".len()..]).unwrap();
     assert_eq!(
         actual.date.game_fmt().to_string(),
         String::from("1444.11.11")
@@ -237,14 +235,14 @@ fn test_text_deserialization() {
 #[test]
 fn test_scalar_u64_overflow_crash() {
     let data = include_bytes!("./fixtures/meta.txt.crash");
-    let actual: Result<Meta, _> = jomini::TextDeserializer::from_windows1252_slice(&data[..]);
+    let actual: Result<Meta, _> = jomini::text::de::from_windows1252_slice(&data[..]);
     assert!(actual.is_err());
 }
 
 #[test]
 fn test_text_de_non_scalar_crash() {
     let data = include_bytes!("./fixtures/meta.txt.crash2");
-    let actual: Result<Meta, _> = jomini::TextDeserializer::from_windows1252_slice(&data[..]);
+    let actual: Result<Meta, _> = jomini::text::de::from_windows1252_slice(&data[..]);
     assert!(actual.is_err());
 }
 
@@ -277,8 +275,8 @@ fn test_binary_meta_deserialization() {
     let data = include_bytes!("./fixtures/meta.bin");
     let data = &data["EU4bin".len()..];
     let hash = create_bin_lookup();
-    let actual: Meta = jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .from_slice(&data, &hash)
+    let actual: Meta = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice(&data, &hash)
         .unwrap();
     assert_eq!(
         actual.date.game_fmt().to_string(),
@@ -293,8 +291,8 @@ fn test_binary_meta_deserialization_boxed() {
     let data = &data["EU4bin".len()..];
     let hash = Box::new(create_bin_lookup());
     let flavor = Box::new(BinaryTestFlavor);
-    let actual: Meta = jomini::BinaryDeserializer::builder_flavor(&flavor)
-        .from_slice(&data, &hash)
+    let actual: Meta = BinaryDeserializer::builder_flavor(&flavor)
+        .deserialize_slice(&data, &hash)
         .unwrap();
     assert_eq!(
         actual.date.game_fmt().to_string(),
@@ -307,8 +305,8 @@ fn test_binary_meta_deserialization_boxed() {
 fn test_binary_slice_index_crash() {
     let data = include_bytes!("./fixtures/meta.bin.crash");
     let hash = create_bin_lookup();
-    assert!(jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .from_slice::<_, Meta>(&data[..], &hash)
+    assert!(BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice::<_, Meta>(&data[..], &hash)
         .is_err());
 }
 
@@ -316,8 +314,8 @@ fn test_binary_slice_index_crash() {
 fn test_binary_incomplete_array() {
     let data = include_bytes!("./fixtures/meta.bin.crash2");
     let hash = create_bin_lookup();
-    assert!(jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .from_slice::<_, Meta>(&data[..], &hash)
+    assert!(BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice::<_, Meta>(&data[..], &hash)
         .is_err());
 }
 
@@ -325,8 +323,8 @@ fn test_binary_incomplete_array() {
 fn test_binary_heterogenous_object_crash() {
     let data = include_bytes!("./fixtures/meta.bin.crash3");
     let hash = create_bin_lookup();
-    assert!(jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .from_slice::<_, Meta>(&data[..], &hash)
+    assert!(BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice::<_, Meta>(&data[..], &hash)
         .is_err());
 }
 
@@ -334,8 +332,8 @@ fn test_binary_heterogenous_object_crash() {
 fn test_binary_unknown_key_object() {
     let data = include_bytes!("./fixtures/meta.bin.crash4");
     let hash = create_bin_lookup();
-    assert!(jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .from_slice::<_, Meta>(&data[..], &hash)
+    assert!(BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice::<_, Meta>(&data[..], &hash)
         .is_err());
 }
 
@@ -343,8 +341,8 @@ fn test_binary_unknown_key_object() {
 fn test_binary_timeout() {
     let data = include_bytes!("./fixtures/bin-timeout");
     let hash = create_bin_lookup();
-    assert!(jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .from_slice::<_, Meta>(&data[..], &hash)
+    assert!(BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice::<_, Meta>(&data[..], &hash)
         .is_err());
 }
 
@@ -362,7 +360,7 @@ fn test_flatten_overflow() {
     }
 
     let data = b"a=b d=e {c d}";
-    let txt_out: MyStruct = TextDeserializer::from_windows1252_slice(&data[..]).unwrap();
+    let txt_out: MyStruct = jomini::text::de::from_windows1252_slice(&data[..]).unwrap();
     assert_eq!(txt_out.meta.a, String::from("b"));
 }
 
@@ -380,6 +378,6 @@ fn test_flatten_overflow2() {
     }
 
     let data = b"a=b d=e {c<d}";
-    let txt_out: MyStruct = TextDeserializer::from_windows1252_slice(&data[..]).unwrap();
+    let txt_out: MyStruct = jomini::text::de::from_windows1252_slice(&data[..]).unwrap();
     assert_eq!(txt_out.meta.a, String::from("b"));
 }
