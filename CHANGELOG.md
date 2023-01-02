@@ -1,3 +1,48 @@
+## v0.21.0 - 2023-01-02
+
+Implement serde `Deserializer` trait on top level deserializers
+
+There are serde crates that can wrap deserializers to enhance functionality. For instance, [`serde_path_to_err`][0.21.0-0], wraps a deserializer and will return the path to the field that caused a deserialization error. This example is especially important when dealing with imperfect information about the data being deserialized.
+
+Last week, it took me a half hour to track down where and why an EU4 save failed to deserialize without any context. I couldn't use `serde_path_to_error` to help as the underlying `TextDeserializer` and `BinaryDeserializer` here don't implement [`serde::Deserializer`][0.21.0-1], which seems like an oversight or a misnomer.
+
+This release implements `serde::Deserializer` for the aforementioned types, and allows the following example, which will show the path to the error.
+
+```rust
+#[derive(Debug, Deserialize)]
+struct Package {
+  name: String,
+  dependencies: HashMap<String, Dependency>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Dependency {
+  version: u32,
+}
+
+let data = b"name=demo dependencies={serde={version=alpha}}";
+let jd = jomini::TextDeserializer::from_windows1252_slice(&data[..]).unwrap();
+let result: Result<Package, _> = serde_path_to_error::deserialize(&jd);
+let err = result.unwrap_err();
+assert_eq!(err.path().to_string(), "dependencies.serde.version");
+```
+
+Since this is a low level crate, all deserializer wrappers will be opt-in, as wrappers may have some cost associated with them. My plan is for downstream save crates to re-deserialize data with `serde_path_to_err` if the first attempt fails.
+
+This is a breaking change. The shorthand methods for parsing and deserializing text in one step is now:
+
+```
+jomini::text::de::from_windows1252_slice()
+jomini::text::de::from_utf8_slice()
+```
+
+While the methods on `TextDeserializer` now return a `TextDeserializer`.
+
+Same thing with `BinaryDeserializer` except `deserialize_slice` is the new method for parsing and deserializing in one step.
+
+[0.21.0-0]: https://github.com/dtolnay/path-to-error
+[0.21.0-1]: https://docs.rs/serde/latest/serde/trait.Deserializer.html
+
 ## v0.20.3 - 2022-12-24
 
 - Up to a 75% throughput increase in binary parsing performance
