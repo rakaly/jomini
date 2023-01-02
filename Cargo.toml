@@ -1,6 +1,6 @@
 [package]
 name = "jomini"
-version = "0.20.3"
+version = "0.21.0"
 authors = ["Nick Babcock <nbabcock19@hotmail.com>"]
 license = "MIT"
 readme = "README.md"
