@@ -7,7 +7,7 @@ readme = "README.md"
 edition = "2018"
 repository = "https://github.com/rakaly/jomini"
 categories = ["parsing"]
-description = "Low level, performance oriented parser for save and game files from EU4, CK3, HOI4, Imperator, and other PDS titles"
+description = "Low level, performance oriented parser for save and game files from EU4, CK3, HOI4, Vic3, Imperator, and other PDS titles"
 keywords = ["eu4", "ck3", "ironman", "clausewitz"]
 exclude = ["/.github", "/assets"]
 
