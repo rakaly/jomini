@@ -23,7 +23,7 @@ use std::{
 /// use serde::Deserialize;
 ///
 /// let data = b"modifier = { abc=yes factor=2 num > 2 }";
-/// let actual: MyStruct = TextDeserializer::from_windows1252_slice(&data[..])?;
+/// let actual: MyStruct = jomini::text::de::from_windows1252_slice(&data[..])?;
 /// assert_eq!(
 ///     actual,
 ///     MyStruct {
@@ -114,11 +114,23 @@ impl<T> Property<T> {
     }
 }
 
+/// Convenience method for parsing the given text data and deserializing as windows1252 encoded.
+pub fn from_windows1252_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
+where
+    T: Deserialize<'a>,
+{
+    TextDeserializer::from_windows1252_slice(data)?.deserialize()
+}
+
+/// Convenience method for parsing the given text data and deserializing as utf8 encoded.
+pub fn from_utf8_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
+where
+    T: Deserialize<'a>,
+{
+    TextDeserializer::from_utf8_slice(data)?.deserialize()
+}
+
 /// A structure to deserialize text data into Rust values.
-///
-/// By default, if a token is unable to be resolved then it will be ignored by
-/// the default. Construct a custom instance through the `builder` method to
-/// tweak this behavior.
 ///
 /// The example below demonstrates how to deserialize data
 ///
@@ -133,7 +145,7 @@ impl<T> Property<T> {
 /// }
 ///
 /// let data = b"field1=ENG field2=2";
-/// let a: StructA = TextDeserializer::from_windows1252_slice(&data[..])?;
+/// let a: StructA = TextDeserializer::from_windows1252_slice(&data[..])?.deserialize()?;
 /// assert_eq!(a, StructA {
 ///   field1: "ENG".to_string(),
 ///   field2: 2,
@@ -161,8 +173,8 @@ impl<T> Property<T> {
 ///
 /// let data = b"field1=ENG field2=2";
 /// let tape = TextTape::from_slice(&data[..])?;
-/// let b: StructB = TextDeserializer::from_windows1252_tape(&tape)?;
-/// let c: StructC = TextDeserializer::from_windows1252_tape(&tape)?;
+/// let b: StructB = TextDeserializer::from_windows1252_tape(&tape).deserialize()?;
+/// let c: StructC = TextDeserializer::from_windows1252_tape(&tape).deserialize()?;
 /// assert_eq!(b, StructB { field1: "ENG".to_string() });
 /// assert_eq!(c, StructC { field2: 2 });
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -170,70 +182,84 @@ impl<T> Property<T> {
 ///
 /// [0]: https://serde.rs/attr-flatten.html
 /// [1]: https://github.com/serde-rs/serde/issues/1529
-pub struct TextDeserializer;
+pub struct TextDeserializer<'a, 'b, E> {
+    tape: TextDeserializerKind<'a, 'b>,
+    encoding: E,
+}
 
-impl TextDeserializer {
+enum TextDeserializerKind<'a, 'b> {
+    Owned(TextTape<'a>),
+    Borrowed(&'b TextTape<'a>),
+}
+
+impl<'a, 'b> TextDeserializer<'a, 'b, Windows1252Encoding> {
     /// Convenience method for parsing the given text data and deserializing as windows1252 encoded.
-    pub fn from_windows1252_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
-    where
-        T: Deserialize<'a>,
-    {
+    pub fn from_windows1252_slice(
+        data: &'a [u8],
+    ) -> Result<TextDeserializer<Windows1252Encoding>, Error> {
         let tape = TextTape::from_slice(data)?;
-        TextDeserializer::from_windows1252_tape(&tape)
+        Ok(TextDeserializer {
+            tape: TextDeserializerKind::Owned(tape),
+            encoding: Windows1252Encoding::new(),
+        })
     }
 
     /// Deserialize the given text tape assuming quoted strings are windows1252 encoded.
-    pub fn from_windows1252_tape<'a, T>(tape: &TextTape<'a>) -> Result<T, Error>
-    where
-        T: Deserialize<'a>,
-    {
-        Self::from_encoded_tape(tape, Windows1252Encoding::new())
+    pub fn from_windows1252_tape(
+        tape: &'b TextTape<'a>,
+    ) -> TextDeserializer<'a, 'b, Windows1252Encoding> {
+        TextDeserializer {
+            tape: TextDeserializerKind::Borrowed(tape),
+            encoding: Windows1252Encoding::new(),
+        }
     }
+}
 
+impl<'a, 'b> TextDeserializer<'a, 'b, Utf8Encoding> {
     /// Convenience method for parsing the given text data and deserializing as utf8 encoded.
-    pub fn from_utf8_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
-    where
-        T: Deserialize<'a>,
-    {
+    pub fn from_utf8_slice(data: &'a [u8]) -> Result<TextDeserializer<Utf8Encoding>, Error> {
         let tape = TextTape::from_slice(data)?;
-        TextDeserializer::from_utf8_tape(&tape)
+        Ok(TextDeserializer {
+            tape: TextDeserializerKind::Owned(tape),
+            encoding: Utf8Encoding::new(),
+        })
     }
 
     /// Deserialize the given text tape assuming quoted strings are utf8 encoded.
-    pub fn from_utf8_tape<'a, 'b, T>(tape: &'b TextTape<'a>) -> Result<T, Error>
-    where
-        T: Deserialize<'a>,
-    {
-        Self::from_encoded_tape(tape, Utf8Encoding::new())
+    pub fn from_utf8_tape(tape: &'b TextTape<'a>) -> TextDeserializer<'a, 'b, Utf8Encoding> {
+        TextDeserializer {
+            tape: TextDeserializerKind::Borrowed(tape),
+            encoding: Utf8Encoding::new(),
+        }
     }
+}
 
+impl<'a, 'b, E> TextDeserializer<'a, 'b, E>
+where
+    E: Encoding + Clone,
+{
     /// Deserialize the given text tape assuming quoted strings can be decoded
     /// according to the given encoder
-    pub fn from_encoded_tape<'b, 'a: 'b, T, E>(
-        tape: &'b TextTape<'a>,
-        encoding: E,
-    ) -> Result<T, Error>
+    pub fn from_encoded_tape(tape: &'b TextTape<'a>, encoding: E) -> TextDeserializer<'a, 'b, E>
     where
-        T: Deserialize<'a>,
         E: Encoding + Clone,
     {
-        let config = DeserializationConfig;
-        let reader = ObjectReader::new(tape, encoding);
-        let root = RootDeserializer { reader, config };
-        Ok(T::deserialize(root)?)
+        TextDeserializer {
+            tape: TextDeserializerKind::Borrowed(tape),
+            encoding,
+        }
+    }
+
+    /// Deserialize into provided type
+    pub fn deserialize<T>(&self) -> Result<T, Error>
+    where
+        T: Deserialize<'a>,
+    {
+        T::deserialize(self).map_err(|e| e.into())
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DeserializationConfig;
-
-#[derive(Debug)]
-struct RootDeserializer<'de, 'tokens, E> {
-    reader: ObjectReader<'de, 'tokens, E>,
-    config: DeserializationConfig,
-}
-
-impl<'de, 'tokens, E> de::Deserializer<'de> for RootDeserializer<'de, 'tokens, E>
+impl<'de, 'a, 'tokens, E> de::Deserializer<'de> for &'a TextDeserializer<'de, 'tokens, E>
 where
     E: Encoding + Clone,
 {
@@ -254,7 +280,12 @@ where
     where
         V: Visitor<'de>,
     {
-        visitor.visit_map(MapAccess::new(self.reader, self.config))
+        match &self.tape {
+            TextDeserializerKind::Owned(x) | &TextDeserializerKind::Borrowed(x) => {
+                let reader = ObjectReader::new(x, self.encoding.clone());
+                visitor.visit_map(MapAccess::new(reader, DeserializationConfig))
+            }
+        }
     }
 
     fn deserialize_struct<V>(
@@ -275,6 +306,9 @@ where
         tuple_struct enum ignored_any identifier
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DeserializationConfig;
 
 macro_rules! visit_str {
     ($data: expr, $visitor: expr) => {
@@ -948,7 +982,7 @@ mod tests {
     where
         T: Deserialize<'a>,
     {
-        Ok(TextDeserializer::from_windows1252_slice(data)?)
+        Ok(super::from_windows1252_slice(data)?)
     }
 
     #[test]

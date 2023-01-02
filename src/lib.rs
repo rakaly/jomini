@@ -18,7 +18,7 @@ Converters](https://github.com/ParadoxGameConverters) and
 - ✔ Small: Compile with zero dependencies
 - ✔ Safe: Extensively fuzzed against potential malicious input
 - ✔ Ergonomic: Use [serde](https://serde.rs/derive.html)-like macros to have parsing logic automatically implemented
-- ✔ Embeddable: Cross platform native apps, statically compiled services, or in the browser via [WASM](https://webassembly.org/)
+- ✔ Embeddable: Cross platform native apps, statically compiled services, or in the browser via [Wasm](https://webassembly.org/)
 
 ## Quick Start
 
@@ -28,7 +28,7 @@ Below is a demonstration on parsing plaintext data using jomini tools.
 # #[cfg(feature = "derive")] {
 use jomini::{
     text::{Operator, Property},
-    JominiDeserialize, TextDeserializer,
+    JominiDeserialize,
 };
 
 #[derive(JominiDeserialize, PartialEq, Debug)]
@@ -61,7 +61,7 @@ let expected = Model {
     names: vec!["Johan".to_string(), "Frederick".to_string()],
 };
 
-let actual: Model = TextDeserializer::from_windows1252_slice(data)?;
+let actual: Model = jomini::text::de::from_windows1252_slice(data)?;
 assert_eq!(actual, expected);
 # }
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -114,7 +114,7 @@ let mut map = HashMap::new();
 map.insert(0x2d82, "field1");
 
 let actual: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-    .from_slice(&data[..], &map)?;
+    .deserialize_slice(&data[..], &map)?;
 assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
 # }
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -157,6 +157,8 @@ for (key, _op, value) in reader.fields() {
 #![cfg_attr(
     feature = "json",
     doc = r##"
+### JSON
+
 The mid-level API also provides the excellent utility of converting the
 plaintext Clausewitz format to JSON when the `json` feature is enabled.
 
@@ -250,17 +252,13 @@ pub mod text;
 pub(crate) mod util;
 
 pub use self::binary::{BinaryTape, BinaryToken};
-
-#[cfg(feature = "derive")]
-pub use self::binary::BinaryDeserializer;
-
 pub use self::encoding::*;
 pub use self::errors::*;
 pub use self::scalar::{Scalar, ScalarError};
 pub use self::text::{TextTape, TextToken, TextWriter, TextWriterBuilder};
 
 #[cfg(feature = "derive")]
-pub use self::text::TextDeserializer;
-
+#[doc(inline)]
+pub use self::{binary::de::BinaryDeserializer, text::de::TextDeserializer};
 #[cfg(feature = "derive")]
 pub use jomini_derive::*;

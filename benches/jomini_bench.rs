@@ -5,8 +5,7 @@ use flate2::read::GzDecoder;
 use jomini::{
     binary::{BinaryFlavor, BinaryTapeParser},
     common::Date,
-    BinaryDeserializer, BinaryTape, Encoding, Scalar, TextDeserializer, TextTape, Utf8Encoding,
-    Windows1252Encoding,
+    BinaryDeserializer, BinaryTape, Encoding, Scalar, TextTape, Utf8Encoding, Windows1252Encoding,
 };
 use std::{borrow::Cow, collections::HashMap, io::Read};
 
@@ -116,7 +115,7 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
     group.bench_function("binary", |b| {
         b.iter(|| {
             let _res: Meta = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-                .from_slice(&data[..], &map)
+                .deserialize_slice(&data[..], &map)
                 .unwrap();
         })
     });
@@ -134,7 +133,7 @@ pub fn text_deserialize_benchmark(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("text", |b| {
         b.iter(|| {
-            let _res: Meta = TextDeserializer::from_windows1252_slice(&data[..]).unwrap();
+            let _res: Meta = jomini::text::de::from_windows1252_slice(&data[..]).unwrap();
         })
     });
     group.finish();

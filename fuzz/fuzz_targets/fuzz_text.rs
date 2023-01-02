@@ -1,7 +1,7 @@
 #![no_main]
 use jomini::{
     text::{ArrayReader, ObjectReader, ValueReader},
-    Encoding, TextToken,
+    Encoding, TextDeserializer, TextToken,
 };
 use libfuzzer_sys::fuzz_target;
 use serde::Deserialize;
@@ -130,6 +130,6 @@ fuzz_target!(|data: &[u8]| {
             GROUPED = true;
         }
         iterate_object2(tape.windows1252_reader());
-        jomini::TextDeserializer::from_windows1252_tape(&tape)
+        TextDeserializer::from_windows1252_tape(&tape).deserialize()
     });
 });

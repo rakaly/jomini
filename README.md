@@ -29,7 +29,7 @@ Below is a demonstration on parsing plaintext data using jomini tools.
 ```rust
 use jomini::{
     text::{Operator, Property},
-    JominiDeserialize, TextDeserializer,
+    JominiDeserialize,
 };
 
 #[derive(JominiDeserialize, PartialEq, Debug)]
@@ -62,7 +62,7 @@ let expected = Model {
     names: vec!["Johan".to_string(), "Frederick".to_string()],
 };
 
-let actual: Model = TextDeserializer::from_windows1252_slice(data)?;
+let actual: Model = jomini::text::de::from_windows1252_slice(data)?;
 assert_eq!(actual, expected);
 ```
 
@@ -112,7 +112,7 @@ let mut map = HashMap::new();
 map.insert(0x2d82, "field1");
 
 let actual: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-    .from_slice(&data[..], &map)?;
+    .deserialize_slice(&data[..], &map)?;
 assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
 ```
 

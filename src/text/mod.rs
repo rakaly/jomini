@@ -7,8 +7,10 @@
 //! [FieldGroupsIter](crate::text::FieldGroupsIter),
 //! [FieldsIter](crate::text::FieldsIter), and
 //! [ValuesIter](crate::text::ValuesIter)
+
+/// text deserialization
 #[cfg(feature = "derive")]
-mod de;
+pub mod de;
 mod fnv;
 mod operator;
 mod reader;
@@ -16,7 +18,8 @@ mod tape;
 mod writer;
 
 #[cfg(feature = "derive")]
-pub use self::de::{Property, TextDeserializer};
+#[doc(inline)]
+pub use self::de::Property;
 pub use self::operator::*;
 pub use self::reader::{
     ArrayReader, FieldGroupsIter, FieldsIter, GroupEntry, GroupEntryIter, ObjectReader, Reader,
