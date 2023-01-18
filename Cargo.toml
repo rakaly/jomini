@@ -30,7 +30,7 @@ json = ["serde", "serde_json"]
 [dev-dependencies]
 attohttpc = { version = "0.24", features = ["tls-vendored"] }
 encoding_rs = "0.8"
-criterion = "0.4"
+criterion = "< 0.4"
 quickcheck = "1"
 quickcheck_macros = "1"
 flate2 = "1"
