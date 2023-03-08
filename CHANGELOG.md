@@ -1,3 +1,7 @@
+## v0.21.1 - 2023-03-08
+
+- Improve text date parsing by up to 30x
+
 ## v0.21.0 - 2023-01-02
 
 Implement serde `Deserializer` trait on top level deserializers
