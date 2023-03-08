@@ -14,7 +14,7 @@ fuzz_target!(|data: &[u8]| {
         match d.game_fmt().to_string().as_str() {
             // I'm not sure how math works when we go across the border
             // as I'm not familiar that EU4 recognizes the zeroth year
-            "1.1.1" | "-1.1.1" => {}
+            "1.1.1" | "-1.1.1" | "0.1.1" | "-0.1.1" => {}
             _ => {
                 assert_eq!(d.days_until(&d.add_days(1)), 1);
                 assert_eq!(d.days_until(&d.add_days(-1)), -1);
