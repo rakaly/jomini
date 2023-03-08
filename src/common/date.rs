@@ -1,4 +1,4 @@
-use crate::scalar::{to_i64_t, to_u64_t};
+use crate::scalar::to_i64_t;
 use std::cmp::Ordering;
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display};
@@ -116,6 +116,7 @@ struct ExpandedRawDate {
 }
 
 impl ExpandedRawDate {
+    #[inline]
     fn from_binary(mut s: i32) -> Option<Self> {
         // quite annoying that the binary format uses a 24 hour clock
         // indexed at 0 so it is up to a higher level API to determine
@@ -139,46 +140,108 @@ impl ExpandedRawDate {
         })
     }
 
+    #[inline]
     fn parse<T: AsRef<[u8]>>(s: T) -> Option<Self> {
-        let data = s.as_ref();
+        Self::_parse(s.as_ref())
+    }
 
+    #[inline]
+    fn _parse(data: &[u8]) -> Option<Self> {
         let (year, data) = to_i64_t(data).ok()?;
         if data.is_empty() {
             return i32::try_from(year).ok().and_then(Self::from_binary);
         }
 
         let year = i16::try_from(year).ok()?;
-        let (delim1, data) = data.split_first()?;
-
-        let (month, data) = to_u64_t(data, 0).ok()?;
-        let month = u8::try_from(month).ok()?;
-        let (delim2, data) = data.split_first()?;
-
-        let (day, data) = to_u64_t(data, 0).ok()?;
-        let day = u8::try_from(day).ok()?;
-
-        if data.is_empty() && *delim1 == b'.' && *delim2 == b'.' {
-            return Some(ExpandedRawDate {
-                year,
-                month,
-                day,
-                hour: 0,
-            });
+        if *data.first()? != b'.' {
+            return None;
         }
 
-        let (delim3, data) = data.split_first()?;
-        let (hour, data) = to_u64_t(data, 0).ok()?;
-        let hour = u8::try_from(hour).ok()?;
+        let n = data.get(1)?;
+        let month1 = if !n.is_ascii_digit() {
+            return None;
+        } else {
+            n - b'0'
+        };
 
-        if data.is_empty() && hour != 0 && *delim1 == b'.' && *delim2 == b'.' && *delim3 == b'.' {
-            Some(ExpandedRawDate {
+        let n = data.get(2)?;
+        let (month, offset) = if *n == b'.' {
+            (month1, 2)
+        } else if n.is_ascii_digit() {
+            (month1 * 10 + (n - b'0'), 3)
+        } else {
+            return None;
+        };
+
+        if *data.get(offset)? != b'.' {
+            return None;
+        }
+
+        let n = data.get(offset + 1)?;
+        let day1 = if !n.is_ascii_digit() {
+            return None;
+        } else {
+            n - b'0'
+        };
+
+        let (day, offset) = match data.get(offset + 2) {
+            None => {
+                return Some(ExpandedRawDate {
+                    year,
+                    month,
+                    day: day1,
+                    hour: 0,
+                })
+            }
+            Some(b'.') => (day1, offset + 2),
+            Some(n) if n.is_ascii_digit() => {
+                let result = day1 * 10 + (n - b'0');
+                if data.len() != offset + 3 {
+                    (result, offset + 3)
+                } else {
+                    return Some(ExpandedRawDate {
+                        year,
+                        month,
+                        day: result,
+                        hour: 0,
+                    });
+                }
+            }
+            _ => return None,
+        };
+
+        if *data.get(offset)? != b'.' {
+            return None;
+        }
+
+        let n = data.get(offset + 1)?;
+        let hour1 = if !n.is_ascii_digit() || *n == b'0' {
+            return None;
+        } else {
+            n - b'0'
+        };
+
+        match data.get(offset + 2) {
+            None => Some(ExpandedRawDate {
                 year,
                 month,
                 day,
-                hour,
-            })
-        } else {
-            None
+                hour: hour1,
+            }),
+            Some(n) if n.is_ascii_digit() => {
+                let result = hour1 * 10 + (n - b'0');
+                if data.len() != offset + 3 {
+                    None
+                } else {
+                    Some(ExpandedRawDate {
+                        year,
+                        month,
+                        day,
+                        hour: result,
+                    })
+                }
+            }
+            _ => None,
         }
     }
 }
@@ -246,6 +309,7 @@ impl Ord for RawDate {
 }
 
 impl RawDate {
+    #[inline]
     fn from_expanded(data: ExpandedRawDate) -> Option<Self> {
         Self::from_ymdh_opt(data.year, data.month, data.day, data.hour)
     }
@@ -260,6 +324,7 @@ impl RawDate {
     /// let date2 = RawDate::from_binary(60759371).unwrap();
     /// assert_eq!(date2.iso_8601().to_string(), String::from("1936-01-01T10"));
     /// ```
+    #[inline]
     pub fn from_binary(s: i32) -> Option<Self> {
         ExpandedRawDate::from_binary(s).and_then(Self::from_expanded)
     }
@@ -267,6 +332,7 @@ impl RawDate {
     /// Create a raw date from individual components.
     ///
     /// Will return none for an invalid date
+    #[inline]
     pub fn from_ymdh_opt(year: i16, month: u8, day: u8, hour: u8) -> Option<Self> {
         if month != 0 && month < 13 && day != 0 && day < 32 && hour < 25 {
             let data = (u16::from(month) << 12) + (u16::from(day) << 7) + (u16::from(hour) << 2);
@@ -279,16 +345,19 @@ impl RawDate {
     /// Create a raw date from individual components.
     ///
     /// Will panic on invalid dates
+    #[inline]
     pub fn from_ymdh(year: i16, month: u8, day: u8, hour: u8) -> Self {
         Self::from_ymdh_opt(year, month, day, hour).unwrap()
     }
 
     /// Return the hour component. Range [1, 24]. If zero, then there is no hour
+    #[inline]
     pub fn hour(&self) -> u8 {
         ((self.data >> 2) & 0x1f) as u8
     }
 
     /// Return if this date has an hour component
+    #[inline]
     pub fn has_hour(&self) -> bool {
         self.data & 0x7c != 0
     }
@@ -305,11 +374,17 @@ impl RawDate {
     ///
     /// Unlike [`Date::parse`], this will not parse the textual form of the
     /// date's binary representation.
+    #[inline]
     pub fn parse<T: AsRef<[u8]>>(s: T) -> Result<Self, DateError> {
-        ExpandedRawDate::parse(&s)
+        Self::_parse(s.as_ref())
+    }
+
+    #[inline]
+    fn _parse(s: &[u8]) -> Result<Self, DateError> {
+        ExpandedRawDate::parse(s)
             .and_then(Self::from_expanded)
             .and_then(|x| {
-                if to_i64_t(s.as_ref()).ok()?.1.is_empty() {
+                if to_i64_t(s).ok()?.1.is_empty() {
                     None
                 } else {
                     Some(x)
@@ -321,16 +396,19 @@ impl RawDate {
 
 impl PdsDate for RawDate {
     /// Return year of date
+    #[inline]
     fn year(&self) -> i16 {
         self.year
     }
 
     /// Return month of date
+    #[inline]
     fn month(&self) -> u8 {
         (self.data >> 12) as u8
     }
 
     /// Return day of date
+    #[inline]
     fn day(&self) -> u8 {
         ((self.data >> 7) & 0x1f) as u8
     }
@@ -347,6 +425,7 @@ impl PdsDate for RawDate {
 impl FromStr for RawDate {
     type Err = DateError;
 
+    #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s.as_bytes())
     }
@@ -367,6 +446,7 @@ impl Debug for Date {
 }
 
 impl Date {
+    #[inline]
     fn from_expanded(date: ExpandedRawDate) -> Option<Self> {
         if date.hour != 0 {
             None
@@ -375,6 +455,7 @@ impl Date {
         }
     }
 
+    #[inline]
     fn days(&self) -> i32 {
         let month_days = julian_ordinal_day(self.month());
         let year_day = i32::from(self.year()) * 365;
@@ -399,6 +480,7 @@ impl Date {
     /// assert!(Date::from_ymd_opt(800, 12, 32).is_none());
     /// assert!(Date::from_ymd_opt(2020, 2, 29).is_none());
     /// ```
+    #[inline]
     pub fn from_ymd_opt(year: i16, month: u8, day: u8) -> Option<Self> {
         RawDate::from_ymdh_opt(year, month, day, 0).and_then(|raw| {
             let days = DAYS_PER_MONTH[usize::from(month)];
@@ -413,6 +495,7 @@ impl Date {
     /// Create a new date from year, month, and day parts
     ///
     /// Will panic if the date does not exist.
+    #[inline]
     pub fn from_ymd(year: i16, month: u8, day: u8) -> Self {
         Self::from_ymd_opt(year, month, day).unwrap()
     }
@@ -428,10 +511,62 @@ impl Date {
     /// assert_eq!(date.month(), 11);
     /// assert_eq!(date.day(), 11);
     /// ```
+    #[inline]
     pub fn parse<T: AsRef<[u8]>>(s: T) -> Result<Self, DateError> {
+        Self::_parse(s.as_ref())
+    }
+
+    #[inline]
+    fn fast_parse(r: [u8; 8]) -> Result<Self, DateError> {
+        if r.iter().all(|x| x.is_ascii_digit()) {
+            let n = r.map(|x| x - b'0');
+            Self::from_expanded(ExpandedRawDate {
+                year: i16::from(n[0]) * 1000
+                    + i16::from(n[1]) * 100
+                    + i16::from(n[2]) * 10
+                    + i16::from(n[3]),
+                month: n[4] * 10 + n[5],
+                day: n[6] * 10 + n[7],
+                hour: 0,
+            })
+            .ok_or(DateError)
+        } else {
+            Self::fallback(&r)
+        }
+    }
+
+    #[cold]
+    fn fallback(s: &[u8]) -> Result<Self, DateError> {
+        if s.len() < 5 || s.len() > 12 {
+            return Err(DateError);
+        }
+
         ExpandedRawDate::parse(s)
             .and_then(Self::from_expanded)
             .ok_or(DateError)
+    }
+
+    #[inline]
+    fn _parse(s: &[u8]) -> Result<Self, DateError> {
+        match s {
+            [y1, y2, y3, y4, b'.', m1, m2, b'.', d1, d2] => {
+                let r = [*y1, *y2, *y3, *y4, *m1, *m2, *d1, *d2];
+                Self::fast_parse(r)
+            }
+            [y1, y2, y3, y4, b'.', m1, m2, b'.', d1] => {
+                let r = [*y1, *y2, *y3, *y4, *m1, *m2, b'0', *d1];
+                Self::fast_parse(r)
+            }
+            [y1, y2, y3, y4, b'.', m1, b'.', d1, d2] => {
+                let r = [*y1, *y2, *y3, *y4, b'0', *m1, *d1, *d2];
+                Self::fast_parse(r)
+            }
+            [y1, y2, y3, y4, b'.', m1, b'.', d1] => {
+                let r = [*y1, *y2, *y3, *y4, b'0', *m1, b'0', *d1];
+                Self::fast_parse(r)
+            }
+            _ => Self::fallback(s),
+        }
     }
 
     /// Returns the number of days between two dates
@@ -447,6 +582,7 @@ impl Date {
     /// assert_eq!(728, date.days_until(&date4));
     /// assert_eq!(-728, date4.days_until(&date));
     /// ```
+    #[inline]
     pub fn days_until(self, other: &Date) -> i32 {
         other.days() - self.days()
     }
@@ -465,6 +601,7 @@ impl Date {
     /// ```
     ///
     /// Will panic on overflow or underflow.
+    #[inline]
     pub fn add_days(self, days: i32) -> Date {
         let new_days = self
             .days()
@@ -484,6 +621,7 @@ impl Date {
     /// Decodes a date from a number that had been parsed from binary data
     ///
     /// The hour component, if present, will be ignored
+    #[inline]
     pub fn from_binary(s: i32) -> Option<Self> {
         // I've not yet found a binary date that has an hour component but shouldn't
         // but for consistency sake we zero out the hour so that we maintain the
@@ -503,6 +641,7 @@ impl Date {
     /// which date back to -2500 or even farther back (mods), but this
     /// function is just a heuristic so direct any extreme dates towards
     /// [`Date::from_binary`].
+    #[inline]
     pub fn from_binary_heuristic(s: i32) -> Option<Self> {
         ExpandedRawDate::from_binary(s).and_then(|x| {
             if x.year > -100 {
@@ -520,6 +659,7 @@ impl Date {
     /// let date = Date::from_ymd(1, 1, 1);
     /// assert_eq!(43808760, date.to_binary());
     /// ```
+    #[inline]
     pub fn to_binary(self) -> i32 {
         let ordinal_day = julian_ordinal_day(self.month()) + i32::from(self.day());
         to_binary(self.year(), ordinal_day, 0)
@@ -534,6 +674,7 @@ impl PdsDate for Date {
     /// let date = Date::from_ymd(1444, 2, 3);
     /// assert_eq!(date.year(), 1444);
     /// ```
+    #[inline]
     fn year(&self) -> i16 {
         self.raw.year()
     }
@@ -545,6 +686,7 @@ impl PdsDate for Date {
     /// let date = Date::from_ymd(1444, 2, 3);
     /// assert_eq!(date.month(), 2);
     /// ```
+    #[inline]
     fn month(&self) -> u8 {
         self.raw.month()
     }
@@ -556,6 +698,7 @@ impl PdsDate for Date {
     /// let date = Date::from_ymd(1444, 2, 3);
     /// assert_eq!(date.day(), 3);
     /// ```
+    #[inline]
     fn day(&self) -> u8 {
         self.raw.day()
     }
@@ -586,6 +729,7 @@ impl PdsDate for Date {
 impl FromStr for Date {
     type Err = DateError;
 
+    #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s.as_bytes())
     }
@@ -728,6 +872,7 @@ impl PdsDate for DateHour {
     /// let date = DateHour::from_ymdh(1936, 1, 2, 24);
     /// assert_eq!(date.year(), 1936);
     /// ```
+    #[inline]
     fn year(&self) -> i16 {
         self.raw.year()
     }
@@ -739,6 +884,7 @@ impl PdsDate for DateHour {
     /// let date = DateHour::from_ymdh(1936, 1, 2, 24);
     /// assert_eq!(date.month(), 1);
     /// ```
+    #[inline]
     fn month(&self) -> u8 {
         self.raw.month()
     }
@@ -750,6 +896,7 @@ impl PdsDate for DateHour {
     /// let date = DateHour::from_ymdh(1936, 1, 2, 24);
     /// assert_eq!(date.day(), 2);
     /// ```
+    #[inline]
     fn day(&self) -> u8 {
         self.raw.day()
     }
@@ -782,6 +929,7 @@ impl PdsDate for DateHour {
 impl FromStr for DateHour {
     type Err = DateError;
 
+    #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s.as_bytes())
     }
@@ -853,6 +1001,11 @@ impl UniformDate {
     /// ```
     #[inline]
     pub fn parse<T: AsRef<[u8]>>(s: T) -> Result<Self, DateError> {
+        Self::_parse(s.as_ref())
+    }
+
+    #[inline]
+    fn _parse(s: &[u8]) -> Result<Self, DateError> {
         ExpandedRawDate::parse(s)
             .and_then(Self::from_expanded)
             .ok_or(DateError)
@@ -867,6 +1020,7 @@ impl PdsDate for UniformDate {
     /// let date = UniformDate::from_ymd(1444, 2, 3);
     /// assert_eq!(date.year(), 1444);
     /// ```
+    #[inline]
     fn year(&self) -> i16 {
         self.raw.year()
     }
@@ -878,6 +1032,7 @@ impl PdsDate for UniformDate {
     /// let date = UniformDate::from_ymd(1444, 2, 3);
     /// assert_eq!(date.month(), 2);
     /// ```
+    #[inline]
     fn month(&self) -> u8 {
         self.raw.month()
     }
@@ -889,6 +1044,7 @@ impl PdsDate for UniformDate {
     /// let date = UniformDate::from_ymd(1444, 2, 3);
     /// assert_eq!(date.day(), 3);
     /// ```
+    #[inline]
     fn day(&self) -> u8 {
         self.raw.day()
     }
@@ -919,11 +1075,13 @@ impl PdsDate for UniformDate {
 impl FromStr for UniformDate {
     type Err = DateError;
 
+    #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s.as_bytes())
     }
 }
 
+#[inline]
 fn month_day_from_julian(days_since_jan1: i32) -> (u8, u8) {
     // https://landweb.modaps.eosdis.nasa.gov/browse/calendar.html
     // except we start at 0 instead of 1
@@ -947,6 +1105,7 @@ fn month_day_from_julian(days_since_jan1: i32) -> (u8, u8) {
     (month, day as u8)
 }
 
+#[inline]
 fn julian_ordinal_day(month: u8) -> i32 {
     match month {
         1 => -1,
@@ -965,6 +1124,7 @@ fn julian_ordinal_day(month: u8) -> i32 {
     }
 }
 
+#[inline]
 fn to_binary(year: i16, ordinal_day: i32, hour: u8) -> i32 {
     let year_part = (i32::from(year) + 5000) * 365;
     let hour = i32::from(hour.saturating_sub(1));
@@ -1140,6 +1300,7 @@ mod tests {
             "1444.11.11",
             "1444.11.30",
             "1444.2.19",
+            "1444.12.3",
         ];
 
         for case in &test_cases {
@@ -1493,6 +1654,11 @@ mod tests {
         assert!(Date::from_binary(-1).is_none());
         assert!(DateHour::from_binary(-1).is_none());
         assert!(Date::from_binary(-24).is_none());
+    }
+
+    #[test]
+    fn test_date_parse_edge_cases() {
+        assert!(Date::parse("05.5.3`.3").is_err());
     }
 
     #[test]
