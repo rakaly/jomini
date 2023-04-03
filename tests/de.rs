@@ -381,3 +381,35 @@ fn test_flatten_overflow2() {
     let txt_out: MyStruct = jomini::text::de::from_windows1252_slice(&data[..]).unwrap();
     assert_eq!(txt_out.meta.a, String::from("b"));
 }
+
+#[test]
+fn test_enum_map() {
+    use serde_with::{serde_as, EnumMap};
+
+    #[serde_as]
+    #[derive(Clone, Debug, Deserialize, PartialEq)]
+    struct Event {
+        #[serde_as(as = "EnumMap")]
+        requirements: Vec<Condition>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq)]
+    #[serde(rename_all = "camelCase")]
+    enum Condition {
+        Country(String),
+        Prestige(u32),
+        #[serde(other)]
+        Other,
+    }
+
+    let data = b"requirements = { country = ENG test = abc prestige = 10 }";
+    let txt_out: Event = jomini::text::de::from_windows1252_slice(&data[..]).unwrap();
+    assert_eq!(
+        txt_out.requirements,
+        vec![
+            Condition::Country(String::from("ENG")),
+            Condition::Other,
+            Condition::Prestige(10)
+        ]
+    );
+}
