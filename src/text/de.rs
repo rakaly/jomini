@@ -729,27 +729,37 @@ where
     where
         V: de::Visitor<'de>,
     {
-        let tmp = match self.reader() {
-            Reader::Value(x) => {
-                if let Ok(x) = x.read_array() {
-                    Ok(x)
-                } else {
-                    Err(DeserializeError {
-                        kind: DeserializeErrorKind::Unsupported(String::from(
-                            "unexpected reader for enum",
-                        )),
-                    })
-                }
-            }
-            _ => Err(DeserializeError {
+        let err = || {
+            Err(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from("unexpected reader for enum")),
-            }),
-        }?;
+            })
+        };
 
-        visitor.visit_enum(VariantAccess {
-            values: tmp.values(),
-            config: self.config,
-        })
+        let value_reader = match self.reader() {
+            Reader::Value(x) => x,
+            _ => return err(),
+        };
+
+        if let Ok(arr) = value_reader.read_array() {
+            let mut values = arr.values();
+            let variant = if let Some(variant) = values.next() {
+                variant
+            } else {
+                return err();
+            };
+
+            visitor.visit_enum(EnumAccess {
+                variant,
+                values: Some(values),
+                config: self.config,
+            })
+        } else {
+            visitor.visit_enum(EnumAccess {
+                variant: value_reader,
+                values: None,
+                config: self.config,
+            })
+        }
     }
 
     fn deserialize_struct<V>(
@@ -847,21 +857,56 @@ where
     }
 }
 
-struct VariantAccess<'de, 'tokens, E> {
+struct EnumAccess<'de, 'tokens, E> {
     config: DeserializationConfig,
-    values: ValuesIter<'de, 'tokens, E>,
+    variant: ValueReader<'de, 'tokens, E>,
+    values: Option<ValuesIter<'de, 'tokens, E>>,
 }
 
-impl<'de, 'tokens, E> VariantAccess<'de, 'tokens, E>
+impl<'de, 'tokens, E> de::EnumAccess<'de> for EnumAccess<'de, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    type Error = DeserializeError;
+    type Variant = VariantDeserializer<'de, 'tokens, E>;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let variant = ValueDeserializer {
+            config: self.config,
+            kind: ValueKind::Value(self.variant),
+        };
+
+        let visitor = VariantDeserializer {
+            config: self.config,
+            values: self.values,
+        };
+
+        seed.deserialize(variant).map(|v| (v, visitor))
+    }
+}
+
+struct VariantDeserializer<'de, 'tokens, E> {
+    config: DeserializationConfig,
+    values: Option<ValuesIter<'de, 'tokens, E>>,
+}
+
+impl<'de, 'tokens, E> VariantDeserializer<'de, 'tokens, E>
 where
     E: Encoding + Clone,
 {
     fn next_value(&mut self) -> Result<ValueKind<'de, 'tokens, E>, DeserializeError> {
-        let val = self.values.next().ok_or_else(|| DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
-                "unexpected none for enum variant seed",
-            )),
-        })?;
+        let val = self
+            .values
+            .as_mut()
+            .and_then(|x| x.next())
+            .ok_or_else(|| DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "unexpected none for enum variant seed",
+                )),
+            })?;
 
         Ok(ValueKind::Value(val))
     }
@@ -877,30 +922,18 @@ where
     }
 }
 
-impl<'de, 'tokens, E> de::EnumAccess<'de> for VariantAccess<'de, 'tokens, E>
-where
-    E: Encoding + Clone,
-{
-    type Error = DeserializeError;
-    type Variant = Self;
-
-    fn variant_seed<V>(mut self, seed: V) -> Result<(V::Value, Self), Self::Error>
-    where
-        V: de::DeserializeSeed<'de>,
-    {
-        let val = seed.deserialize(self.next_deserializer()?)?;
-        Ok((val, self))
-    }
-}
-
-impl<'de, 'tokens, E> de::VariantAccess<'de> for VariantAccess<'de, 'tokens, E>
+impl<'de, 'tokens, E> de::VariantAccess<'de> for VariantDeserializer<'de, 'tokens, E>
 where
     E: Encoding + Clone,
 {
     type Error = DeserializeError;
 
     fn unit_variant(mut self) -> Result<(), Self::Error> {
-        de::Deserialize::deserialize(self.next_deserializer()?)
+        if self.values.is_none() {
+            Ok(())
+        } else {
+            de::Deserialize::deserialize(self.next_deserializer()?)
+        }
     }
 
     fn newtype_variant_seed<T>(mut self, seed: T) -> Result<T::Value, Self::Error>
@@ -1606,6 +1639,31 @@ mod tests {
                 color: MyColor::Rgb(10, 11, 12),
             },
         );
+    }
+
+    #[test]
+    fn test_deserialize_enum_scalar() {
+        let data = b"kind = infantry";
+
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                kind: UnitKind::Infantry
+            }
+        );
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            kind: UnitKind,
+        }
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        #[serde(rename_all = "camelCase")]
+        enum UnitKind {
+            Infantry,
+            Cavalry,
+        }
     }
 
     #[test]
