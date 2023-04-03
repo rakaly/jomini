@@ -401,7 +401,6 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializ
             BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
                 config: self.config,
                 tokens: self.tokens,
-                de_idx: 0,
                 idx: idx + 1,
                 end_idx: *x,
             }),
@@ -427,7 +426,6 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializ
             BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
                 config: self.config,
                 tokens: self.tokens,
-                de_idx: 0,
                 idx: idx + 1,
                 end_idx: *x,
             }),
@@ -637,47 +635,7 @@ struct BinarySequence<'b, 'de: 'b, 'res: 'de, RES, E> {
     config: &'b BinaryConfig<'res, RES, E>,
     tokens: &'b [BinaryToken<'de>],
     idx: usize,
-    de_idx: usize,
     end_idx: usize,
-}
-
-impl<'b, 'de, 'r, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
-    for &'r mut BinarySequence<'b, 'de, 'res, RES, E>
-{
-    type Error = DeserializeError;
-
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        match &self.tokens[self.de_idx] {
-            BinaryToken::Object(x) => visitor.visit_map(BinaryMap::new(
-                self.config,
-                self.tokens,
-                self.de_idx + 1,
-                *x,
-            )),
-            BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
-                config: self.config,
-                tokens: self.tokens,
-                de_idx: 0,
-                idx: self.de_idx + 1,
-                end_idx: *x,
-            }),
-            BinaryToken::End(_x) => Err(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from(
-                    "encountered unexpected token when trying to deserialize map",
-                )),
-            }),
-            _ => visit_key(self.de_idx, self.tokens, self.config, visitor),
-        }
-    }
-
-    serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct tuple
-        tuple_struct map enum ignored_any identifier struct seq
-    }
 }
 
 impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> SeqAccess<'de>
@@ -697,9 +655,14 @@ impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> SeqAccess<'de>
                 _ => self.idx,
             };
 
-            self.de_idx = self.idx;
+            let value_ind = self.idx;
             self.idx = next_key + 1;
-            seed.deserialize(self).map(Some)
+            seed.deserialize(ValueDeserializer {
+                config: self.config,
+                tokens: self.tokens,
+                value_ind,
+            })
+            .map(Some)
         }
     }
 
