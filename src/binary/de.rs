@@ -321,15 +321,7 @@ struct KeyDeserializer<'b, 'de: 'b, 'res: 'de, RES, F> {
     tape_idx: usize,
 }
 
-fn visit_key<
-    'c,
-    'b: 'c,
-    'de: 'b,
-    'res: 'de,
-    RES: TokenResolver,
-    F: BinaryFlavor,
-    V: Visitor<'de>,
->(
+fn visit_key<'b, 'de: 'b, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, V: Visitor<'de>>(
     tape_idx: usize,
     tokens: &'b [BinaryToken<'de>],
     config: &'b BinaryConfig<'res, RES, F>,
@@ -526,10 +518,118 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializ
         }
     }
 
+    #[inline]
+    fn deserialize_enum<V>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_enum(EnumAccess {
+            config: self.config,
+            tokens: self.tokens,
+            idx: self.value_ind,
+        })
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf unit unit_struct
-        enum identifier
+        identifier
+    }
+}
+
+struct EnumAccess<'b, 'de: 'b, 'res: 'de, RES, E> {
+    config: &'b BinaryConfig<'res, RES, E>,
+    tokens: &'b [BinaryToken<'de>],
+    idx: usize,
+}
+
+impl<'b, 'de, 'tokens, RES, E> de::EnumAccess<'de> for EnumAccess<'b, 'de, 'tokens, RES, E>
+where
+    RES: TokenResolver,
+    E: BinaryFlavor,
+{
+    type Error = DeserializeError;
+    type Variant = VariantDeserializer<'b, 'de, 'tokens, RES, E>;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let variant = ValueDeserializer {
+            value_ind: self.idx,
+            tokens: self.tokens,
+            config: self.config,
+        };
+
+        let visitor = VariantDeserializer {
+            config: self.config,
+            tokens: self.tokens,
+            idx: self.idx,
+        };
+
+        seed.deserialize(variant).map(|v| (v, visitor))
+    }
+}
+
+#[allow(dead_code)]
+struct VariantDeserializer<'b, 'de: 'b, 'res: 'de, RES, E> {
+    config: &'b BinaryConfig<'res, RES, E>,
+    tokens: &'b [BinaryToken<'de>],
+    idx: usize,
+}
+
+impl<'b, 'de, 'tokens, RES, E> de::VariantAccess<'de>
+    for VariantDeserializer<'b, 'de, 'tokens, RES, E>
+where
+    RES: TokenResolver,
+    E: BinaryFlavor,
+{
+    type Error = DeserializeError;
+
+    fn unit_variant(self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        Err(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unsupported enum deserialization. Please file issue",
+            )),
+        })
+    }
+
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unsupported enum deserialization. Please file issue",
+            )),
+        })
+    }
+
+    fn struct_variant<V>(
+        self,
+        _fields: &'static [&'static str],
+        _visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unsupported enum deserialization. Please file issue",
+            )),
+        })
     }
 }
 
@@ -1331,6 +1431,37 @@ mod tests {
             actual,
             MyStruct {
                 field1: Some("ENG".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_enum_field() {
+        let data = [
+            0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x07, 0x00, 0x67, 0x65, 0x6e, 0x65, 0x72, 0x61,
+            0x6c,
+        ];
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: MyEnum,
+        }
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        #[serde(rename_all = "camelCase")]
+        enum MyEnum {
+            General,
+            Admiral,
+        }
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, "field1");
+
+        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                field1: MyEnum::General,
             }
         );
     }
