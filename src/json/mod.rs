@@ -60,6 +60,9 @@ pub struct JsonOptions {
 
     /// Controls the how duplicate keys are formatted
     duplicate_keys: DuplicateKeyMode,
+
+    /// Controls how values are narrowed to a more specific type
+    type_narrowing: TypeNarrowing,
 }
 
 impl JsonOptions {
@@ -77,6 +80,12 @@ impl JsonOptions {
     /// Sets how duplicate keys are formatted
     pub fn with_duplicate_keys(mut self, duplicate_keys: DuplicateKeyMode) -> JsonOptions {
         self.duplicate_keys = duplicate_keys;
+        self
+    }
+
+    /// Sets when a value is attempted to be narrowed to a more specific type
+    pub fn with_type_narrowing(mut self, type_narrowing: TypeNarrowing) -> JsonOptions {
+        self.type_narrowing = type_narrowing;
         self
     }
 
@@ -99,8 +108,76 @@ impl Default for JsonOptions {
         Self {
             pretty: false,
             duplicate_keys: DuplicateKeyMode::Preserve,
+            type_narrowing: TypeNarrowing::All,
         }
     }
+}
+
+/// Controls when a value is attempted to be narrowed to a more specific type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeNarrowing {
+    /// Attempt to narrow all values to more specific type
+    ///
+    /// ```
+    /// use jomini::{TextTape, json::{JsonOptions, TypeNarrowing}};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let tape = TextTape::from_slice(br#"a="01" b=02 c="yes" d=no"#)?;
+    /// let reader = tape.windows1252_reader();
+    ///
+    /// let options = JsonOptions::new()
+    ///     .with_type_narrowing(TypeNarrowing::All);
+    ///
+    /// let actual = reader.json()
+    ///     .with_options(options)
+    ///     .to_string();
+    /// assert_eq!(actual, r#"{"a":1,"b":2,"c":true,"d":false}"#);
+    /// # Ok(())
+    /// # }
+    /// ```
+    All,
+
+    /// Only attempt to narrow unquoted values to a more specific type
+    ///
+    /// ```
+    /// use jomini::{TextTape, json::{JsonOptions, TypeNarrowing}};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let tape = TextTape::from_slice(br#"a="01" b=02 c="yes" d=no"#)?;
+    /// let reader = tape.windows1252_reader();
+    ///
+    /// let options = JsonOptions::new()
+    ///     .with_type_narrowing(TypeNarrowing::Unquoted);
+    ///
+    /// let actual = reader.json()
+    ///     .with_options(options)
+    ///     .to_string();
+    /// assert_eq!(actual, r#"{"a":"01","b":2,"c":"yes","d":false}"#);
+    /// # Ok(())
+    /// # }
+    /// ```
+    Unquoted,
+
+    /// Don't attempt any narrowing (all values will be strings)
+    ///
+    /// ```
+    /// use jomini::{TextTape, json::{JsonOptions, TypeNarrowing}};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let tape = TextTape::from_slice(br#"a="01" b=02 c="yes" d=no"#)?;
+    /// let reader = tape.windows1252_reader();
+    ///
+    /// let options = JsonOptions::new()
+    ///     .with_type_narrowing(TypeNarrowing::None);
+    ///
+    /// let actual = reader.json()
+    ///     .with_options(options)
+    ///     .to_string();
+    /// assert_eq!(actual, r#"{"a":"01","b":"02","c":"yes","d":"no"}"#);
+    /// # Ok(())
+    /// # }
+    /// ```
+    None,
 }
 
 /// Controls JSON structure when duplicate keys are encountered
@@ -441,8 +518,14 @@ where
         S: Serializer,
     {
         match self.reader.token() {
-            TextToken::Quoted(_) | TextToken::Unquoted(_) => {
+            TextToken::Unquoted(_) if self.options.type_narrowing != TypeNarrowing::None => {
                 serialize_scalar(&self.reader, serializer)
+            }
+            TextToken::Quoted(_) if self.options.type_narrowing == TypeNarrowing::All => {
+                serialize_scalar(&self.reader, serializer)
+            }
+            TextToken::Unquoted(_) | TextToken::Quoted(_) => {
+                serializer.serialize_str(self.reader.read_str().unwrap().deref())
             }
             TextToken::Array { .. } => {
                 let array_reader = self.reader.read_array().unwrap();
@@ -616,12 +699,7 @@ where
         let mut iter = self.reader.values();
         let mut window = [iter.next(), iter.next(), iter.next()];
 
-        loop {
-            let first_val = match &window[0] {
-                Some(x) => x,
-                None => break,
-            };
-
+        while let Some(first_val) = &window[0] {
             if first_val.token() == &TextToken::MixedContainer {
                 window.swap(1, 0);
                 window.swap(2, 1);
