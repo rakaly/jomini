@@ -1,3 +1,12 @@
+## v0.21.3 - 2023-05-25
+
+- Add json type narrowing configuration
+  
+  When converting to JSON, values are eagerly narrowed from strings to numbers or booleans. This is now configurable: 
+  - All (default). Current behavior of type narrowing all values
+  - Unquoted. Only type narrow values that aren't quoted
+  - None. Never type narrow
+
 ## v0.21.2 - 2023-04-03
 
 - Improve enum deserialization for simple scalar values.
