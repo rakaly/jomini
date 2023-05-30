@@ -674,6 +674,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         data = &data[2..];
                         state = ParseState::ObjectValue;
                     }
+                    [b'?', b'=', ..] => {
+                        self.token_tape.push(TextToken::Operator(Operator::Exists));
+                        data = &data[2..];
+                        state = ParseState::ObjectValue;
+                    }
                     [b'=', b'=', ..] => {
                         self.token_tape.push(TextToken::Operator(Operator::Exact));
                         data = &data[2..];
@@ -2099,6 +2104,20 @@ mod tests {
                 TextToken::Unquoted(Scalar::new(b"is_preparing")),
                 TextToken::Unquoted(Scalar::new(b"true")),
                 TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_exists_operator() {
+        let data = b"c:RUS ?= this";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"c:RUS")),
+                TextToken::Operator(Operator::Exists),
+                TextToken::Unquoted(Scalar::new(b"this")),
             ]
         );
     }
