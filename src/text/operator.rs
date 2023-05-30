@@ -26,6 +26,9 @@ pub enum Operator {
 
     /// A `=` token
     Equal,
+
+    /// A `?=` token
+    Exists,
 }
 
 impl Display for Operator {
@@ -46,6 +49,7 @@ impl Operator {
     /// assert_eq!(Operator::Exact.symbol(), "==");
     /// assert_eq!(Operator::NotEqual.symbol(), "!=");
     /// assert_eq!(Operator::Equal.symbol(), "=");
+    /// assert_eq!(Operator::Exists.symbol(), "?=");
     /// ```
     pub fn symbol(&self) -> &'static str {
         match self {
@@ -56,6 +60,7 @@ impl Operator {
             Operator::Exact => "==",
             Operator::Equal => "=",
             Operator::NotEqual => "!=",
+            Operator::Exists => "?=",
         }
     }
 
@@ -70,6 +75,7 @@ impl Operator {
     /// assert_eq!(Operator::Exact.name(), "EXACT");
     /// assert_eq!(Operator::NotEqual.name(), "NOT_EQUAL");
     /// assert_eq!(Operator::Equal.name(), "EQUAL");
+    /// assert_eq!(Operator::Exists.name(), "EXISTS");
     /// ```
     pub fn name(&self) -> &'static str {
         match self {
@@ -80,6 +86,7 @@ impl Operator {
             Operator::Exact => "EXACT",
             Operator::Equal => "EQUAL",
             Operator::NotEqual => "NOT_EQUAL",
+            Operator::Exists => "EXISTS",
         }
     }
 }
@@ -111,6 +118,7 @@ impl<'de> serde::Deserialize<'de> for Operator {
                     "==" => Ok(Operator::Exact),
                     "=" => Ok(Operator::Equal),
                     "!=" => Ok(Operator::NotEqual),
+                    "?=" => Ok(Operator::Exists),
                     _ => Err(E::custom("did not receive a known operator")),
                 }
             }
