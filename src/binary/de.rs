@@ -516,7 +516,6 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializ
         }
     }
 
-    #[inline]
     fn deserialize_enum<V>(
         self,
         _name: &'static str,
@@ -552,7 +551,7 @@ where
     E: BinaryFlavor,
 {
     type Error = DeserializeError;
-    type Variant = VariantDeserializer<'b, 'de, 'tokens, RES, E>;
+    type Variant = VariantDeserializer;
 
     fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
     where
@@ -564,29 +563,14 @@ where
             config: self.config,
         };
 
-        let visitor = VariantDeserializer {
-            config: self.config,
-            tokens: self.tokens,
-            idx: self.idx,
-        };
-
+        let visitor = VariantDeserializer;
         seed.deserialize(variant).map(|v| (v, visitor))
     }
 }
 
-#[allow(dead_code)]
-struct VariantDeserializer<'b, 'de: 'b, 'res: 'de, RES, E> {
-    config: &'b BinaryConfig<'res, RES, E>,
-    tokens: &'b [BinaryToken<'de>],
-    idx: usize,
-}
+struct VariantDeserializer;
 
-impl<'b, 'de, 'tokens, RES, E> de::VariantAccess<'de>
-    for VariantDeserializer<'b, 'de, 'tokens, RES, E>
-where
-    RES: TokenResolver,
-    E: BinaryFlavor,
-{
+impl<'de> de::VariantAccess<'de> for VariantDeserializer {
     type Error = DeserializeError;
 
     fn unit_variant(self) -> Result<(), Self::Error> {
