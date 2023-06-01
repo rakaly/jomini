@@ -1,3 +1,4 @@
+use super::tokens::*;
 use crate::{
     binary::Rgb,
     copyless::VecHelper,
@@ -56,19 +57,6 @@ pub enum BinaryToken<'a> {
     /// Represents the index of the encoded rgb value
     Rgb(Rgb),
 }
-
-const END: u16 = 0x0004;
-const OPEN: u16 = 0x0003;
-const EQUAL: u16 = 0x0001;
-const U32: u16 = 0x0014;
-const U64: u16 = 0x029c;
-const I32: u16 = 0x000c;
-const BOOL: u16 = 0x000e;
-const QUOTED_STRING: u16 = 0x000f;
-const UNQUOTED_STRING: u16 = 0x0017;
-const F32: u16 = 0x000d;
-const F64: u16 = 0x0167;
-const RGB: u16 = 0x0243;
 
 /// Customizes how the binary tape is parsed from data
 #[derive(Debug)]

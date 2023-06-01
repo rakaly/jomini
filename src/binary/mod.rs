@@ -10,6 +10,7 @@ mod flavor;
 mod resolver;
 mod rgb;
 mod tape;
+mod tokens;
 
 pub use self::flavor::BinaryFlavor;
 pub use self::resolver::{FailedResolveStrategy, TokenResolver};

@@ -121,6 +121,23 @@ without any duplication.
 
 One can configure the behavior when a token is unknown (ie: fail immediately or try to continue).
 
+### Ondemand Deserialization
+
+The ondemand deserializer is a one-shot deserialization mode is often faster
+and more memory efficient as it does not parse the input into an intermediate
+tape, and instead deserializes right from the input.
+
+It is instantiated and used similarly to `BinaryDeserializer`
+
+```rust
+use jomini::OndemandBinaryDeserializer;
+// [...snip code from previous example...]
+
+let actual: MyStruct = OndemandBinaryDeserializer::builder_flavor(BinaryTestFlavor)
+    .deserialize_slice(&data[..], &map)?;
+assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
+```
+
 ## Caveats
 
 Caller is responsible for:

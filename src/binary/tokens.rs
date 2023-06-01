@@ -1,0 +1,12 @@
+pub(crate) const END: u16 = 0x0004;
+pub(crate) const OPEN: u16 = 0x0003;
+pub(crate) const EQUAL: u16 = 0x0001;
+pub(crate) const U32: u16 = 0x0014;
+pub(crate) const U64: u16 = 0x029c;
+pub(crate) const I32: u16 = 0x000c;
+pub(crate) const BOOL: u16 = 0x000e;
+pub(crate) const QUOTED_STRING: u16 = 0x000f;
+pub(crate) const UNQUOTED_STRING: u16 = 0x0017;
+pub(crate) const F32: u16 = 0x000d;
+pub(crate) const F64: u16 = 0x0167;
+pub(crate) const RGB: u16 = 0x0243;

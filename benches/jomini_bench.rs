@@ -3,13 +3,14 @@ use criterion::{
 };
 use flate2::read::GzDecoder;
 use jomini::{
-    binary::{BinaryFlavor, BinaryTapeParser},
+    binary::{
+        de::OndemandBinaryDeserializerBuilder, BinaryFlavor, BinaryTapeParser, TokenResolver,
+    },
     common::Date,
     BinaryDeserializer, BinaryTape, Encoding, Scalar, TextTape, Utf8Encoding, Windows1252Encoding,
 };
-use std::{borrow::Cow, collections::HashMap, io::Read};
+use std::{borrow::Cow, io::Read};
 
-const METADATA_BIN: &'static [u8] = include_bytes!("../tests/fixtures/meta.bin");
 const METADATA_TXT: &'static [u8] = include_bytes!("../tests/fixtures/meta.txt");
 const CK3_TXT: &'static [u8] = include_bytes!("../tests/fixtures/ck3-header.txt");
 
@@ -84,8 +85,8 @@ pub fn to_f64_benchmark(c: &mut Criterion) {
 
 pub fn binary_deserialize_benchmark(c: &mut Criterion) {
     #[derive(serde::Deserialize, PartialEq, Eq, Debug)]
-    struct Meta {
-        campaign_id: String,
+    struct Gamestate {
+        pub current_age: String,
     }
 
     #[derive(Debug, Default)]
@@ -107,15 +108,32 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
         }
     }
 
-    let data = &METADATA_BIN["EU4bin".len()..];
-    let mut group = c.benchmark_group("deserialize");
-    let mut map = HashMap::new();
-    map.insert(0x337f, "campaign_id");
+    struct MyBinaryResolver;
+
+    impl TokenResolver for MyBinaryResolver {
+        fn resolve(&self, token: u16) -> Option<&str> {
+            if token == 0x3564 {
+                Some("current_age")
+            } else {
+                None
+            }
+        }
+    }
+
+    let mut group = c.benchmark_group("binary-deserialize");
+    let data = request(&format!("jomini/eu4-bin"));
     group.throughput(Throughput::Bytes(data.len() as u64));
-    group.bench_function("binary", |b| {
+    group.bench_function("ondemand", |b| {
         b.iter(|| {
-            let _res: Meta = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-                .deserialize_slice(&data[..], &map)
+            let _res: Gamestate = OndemandBinaryDeserializerBuilder::with_flavor(BinaryTestFlavor)
+                .deserialize_slice(&data[..], &MyBinaryResolver)
+                .unwrap();
+        })
+    });
+    group.bench_function("tape", |b| {
+        b.iter(|| {
+            let _res: Gamestate = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+                .deserialize_slice(&data[..], &MyBinaryResolver)
                 .unwrap();
         })
     });

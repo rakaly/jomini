@@ -21,6 +21,11 @@ impl Error {
         &self.0
     }
 
+    /// Unwrap this error into its underlying type
+    pub fn into_kind(self) -> ErrorKind {
+        *self.0
+    }
+
     /// Returns the byte offset that the error occurs (if available)
     pub fn offset(&self) -> Option<usize> {
         self.0.offset()
@@ -165,6 +170,15 @@ impl std::fmt::Display for DeserializeError {
 }
 
 #[cfg(feature = "serde")]
+impl serde::de::Error for Error {
+    fn custom<T: fmt::Display>(msg: T) -> Self {
+        Error::new(ErrorKind::Deserialize(DeserializeError {
+            kind: DeserializeErrorKind::Message(msg.to_string()),
+        }))
+    }
+}
+
+#[cfg(feature = "serde")]
 impl serde::de::Error for DeserializeError {
     fn custom<T: fmt::Display>(msg: T) -> Self {
         DeserializeError {
@@ -179,11 +193,11 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<ScalarError> for DeserializeError {
+impl From<ScalarError> for Error {
     fn from(error: ScalarError) -> Self {
-        DeserializeError {
+        Error::from(DeserializeError {
             kind: DeserializeErrorKind::Scalar(error),
-        }
+        })
     }
 }
 
