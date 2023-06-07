@@ -1,10 +1,776 @@
+use super::{tokens::*, Rgb};
 use crate::{
     binary::{BinaryFlavor, FailedResolveStrategy, TokenResolver},
     de::ColorSequence,
-    BinaryTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error,
+    util::get_split,
+    BinaryTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error, ErrorKind,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use std::borrow::Cow;
+
+#[derive(Debug)]
+struct OndemandParser<'data> {
+    data: &'data [u8],
+    original_length: usize,
+}
+
+impl<'data> OndemandParser<'data> {
+    #[inline]
+    pub fn peek(&mut self) -> Option<u16> {
+        self.data
+            .get(..2)
+            .map(|head| u16::from_le_bytes([head[0], head[1]]))
+    }
+
+    #[inline]
+    pub fn next(&mut self) -> Option<u16> {
+        let (data, token) =
+            get_split::<2>(self.data).map(|(head, rest)| (rest, u16::from_le_bytes(head)))?;
+        self.data = data;
+        Some(token)
+    }
+
+    #[inline]
+    pub fn read(&mut self) -> Result<u16, Error> {
+        self.next().ok_or_else(Error::eof)
+    }
+
+    #[inline]
+    pub fn read_string(&mut self) -> Result<&'data [u8], Error> {
+        let (head, rest) = get_split::<2>(self.data).ok_or_else(Error::eof)?;
+        let text_len = usize::from(u16::from_le_bytes(head));
+        if text_len <= rest.len() {
+            let (text, rest) = rest.split_at(text_len);
+            self.data = rest;
+            Ok(text)
+        } else {
+            Err(Error::eof())
+        }
+    }
+
+    #[inline]
+    pub fn read_bool(&mut self) -> Result<bool, Error> {
+        let (&first, rest) = self.data.split_first().ok_or_else(Error::eof)?;
+        self.data = rest;
+        Ok(first != 0)
+    }
+
+    #[inline]
+    fn read_u32(&mut self) -> Result<u32, Error> {
+        let (head, rest) = get_split::<4>(self.data).ok_or_else(Error::eof)?;
+        self.data = rest;
+        Ok(u32::from_le_bytes(head))
+    }
+
+    #[inline]
+    fn read_u64(&mut self) -> Result<u64, Error> {
+        let (head, rest) = get_split::<8>(self.data).ok_or_else(Error::eof)?;
+        self.data = rest;
+        Ok(u64::from_le_bytes(head))
+    }
+
+    #[inline]
+    fn read_i32(&mut self) -> Result<i32, Error> {
+        let (head, rest) = get_split::<4>(self.data).ok_or_else(Error::eof)?;
+        self.data = rest;
+        Ok(i32::from_le_bytes(head))
+    }
+
+    #[inline]
+    fn read_f32(&mut self) -> Result<[u8; 4], Error> {
+        let (head, rest) = get_split::<4>(self.data).ok_or_else(Error::eof)?;
+        self.data = rest;
+        Ok(head)
+    }
+
+    #[inline]
+    fn read_f64(&mut self) -> Result<[u8; 8], Error> {
+        let (head, rest) = get_split::<8>(self.data).ok_or_else(Error::eof)?;
+        self.data = rest;
+        Ok(head)
+    }
+
+    #[inline]
+    fn skip_value(&mut self, init: u16) -> Result<(), Error> {
+        match init {
+            QUOTED_STRING | UNQUOTED_STRING => {
+                self.read_string()?;
+                Ok(())
+            }
+            U32 => {
+                self.read_u32()?;
+                Ok(())
+            }
+            I32 => {
+                self.read_i32()?;
+                Ok(())
+            }
+            U64 => {
+                self.read_u64()?;
+                Ok(())
+            }
+            BOOL => {
+                self.read_bool()?;
+                Ok(())
+            }
+            F32 => {
+                self.read_f32()?;
+                Ok(())
+            }
+            F64 => {
+                self.read_f64()?;
+                Ok(())
+            }
+            OPEN => self.skip_container(),
+            _ => Ok(()),
+        }
+    }
+
+    #[inline]
+    fn skip_container(&mut self) -> Result<(), Error> {
+        let mut depth = 1;
+        while depth != 0 {
+            match self.read()? {
+                QUOTED_STRING | UNQUOTED_STRING => {
+                    self.read_string()?;
+                }
+                U32 => {
+                    self.read_u32()?;
+                }
+                I32 => {
+                    self.read_i32()?;
+                }
+                U64 => {
+                    self.read_u64()?;
+                }
+                BOOL => {
+                    self.read_bool()?;
+                }
+                F32 => {
+                    self.read_f32()?;
+                }
+                F64 => {
+                    self.read_f64()?;
+                }
+                END => depth -= 1,
+                OPEN => depth += 1,
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn read_rgb(&mut self) -> Result<Rgb, Error> {
+        let start = self.read()?;
+        let rtoken = self.read()?;
+        let r = self.read_u32()?;
+        let gtoken = self.read()?;
+        let g = self.read_u32()?;
+        let btoken = self.read()?;
+        let b = self.read_u32()?;
+        let end = self.read()?;
+        match (start, rtoken, gtoken, btoken, end) {
+            (OPEN, U32, U32, U32, END) => Ok(Rgb { r, g, b }),
+            _ => Err(self.invalid_syntax("invalid rgb value")),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn invalid_syntax<T: Into<String>>(&self, msg: T) -> Error {
+        Error::new(ErrorKind::InvalidSyntax {
+            msg: msg.into(),
+            offset: self.original_length - self.data.len(),
+        })
+    }
+}
+
+/// On-demand binary deserializer
+pub struct OndemandBinaryDeserializer<'data, 'res: 'data, RES, F> {
+    parser: OndemandParser<'data>,
+    config: BinaryConfig<'res, RES, F>,
+}
+
+impl OndemandBinaryDeserializer<'_, '_, (), ()> {
+    /// Constructs a OndemandBinaryDeserializerBuilder
+    pub fn builder_flavor<F: BinaryFlavor>(flavor: F) -> OndemandBinaryDeserializerBuilder<F> {
+        OndemandBinaryDeserializerBuilder::with_flavor(flavor)
+    }
+}
+
+/// Build a tweaked on-deman binary deserializer
+#[derive(Debug)]
+pub struct OndemandBinaryDeserializerBuilder<F> {
+    failed_resolve_strategy: FailedResolveStrategy,
+    flavor: F,
+}
+
+impl<F> OndemandBinaryDeserializerBuilder<F>
+where
+    F: BinaryFlavor,
+{
+    /// Create a new builder instance
+    pub fn with_flavor(flavor: F) -> Self {
+        OndemandBinaryDeserializerBuilder {
+            failed_resolve_strategy: FailedResolveStrategy::Ignore,
+            flavor,
+        }
+    }
+
+    /// Set the behavior when a unknown token is encountered
+    pub fn on_failed_resolve(&mut self, strategy: FailedResolveStrategy) -> &mut Self {
+        self.failed_resolve_strategy = strategy;
+        self
+    }
+
+    /// Convenience method for parsing and building a deserializer
+    pub fn from_slice<'data, 'res: 'data, RES>(
+        self,
+        data: &'data [u8],
+        resolver: &'res RES,
+    ) -> OndemandBinaryDeserializer<'data, 'res, RES, F>
+    where
+        RES: TokenResolver,
+    {
+        let config = BinaryConfig {
+            resolver,
+            failed_resolve_strategy: self.failed_resolve_strategy,
+            flavor: self.flavor,
+        };
+
+        OndemandBinaryDeserializer {
+            parser: OndemandParser {
+                data,
+                original_length: data.len(),
+            },
+            config,
+        }
+    }
+
+    /// Convenience method for parsing and deserializing binary data
+    pub fn deserialize_slice<'b, 'data, 'res: 'data, RES, T>(
+        self,
+        data: &'data [u8],
+        resolver: &'res RES,
+    ) -> Result<T, Error>
+    where
+        T: Deserialize<'data>,
+        RES: TokenResolver,
+    {
+        self.from_slice(data, resolver).deserialize()
+    }
+}
+
+impl<'de, 'res, RES: TokenResolver, E: BinaryFlavor> OndemandBinaryDeserializer<'de, 'res, RES, E> {
+    /// Deserialize into provided type
+    pub fn deserialize<T>(&mut self) -> Result<T, Error>
+    where
+        T: Deserialize<'de>,
+    {
+        T::deserialize(self)
+    }
+}
+
+impl<'a, 'de, 'res, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
+    for &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>
+{
+    type Error = Error;
+
+    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "root deserializer can only work with key value pairs",
+            )),
+        }))
+    }
+
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_map(OndemandMap::new(self, true))
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_map(visitor)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct enum ignored_any identifier
+    }
+}
+
+struct OndemandMap<'a, 'de: 'a, 'res: 'de, RES: 'a, F> {
+    de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>,
+    root: bool,
+}
+
+impl<'a, 'de: 'a, 'res: 'de, RES: 'a, F> OndemandMap<'a, 'de, 'res, RES, F> {
+    fn new(de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>, root: bool) -> Self {
+        OndemandMap { de, root }
+    }
+}
+
+impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
+    for OndemandMap<'a, 'de, 'res, RES, F>
+{
+    type Error = Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: DeserializeSeed<'de>,
+    {
+        let token = self.de.parser.next();
+        match token {
+            Some(END) => Ok(None),
+            None if self.root => Ok(None),
+            None => Err(Error::eof()),
+            Some(token) => seed
+                .deserialize(OndemandTokenDeserializer {
+                    de: &mut *self.de,
+                    token,
+                })
+                .map(Some),
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        let mut token = self.de.parser.read()?;
+        if token == EQUAL {
+            token = self.de.parser.read()?;
+        }
+
+        seed.deserialize(OndemandTokenDeserializer {
+            de: &mut *self.de,
+            token,
+        })
+    }
+}
+
+struct OndemandTokenDeserializer<'a, 'de: 'a, 'res: 'de, RES: 'a, F> {
+    de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>,
+    token: u16,
+}
+
+impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor>
+    OndemandTokenDeserializer<'a, 'de, 'res, RES, F>
+where
+    F: BinaryFlavor,
+{
+    fn deser<V>(self, visitor: V) -> Result<V::Value, Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        let mut tok = self.token;
+
+        // Skip empty objects masquerading as keys
+        while tok == OPEN && matches!(self.de.parser.peek(), Some(END)) {
+            self.de.parser.read()?;
+            tok = self.de.parser.read()?;
+        }
+
+        match tok {
+            QUOTED_STRING | UNQUOTED_STRING => {
+                let data = self.de.parser.read_string()?;
+                match self.de.config.flavor.decode(data) {
+                    Cow::Borrowed(x) => visitor.visit_borrowed_str(x),
+                    Cow::Owned(x) => visitor.visit_string(x),
+                }
+            }
+            U32 => visitor.visit_u32(self.de.parser.read_u32()?),
+            I32 => visitor.visit_i32(self.de.parser.read_i32()?),
+            U64 => visitor.visit_u64(self.de.parser.read_u64()?),
+            BOOL => visitor.visit_bool(self.de.parser.read_bool()?),
+            F32 => visitor.visit_f32(self.de.config.flavor.visit_f32(self.de.parser.read_f32()?)),
+            F64 => visitor.visit_f64(self.de.config.flavor.visit_f64(self.de.parser.read_f64()?)),
+            OPEN => visitor.visit_seq(OndemandSeq::new(self.de)),
+            END | EQUAL => Err(self
+                .de
+                .parser
+                .invalid_syntax("unexpected token encountered")),
+            s => match self.de.config.resolver.resolve(s) {
+                Some(id) => visitor.visit_borrowed_str(id),
+                None => match self.de.config.failed_resolve_strategy {
+                    FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::UnknownToken { token_id: s },
+                    })),
+                    FailedResolveStrategy::Stringify => visitor.visit_string(format!("0x{:x}", s)),
+                    FailedResolveStrategy::Ignore => {
+                        visitor.visit_borrowed_str("__internal_identifier_ignore")
+                    }
+                },
+            },
+        }
+    }
+}
+
+macro_rules! deserialize_scalar {
+    ($method:ident) => {
+        fn $method<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: de::Visitor<'de>,
+        {
+            self.deser(visitor)
+        }
+    };
+}
+
+impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
+    for OndemandTokenDeserializer<'a, 'de, 'res, RES, F>
+{
+    type Error = Error;
+
+    deserialize_scalar!(deserialize_any);
+    deserialize_scalar!(deserialize_i8);
+    deserialize_scalar!(deserialize_i16);
+    deserialize_scalar!(deserialize_i64);
+    deserialize_scalar!(deserialize_u8);
+    deserialize_scalar!(deserialize_u16);
+    deserialize_scalar!(deserialize_char);
+    deserialize_scalar!(deserialize_identifier);
+    deserialize_scalar!(deserialize_bytes);
+    deserialize_scalar!(deserialize_byte_buf);
+
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if self.token == BOOL {
+            visitor.visit_bool(self.de.parser.read_bool()?)
+        } else {
+            Ok(self.deser(visitor)?)
+        }
+    }
+
+    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if self.token == I32 {
+            visitor.visit_i32(self.de.parser.read_i32()?)
+        } else {
+            Ok(self.deser(visitor)?)
+        }
+    }
+
+    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if self.token == U32 {
+            visitor.visit_u32(self.de.parser.read_u32()?)
+        } else {
+            Ok(self.deser(visitor)?)
+        }
+    }
+
+    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if self.token == U64 {
+            visitor.visit_u64(self.de.parser.read_u64()?)
+        } else {
+            Ok(self.deser(visitor)?)
+        }
+    }
+
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if self.token == F32 {
+            visitor.visit_f32(self.de.config.flavor.visit_f32(self.de.parser.read_f32()?))
+        } else {
+            Ok(self.deser(visitor)?)
+        }
+    }
+
+    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if self.token == F64 {
+            visitor.visit_f64(self.de.config.flavor.visit_f64(self.de.parser.read_f64()?))
+        } else {
+            Ok(self.deser(visitor)?)
+        }
+    }
+
+    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_string(visitor)
+    }
+
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if self.token == QUOTED_STRING || self.token == UNQUOTED_STRING {
+            let data = self.de.parser.read_string()?;
+            match self.de.config.flavor.decode(data) {
+                Cow::Borrowed(x) => visitor.visit_borrowed_str(x),
+                Cow::Owned(x) => visitor.visit_string(x),
+            }
+        } else {
+            Ok(self.deser(visitor)?)
+        }
+    }
+
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_some(self)
+    }
+
+    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_ignored_any(visitor)
+    }
+
+    fn deserialize_unit_struct<V>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_ignored_any(visitor)
+    }
+
+    fn deserialize_newtype_struct<V>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_newtype_struct(self)
+    }
+
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if self.token == OPEN {
+            let mut seq = OndemandSeq::new(self.de);
+            let result = visitor.visit_seq(&mut seq)?;
+            if !seq.hit_end {
+                // For when we are deserializing an array that doesn't read
+                // the closing token
+                let ender = self.de.parser.read()?;
+                if ender != END {
+                    return Err(self
+                        .de
+                        .parser
+                        .invalid_syntax("Expected sequence to be terminated with an end token"));
+                }
+            }
+            Ok(result)
+        } else if self.token == RGB {
+            let rgb = self.de.parser.read_rgb()?;
+            visitor.visit_seq(ColorSequence::new(rgb))
+        } else {
+            Ok(self.deser(visitor)?)
+        }
+    }
+
+    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_tuple_struct<V>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if self.token == OPEN {
+            visitor.visit_map(OndemandMap::new(self.de, false))
+        } else {
+            Ok(self.deser(visitor)?)
+        }
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_map(visitor)
+    }
+
+    fn deserialize_enum<V>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_enum(OndemandEnum::new(self.de, self.token))
+    }
+
+    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.de.parser.skip_value(self.token)?;
+        visitor.visit_unit()
+    }
+}
+
+struct OndemandSeq<'a, 'de: 'a, 'res: 'de, RES: 'a, F> {
+    de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>,
+    hit_end: bool,
+}
+
+impl<'a, 'de: 'a, 'res: 'de, RES: 'a, F> OndemandSeq<'a, 'de, 'res, RES, F> {
+    fn new(de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>) -> Self {
+        OndemandSeq { de, hit_end: false }
+    }
+}
+
+impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> SeqAccess<'de>
+    for OndemandSeq<'a, 'de, 'res, RES, F>
+{
+    type Error = Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        let token = self.de.parser.read()?;
+        if token == END {
+            self.hit_end = true;
+            Ok(None)
+        } else {
+            seed.deserialize(OndemandTokenDeserializer {
+                de: &mut *self.de,
+                token,
+            })
+            .map(Some)
+        }
+    }
+}
+
+struct OndemandEnum<'a, 'de: 'a, 'res: 'de, RES: 'a, F> {
+    de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>,
+    token: u16,
+}
+
+impl<'a, 'de: 'a, 'res: 'de, RES: 'a, F> OndemandEnum<'a, 'de, 'res, RES, F> {
+    fn new(de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>, token: u16) -> Self {
+        OndemandEnum { de, token }
+    }
+}
+
+impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::EnumAccess<'de>
+    for OndemandEnum<'a, 'de, 'res, RES, F>
+{
+    type Error = Error;
+    type Variant = Self;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self), Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let variant = seed.deserialize(OndemandTokenDeserializer {
+            de: self.de,
+            token: self.token,
+        })?;
+        Ok((variant, self))
+    }
+}
+
+impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
+    for OndemandEnum<'a, 'de, 'res, RES, F>
+{
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unsupported enum deserialization. Please file issue",
+            )),
+        }))
+    }
+
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unsupported enum deserialization. Please file issue",
+            )),
+        }))
+    }
+
+    fn struct_variant<V>(
+        self,
+        _fields: &'static [&'static str],
+        _visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unsupported enum deserialization. Please file issue",
+            )),
+        }))
+    }
+}
 
 /// A structure to deserialize binary data into Rust values.
 ///
@@ -169,7 +935,7 @@ impl<'b, 'de, 'res, RES: TokenResolver, E: BinaryFlavor> BinaryDeserializer<'b, 
     where
         T: Deserialize<'de>,
     {
-        T::deserialize(self).map_err(|e| e.into())
+        T::deserialize(self)
     }
 }
 
@@ -197,17 +963,17 @@ struct BinaryConfig<'res, RES, F> {
 impl<'a, 'b, 'de, 'res, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
     for &'a BinaryDeserializer<'b, 'de, 'res, RES, F>
 {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        Err(DeserializeError {
+        Err(Error::from(DeserializeError {
             kind: DeserializeErrorKind::Unsupported(String::from(
                 "root deserializer can only work with key value pairs",
             )),
-        })
+        }))
     }
 
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -272,7 +1038,7 @@ impl<'c, 'a, 'de, 'res: 'de, RES, E> BinaryMap<'c, 'a, 'de, 'res, RES, E> {
 impl<'c, 'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
     for BinaryMap<'c, 'a, 'de, 'res, RES, F>
 {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
     where
@@ -326,14 +1092,14 @@ fn visit_key<'b, 'de: 'b, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, V: Vis
     tokens: &'b [BinaryToken<'de>],
     config: &'b BinaryConfig<'res, RES, F>,
     visitor: V,
-) -> Result<V::Value, DeserializeError> {
+) -> Result<V::Value, Error> {
     match tokens[tape_idx] {
         BinaryToken::Object(_)
         | BinaryToken::Array(_)
         | BinaryToken::End(_)
-        | BinaryToken::Rgb(_) => Err(DeserializeError {
+        | BinaryToken::Rgb(_) => Err(Error::from(DeserializeError {
             kind: DeserializeErrorKind::Unsupported(String::from("unable to deserialize key type")),
-        }),
+        })),
         BinaryToken::MixedContainer | BinaryToken::Equal => visitor.visit_unit(),
         BinaryToken::Bool(x) => visitor.visit_bool(x),
         BinaryToken::U32(x) => visitor.visit_u32(x),
@@ -350,9 +1116,9 @@ fn visit_key<'b, 'de: 'b, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, V: Vis
         BinaryToken::Token(s) => match config.resolver.resolve(s) {
             Some(id) => visitor.visit_borrowed_str(id),
             None => match config.failed_resolve_strategy {
-                FailedResolveStrategy::Error => Err(DeserializeError {
+                FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
                     kind: DeserializeErrorKind::UnknownToken { token_id: s },
-                }),
+                })),
                 FailedResolveStrategy::Stringify => visitor.visit_string(format!("0x{:x}", s)),
                 FailedResolveStrategy::Ignore => {
                     visitor.visit_borrowed_str("__internal_identifier_ignore")
@@ -365,7 +1131,7 @@ fn visit_key<'b, 'de: 'b, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, V: Vis
 impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
     for KeyDeserializer<'b, 'de, 'res, RES, E>
 {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -390,7 +1156,7 @@ struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES, E> {
 impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
     for ValueDeserializer<'c, 'b, 'de, 'res, RES, E>
 {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -408,11 +1174,11 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializ
             BinaryToken::Object(x) => {
                 visitor.visit_map(BinaryMap::new(self.config, self.tokens, idx + 1, *x))
             }
-            BinaryToken::End(_x) => Err(DeserializeError {
+            BinaryToken::End(_x) => Err(Error::from(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered end when trying to deserialize",
                 )),
-            }),
+            })),
             _ => visit_key(idx, self.tokens, self.config, visitor),
         }
     }
@@ -430,11 +1196,11 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializ
                 end_idx: *x,
             }),
             BinaryToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
-            _ => Err(DeserializeError {
+            _ => Err(Error::from(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered non-array when trying to deserialize array",
                 )),
-            }),
+            })),
         }
     }
 
@@ -508,11 +1274,11 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializ
             BinaryToken::Array(x) => {
                 visitor.visit_map(BinaryMap::new(self.config, self.tokens, idx + 1, *x))
             }
-            _ => Err(DeserializeError {
+            _ => Err(Error::from(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "encountered unexpected token when trying to deserialize map",
                 )),
-            }),
+            })),
         }
     }
 
@@ -550,7 +1316,7 @@ where
     RES: TokenResolver,
     E: BinaryFlavor,
 {
-    type Error = DeserializeError;
+    type Error = Error;
     type Variant = VariantDeserializer;
 
     fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
@@ -571,7 +1337,7 @@ where
 struct VariantDeserializer;
 
 impl<'de> de::VariantAccess<'de> for VariantDeserializer {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn unit_variant(self) -> Result<(), Self::Error> {
         Ok(())
@@ -581,22 +1347,22 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer {
     where
         T: DeserializeSeed<'de>,
     {
-        Err(DeserializeError {
+        Err(Error::from(DeserializeError {
             kind: DeserializeErrorKind::Unsupported(String::from(
                 "unsupported enum deserialization. Please file issue",
             )),
-        })
+        }))
     }
 
     fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        Err(DeserializeError {
+        Err(Error::from(DeserializeError {
             kind: DeserializeErrorKind::Unsupported(String::from(
                 "unsupported enum deserialization. Please file issue",
             )),
-        })
+        }))
     }
 
     fn struct_variant<V>(
@@ -607,11 +1373,11 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer {
     where
         V: Visitor<'de>,
     {
-        Err(DeserializeError {
+        Err(Error::from(DeserializeError {
             kind: DeserializeErrorKind::Unsupported(String::from(
                 "unsupported enum deserialization. Please file issue",
             )),
-        })
+        }))
     }
 }
 
@@ -625,7 +1391,7 @@ struct BinarySequence<'b, 'de: 'b, 'res: 'de, RES, E> {
 impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> SeqAccess<'de>
     for BinarySequence<'b, 'de, 'res, RES, E>
 {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
     where
@@ -740,10 +1506,14 @@ mod tests {
 
     fn from_slice<'a, 'res: 'a, RES, T>(data: &'a [u8], resolver: &'res RES) -> Result<T, Error>
     where
-        T: Deserialize<'a>,
+        T: Deserialize<'a> + PartialEq + std::fmt::Debug,
         RES: TokenResolver,
     {
-        eu4_builder().from_slice(data, resolver)?.deserialize()
+        let result = eu4_builder().from_slice(data, resolver)?.deserialize()?;
+        let ondemand = OndemandBinaryDeserializerBuilder::with_flavor(Eu4Flavor::new())
+            .deserialize_slice(data, resolver)?;
+        assert_eq!(result, ondemand);
+        Ok(result)
     }
 
     #[test]
@@ -1066,12 +1836,92 @@ mod tests {
     }
 
     #[test]
+    fn test_array_deserialization() {
+        let data = [
+            0xe1, 0x2e, 0x01, 0x00, 0x03, 0x00, 0x0f, 0x00, 0x0a, 0x00, 0x41, 0x72, 0x74, 0x20,
+            0x6f, 0x66, 0x20, 0x57, 0x61, 0x72, 0x0f, 0x00, 0x14, 0x00, 0x43, 0x6f, 0x6e, 0x71,
+            0x75, 0x65, 0x73, 0x74, 0x20, 0x6f, 0x66, 0x20, 0x50, 0x61, 0x72, 0x61, 0x64, 0x69,
+            0x73, 0x65, 0x0f, 0x00, 0x0b, 0x00, 0x52, 0x65, 0x73, 0x20, 0x50, 0x75, 0x62, 0x6c,
+            0x69, 0x63, 0x61, 0x0f, 0x00, 0x11, 0x00, 0x57, 0x65, 0x61, 0x6c, 0x74, 0x68, 0x20,
+            0x6f, 0x66, 0x20, 0x4e, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x73, 0x04, 0x00, 0x82, 0x2d,
+            0x01, 0x00, 0x0e, 0x00, 0x00,
+        ];
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            dlc_enabled: [String; 4],
+            field1: bool,
+        }
+
+        let mut map = HashMap::new();
+        map.insert(0x2ee1, String::from("dlc_enabled"));
+        map.insert(0x2d82, String::from("field1"));
+
+        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                dlc_enabled: [
+                    String::from("Art of War"),
+                    String::from("Conquest of Paradise"),
+                    String::from("Res Publica"),
+                    String::from("Wealth of Nations"),
+                ],
+                field1: false,
+            }
+        );
+    }
+
+    #[test]
     fn test_nested_object() {
         let data = [
             0xc9, 0x2e, 0x01, 0x00, 0x03, 0x00, 0xe2, 0x28, 0x01, 0x00, 0x0c, 0x00, 0x01, 0x00,
             0x00, 0x00, 0xe3, 0x28, 0x01, 0x00, 0x0c, 0x00, 0x0b, 0x00, 0x00, 0x00, 0xc7, 0x2e,
             0x01, 0x00, 0x0c, 0x00, 0x04, 0x00, 0x00, 0x00, 0xc8, 0x2e, 0x01, 0x00, 0x0c, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
+        ];
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            savegame_version: Version,
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Version {
+            first: i32,
+            second: i32,
+            third: i32,
+            fourth: i32,
+        }
+
+        let mut map = HashMap::new();
+        map.insert(0x2ec9, String::from("savegame_version"));
+        map.insert(0x28e2, String::from("first"));
+        map.insert(0x28e3, String::from("second"));
+        map.insert(0x2ec7, String::from("third"));
+        map.insert(0x2ec8, String::from("fourth"));
+
+        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                savegame_version: Version {
+                    first: 1,
+                    second: 11,
+                    third: 4,
+                    fourth: 0,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn test_empty_object() {
+        let data = [
+            0xc9, 0x2e, 0x01, 0x00, 0x03, 0x00, 0xe2, 0x28, 0x01, 0x00, 0x0c, 0x00, 0x01, 0x00,
+            0x00, 0x00, 0x03, 0x00, 0x04, 0x00, 0xe3, 0x28, 0x01, 0x00, 0x0c, 0x00, 0x0b, 0x00,
+            0x00, 0x00, 0xc7, 0x2e, 0x01, 0x00, 0x0c, 0x00, 0x04, 0x00, 0x00, 0x00, 0xc8, 0x2e,
+            0x01, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
         ];
 
         #[derive(Deserialize, PartialEq, Debug)]

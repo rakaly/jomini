@@ -255,7 +255,7 @@ where
     where
         T: Deserialize<'a>,
     {
-        T::deserialize(self).map_err(|e| e.into())
+        T::deserialize(self)
     }
 }
 
@@ -263,17 +263,17 @@ impl<'de, 'a, 'tokens, E> de::Deserializer<'de> for &'a TextDeserializer<'de, 't
 where
     E: Encoding + Clone,
 {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        Err(DeserializeError {
+        Err(Error::from(DeserializeError {
             kind: DeserializeErrorKind::Unsupported(String::from(
                 "root deserializer can only work with key value pairs",
             )),
-        })
+        }))
     }
 
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -344,7 +344,7 @@ impl<'de, 'tokens, E> de::MapAccess<'de> for MapAccess<'de, 'tokens, E>
 where
     E: Encoding + Clone,
 {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
     where
@@ -454,11 +454,11 @@ macro_rules! deserialize_any_value {
             }
             TextToken::Array { .. } => $self.deserialize_seq($visitor),
             TextToken::Object { .. } => $self.deserialize_map($visitor),
-            _ => Err(DeserializeError {
+            _ => Err(Error::from(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "unsupported value reader token",
                 )),
-            }),
+            })),
         }
     };
 }
@@ -467,7 +467,7 @@ impl<'de, 'tokens, E> de::Deserializer<'de> for ValueDeserializer<'de, 'tokens, 
 where
     E: Encoding + Clone,
 {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn deserialize_any<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -622,11 +622,11 @@ where
             let map = MapAccess::new(x.read_object()?, self.config);
             visitor.visit_map(map)
         } else {
-            Err(DeserializeError {
+            Err(Error::from(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "can only deserialize an object as a map",
                 )),
-            })
+            }))
         }
     }
 
@@ -649,11 +649,11 @@ where
                 };
                 visitor.visit_seq(map)
             }
-            _ => Err(DeserializeError {
+            _ => Err(Error::from(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
                     "unexpected reader for sequence",
                 )),
-            }),
+            })),
         }
     }
 
@@ -730,9 +730,9 @@ where
         V: de::Visitor<'de>,
     {
         let err = || {
-            Err(DeserializeError {
+            Err(Error::from(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from("unexpected reader for enum")),
-            })
+            }))
         };
 
         let value_reader = match self.reader() {
@@ -795,7 +795,7 @@ impl<'de, 'tokens, E> de::MapAccess<'de> for PropertyMap<'de, 'tokens, E>
 where
     E: Encoding + Clone,
 {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
     where
@@ -834,7 +834,7 @@ impl<'de, 'tokens, E> de::SeqAccess<'de> for SeqAccess<'de, 'tokens, E>
 where
     E: Encoding + Clone,
 {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
     where
@@ -867,7 +867,7 @@ impl<'de, 'tokens, E> de::EnumAccess<'de> for EnumAccess<'de, 'tokens, E>
 where
     E: Encoding + Clone,
 {
-    type Error = DeserializeError;
+    type Error = Error;
     type Variant = VariantDeserializer<'de, 'tokens, E>;
 
     fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
@@ -926,7 +926,7 @@ impl<'de, 'tokens, E> de::VariantAccess<'de> for VariantDeserializer<'de, 'token
 where
     E: Encoding + Clone,
 {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn unit_variant(mut self) -> Result<(), Self::Error> {
         if self.values.is_none() {
@@ -965,7 +965,7 @@ where
 struct StaticDeserializer(&'static str);
 
 impl<'de> de::Deserializer<'de> for StaticDeserializer {
-    type Error = DeserializeError;
+    type Error = Error;
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
@@ -983,7 +983,7 @@ impl<'de> de::Deserializer<'de> for StaticDeserializer {
 struct OperatorDeserializer(Operator);
 
 impl<'de> de::Deserializer<'de> for OperatorDeserializer {
-    type Error = DeserializeError;
+    type Error = Error;
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,

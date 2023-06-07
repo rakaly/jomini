@@ -1,4 +1,4 @@
-use crate::{binary::Rgb, DeserializeError};
+use crate::{binary::Rgb, Error};
 use de::{DeserializeSeed, SeqAccess, Visitor};
 use serde::de;
 
@@ -15,7 +15,7 @@ impl ColorSequence {
 }
 
 impl<'de, 'r> de::Deserializer<'de> for &'r mut ColorSequence {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -36,7 +36,7 @@ impl<'de, 'r> de::Deserializer<'de> for &'r mut ColorSequence {
 }
 
 impl<'de> SeqAccess<'de> for ColorSequence {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
     where
@@ -73,7 +73,7 @@ impl InnerColorSequence {
 }
 
 impl<'de, 'r> de::Deserializer<'de> for &'r mut InnerColorSequence {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -90,7 +90,7 @@ impl<'de, 'r> de::Deserializer<'de> for &'r mut InnerColorSequence {
 }
 
 impl<'de> SeqAccess<'de> for InnerColorSequence {
-    type Error = DeserializeError;
+    type Error = Error;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
     where
