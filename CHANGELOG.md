@@ -1,3 +1,8 @@
+## v0.22.0 - 2023-06-07
+
+- Add ondemand binary deserializer for efficient one-shot parsing deserialization
+- Deserialization error types updated from `DeserializeError` to `jomini::Error`
+
 ## v0.21.3 - 2023-05-25
 
 - Add json type narrowing configuration
