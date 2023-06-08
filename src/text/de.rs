@@ -2002,4 +2002,42 @@ mod tests {
             modifier: Modifier,
         }
     }
+
+    #[test]
+    fn test_deserialize_untagged() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            dynasty_house: HashMap<String, MaybeObject<DynastyHouse>>,
+        }
+
+        #[derive(Deserialize, Debug, Clone, PartialEq)]
+        #[serde(untagged)]
+        enum MaybeObject<T> {
+            Text(String),
+            Object(T),
+        }
+
+        #[derive(Debug, Deserialize, Clone, PartialEq)]
+        struct DynastyHouse {
+            name: String,
+        }
+
+        let data = br#"dynasty_house={1=none 2={name="dynn"}}"#;
+        let expected = HashMap::from([
+            (String::from("1"), MaybeObject::Text(String::from("none"))),
+            (
+                String::from("2"),
+                MaybeObject::Object(DynastyHouse {
+                    name: String::from("dynn"),
+                }),
+            ),
+        ]);
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                dynasty_house: expected
+            }
+        );
+    }
 }

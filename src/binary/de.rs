@@ -2264,6 +2264,40 @@ mod tests {
     }
 
     #[test]
+    fn test_deserialize_untagged_enum() {
+        let data = [
+            0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x07, 0x00, 0x67, 0x65, 0x6e, 0x65, 0x72, 0x61,
+            0x6c, 0x83, 0x2d, 0x01, 0x00, 0x0e, 0x00, 0x01,
+        ];
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: MyEnum,
+            field2: MyEnum,
+        }
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        #[serde(untagged)]
+        enum MyEnum {
+            Text(String),
+            Bool(bool),
+        }
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, "field1");
+        map.insert(0x2d83, "field2");
+
+        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                field1: MyEnum::Text(String::from("general")),
+                field2: MyEnum::Bool(true),
+            }
+        );
+    }
+
+    #[test]
     fn test_tuple_struct_field() {
         let data = [
             0x82, 0x2d, 0x01, 0x00, 0x03, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47, 0x0f,
