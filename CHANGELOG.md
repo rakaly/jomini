@@ -1,3 +1,7 @@
+## v0.22.1 - 2023-06-10
+
+- Fix eagerly erroring when data does not follow deserialization hints for maps and sequences
+
 ## v0.22.0 - 2023-06-07
 
 - Add ondemand binary deserializer for efficient one-shot parsing deserialization
