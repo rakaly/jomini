@@ -1196,11 +1196,7 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializ
                 end_idx: *x,
             }),
             BinaryToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
-            _ => Err(Error::from(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from(
-                    "encountered non-array when trying to deserialize array",
-                )),
-            })),
+            _ => visit_key(idx, self.tokens, self.config, visitor),
         }
     }
 
@@ -1274,11 +1270,7 @@ impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializ
             BinaryToken::Array(x) => {
                 visitor.visit_map(BinaryMap::new(self.config, self.tokens, idx + 1, *x))
             }
-            _ => Err(Error::from(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from(
-                    "encountered unexpected token when trying to deserialize map",
-                )),
-            })),
+            _ => visit_key(idx, self.tokens, self.config, visitor),
         }
     }
 
@@ -1466,8 +1458,7 @@ mod tests {
     use crate::{Encoding, Windows1252Encoding};
     use jomini_derive::JominiDeserialize;
     use serde::{de::Deserializer, Deserialize};
-    use std::collections::HashMap;
-    use std::fmt;
+    use std::{collections::HashMap, fmt, marker::PhantomData};
 
     /// The eu4 binary flavor
     #[derive(Debug, Default)]
@@ -2266,33 +2257,96 @@ mod tests {
     #[test]
     fn test_deserialize_untagged_enum() {
         let data = [
-            0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x07, 0x00, 0x67, 0x65, 0x6e, 0x65, 0x72, 0x61,
-            0x6c, 0x83, 0x2d, 0x01, 0x00, 0x0e, 0x00, 0x01,
+            0x5e, 0x2e, 0x01, 0x00, 0x03, 0x00, 0x0c, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
+            0x65, 0x01, 0x0c, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x03, 0x00, 0x1b, 0x00,
+            0x01, 0x00, 0x0f, 0x00, 0x04, 0x00, 0x64, 0x79, 0x6e, 0x6e, 0x0e, 0x28, 0x01, 0x00, 0x0c, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x04, 0x00,
         ];
 
-        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        #[derive(Deserialize, Debug, PartialEq)]
         struct MyStruct {
-            field1: MyEnum,
-            field2: MyEnum,
+            dynasty_house: HashMap<i32, MaybeObject<DynastyHouse>>,
         }
 
-        #[derive(Deserialize, PartialEq, Eq, Debug)]
-        #[serde(untagged)]
-        enum MyEnum {
+        #[derive(Debug, Clone, PartialEq)]
+        enum MaybeObject<T> {
             Text(String),
-            Bool(bool),
+            Object(T),
         }
+
+        impl<'de, T> Deserialize<'de> for MaybeObject<T>
+        where
+            T: Deserialize<'de>,
+        {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                struct MaybeObjectVisitor<T1> {
+                    marker: PhantomData<T1>,
+                }
+
+                impl<'de, T1> de::Visitor<'de> for MaybeObjectVisitor<T1>
+                where
+                    T1: Deserialize<'de>,
+                {
+                    type Value = MaybeObject<T1>;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                        formatter.write_str("an object or string")
+                    }
+
+                    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        Ok(MaybeObject::Text(String::from(v)))
+                    }
+
+                    fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: de::MapAccess<'de>,
+                    {
+                        let mvd = de::value::MapAccessDeserializer::new(map);
+                        let result = T1::deserialize(mvd)?;
+                        Ok(MaybeObject::Object(result))
+                    }
+                }
+
+                deserializer.deserialize_map(MaybeObjectVisitor {
+                    marker: PhantomData,
+                })
+            }
+        }
+
+        #[derive(Debug, Deserialize, Clone, PartialEq)]
+        struct DynastyHouse {
+            name: String,
+            dynasty: i32,
+        }
+
+        let expected = HashMap::from([
+            (1, MaybeObject::Text(String::from("none"))),
+            (
+                2,
+                MaybeObject::Object(DynastyHouse {
+                    name: String::from("dynn"),
+                    dynasty: 1,
+                }),
+            ),
+        ]);
 
         let mut map = HashMap::new();
-        map.insert(0x2d82, "field1");
-        map.insert(0x2d83, "field2");
+        map.insert(0x2e5e, "dynasty_house");
+        map.insert(0x280e, "dynasty");
+        map.insert(0x1b, "name");
+        map.insert(0x165, "none");
 
         let actual: MyStruct = from_slice(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
-                field1: MyEnum::Text(String::from("general")),
-                field2: MyEnum::Bool(true),
+                dynasty_house: expected
             }
         );
     }
