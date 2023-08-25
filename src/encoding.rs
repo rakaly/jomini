@@ -47,7 +47,7 @@ pub struct Windows1252Encoding;
 impl Windows1252Encoding {
     /// Creates a new windows 1252 decoder
     pub fn new() -> Self {
-        Self::default()
+        Windows1252Encoding
     }
 
     /// Static method for decoding windows 1252 data
@@ -92,7 +92,7 @@ pub struct Utf8Encoding;
 impl Utf8Encoding {
     /// Creates a new utf8 decoder
     pub fn new() -> Self {
-        Self::default()
+        Utf8Encoding
     }
 
     /// Static method for decoding utf8 data

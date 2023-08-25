@@ -111,7 +111,7 @@ pub struct TextTapeParser;
 impl TextTapeParser {
     /// Create a text parser
     pub fn new() -> Self {
-        TextTapeParser::default()
+        TextTapeParser
     }
 
     /// Parse the text format and return the data tape
