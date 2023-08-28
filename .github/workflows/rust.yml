@@ -22,7 +22,7 @@ jobs:
         - nightly
         - macos
         - win-msvc
-        - stable-mips
+        - big-endian
         - stable-32
         include:
         - build: stable
@@ -40,10 +40,10 @@ jobs:
         - build: win-msvc
           os: windows-latest
           rust: stable
-        - build: stable-mips
+        - build: big-endian
           os: ubuntu-latest
           rust: stable
-          target: mips64-unknown-linux-gnuabi64
+          target: powerpc64-unknown-linux-gnu
         - build: stable-32
           os: ubuntu-latest
           rust: stable
@@ -59,7 +59,7 @@ jobs:
     - name: Use Cross
       if: matrix.target != ''
       run: |
-        cargo install --version 0.2.1 cross
+        cargo install cross
         echo "CARGO=cross" >> $GITHUB_ENV
         echo "TARGET=--target ${{ matrix.target }}" >> $GITHUB_ENV
     - name: Build
