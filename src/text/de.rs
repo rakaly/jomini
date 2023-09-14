@@ -183,13 +183,13 @@ where
 /// [0]: https://serde.rs/attr-flatten.html
 /// [1]: https://github.com/serde-rs/serde/issues/1529
 pub struct TextDeserializer<'a, 'b, E> {
-    tape: TextDeserializerKind<'a, 'b>,
-    encoding: E,
+    kind: TextDeserializerKind<'a, 'b, E>,
 }
 
-enum TextDeserializerKind<'a, 'b> {
-    Owned(TextTape<'a>),
-    Borrowed(&'b TextTape<'a>),
+enum TextDeserializerKind<'a, 'b, E> {
+    Owned { tape: TextTape<'a>, encoding: E },
+    Borrowed { tape: &'b TextTape<'a>, encoding: E },
+    Reader { reader: &'b ObjectReader<'a, 'b, E> },
 }
 
 impl<'a, 'b> TextDeserializer<'a, 'b, Windows1252Encoding> {
@@ -199,8 +199,10 @@ impl<'a, 'b> TextDeserializer<'a, 'b, Windows1252Encoding> {
     ) -> Result<TextDeserializer<Windows1252Encoding>, Error> {
         let tape = TextTape::from_slice(data)?;
         Ok(TextDeserializer {
-            tape: TextDeserializerKind::Owned(tape),
-            encoding: Windows1252Encoding::new(),
+            kind: TextDeserializerKind::Owned {
+                tape,
+                encoding: Windows1252Encoding::new(),
+            },
         })
     }
 
@@ -209,8 +211,10 @@ impl<'a, 'b> TextDeserializer<'a, 'b, Windows1252Encoding> {
         tape: &'b TextTape<'a>,
     ) -> TextDeserializer<'a, 'b, Windows1252Encoding> {
         TextDeserializer {
-            tape: TextDeserializerKind::Borrowed(tape),
-            encoding: Windows1252Encoding::new(),
+            kind: TextDeserializerKind::Borrowed {
+                tape,
+                encoding: Windows1252Encoding::new(),
+            },
         }
     }
 }
@@ -220,16 +224,20 @@ impl<'a, 'b> TextDeserializer<'a, 'b, Utf8Encoding> {
     pub fn from_utf8_slice(data: &'a [u8]) -> Result<TextDeserializer<Utf8Encoding>, Error> {
         let tape = TextTape::from_slice(data)?;
         Ok(TextDeserializer {
-            tape: TextDeserializerKind::Owned(tape),
-            encoding: Utf8Encoding::new(),
+            kind: TextDeserializerKind::Owned {
+                tape,
+                encoding: Utf8Encoding::new(),
+            },
         })
     }
 
     /// Deserialize the given text tape assuming quoted strings are utf8 encoded.
     pub fn from_utf8_tape(tape: &'b TextTape<'a>) -> TextDeserializer<'a, 'b, Utf8Encoding> {
         TextDeserializer {
-            tape: TextDeserializerKind::Borrowed(tape),
-            encoding: Utf8Encoding::new(),
+            kind: TextDeserializerKind::Borrowed {
+                tape,
+                encoding: Utf8Encoding::new(),
+            },
         }
     }
 }
@@ -245,8 +253,19 @@ where
         E: Encoding + Clone,
     {
         TextDeserializer {
-            tape: TextDeserializerKind::Borrowed(tape),
-            encoding,
+            kind: TextDeserializerKind::Borrowed { tape, encoding },
+        }
+    }
+
+    /// Create text deserialization from an object reader
+    ///
+    /// See example at [ObjectReader::deserialize]
+    pub fn from_reader(reader: &'b ObjectReader<'a, 'b, E>) -> TextDeserializer<'a, 'b, E>
+    where
+        E: Encoding + Clone,
+    {
+        TextDeserializer {
+            kind: TextDeserializerKind::Reader { reader },
         }
     }
 
@@ -280,10 +299,23 @@ where
     where
         V: Visitor<'de>,
     {
-        match &self.tape {
-            TextDeserializerKind::Owned(x) | &TextDeserializerKind::Borrowed(x) => {
-                let reader = ObjectReader::new(x, self.encoding.clone());
+        match &self.kind {
+            TextDeserializerKind::Owned { tape, encoding } => {
+                let reader = ObjectReader::new(tape, encoding.clone());
                 visitor.visit_map(MapAccess::new(reader, DeserializationConfig))
+            }
+            TextDeserializerKind::Borrowed { tape, encoding } => {
+                let reader = ObjectReader::new(tape, encoding.clone());
+                visitor.visit_map(MapAccess::new(reader, DeserializationConfig))
+            }
+            TextDeserializerKind::Reader { reader } => {
+                let access = MapAccess {
+                    fields: reader.fields(),
+                    config: DeserializationConfig,
+                    value: None,
+                    at_remainder: false,
+                };
+                visitor.visit_map(access)
             }
         }
     }
