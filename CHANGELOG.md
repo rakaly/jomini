@@ -1,3 +1,8 @@
+## v0.22.2 - 2023-09-14
+
+- Add `ObjectReader::deserialize` to deserialize from an arbitrary point in a text document
+- Add `TextDeserializer::from_reader` to deserialize from an `ObjectReader`
+
 ## v0.22.1 - 2023-06-10
 
 - Fix eagerly erroring when data does not follow deserialization hints for maps and sequences
