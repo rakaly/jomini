@@ -1,6 +1,7 @@
 use super::fnv::FnvBuildHasher;
 use crate::{
-    text::Operator, DeserializeError, DeserializeErrorKind, Encoding, Scalar, TextTape, TextToken,
+    text::Operator, DeserializeError, DeserializeErrorKind, Encoding, Error, Scalar, TextTape,
+    TextToken,
 };
 use std::{
     borrow::Cow,
@@ -561,6 +562,36 @@ where
     /// ```
     pub fn tokens_len(&self) -> usize {
         self.end_ind - self.start_ind
+    }
+
+    /// Deserialize from the object reader
+    ///
+    /// ```
+    /// use jomini::TextTape;
+    /// use serde::Deserialize;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// #[derive(Debug, Clone, Deserialize, PartialEq)]
+    /// pub struct Obj {
+    ///   foo: String,
+    /// }
+    ///
+    /// let tape = TextTape::from_slice(b"obj={foo=bar}")?;
+    /// let reader = tape.windows1252_reader();
+    /// let mut fields = reader.fields();
+    /// let (_, _, obj_value) = fields.next().unwrap();
+    /// let obj_reader = obj_value.read_object().unwrap();
+    /// let result: Obj = obj_reader.deserialize().unwrap();
+    /// assert_eq!(result, Obj { foo: "bar".to_string() });
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "derive")]
+    pub fn deserialize<T>(&self) -> Result<T, Error>
+    where
+        T: serde::Deserialize<'data>,
+    {
+        T::deserialize(&crate::TextDeserializer::from_reader(self))
     }
 
     /// Return the number of key value pairs that the object contains.
