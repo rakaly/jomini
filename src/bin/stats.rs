@@ -18,6 +18,7 @@ struct Stats {
     f64: u32,
     token: u32,
     rgb: u32,
+    i64: u32,
 }
 
 impl Stats {
@@ -31,6 +32,7 @@ impl Stats {
             BinaryToken::Bool(_) => self.bool += 1,
             BinaryToken::U32(_) => self.u32 += 1,
             BinaryToken::U64(_) => self.u64 += 1,
+            BinaryToken::I64(_) => self.i64 += 1,
             BinaryToken::I32(_) => self.i32 += 1,
             BinaryToken::Quoted(_) => self.quoted += 1,
             BinaryToken::Unquoted(_) => self.unquoted += 1,
@@ -56,7 +58,8 @@ impl std::fmt::Display for Stats {
             + self.f32
             + self.f64
             + self.token
-            + self.rgb;
+            + self.rgb
+            + self.i64;
 
         let total = total as f64;
 
@@ -165,6 +168,15 @@ impl std::fmt::Display for Stats {
                 "rgb:\t\t{:<8}({:.2}%)",
                 self.rgb,
                 (self.rgb as f64) / total * 100.0
+            )?;
+        }
+
+        if self.i64 != 0 {
+            writeln!(
+                f,
+                "i64:\t\t{:<8}({:.2}%)",
+                self.i64,
+                (self.i64 as f64) / total * 100.0
             )?;
         }
 

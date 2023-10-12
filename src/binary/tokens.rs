@@ -10,3 +10,4 @@ pub(crate) const UNQUOTED_STRING: u16 = 0x0017;
 pub(crate) const F32: u16 = 0x000d;
 pub(crate) const F64: u16 = 0x0167;
 pub(crate) const RGB: u16 = 0x0243;
+pub(crate) const I64: u16 = 0x0317;

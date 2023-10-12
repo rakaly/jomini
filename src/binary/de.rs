@@ -70,6 +70,13 @@ impl<'data> OndemandParser<'data> {
     }
 
     #[inline]
+    fn read_i64(&mut self) -> Result<i64, Error> {
+        let (head, rest) = get_split::<8>(self.data).ok_or_else(Error::eof)?;
+        self.data = rest;
+        Ok(i64::from_le_bytes(head))
+    }
+
+    #[inline]
     fn read_i32(&mut self) -> Result<i32, Error> {
         let (head, rest) = get_split::<4>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
@@ -109,6 +116,10 @@ impl<'data> OndemandParser<'data> {
                 self.read_u64()?;
                 Ok(())
             }
+            I64 => {
+                self.read_i64()?;
+                Ok(())
+            }
             BOOL => {
                 self.read_bool()?;
                 Ok(())
@@ -142,6 +153,9 @@ impl<'data> OndemandParser<'data> {
                 }
                 U64 => {
                     self.read_u64()?;
+                }
+                I64 => {
+                    self.read_i64()?;
                 }
                 BOOL => {
                     self.read_bool()?;
@@ -397,6 +411,7 @@ where
             U32 => visitor.visit_u32(self.de.parser.read_u32()?),
             I32 => visitor.visit_i32(self.de.parser.read_i32()?),
             U64 => visitor.visit_u64(self.de.parser.read_u64()?),
+            I64 => visitor.visit_i64(self.de.parser.read_i64()?),
             BOOL => visitor.visit_bool(self.de.parser.read_bool()?),
             F32 => visitor.visit_f32(self.de.config.flavor.visit_f32(self.de.parser.read_f32()?)),
             F64 => visitor.visit_f64(self.de.config.flavor.visit_f64(self.de.parser.read_f64()?)),
@@ -440,7 +455,6 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializ
     deserialize_scalar!(deserialize_any);
     deserialize_scalar!(deserialize_i8);
     deserialize_scalar!(deserialize_i16);
-    deserialize_scalar!(deserialize_i64);
     deserialize_scalar!(deserialize_u8);
     deserialize_scalar!(deserialize_u16);
     deserialize_scalar!(deserialize_char);
@@ -487,6 +501,17 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializ
     {
         if self.token == U64 {
             visitor.visit_u64(self.de.parser.read_u64()?)
+        } else {
+            Ok(self.deser(visitor)?)
+        }
+    }
+
+    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if self.token == I64 {
+            visitor.visit_i64(self.de.parser.read_i64()?)
         } else {
             Ok(self.deser(visitor)?)
         }
@@ -1104,6 +1129,7 @@ fn visit_key<'b, 'de: 'b, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, V: Vis
         BinaryToken::Bool(x) => visitor.visit_bool(x),
         BinaryToken::U32(x) => visitor.visit_u32(x),
         BinaryToken::U64(x) => visitor.visit_u64(x),
+        BinaryToken::I64(x) => visitor.visit_i64(x),
         BinaryToken::I32(x) => visitor.visit_i32(x),
         BinaryToken::Quoted(x) | BinaryToken::Unquoted(x) => {
             match config.flavor.decode(x.as_bytes()) {
@@ -1641,6 +1667,24 @@ mod tests {
 
         let actual: MyStruct = from_slice(&data[..], &map).unwrap();
         assert_eq!(actual, MyStruct { field1: 128 });
+    }
+
+    #[test]
+    fn test_i64_event() {
+        let data = [
+            0x6b, 0x32, 0x01, 0x00, 0x17, 0x03, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        ];
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: i64,
+        }
+
+        let mut map = HashMap::new();
+        map.insert(0x326b, String::from("field1"));
+
+        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        assert_eq!(actual, MyStruct { field1: -1 });
     }
 
     #[test]
