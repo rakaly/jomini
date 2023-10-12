@@ -36,6 +36,9 @@ pub enum BinaryToken<'a> {
     /// Represents a binary unsigned 64bit integer
     U64(u64),
 
+    /// Represents a binary signed 64bit integer
+    I64(i64),
+
     /// Represents a binary signed 32bit integer
     I32(i32),
 
@@ -170,6 +173,14 @@ impl<'a, 'b> ParserState<'a, 'b> {
         let (head, rest) = get_split::<8>(data).ok_or_else(Error::eof)?;
         let val = u64::from_le_bytes(head);
         self.token_tape.alloc().init(BinaryToken::U64(val));
+        Ok(rest)
+    }
+
+    #[inline]
+    fn parse_i64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
+        let (head, rest) = get_split::<8>(data).ok_or_else(Error::eof)?;
+        let val = i64::from_le_bytes(head);
+        self.token_tape.alloc().init(BinaryToken::I64(val));
         Ok(rest)
     }
 
@@ -613,6 +624,9 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             state = ParseState::ObjectValue;
                         } else {
                             let len = self.token_tape.len();
+                            if len == 0 {
+                                panic!("EEEK");
+                            }
                             unsafe { ptr.add(len).write(BinaryToken::MixedContainer) };
                             unsafe { ptr.add(len + 1).write(last) };
                             unsafe { ptr.add(len + 2).write(BinaryToken::Equal) };
@@ -626,6 +640,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
                 RGB if state == ParseState::ObjectValue => {
                     data = self.parse_rgb(d)?;
                     state = ParseState::Key;
+                }
+                I64 => {
+                    data = self.parse_i64(d)?;
+                    state = Self::next_state(state);
                 }
                 x => {
                     data = d;
@@ -1207,6 +1225,17 @@ mod tests {
         assert_eq!(
             parse(&data).unwrap().token_tape,
             vec![BinaryToken::Token(0x326b), BinaryToken::U64(128),]
+        );
+    }
+
+    #[test]
+    fn test_i64() {
+        let data = [
+            0x6b, 0x32, 0x01, 0x00, 0x17, 0x03, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        ];
+        assert_eq!(
+            parse(&data).unwrap().token_tape,
+            vec![BinaryToken::Token(0x326b), BinaryToken::I64(-1),]
         );
     }
 
