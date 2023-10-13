@@ -1,7 +1,7 @@
 use crate::{
     common::PdsDateFormatter,
     text::{ArrayReader, ObjectReader, Operator, ValueReader},
-    Encoding, Error, ErrorKind, TextTape, TextToken,
+    BinaryToken, Encoding, Error, ErrorKind, TextTape, TextToken,
 };
 use std::{fmt::Arguments, io::Write, ops::Deref};
 
@@ -89,8 +89,15 @@ where
     }
 
     /// Returns true if the next write event would be a key
+    #[inline]
     pub fn expecting_key(&self) -> bool {
-        self.state == WriteState::Key || self.state == WriteState::FirstKey
+        matches!(self.state, WriteState::Key | WriteState::FirstKey)
+    }
+
+    /// Returns the number of objects deep the writer is from the root object
+    #[inline]
+    pub fn depth(&self) -> usize {
+        self.depth.len()
     }
 
     /// Write out the start of an object
@@ -294,6 +301,23 @@ where
         write!(self, "{}", data)
     }
 
+    /// Write a signed 64bit integer.
+    ///
+    /// ```
+    /// use jomini::TextWriterBuilder;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut out: Vec<u8> = Vec::new();
+    /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+    /// writer.write_unquoted(b"ratio")?;
+    /// writer.write_i64(-1);
+    /// assert_eq!(&out, b"ratio=-1");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn write_i64(&mut self, data: i64) -> Result<(), Error> {
+        write!(self, "{}", data)
+    }
+
     /// Write a 32 bit floating point at full precision
     ///
     /// ```
@@ -489,6 +513,80 @@ where
     pub fn start_mixed_mode(&mut self) {
         self.mode = DepthMode::Array;
         self.mixed_mode = MixedMode::Started;
+    }
+
+    /// Write the binary token with reasonable defaults
+    ///
+    /// This function is intended to be used as a fallback for a higher level
+    /// melter that doesn't need special handling for a given token and thus can
+    /// rely on the default behavior of forwarding the token to the writer's
+    /// `write_x` methods.
+    ///
+    /// Any caller that uses this function will want to provide the floating
+    /// point conversion and token translation, which is different from game to
+    /// game.
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// use jomini::{binary::{BinaryTape, BinaryToken}, TextTape, TextWriterBuilder};
+    ///
+    /// let data = [ 0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47 ];
+    /// let tape = BinaryTape::from_slice(&data[..]).unwrap();
+    /// let mut out: Vec<u8> = Vec::new();
+    /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+    /// for token in tape.tokens() {
+    ///     match token {
+    ///         // Define a floating point handler as there isn't a fallback format
+    ///         BinaryToken::F32(x) => writer.write_f32(f32::from_le_bytes(*x))?,
+    ///         BinaryToken::F64(x) => writer.write_f64(f64::from_le_bytes(*x))?,
+    ///
+    ///         // Every melter will want a custom token resolver
+    ///         BinaryToken::Token(x) => {
+    ///             if *x == 0x2d82 {
+    ///                 writer.write_unquoted(b"field1")?;
+    ///             } else {
+    ///                 writer.write_unquoted(b"unknown")?;
+    ///             }
+    ///         },
+    ///         x => writer.write_binary(x)?,
+    ///     }
+    /// }
+    /// assert_eq!(&out, b"field1=\"ENG\"");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[inline]
+    pub fn write_binary(&mut self, token: &BinaryToken<'_>) -> Result<(), Error> {
+        match token {
+            BinaryToken::Array(_) => self.write_array_start(),
+            BinaryToken::Object(_) => self.write_object_start(),
+            BinaryToken::MixedContainer => {
+                self.start_mixed_mode();
+                Ok(())
+            }
+            BinaryToken::Equal => self.write_operator(Operator::Equal),
+            BinaryToken::End(_) => self.write_end(),
+            BinaryToken::Bool(x) => self.write_bool(*x),
+            BinaryToken::U32(x) => self.write_u32(*x),
+            BinaryToken::U64(x) => self.write_u64(*x),
+            BinaryToken::I64(x) => self.write_i64(*x),
+            BinaryToken::I32(x) => self.write_i32(*x),
+            BinaryToken::Quoted(x) => self.write_quoted(x.as_bytes()),
+            BinaryToken::Unquoted(x) => self.write_unquoted(x.as_bytes()),
+            BinaryToken::F32(x) => self.write_f32(f32::from_le_bytes(*x)),
+            BinaryToken::F64(x) => self.write_f64(f64::from_le_bytes(*x)),
+            BinaryToken::Token(x) => {
+                write!(self, "__unknown_0x{:x}", x)
+            }
+            BinaryToken::Rgb(color) => {
+                self.write_header(b"rgb")?;
+                self.write_array_start()?;
+                self.write_u32(color.r)?;
+                self.write_u32(color.g)?;
+                self.write_u32(color.b)?;
+                self.write_end()
+            }
+        }
     }
 
     /// Writes a text tape
