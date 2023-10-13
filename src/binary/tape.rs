@@ -624,9 +624,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             state = ParseState::ObjectValue;
                         } else {
                             let len = self.token_tape.len();
-                            if len == 0 {
-                                panic!("EEEK");
-                            }
                             unsafe { ptr.add(len).write(BinaryToken::MixedContainer) };
                             unsafe { ptr.add(len + 1).write(last) };
                             unsafe { ptr.add(len + 2).write(BinaryToken::Equal) };
