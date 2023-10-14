@@ -1,3 +1,8 @@
+## v0.23.0 - 2023-10-14
+
+- Add new binary i64 data type introduced in HOI4 1.13
+- Add TextWriter::write_binary and depth
+
 ## v0.22.2 - 2023-09-14
 
 - Add `ObjectReader::deserialize` to deserialize from an arbitrary point in a text document
