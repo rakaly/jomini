@@ -138,6 +138,32 @@ fn alias(f: &Field) -> Option<String> {
         .next()
 }
 
+fn binary_token(f: &Field) -> Option<u16> {
+    f.attrs
+        .iter()
+        .filter(|attr| attr.path.is_ident("jomini"))
+        .map(|attr| attr.parse_meta().unwrap())
+        .filter_map(|meta| match meta {
+            Meta::List(x) => Some(x),
+            _ => None,
+        })
+        .flat_map(|x| x.nested)
+        .filter_map(|x| match x {
+            NestedMeta::Meta(m) => Some(m),
+            _ => None,
+        })
+        .filter(|m| m.path().is_ident("token"))
+        .filter_map(|meta| match meta {
+            Meta::NameValue(mnv) => Some(mnv),
+            _ => None,
+        })
+        .filter_map(|mnv| match mnv.lit {
+            Lit::Int(s) => s.base10_parse::<u16>().ok(),
+            _ => None,
+        })
+        .next()
+}
+
 fn ungroup(mut ty: &Type) -> &Type {
     while let Type::Group(group) = ty {
         ty = &group.elem;
@@ -369,6 +395,36 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     });
 
+    let field_enum_token_match = named_fields.named.iter().filter_map(|f| {
+        let name = &f.ident;
+        if let Some(match_arm) = binary_token(f) {
+            let field_ident = quote! { __Field::#name };
+            Some(quote! {
+                #match_arm => Ok(#field_ident),
+            })
+        } else {
+            None
+        }
+    });
+
+    let token_count = named_fields.named.iter().filter_map(binary_token).count();
+    if token_count > 0 && token_count < named_fields.named.len() {
+        panic!(
+            "{} does not have #[jomini(token = x)] defined for all fields",
+            struct_ident
+        )
+    }
+
+    let deser_request = if token_count > 0 {
+        quote! {
+            ::serde::Deserializer::deserialize_u16(__deserializer, __FieldVisitor)
+        }
+    } else {
+        quote! {
+            ::serde::Deserializer::deserialize_identifier(__deserializer, __FieldVisitor)
+        }
+    };
+
     let expecting = format!("struct {}", struct_ident);
     let struct_ident_str = struct_ident.to_string();
 
@@ -415,6 +471,18 @@ pub fn derive(input: TokenStream) -> TokenStream {
                             _ => Ok(__Field::__ignore),
                         }
                     }
+                    fn visit_u16<__E>(
+                        self,
+                        __value: u16,
+                    ) -> ::std::result::Result<Self::Value, __E>
+                    where
+                        __E: ::serde::de::Error,
+                    {
+                        match __value {
+                            #(#field_enum_token_match)*
+                            _ => Ok(__Field::__ignore),
+                        }
+                    }
                 }
 
                 impl<'de> serde::Deserialize<'de> for __Field {
@@ -425,7 +493,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     where
                         __D: ::serde::Deserializer<'de>,
                     {
-                        ::serde::Deserializer::deserialize_identifier(__deserializer, __FieldVisitor)
+                        #deser_request
                     }
                 }
 

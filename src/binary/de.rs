@@ -465,7 +465,6 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializ
     deserialize_scalar!(deserialize_i8);
     deserialize_scalar!(deserialize_i16);
     deserialize_scalar!(deserialize_u8);
-    deserialize_scalar!(deserialize_u16);
     deserialize_scalar!(deserialize_char);
     deserialize_scalar!(deserialize_identifier);
     deserialize_scalar!(deserialize_bytes);
@@ -479,6 +478,17 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializ
             visitor.visit_bool(self.de.parser.read_bool()?)
         } else {
             Ok(self.deser(visitor)?)
+        }
+    }
+
+    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match self.token {
+            QUOTED_STRING | UNQUOTED_STRING | U32 | I32 | U64 | I64 | BOOL | F32 | F64 | OPEN
+            | END | EQUAL => self.deser(visitor),
+            x => visitor.visit_u16(x),
         }
     }
 
@@ -1168,6 +1178,17 @@ impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'
 {
     type Error = Error;
 
+    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if let BinaryToken::Token(x) = self.tokens[self.tape_idx] {
+            visitor.visit_u16(x)
+        } else {
+            visit_key(self.tape_idx, self.tokens, self.config, visitor)
+        }
+    }
+
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
@@ -1176,7 +1197,7 @@ impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'
     }
 
     serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bool i8 i16 i32 i64 i128 u8 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
         tuple_struct map enum ignored_any identifier struct
     }
@@ -1814,6 +1835,34 @@ mod tests {
             actual,
             MyStruct {
                 field1: DateHour::from_ymdh(1936, 1, 1, 12)
+            }
+        );
+    }
+
+    #[test]
+    fn test_token_visit() {
+        let data = [
+            0x82, 0x2d, 0x01, 0x00, 0x17, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47,
+        ];
+
+        #[derive(JominiDeserialize, PartialEq, Debug)]
+        struct MyStruct {
+            #[jomini(token = 0x2d82)]
+            field1: String,
+        }
+
+        struct NullResolver;
+        impl TokenResolver for NullResolver {
+            fn resolve(&self, _token: u16) -> Option<&str> {
+                None
+            }
+        }
+
+        let actual: MyStruct = from_slice(&data[..], &NullResolver).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                field1: String::from("ENG"),
             }
         );
     }
