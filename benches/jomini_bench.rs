@@ -312,29 +312,27 @@ pub fn json_benchmark(c: &mut Criterion) {
 
 pub fn date_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("date");
-    group.bench_function("1444.11.11", |b| {
-        b.iter(|| Date::parse("1444.11.11").unwrap())
-    });
-    group.bench_function("1444.3.5", |b| b.iter(|| Date::parse("1444.3.5").unwrap()));
-    group.bench_function("1444.12.3", |b| {
-        b.iter(|| Date::parse("1444.12.3").unwrap())
-    });
-    group.bench_function("1444.2.19", |b| {
-        b.iter(|| Date::parse("1444.2.19").unwrap())
-    });
-    group.bench_function("1.1.1", |b| b.iter(|| Date::parse("1.1.1").unwrap()));
-    group.bench_function("-2500.1.1", |b| {
-        b.iter(|| Date::parse("-2500.1.1").unwrap())
-    });
-    group.bench_function("binary-date", |b| {
-        b.iter(|| Date::from_binary(56379360).unwrap())
-    });
-    group.bench_function("invalid-date", |b| {
-        b.iter(|| Date::parse("marketplace").is_err())
-    });
-    group.bench_function("long-invalid-date", |b| {
-        b.iter(|| Date::parse("incidents_bur_inheritance.5").is_err())
-    });
+    for date in [
+        "1444.11.11",
+        "1444.3.5",
+        "1444.12.3",
+        "1444.2.19",
+        "1.1.1",
+        "-2500.1.1",
+        "invalid-date",
+        "longer-invalid-date",
+    ] {
+        group.bench_with_input(BenchmarkId::from_parameter(date), date, |b, date| {
+            b.iter(|| Date::parse(date))
+        });
+    }
+
+    for date in [56379360, 0].iter() {
+        group.bench_with_input(BenchmarkId::from_parameter(date), date, |b, &date| {
+            b.iter(|| Date::from_binary(date))
+        });
+    }
+
     group.finish();
 }
 
