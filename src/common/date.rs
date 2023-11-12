@@ -517,10 +517,10 @@ impl Date {
     }
 
     #[inline]
-    fn fast_parse(r: [u8; 8]) -> Result<Self, DateError> {
+    fn fast_parse(r: [u8; 8]) -> Option<Result<Self, DateError>> {
         if r.iter().all(|x| x.is_ascii_digit()) {
             let n = r.map(|x| x - b'0');
-            Self::from_expanded(ExpandedRawDate {
+            let result = Self::from_expanded(ExpandedRawDate {
                 year: i16::from(n[0]) * 1000
                     + i16::from(n[1]) * 100
                     + i16::from(n[2]) * 10
@@ -529,9 +529,10 @@ impl Date {
                 day: n[6] * 10 + n[7],
                 hour: 0,
             })
-            .ok_or(DateError)
+            .ok_or(DateError);
+            Some(result)
         } else {
-            Self::fallback(&r)
+            None
         }
     }
 
@@ -551,19 +552,19 @@ impl Date {
         match s {
             [y1, y2, y3, y4, b'.', m1, m2, b'.', d1, d2] => {
                 let r = [*y1, *y2, *y3, *y4, *m1, *m2, *d1, *d2];
-                Self::fast_parse(r)
+                Self::fast_parse(r).unwrap_or_else(|| Self::fallback(s))
             }
             [y1, y2, y3, y4, b'.', m1, m2, b'.', d1] => {
                 let r = [*y1, *y2, *y3, *y4, *m1, *m2, b'0', *d1];
-                Self::fast_parse(r)
+                Self::fast_parse(r).unwrap_or_else(|| Self::fallback(s))
             }
             [y1, y2, y3, y4, b'.', m1, b'.', d1, d2] => {
                 let r = [*y1, *y2, *y3, *y4, b'0', *m1, *d1, *d2];
-                Self::fast_parse(r)
+                Self::fast_parse(r).unwrap_or_else(|| Self::fallback(s))
             }
             [y1, y2, y3, y4, b'.', m1, b'.', d1] => {
                 let r = [*y1, *y2, *y3, *y4, b'0', *m1, b'0', *d1];
-                Self::fast_parse(r)
+                Self::fast_parse(r).unwrap_or_else(|| Self::fallback(s))
             }
             _ => Self::fallback(s),
         }
@@ -1279,9 +1280,10 @@ mod datederive {}
 mod tests {
     use super::*;
     use quickcheck_macros::quickcheck;
+    use rstest::*;
 
     #[test]
-    fn test_date_roundtrip() {
+    fn test_date_iso() {
         let date = Date::parse("1400.1.2").unwrap();
         assert_eq!(date.iso_8601().to_string(), String::from("1400-01-02"));
     }
@@ -1289,24 +1291,6 @@ mod tests {
     #[test]
     fn test_date_parse() {
         assert_eq!(Date::parse("1.01.01").unwrap(), Date::from_ymd(1, 1, 1));
-    }
-
-    #[test]
-    fn test_game_fmt() {
-        let test_cases = [
-            "1400.1.2",
-            "1457.3.5",
-            "1.1.1",
-            "1444.11.11",
-            "1444.11.30",
-            "1444.2.19",
-            "1444.12.3",
-        ];
-
-        for case in &test_cases {
-            let date = Date::parse(case).unwrap();
-            assert_eq!(date.game_fmt().to_string(), case.to_string());
-        }
     }
 
     #[test]
@@ -1363,6 +1347,51 @@ mod tests {
         assert_eq!(date.game_fmt().to_string(), String::from("-17.1.1"));
 
         assert_eq!(date, date2);
+    }
+
+    #[rstest]
+    #[case("-1.1.1")]
+    #[case("-1.1.12")]
+    #[case("-1.11.1")]
+    #[case("-1.11.12")]
+    #[case("-10.1.1")]
+    #[case("-10.1.12")]
+    #[case("-10.11.1")]
+    #[case("-10.11.12")]
+    #[case("-100.1.1")]
+    #[case("-100.1.12")]
+    #[case("-100.11.1")]
+    #[case("-100.11.12")]
+    #[case("-1000.1.1")]
+    #[case("-1000.1.12")]
+    #[case("-1000.11.1")]
+    #[case("-1000.11.12")]
+    #[case("1.1.1")]
+    #[case("1.1.12")]
+    #[case("1.11.1")]
+    #[case("1.11.12")]
+    #[case("10.1.1")]
+    #[case("10.1.12")]
+    #[case("10.11.1")]
+    #[case("10.11.12")]
+    #[case("100.1.1")]
+    #[case("100.1.12")]
+    #[case("100.11.1")]
+    #[case("100.11.12")]
+    #[case("1000.1.1")]
+    #[case("1000.1.12")]
+    #[case("1000.11.1")]
+    #[case("1000.11.12")]
+    #[case("1400.1.2")]
+    #[case("1457.3.5")]
+    #[case("1.1.1")]
+    #[case("1444.11.11")]
+    #[case("1444.11.30")]
+    #[case("1444.2.19")]
+    #[case("1444.12.3")]
+    fn test_date_game_fmt_roundtrip(#[case] input: &str) {
+        let s = Date::parse(input).unwrap().game_fmt().to_string();
+        assert_eq!(&s, input);
     }
 
     #[test]
