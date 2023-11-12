@@ -1,4 +1,5 @@
 use crate::scalar::to_i64_t;
+use crate::util::{fast_digit_parse, le_u64};
 use std::cmp::Ordering;
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display};
@@ -518,30 +519,29 @@ impl Date {
 
     #[inline]
     fn fast_parse(r: [u8; 8]) -> Option<Result<Self, DateError>> {
-        if r.iter().all(|x| x.is_ascii_digit()) {
-            let n = r.map(|x| x - b'0');
-            let result = Self::from_expanded(ExpandedRawDate {
-                year: i16::from(n[0]) * 1000
-                    + i16::from(n[1]) * 100
-                    + i16::from(n[2]) * 10
-                    + i16::from(n[3]),
-                month: n[4] * 10 + n[5],
-                day: n[6] * 10 + n[7],
-                hour: 0,
-            })
-            .ok_or(DateError);
-            Some(result)
-        } else {
-            None
-        }
+        Self::fast_parse_u64(u64::from_le_bytes(r))
+    }
+
+    #[inline]
+    fn fast_parse_u64(r: u64) -> Option<Result<Self, DateError>> {
+        let val = fast_digit_parse(r)?;
+        let day = val % 100;
+        let month = (val / 100) % 100;
+        let val = val / 10_000;
+
+        let result = Self::from_expanded(ExpandedRawDate {
+            year: val as i16,
+            month: month as u8,
+            day: day as u8,
+            hour: 0,
+        })
+        .ok_or(DateError);
+
+        Some(result)
     }
 
     #[cold]
     fn fallback(s: &[u8]) -> Result<Self, DateError> {
-        if s.len() < 5 || s.len() > 12 {
-            return Err(DateError);
-        }
-
         ExpandedRawDate::parse(s)
             .and_then(Self::from_expanded)
             .ok_or(DateError)
@@ -562,11 +562,25 @@ impl Date {
                 let r = [*y1, *y2, *y3, *y4, b'0', *m1, *d1, *d2];
                 Self::fast_parse(r).unwrap_or_else(|| Self::fallback(s))
             }
-            [y1, y2, y3, y4, b'.', m1, b'.', d1] => {
-                let r = [*y1, *y2, *y3, *y4, b'0', *m1, b'0', *d1];
-                Self::fast_parse(r).unwrap_or_else(|| Self::fallback(s))
+            _ => {
+                if s.len() == 8 {
+                    // YYYY.M.D
+                    let d = le_u64(s);
+                    let one_digit_month = d & 0x00FF_00FF_0000_0000 == 0x002E_002E_0000_0000;
+                    let e = (d & 0xFF30_FF30_FFFF_FFFF) | 0x0030_0030_0000_0000;
+                    if one_digit_month {
+                        if let Some(x) = Self::fast_parse_u64(e) {
+                            return x;
+                        }
+                    }
+
+                    Self::fallback(s)
+                } else if s.len() < 5 || s.len() > 12 || !matches!(s[0], b'-' | b'0'..=b'9') {
+                    Err(DateError)
+                } else {
+                    Self::fallback(s)
+                }
             }
-            _ => Self::fallback(s),
         }
     }
 
