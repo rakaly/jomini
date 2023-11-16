@@ -42,6 +42,8 @@ pub struct Model {
     #[jomini(alias = "core", duplicated)]
     cores: Vec<String>,
     names: Vec<String>,
+    #[jomini(take_last)]
+    checksum: String,
 }
 
 let data = br#"
@@ -51,6 +53,8 @@ let data = br#"
     core = "HAB"
     names = { "Johan" "Frederick" }
     core = FRA
+    checksum = "first"
+    checksum = "second"
 "#;
 
 let expected = Model {
@@ -60,6 +64,7 @@ let expected = Model {
     fourth: 10,
     cores: vec!["HAB".to_string(), "FRA".to_string()],
     names: vec!["Johan".to_string(), "Frederick".to_string()],
+    checksum: "second".to_string(),
 };
 
 let actual: Model = jomini::text::de::from_windows1252_slice(data)?;

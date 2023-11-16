@@ -450,7 +450,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
                         while let Some(__key) = ::serde::de::MapAccess::next_key::<__Field>(&mut __map)? {
                             match __key {
-                                #(#builder_fields),*
+                                #(#builder_fields),* ,
                                 _ => { ::serde::de::MapAccess::next_value::<::serde::de::IgnoredAny>(&mut __map)?; }
                             }
                         }
