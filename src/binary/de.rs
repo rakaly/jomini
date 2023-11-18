@@ -9,12 +9,19 @@ use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visito
 use std::borrow::Cow;
 
 #[derive(Debug)]
-struct OndemandParser<'data> {
+pub struct OndemandParser<'data> {
     data: &'data [u8],
     original_length: usize,
 }
 
 impl<'data> OndemandParser<'data> {
+    pub fn new(data: &'data [u8]) -> Self {
+        Self {
+            data,
+            original_length: data.len(),
+        }
+    }
+
     #[inline]
     pub fn peek(&mut self) -> Option<u16> {
         self.data
@@ -56,49 +63,49 @@ impl<'data> OndemandParser<'data> {
     }
 
     #[inline]
-    fn read_u32(&mut self) -> Result<u32, Error> {
+    pub fn read_u32(&mut self) -> Result<u32, Error> {
         let (head, rest) = get_split::<4>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
         Ok(u32::from_le_bytes(head))
     }
 
     #[inline]
-    fn read_u64(&mut self) -> Result<u64, Error> {
+    pub fn read_u64(&mut self) -> Result<u64, Error> {
         let (head, rest) = get_split::<8>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
         Ok(u64::from_le_bytes(head))
     }
 
     #[inline]
-    fn read_i64(&mut self) -> Result<i64, Error> {
+    pub fn read_i64(&mut self) -> Result<i64, Error> {
         let (head, rest) = get_split::<8>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
         Ok(i64::from_le_bytes(head))
     }
 
     #[inline]
-    fn read_i32(&mut self) -> Result<i32, Error> {
+    pub fn read_i32(&mut self) -> Result<i32, Error> {
         let (head, rest) = get_split::<4>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
         Ok(i32::from_le_bytes(head))
     }
 
     #[inline]
-    fn read_f32(&mut self) -> Result<[u8; 4], Error> {
+    pub fn read_f32(&mut self) -> Result<[u8; 4], Error> {
         let (head, rest) = get_split::<4>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
         Ok(head)
     }
 
     #[inline]
-    fn read_f64(&mut self) -> Result<[u8; 8], Error> {
+    pub fn read_f64(&mut self) -> Result<[u8; 8], Error> {
         let (head, rest) = get_split::<8>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
         Ok(head)
     }
 
     #[inline]
-    fn skip_value(&mut self, init: u16) -> Result<(), Error> {
+    pub fn skip_value(&mut self, init: u16) -> Result<(), Error> {
         match init {
             QUOTED_STRING | UNQUOTED_STRING => {
                 self.read_string()?;
@@ -175,7 +182,7 @@ impl<'data> OndemandParser<'data> {
         Ok(())
     }
 
-    fn read_rgb(&mut self) -> Result<Rgb, Error> {
+    pub fn read_rgb(&mut self) -> Result<Rgb, Error> {
         let start = self.read()?;
         let rtoken = self.read()?;
         let r = self.read_u32()?;
@@ -199,12 +206,17 @@ impl<'data> OndemandParser<'data> {
         Ok(Rgb { r, g, b, a })
     }
 
+    #[inline]
+    pub fn position(&self) -> usize {
+        self.original_length - self.data.len()
+    }
+
     #[cold]
     #[inline(never)]
     fn invalid_syntax<T: Into<String>>(&self, msg: T) -> Error {
         Error::new(ErrorKind::InvalidSyntax {
             msg: msg.into(),
-            offset: self.original_length - self.data.len(),
+            offset: self.position(),
         })
     }
 }
@@ -263,10 +275,7 @@ where
         };
 
         OndemandBinaryDeserializer {
-            parser: OndemandParser {
-                data,
-                original_length: data.len(),
-            },
+            parser: OndemandParser::new(data),
             config,
         }
     }

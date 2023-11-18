@@ -41,6 +41,10 @@ rstest = "0.18.2"
 name = "json"
 required-features = ["json"]
 
+[[bin]]
+name = "melt"
+required-features = ["derive"]
+
 [[bench]]
 name = "jomini_bench"
 harness = false
