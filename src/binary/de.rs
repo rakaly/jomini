@@ -183,11 +183,20 @@ impl<'data> OndemandParser<'data> {
         let g = self.read_u32()?;
         let btoken = self.read()?;
         let b = self.read_u32()?;
-        let end = self.read()?;
-        match (start, rtoken, gtoken, btoken, end) {
-            (OPEN, U32, U32, U32, END) => Ok(Rgb { r, g, b }),
-            _ => Err(self.invalid_syntax("invalid rgb value")),
-        }
+        let next_tok = self.read()?;
+        let a = match (start, rtoken, gtoken, btoken, next_tok) {
+            (OPEN, U32, U32, U32, END) => None,
+            (OPEN, U32, U32, U32, U32) => {
+                let a = Some(self.read_u32()?);
+                if self.read()? != END {
+                    return Err(self.invalid_syntax("expected end after rgb alpha"));
+                }
+                a
+            }
+            _ => return Err(self.invalid_syntax("invalid rgb value")),
+        };
+
+        Ok(Rgb { r, g, b, a })
     }
 
     #[cold]
@@ -2715,6 +2724,31 @@ mod tests {
 
                 deserializer.deserialize_seq(ColorVisitor)
             }
+        }
+    }
+
+    #[test]
+    fn test_deserialize_rgba() {
+        let data = [
+            0x3a, 0x05, 0x01, 0x00, 0x43, 0x02, 0x03, 0x00, 0x14, 0x00, 0x6e, 0x00, 0x00, 0x00,
+            0x14, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x14, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x14, 0x00,
+            0x1c, 0x00, 0x00, 0x00, 0x04, 0x00,
+        ];
+
+        let mut map = HashMap::new();
+        map.insert(0x053a, "color");
+
+        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                color: (String::from("rgb"), (110, 27, 27, 28))
+            }
+        );
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            color: (String, (u8, u8, u8, u8)),
         }
     }
 

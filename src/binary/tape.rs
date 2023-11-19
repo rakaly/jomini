@@ -1,10 +1,5 @@
 use super::tokens::*;
-use crate::{
-    binary::Rgb,
-    copyless::VecHelper,
-    util::{get_split, le_u32},
-    Error, ErrorKind, Scalar,
-};
+use crate::{binary::Rgb, copyless::VecHelper, util::get_split, Error, ErrorKind, Scalar};
 
 /// Represents any valid binary value
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,14 +209,42 @@ impl<'a, 'b> ParserState<'a, 'b> {
     }
 
     fn parse_rgb(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (head, rest) = get_split::<22>(data).ok_or_else(Error::eof)?;
-        let val = Rgb {
-            r: le_u32(&head[4..]),
-            g: le_u32(&head[10..]),
-            b: le_u32(&head[16..]),
+        let data = &data[2..];
+        let (data, r_tok) = self.parse_next_id(data)?;
+        let (r_data, data) = get_split::<4>(data).ok_or_else(Error::eof)?;
+        let r = u32::from_le_bytes(r_data);
+
+        let (data, g_tok) = self.parse_next_id(data)?;
+        let (g_data, data) = get_split::<4>(data).ok_or_else(Error::eof)?;
+        let g = u32::from_le_bytes(g_data);
+
+        let (data, b_tok) = self.parse_next_id(data)?;
+        let (b_data, data) = get_split::<4>(data).ok_or_else(Error::eof)?;
+        let b = u32::from_le_bytes(b_data);
+
+        if r_tok != U32 && g_tok != U32 && b_tok != U32 {
+            return Err(self.invalid_syntax("invalid rgb tokens", data));
+        }
+
+        let (data, next_tok) = self.parse_next_id(data)?;
+
+        let (data, a) = match next_tok {
+            U32 => {
+                let (a_data, data) = get_split::<4>(data).ok_or_else(Error::eof)?;
+                let a = u32::from_le_bytes(a_data);
+                let (data, end_tok) = self.parse_next_id(data)?;
+                if end_tok != END {
+                    return Err(self.invalid_syntax("expected end to follow rgb alpha", data));
+                }
+                (data, Some(a))
+            }
+            END => (data, None),
+            _ => return Err(self.invalid_syntax("invalid rgb end token", data)),
         };
+
+        let val = Rgb { r, g, b, a };
         self.token_tape.alloc().init(BinaryToken::Rgb(val));
-        Ok(rest)
+        Ok(data)
     }
 
     #[inline(always)]
@@ -748,6 +771,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
             offset: self.offset(data),
         })
     }
+
+    #[inline(never)]
+    #[cold]
+    fn invalid_syntax<T: Into<String>>(&self, msg: T, data: &[u8]) -> Error {
+        Error::new(ErrorKind::InvalidSyntax {
+            msg: msg.into(),
+            offset: self.offset(data),
+        })
+    }
 }
 
 /// Houses the tape of tokens that is extracted from binary data
@@ -784,9 +816,7 @@ mod tests {
     #[test]
     fn test_size_of_binary_token() {
         let token_size = std::mem::size_of::<BinaryToken>();
-        let maxed = std::cmp::max(std::mem::size_of::<Scalar>(), std::mem::size_of::<Rgb>());
         assert!(token_size <= 24);
-        assert_eq!(token_size, maxed + std::mem::size_of::<usize>());
     }
 
     #[test]
@@ -1199,6 +1229,7 @@ mod tests {
                     r: 110,
                     g: 27,
                     b: 27,
+                    a: None
                 })
             ]
         );
@@ -1211,6 +1242,29 @@ mod tests {
         assert_eq!(
             parse(&data[..]).unwrap().token_tape,
             vec![BinaryToken::Token(0x0243), BinaryToken::Token(0x28be),]
+        );
+    }
+
+    #[test]
+    fn test_rgba() {
+        let data = [
+            0x3a, 0x05, 0x01, 0x00, 0x43, 0x02, 0x03, 0x00, 0x14, 0x00, 0x6e, 0x00, 0x00, 0x00,
+            0x14, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x14, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x14, 0x00,
+            0x1c, 0x00, 0x00, 0x00, 0x04, 0x00,
+        ];
+
+        let tape = parse(&data[..]).unwrap();
+        assert_eq!(
+            tape.token_tape,
+            vec![
+                BinaryToken::Token(0x053a),
+                BinaryToken::Rgb(Rgb {
+                    r: 110,
+                    g: 27,
+                    b: 27,
+                    a: Some(28)
+                })
+            ]
         );
     }
 

@@ -12,4 +12,7 @@ pub struct Rgb {
 
     /// Blue channel
     pub b: u32,
+
+    /// Optional alpha channel
+    pub a: Option<u32>,
 }
