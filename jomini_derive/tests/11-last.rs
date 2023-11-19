@@ -8,7 +8,6 @@ pub struct Model {
     fourth: u16,
 }
 
-
 #[derive(JominiDeserialize)]
 pub struct Model2 {
     human: bool,
@@ -35,5 +34,4 @@ fn test_options() {
     assert_eq!(m.checksum, m2.checksum);
     assert_eq!(m.human, m2.human);
     assert_eq!(m.fourth, m2.fourth);
-
 }
