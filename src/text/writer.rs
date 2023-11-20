@@ -170,7 +170,11 @@ where
         }
     }
 
-    /// Write an non-equal operator
+    /// Write an operator. Writing an equal operator is optional whenever
+    /// an object is being written.
+    ///
+    /// If an array was being written, the operator will switch to writing
+    /// an object
     ///
     /// ```
     /// use jomini::{text::Operator, TextWriterBuilder};
@@ -186,7 +190,13 @@ where
     /// ```
     pub fn write_operator(&mut self, data: Operator) -> Result<(), Error> {
         if self.mixed_mode == MixedMode::Disabled {
-            write!(self.writer, " {} ", data)?;
+            if data == Operator::Equal {
+                write!(self.writer, "{}", data)?;
+            } else {
+                write!(self.writer, " {} ", data)?;
+            }
+
+            self.mode = DepthMode::Object;
             self.state = WriteState::ObjectValue;
         } else {
             write!(self.writer, "{}", data)?;
@@ -1080,6 +1090,29 @@ mod tests {
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
             "data={\n  {\n    a=b\n  }\n  {\n    c=d\n  }\n}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn write_operator_equal() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_unquoted(b"data")?;
+        writer.write_array_start()?;
+        writer.write_unquoted(b"a")?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_unquoted(b"b")?;
+        writer.write_end()?;
+        writer.write_unquoted(b"data")?;
+        writer.write_object_start()?;
+        writer.write_unquoted(b"a")?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_unquoted(b"b")?;
+        writer.write_end()?;
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "data={\n  a=b\n}\ndata={\n  a=b\n}"
         );
         Ok(())
     }
