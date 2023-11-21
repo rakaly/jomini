@@ -683,7 +683,7 @@ where
     {
         let val = self
             .read_scalar()
-            .and_then(|x: crate::Scalar<'_>| x.to_f64().map_err(Error::from));
+            .and_then(|x| x.to_f64().map_err(Error::from));
 
         if let Ok(x) = val {
             visitor.visit_f64(x)
