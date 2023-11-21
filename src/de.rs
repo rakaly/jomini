@@ -67,6 +67,7 @@ impl InnerColorSequence {
             1 => self.data.r,
             2 => self.data.g,
             3 => self.data.b,
+            4 => self.data.a.unwrap(),
             _ => unreachable!(),
         }
     }
@@ -96,7 +97,7 @@ impl<'de> SeqAccess<'de> for InnerColorSequence {
     where
         T: DeserializeSeed<'de>,
     {
-        if self.idx >= 3 {
+        if (self.idx >= 3 && self.data.a.is_none()) || (self.idx >= 4 && self.data.a.is_some()) {
             Ok(None)
         } else {
             self.idx += 1;

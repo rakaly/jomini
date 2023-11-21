@@ -1,4 +1,5 @@
 use crate::{
+    binary::Rgb,
     common::PdsDateFormatter,
     text::{ArrayReader, ObjectReader, Operator, ValueReader},
     BinaryToken, Encoding, Error, ErrorKind, TextTape, TextToken,
@@ -444,6 +445,36 @@ where
         write!(self, "{}", data)
     }
 
+    /// Write an rgb value
+    ///
+    /// ```
+    /// use jomini::{binary::Rgb, TextWriterBuilder};
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut out: Vec<u8> = Vec::new();
+    /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+    /// writer.write_unquoted(b"start")?;
+    /// let val = Rgb { r: 10, g: 9, b: 8, a: None };
+    /// writer.write_rgb(&val)?;
+    /// writer.write_unquoted(b"end")?;
+    ///
+    /// let val = Rgb { r: 7, g: 6, b: 5, a: Some(4) };
+    /// writer.write_rgb(&val)?;
+    /// assert_eq!(&out, b"start=rgb {\n  10 9 8\n}\nend=rgb {\n  7 6 5 4\n}");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn write_rgb(&mut self, color: &Rgb) -> Result<(), Error> {
+        self.write_header(b"rgb")?;
+        self.write_array_start()?;
+        self.write_u32(color.r)?;
+        self.write_u32(color.g)?;
+        self.write_u32(color.b)?;
+        if let Some(a) = color.a {
+            self.write_u32(a)?;
+        }
+        self.write_end()
+    }
+
     /// Write formatted data
     ///
     /// Typically not invoked directly but instead through the `write!` macro
@@ -588,14 +619,7 @@ where
             BinaryToken::Token(x) => {
                 write!(self, "__unknown_0x{:x}", x)
             }
-            BinaryToken::Rgb(color) => {
-                self.write_header(b"rgb")?;
-                self.write_array_start()?;
-                self.write_u32(color.r)?;
-                self.write_u32(color.g)?;
-                self.write_u32(color.b)?;
-                self.write_end()
-            }
+            BinaryToken::Rgb(color) => self.write_rgb(color),
         }
     }
 

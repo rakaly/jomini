@@ -28,11 +28,6 @@ pub(crate) const fn fast_digit_parse(val: u64) -> Option<u64> {
 }
 
 #[inline]
-pub(crate) fn le_u32(data: &[u8]) -> u32 {
-    u32::from_le_bytes(take::<4>(data))
-}
-
-#[inline]
 pub(crate) fn le_u64(data: &[u8]) -> u64 {
     u64::from_le_bytes(take::<8>(data))
 }
