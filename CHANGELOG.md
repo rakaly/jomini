@@ -1,3 +1,13 @@
+## v0.24.0 - 2023-11-21
+
+- Fix incorrect date parsing for dates from years [-100, -999]
+- Fix `#[jomini(take_last)]` compilation error for last field in struct
+- Add support for optional alpha component in binary RGB values
+- Add `write_rgb` to `TextWriter`
+- Add text deserialization hint support
+- Add direct struct field matching from binary token with `#[jomini(token = <num>)]`
+- Improve performance of date parsing from 15-40%
+
 ## v0.23.0 - 2023-10-14
 
 - Add new binary i64 data type introduced in HOI4 1.13
