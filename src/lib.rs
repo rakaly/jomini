@@ -181,6 +181,61 @@ assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+### Direct identifier deserialization with `token` attribute
+
+There may be some performance loss during binary deserialization as
+tokens are resolved to strings via a `TokenResolver` and then matched against the
+string representations of a struct's fields.
+
+We can fix this issue by directly encoding the expected token value into the struct:
+
+```rust
+# #[cfg(feature = "derive")] {
+# use jomini::{Encoding, JominiDeserialize, Windows1252Encoding, BinaryDeserializer};
+# use std::{borrow::Cow, collections::HashMap};
+#
+# #[derive(Debug, Default)]
+# pub struct BinaryTestFlavor;
+#
+# impl jomini::binary::BinaryFlavor for BinaryTestFlavor {
+#     fn visit_f32(&self, data: [u8; 4]) -> f32 {
+#         f32::from_le_bytes(data)
+#     }
+#
+#     fn visit_f64(&self, data: [u8; 8]) -> f64 {
+#         f64::from_le_bytes(data)
+#     }
+# }
+#
+# impl Encoding for BinaryTestFlavor {
+#     fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
+#         Windows1252Encoding::decode(data)
+#     }
+# }
+#
+# let data = [ 0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47 ];
+#
+#[derive(JominiDeserialize, PartialEq, Debug)]
+struct MyStruct {
+    #[jomini(token = 0x2d82)]
+    field1: String,
+}
+
+// Empty token to string resolver
+let map = HashMap::<u16, String>::new();
+
+let actual: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+    .deserialize_slice(&data[..], &map)?;
+assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
+# }
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Couple notes:
+
+- This does not obviate need for the token to string resolver as tokens may be used as values.
+- If the `token` attribute is specified on one field on a struct, it must be specified on all fields of that struct.
+
 ## Caveats
 
 Caller is responsible for:

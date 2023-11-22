@@ -1,7 +1,8 @@
 #![cfg(feature = "derive")]
 
 use jomini::{
-    binary::BinaryFlavor, common::PdsDate, BinaryDeserializer, Encoding, Windows1252Encoding,
+    binary::BinaryFlavor, common::PdsDate, BinaryDeserializer, Encoding, JominiDeserialize,
+    Windows1252Encoding,
 };
 use serde::{
     de::{self, Visitor},
@@ -283,6 +284,39 @@ fn test_binary_meta_deserialization() {
         String::from("1597.1.15")
     );
     assert_eq!(actual.savegame_version.0, String::from("1.29.4.0"));
+}
+
+#[test]
+fn test_token_attribute_deserialization() {
+    #[derive(JominiDeserialize, Debug, Clone, PartialEq)]
+    struct Meta {
+        #[jomini(token = 0x284d)]
+        date: jomini::common::Date,
+        #[jomini(token = 0x2a38)]
+        player: String,
+    }
+
+    let data = include_bytes!("./fixtures/meta.bin");
+    let data = &data["EU4bin".len()..];
+    let mut hash = create_bin_lookup();
+    hash.remove(&0x284d);
+    hash.remove(&0x2a38);
+    let actual: Meta = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice(&data, &hash)
+        .unwrap();
+    assert_eq!(
+        actual.date.game_fmt().to_string(),
+        String::from("1597.1.15")
+    );
+    assert_eq!(&actual.player, "RAG");
+
+    let data = include_bytes!("./fixtures/meta.txt");
+    let actual: Meta = jomini::text::de::from_windows1252_slice(&data["EU4txt".len()..]).unwrap();
+    assert_eq!(
+        actual.date.game_fmt().to_string(),
+        String::from("1444.11.11")
+    );
+    assert_eq!(&actual.player, "ENG");
 }
 
 #[test]
