@@ -20,7 +20,7 @@ members = ["jomini_derive"]
 [dependencies]
 serde = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }
-jomini_derive = { path = "jomini_derive", version = "^0.2.2", optional = true }
+jomini_derive = { path = "jomini_derive", version = "^0.2.3", optional = true }
 
 [features]
 default = ["derive"]
