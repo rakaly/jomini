@@ -6,6 +6,32 @@ fn take<const N: usize>(data: &[u8]) -> [u8; N] {
 }
 
 #[inline]
+pub const fn split_first_chunk<const N: usize>(data: &[u8]) -> Option<(&[u8; N], &[u8])> {
+    #[inline]
+    const unsafe fn split_at_unchecked(data: &[u8], mid: usize) -> (&[u8], &[u8]) {
+        let len = data.len();
+        let ptr = data.as_ptr();
+        unsafe {
+            (
+                core::slice::from_raw_parts(ptr, mid),
+                core::slice::from_raw_parts(ptr.add(mid), len - mid),
+            )
+        }
+    }
+
+    if data.len() < N {
+        None
+    } else {
+        // SAFETY: We manually verified the bounds of the split.
+        let (first, tail) = unsafe { split_at_unchecked(data, N) };
+
+        // SAFETY: We explicitly check for the correct number of elements,
+        //   and do not let the references outlive the slice.
+        Some((unsafe { &*(first.as_ptr().cast::<[u8; N]>()) }, tail))
+    }
+}
+
+#[inline]
 pub(crate) fn get_split<const N: usize>(data: &[u8]) -> Option<([u8; N], &[u8])> {
     data.get(N..).map(|d| (take::<N>(data), d))
 }
