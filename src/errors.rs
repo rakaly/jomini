@@ -1,4 +1,7 @@
-use crate::ScalarError;
+use crate::{
+    binary::{reader::ReaderError, LexError, LexerError},
+    ScalarError,
+};
 use std::fmt;
 
 /// An error that can occur when processing data
@@ -14,6 +17,17 @@ impl Error {
     #[cold]
     pub(crate) fn eof() -> Error {
         Self::new(ErrorKind::Eof)
+    }
+
+    #[cold]
+    pub(crate) fn invalid_syntax<T>(msg: T, position: usize) -> Error
+    where
+        T: Into<String>,
+    {
+        Self::new(ErrorKind::InvalidSyntax {
+            msg: msg.into(),
+            offset: position,
+        })
     }
 
     /// Return the specific type of error
@@ -110,6 +124,30 @@ impl std::fmt::Display for Error {
 impl From<DeserializeError> for Error {
     fn from(error: DeserializeError) -> Self {
         Error::new(ErrorKind::Deserialize(error))
+    }
+}
+
+impl From<LexerError> for Error {
+    fn from(value: LexerError) -> Self {
+        match value.kind() {
+            LexError::Eof => Error::eof(),
+            _ => Error::new(ErrorKind::InvalidSyntax {
+                msg: format!("{}", value.kind()),
+                offset: value.position(),
+            }),
+        }
+    }
+}
+
+impl From<LexError> for Error {
+    fn from(_value: LexError) -> Self {
+        Error::eof()
+    }
+}
+
+impl From<ReaderError> for Error {
+    fn from(_value: ReaderError) -> Self {
+        Error::eof()
     }
 }
 

@@ -4,7 +4,8 @@ use criterion::{
 use flate2::read::GzDecoder;
 use jomini::{
     binary::{
-        de::OndemandBinaryDeserializerBuilder, BinaryFlavor, BinaryTapeParser, TokenResolver,
+        de::{BinaryReaderDeserializer, OndemandBinaryDeserializerBuilder},
+        BinaryFlavor, BinaryTapeParser, TokenResolver,
     },
     common::Date,
     BinaryDeserializer, BinaryTape, Encoding, Scalar, TextTape, Utf8Encoding, Windows1252Encoding,
@@ -127,6 +128,13 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
         b.iter(|| {
             let _res: Gamestate = OndemandBinaryDeserializerBuilder::with_flavor(BinaryTestFlavor)
                 .deserialize_slice(&data[..], &MyBinaryResolver)
+                .unwrap();
+        })
+    });
+    group.bench_function("ondemand-reader", |b| {
+        b.iter(|| {
+            let _res: Gamestate = BinaryReaderDeserializer::builder_flavor(BinaryTestFlavor)
+                .deserialize_reader(&data[..], &MyBinaryResolver)
                 .unwrap();
         })
     });
