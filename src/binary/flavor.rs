@@ -1,3 +1,7 @@
+use crate::BinaryDeserializer;
+
+use super::de::BinaryDeserializerBuilder;
+
 /// Trait customizing decoding values from binary data
 ///
 /// How binary data is encoded differs between games and even
@@ -8,6 +12,10 @@ pub trait BinaryFlavor: crate::Encoding {
 
     /// Decode a f64 from 8 bytes of data
     fn visit_f64(&self, data: [u8; 8]) -> f64;
+
+    fn deserializer(self) -> BinaryDeserializerBuilder<Self> where Self: Sized {
+        BinaryDeserializer::builder_flavor(self)
+    }
 }
 
 impl<T: BinaryFlavor + ?Sized> BinaryFlavor for &'_ T {

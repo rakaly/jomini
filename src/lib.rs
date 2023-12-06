@@ -72,9 +72,9 @@ assert_eq!(actual, expected);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Binary Parsing
+## Binary Deserialization
 
-Parsing data encoded in the binary format is done in a similar fashion but with a couple extra steps for the caller to supply:
+Deserializing data encoded in the binary format is done in a similar fashion but with a couple extra steps for the caller to supply:
 
 - How text should be decoded (typically Windows-1252 or UTF-8)
 - How rational (floating point) numbers are decoded
@@ -86,7 +86,7 @@ Below is an example that defines a sample binary format and uses a hashmap token
 
 ```rust
 # #[cfg(feature = "derive")] {
-use jomini::{BinaryDeserializer, Encoding, JominiDeserialize, Windows1252Encoding};
+use jomini::{Encoding, JominiDeserialize, Windows1252Encoding};
 use std::{borrow::Cow, collections::HashMap};
 
 #[derive(JominiDeserialize, PartialEq, Debug)]
@@ -108,7 +108,7 @@ impl jomini::binary::BinaryFlavor for BinaryTestFlavor {
 }
 
 impl Encoding for BinaryTestFlavor {
-    fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
+    fn decode(&self, data: &[u8]) -> Cow<str> {
         Windows1252Encoding::decode(data)
     }
 }
@@ -118,8 +118,7 @@ let data = [ 0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47 ];
 let mut map = HashMap::new();
 map.insert(0x2d82, "field1");
 
-let actual: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-    .deserialize_slice(&data[..], &map)?;
+let actual: MyStruct = BinaryTestFlavor.deserialize_slice(&data[..], &map)?;
 assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
 # }
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -129,57 +128,6 @@ When done correctly, one can use the same structure to represent both the plaint
 without any duplication.
 
 One can configure the behavior when a token is unknown (ie: fail immediately or try to continue).
-
-### Ondemand Deserialization
-
-The ondemand deserializer is a one-shot deserialization mode is often faster
-and more memory efficient as it does not parse the input into an intermediate
-tape, and instead deserializes right from the input.
-
-It is instantiated and used similarly to `BinaryDeserializer`
-
-```rust
-# #[cfg(feature = "derive")] {
-use jomini::OndemandBinaryDeserializer;
-# use jomini::{Encoding, JominiDeserialize, Windows1252Encoding};
-# use std::{borrow::Cow, collections::HashMap};
-#
-# #[derive(JominiDeserialize, PartialEq, Debug)]
-# struct MyStruct {
-#     field1: String,
-# }
-#
-# #[derive(Debug, Default)]
-# pub struct BinaryTestFlavor;
-#
-# impl jomini::binary::BinaryFlavor for BinaryTestFlavor {
-#     fn visit_f32(&self, data: [u8; 4]) -> f32 {
-#         f32::from_le_bytes(data)
-#     }
-#
-#     fn visit_f64(&self, data: [u8; 8]) -> f64 {
-#         f64::from_le_bytes(data)
-#     }
-# }
-#
-# impl Encoding for BinaryTestFlavor {
-#     fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
-#         Windows1252Encoding::decode(data)
-#     }
-# }
-#
-# let data = [ 0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47 ];
-#
-# let mut map = HashMap::new();
-# map.insert(0x2d82, "field1");
-// [...snip code from previous example...]
-
-let actual: MyStruct = OndemandBinaryDeserializer::builder_flavor(BinaryTestFlavor)
-    .deserialize_slice(&data[..], &map)?;
-assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
-# }
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
 
 ### Direct identifier deserialization with `token` attribute
 
@@ -224,8 +172,7 @@ struct MyStruct {
 // Empty token to string resolver
 let map = HashMap::<u16, String>::new();
 
-let actual: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-    .deserialize_slice(&data[..], &map)?;
+let actual: MyStruct = BinaryTestFlavor.deserialize_slice(&data[..], &map)?;
 assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
 # }
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -363,17 +310,16 @@ mod scalar;
 pub mod text;
 pub(crate) mod util;
 
+#[doc(inline)]
 pub use self::binary::{BinaryTape, BinaryToken};
 pub use self::encoding::*;
 pub use self::errors::*;
 pub use self::scalar::{Scalar, ScalarError};
+#[doc(inline)]
 pub use self::text::{TextTape, TextToken, TextWriter, TextWriterBuilder};
 
 #[cfg(feature = "derive")]
 #[doc(inline)]
-pub use self::{
-    binary::de::{BinaryDeserializer, OndemandBinaryDeserializer},
-    text::de::TextDeserializer,
-};
+pub use self::{binary::de::BinaryDeserializer, text::de::TextDeserializer};
 #[cfg(feature = "derive")]
 pub use jomini_derive::*;
