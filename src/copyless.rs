@@ -1,4 +1,4 @@
-//! Trimmed down version of copyless v0.1.5: https://github.com/kvark/copyless
+//! Trimmed down version of copyless v0.1.5: <https://github.com/kvark/copyless>
 
 /// A typesafe helper that separates new value construction from
 /// vector growing, allowing LLVM to ideally construct the element in place.

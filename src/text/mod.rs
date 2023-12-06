@@ -3,10 +3,8 @@
 //! See the top level module documentation for an overview that includes parsing
 //! and deserializing text.
 //!
-//! For more examples of the mid-level DOM-like API, see
-//! [FieldGroupsIter](crate::text::FieldGroupsIter),
-//! [FieldsIter](crate::text::FieldsIter), and
-//! [ValuesIter](crate::text::ValuesIter)
+//! For more examples of the mid-level DOM-like API, see [FieldGroupsIter],
+//! [FieldsIter], and [ValuesIter]
 
 /// text deserialization
 #[cfg(feature = "derive")]
