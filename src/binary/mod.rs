@@ -14,7 +14,7 @@ mod rgb;
 mod tape;
 
 pub use self::flavor::BinaryFlavor;
-pub use self::lexer::{LexError, LexemeId, Lexer, LexerError, Token};
+pub use self::lexer::{BinToken, LexError, LexemeId, Lexer, LexerError};
 pub use self::resolver::{FailedResolveStrategy, TokenResolver};
 pub use self::rgb::*;
 pub use self::tape::{BinaryTape, BinaryTapeParser, BinaryToken};

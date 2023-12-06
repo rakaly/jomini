@@ -1,6 +1,6 @@
-use crate::BinaryDeserializer;
+use crate::{BinaryDeserializer, Error};
 
-use super::de::BinaryDeserializerBuilder;
+use super::{de::BinaryDeserializerBuilder, TokenResolver};
 
 /// Trait customizing decoding values from binary data
 ///
@@ -13,8 +13,20 @@ pub trait BinaryFlavor: crate::Encoding {
     /// Decode a f64 from 8 bytes of data
     fn visit_f64(&self, data: [u8; 8]) -> f64;
 
-    fn deserializer(self) -> BinaryDeserializerBuilder<Self> where Self: Sized {
+    fn deserializer(&self) -> BinaryDeserializerBuilder<&Self> {
         BinaryDeserializer::builder_flavor(self)
+    }
+
+    fn deserialize_slice<'de, 'res: 'de, T, RES>(
+        &self,
+        data: &'de [u8],
+        resolver: &'res RES,
+    ) -> Result<T, Error>
+    where
+        T: serde::de::Deserialize<'de>,
+        RES: TokenResolver,
+    {
+        self.deserializer().deserialize_slice(data, resolver)
     }
 }
 

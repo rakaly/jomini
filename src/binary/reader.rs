@@ -1,6 +1,6 @@
 use super::{
     lexer::{read_id, read_string, read_token},
-    LexError, LexemeId, LexerError, Token,
+    BinToken, LexError, LexemeId, LexerError,
 };
 use std::{fmt, io::Read};
 
@@ -40,7 +40,7 @@ where
     }
 
     #[inline(always)]
-    fn next_opt(&mut self) -> (Option<Token>, Option<ReaderError>) {
+    fn next_opt(&mut self) -> (Option<BinToken>, Option<ReaderError>) {
         loop {
             let data_len = self.data_len();
             let inp = unsafe { std::slice::from_raw_parts(self.data, data_len) };
@@ -117,8 +117,8 @@ where
     }
 
     #[inline]
-    pub fn skip_token(&mut self, token: Token) -> Result<(), ReaderError> {
-        if token != Token::Open {
+    pub fn skip_token(&mut self, token: BinToken) -> Result<(), ReaderError> {
+        if token != BinToken::Open {
             return Ok(());
         }
 
@@ -133,7 +133,7 @@ where
                 };
 
                 match id {
-                    LexemeId::END => {
+                    LexemeId::CLOSE => {
                         self.data = data.as_ptr();
                         depth -= 1;
                         if depth == 0 {
@@ -206,12 +206,12 @@ where
 
     #[cold]
     #[inline(never)]
-    pub(crate) fn unlikely_read(&mut self) -> Result<Token, ReaderError> {
+    pub(crate) fn unlikely_read(&mut self) -> Result<BinToken, ReaderError> {
         self.read()
     }
 
     #[inline(always)]
-    pub fn read(&mut self) -> Result<Token, ReaderError> {
+    pub fn read(&mut self) -> Result<BinToken, ReaderError> {
         // Workaround for borrow checker :(
         let s = unsafe { &mut *(self as *mut TokenReader<R>) };
         match self.next_opt() {
@@ -222,7 +222,7 @@ where
     }
 
     #[inline(always)]
-    pub fn next(&mut self) -> Result<Option<Token>, ReaderError> {
+    pub fn next(&mut self) -> Result<Option<BinToken>, ReaderError> {
         match self.next_opt() {
             (Some(x), _) => Ok(Some(x)),
             (None, None) => Ok(None),
@@ -364,9 +364,11 @@ impl From<LexerError> for ReaderError {
 mod tests {
     use super::*;
 
-    fn test_reader(data: &[u8], expected: &[Token])
-    {
-        fn eq<R>(mut reader: TokenReader<R>, expected: &[Token]) where R: Read {
+    fn test_reader(data: &[u8], expected: &[BinToken]) {
+        fn eq<R>(mut reader: TokenReader<R>, expected: &[BinToken])
+        where
+            R: Read,
+        {
             for token in expected {
                 assert_eq!(reader.next().unwrap(), Some(*token));
             }
@@ -380,7 +382,10 @@ mod tests {
         assert_eq!(reader.skip_bytes(6).unwrap(), &b"EU4bin"[..]);
         eq(reader, expected);
 
-        eq(TokenReader::builder().init_buffer_len(5).build(data), expected);
+        eq(
+            TokenReader::builder().init_buffer_len(5).build(data),
+            expected,
+        );
     }
 
     #[test]
@@ -388,7 +393,12 @@ mod tests {
         let data = [0xe1, 0x00, 0x01, 0x00, 0x03, 0x00, 0x04, 0x00];
         test_reader(
             &data,
-            &[Token::Other(0x00e1), Token::Equal, Token::Open, Token::End],
+            &[
+                BinToken::Other(0x00e1),
+                BinToken::Equal,
+                BinToken::Open,
+                BinToken::Close,
+            ],
         );
     }
 }

@@ -86,7 +86,7 @@ Below is an example that defines a sample binary format and uses a hashmap token
 
 ```rust
 # #[cfg(feature = "derive")] {
-use jomini::{Encoding, JominiDeserialize, Windows1252Encoding};
+use jomini::{Encoding, JominiDeserialize, Windows1252Encoding, binary::BinaryFlavor};
 use std::{borrow::Cow, collections::HashMap};
 
 #[derive(JominiDeserialize, PartialEq, Debug)]
@@ -97,7 +97,7 @@ struct MyStruct {
 #[derive(Debug, Default)]
 pub struct BinaryTestFlavor;
 
-impl jomini::binary::BinaryFlavor for BinaryTestFlavor {
+impl BinaryFlavor for BinaryTestFlavor {
     fn visit_f32(&self, data: [u8; 4]) -> f32 {
         f32::from_le_bytes(data)
     }
@@ -108,7 +108,7 @@ impl jomini::binary::BinaryFlavor for BinaryTestFlavor {
 }
 
 impl Encoding for BinaryTestFlavor {
-    fn decode(&self, data: &[u8]) -> Cow<str> {
+    fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
         Windows1252Encoding::decode(data)
     }
 }
@@ -139,13 +139,13 @@ We can fix this issue by directly encoding the expected token value into the str
 
 ```rust
 # #[cfg(feature = "derive")] {
-# use jomini::{Encoding, JominiDeserialize, Windows1252Encoding, BinaryDeserializer};
+# use jomini::{Encoding, JominiDeserialize, Windows1252Encoding, binary::BinaryFlavor};
 # use std::{borrow::Cow, collections::HashMap};
 #
 # #[derive(Debug, Default)]
 # pub struct BinaryTestFlavor;
 #
-# impl jomini::binary::BinaryFlavor for BinaryTestFlavor {
+# impl BinaryFlavor for BinaryTestFlavor {
 #     fn visit_f32(&self, data: [u8; 4]) -> f32 {
 #         f32::from_le_bytes(data)
 #     }

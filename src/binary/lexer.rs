@@ -2,36 +2,71 @@ use super::Rgb;
 use crate::{util::get_split, Scalar};
 use std::fmt;
 
+/// The ID of current Lexeme
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct LexemeId(pub u16);
 
 impl LexemeId {
+    /// A binary '{' (open bracket)
     pub const OPEN: LexemeId = LexemeId::new(0x0003);
-    pub const END: LexemeId = LexemeId::new(0x0004);
+
+    /// A binary '}' (close bracket)
+    pub const CLOSE: LexemeId = LexemeId::new(0x0004);
+
+    /// A binary '='
     pub const EQUAL: LexemeId = LexemeId::new(0x0001);
+
+    /// A binary 32 bit unsigned integer
     pub const U32: LexemeId = LexemeId::new(0x0014);
+
+    /// A binary 64 bit unsigned integer
     pub const U64: LexemeId = LexemeId::new(0x029c);
+
+    /// A binary 32 bit signed integer
     pub const I32: LexemeId = LexemeId::new(0x000c);
+
+    /// A binary boolean
     pub const BOOL: LexemeId = LexemeId::new(0x000e);
+
+    /// A binary string that is typically quoted
     pub const QUOTED_STRING: LexemeId = LexemeId::new(0x000f);
+
+    /// A binary string that is typically without quotes
     pub const UNQUOTED_STRING: LexemeId = LexemeId::new(0x0017);
+
+    /// A binary 32 bit floating point
     pub const F32: LexemeId = LexemeId::new(0x000d);
+
+    /// A binary 64 bit floating point
     pub const F64: LexemeId = LexemeId::new(0x0167);
+
+    /// A binary RGB value
     pub const RGB: LexemeId = LexemeId::new(0x0243);
+
+    /// A binary 64 bit signed integer
     pub const I64: LexemeId = LexemeId::new(0x0317);
 
+    /// Construct a new [LexemeId] from a 16bit value
     #[inline]
     pub const fn new(x: u16) -> Self {
         LexemeId(x)
     }
 
+    /// Identifies if the given ID does not match of the predefined [LexemeId]
+    /// constants, and thus can be considered an ID token.
+    ///
+    /// ```rust
+    /// use jomini::binary::LexemeId;
+    /// let lid = LexemeId::new(0x1000);
+    /// assert!(lid.is_id());
+    /// ```
     #[inline]
     pub const fn is_id(&self) -> bool {
         !matches!(
             *self,
             LexemeId::OPEN
-                | LexemeId::END
+                | LexemeId::CLOSE
                 | LexemeId::EQUAL
                 | LexemeId::U32
                 | LexemeId::U64
@@ -118,13 +153,13 @@ pub(crate) fn read_rgb(data: &[u8]) -> Result<(Rgb, &[u8]), LexError> {
     let (b, data) = read_u32(data)?;
     let (next_tok, data) = read_id(data)?;
     match (start, rtoken, gtoken, btoken, next_tok) {
-        (LexemeId::OPEN, LexemeId::U32, LexemeId::U32, LexemeId::U32, LexemeId::END) => {
+        (LexemeId::OPEN, LexemeId::U32, LexemeId::U32, LexemeId::U32, LexemeId::CLOSE) => {
             Ok((Rgb { r, g, b, a: None }, data))
         }
         (LexemeId::OPEN, LexemeId::U32, LexemeId::U32, LexemeId::U32, LexemeId::U32) => {
             let (a, data) = read_u32(data)?;
             let (end, data) = read_id(data)?;
-            if end == LexemeId::END {
+            if end == LexemeId::CLOSE {
                 let a = Some(a);
                 Ok((Rgb { r, g, b, a }, data))
             } else {
@@ -136,9 +171,9 @@ pub(crate) fn read_rgb(data: &[u8]) -> Result<(Rgb, &[u8]), LexError> {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Token<'a> {
+pub enum BinToken<'a> {
     Open,
-    End,
+    Close,
     Equal,
     U32(u32),
     U64(u64),
@@ -154,26 +189,29 @@ pub enum Token<'a> {
 }
 
 #[inline]
-pub(crate) fn read_token(data: &[u8]) -> Result<(Token, &[u8]), LexError> {
+pub(crate) fn read_token(data: &[u8]) -> Result<(BinToken, &[u8]), LexError> {
     let (id, data) = read_id(data)?;
     match id {
-        LexemeId::OPEN => Ok((Token::Open, data)),
-        LexemeId::END => Ok((Token::End, data)),
-        LexemeId::EQUAL => Ok((Token::Equal, data)),
-        LexemeId::U32 => read_u32(data).map(|(x, d)| (Token::U32(x), d)),
-        LexemeId::U64 => read_u64(data).map(|(x, d)| (Token::U64(x), d)),
-        LexemeId::I32 => read_i32(data).map(|(x, d)| (Token::I32(x), d)),
-        LexemeId::BOOL => read_bool(data).map(|(x, d)| (Token::Bool(x), d)),
-        LexemeId::QUOTED_STRING => read_string(data).map(|(x, d)| (Token::QuotedString(x), d)),
-        LexemeId::UNQUOTED_STRING => read_string(data).map(|(x, d)| (Token::UnquotedString(x), d)),
-        LexemeId::F32 => read_f32(data).map(|(x, d)| (Token::F32(x), d)),
-        LexemeId::F64 => read_f64(data).map(|(x, d)| (Token::F64(x), d)),
-        LexemeId::RGB => read_rgb(data).map(|(x, d)| (Token::RGB(x), d)),
-        LexemeId::I64 => read_i64(data).map(|(x, d)| (Token::I64(x), d)),
-        LexemeId(id) => Ok((Token::Other(id), data)),
+        LexemeId::OPEN => Ok((BinToken::Open, data)),
+        LexemeId::CLOSE => Ok((BinToken::Close, data)),
+        LexemeId::EQUAL => Ok((BinToken::Equal, data)),
+        LexemeId::U32 => read_u32(data).map(|(x, d)| (BinToken::U32(x), d)),
+        LexemeId::U64 => read_u64(data).map(|(x, d)| (BinToken::U64(x), d)),
+        LexemeId::I32 => read_i32(data).map(|(x, d)| (BinToken::I32(x), d)),
+        LexemeId::BOOL => read_bool(data).map(|(x, d)| (BinToken::Bool(x), d)),
+        LexemeId::QUOTED_STRING => read_string(data).map(|(x, d)| (BinToken::QuotedString(x), d)),
+        LexemeId::UNQUOTED_STRING => {
+            read_string(data).map(|(x, d)| (BinToken::UnquotedString(x), d))
+        }
+        LexemeId::F32 => read_f32(data).map(|(x, d)| (BinToken::F32(x), d)),
+        LexemeId::F64 => read_f64(data).map(|(x, d)| (BinToken::F64(x), d)),
+        LexemeId::RGB => read_rgb(data).map(|(x, d)| (BinToken::RGB(x), d)),
+        LexemeId::I64 => read_i64(data).map(|(x, d)| (BinToken::I64(x), d)),
+        LexemeId(id) => Ok((BinToken::Other(id), data)),
     }
 }
 
+/// Lexical error type without positional information
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LexError {
     Eof,
@@ -198,7 +236,7 @@ impl std::fmt::Display for LexError {
 impl LexError {
     #[inline]
     #[must_use]
-    pub fn at(self, position: usize) -> LexerError {
+    pub(crate) fn at(self, position: usize) -> LexerError {
         LexerError {
             position,
             kind: self,
@@ -206,6 +244,7 @@ impl LexError {
     }
 }
 
+/// Lexical error type with positional information
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LexerError {
     position: usize,
@@ -221,6 +260,7 @@ impl LexerError {
         &self.kind
     }
 
+    #[must_use]
     pub fn into_kind(self) -> LexError {
         self.kind
     }
@@ -241,12 +281,74 @@ impl std::fmt::Display for LexerError {
     }
 }
 
+/// Zero cost binary data scanner.
+///
+/// There are two main ways to drive the lexer. To see them in action, imagine
+/// we want to count the max amount of nesting.
+///
+/// ```rust
+/// use jomini::binary::{Lexer, BinToken};
+/// let mut lexer = Lexer::new(&[0x2d, 0x28, 0x01, 0x00, 0x03, 0x00, 0x03, 0x00, 0x04, 0x00, 0x04, 0x00]);
+/// let mut max_depth = 0;
+/// let mut current_depth = 0;
+/// while let Some(token) = lexer.next_token()? {
+///   match token {
+///     BinToken::Open => {
+///       current_depth += 1;
+///       max_depth = max_depth.max(current_depth);
+///     }
+///     BinToken::Close => current_depth -= 1,
+///     _ => {}
+///   }
+/// }
+/// assert_eq!(max_depth, 2);
+/// # Ok::<(), jomini::binary::LexerError>(())
+/// ```
+///
+/// The [Lexer::next_token] is an ergonomic way to scan through binary tokens.
+/// The functions prefixed with `read_`denote more data is expected, while
+/// `next_` allows for the data to finish.
+///
+/// If it is desired scan through the binary data with zero overhead, one needs
+/// to drive the lexer more thoroughly.
+///
+/// ```rust
+/// use jomini::binary::{Lexer, LexemeId};
+/// let mut lexer = Lexer::new(&[0x2d, 0x28, 0x01, 0x00, 0x03, 0x00, 0x03, 0x00, 0x04, 0x00, 0x04, 0x00]);
+/// let mut max_depth = 0;
+/// let mut current_depth = 0;
+/// while let Some(id) = lexer.next_id()? {
+///   match id {
+///     LexemeId::OPEN => {
+///       current_depth += 1;
+///       max_depth = max_depth.max(current_depth);
+///     }
+///     LexemeId::CLOSE => current_depth -= 1,
+///     LexemeId::U32 => { lexer.read_u32()?; }
+///     LexemeId::I32 => { lexer.read_i32()?; }
+///     LexemeId::BOOL => { lexer.read_bool()?; }
+///     LexemeId::QUOTED_STRING | LexemeId::UNQUOTED_STRING => { lexer.read_string()?; }
+///     LexemeId::F32 => { lexer.read_f32()?; }
+///     LexemeId::F64 => { lexer.read_f64()?; }
+///     LexemeId::I64 => { lexer.read_i64()?; }
+///     _ => {}
+///   }
+/// }
+/// assert_eq!(max_depth, 2);
+/// # Ok::<(), jomini::binary::LexerError>(())
+/// ```
+///
+/// Only at token boundaries can `token` functions be interpersed with the
+/// individual lexeme functions.
+///
+/// Errors reported will contain positional information.
 pub struct Lexer<'a> {
     data: &'a [u8],
     original_length: usize,
 }
 
 impl<'a> Lexer<'a> {
+    /// Creates a new lexer over the given data
     #[inline]
     pub fn new(data: &'a [u8]) -> Self {
         Self {
@@ -255,11 +357,27 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Returns the remaining data that has not yet been processed.
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexemeId};
+    /// let mut lexer = Lexer::new(&[0xd2, 0x28, 0xff]);
+    /// assert_eq!(lexer.read_id().unwrap(), LexemeId::new(0x28d2));
+    /// assert_eq!(lexer.remainder(), &[0xff]);
+    /// ```
     #[inline]
     pub fn remainder(&self) -> &'a [u8] {
         self.data
     }
 
+    /// Returns how many bytes have been processed by the lexer
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexemeId};
+    /// let mut lexer = Lexer::new(&[0xd2, 0x28, 0xff]);
+    /// assert_eq!(lexer.read_id().unwrap(), LexemeId::new(0x28d2));
+    /// assert_eq!(lexer.position(), 2);
+    /// ```
     #[inline]
     pub fn position(&self) -> usize {
         self.original_length - self.data.len()
@@ -270,6 +388,7 @@ impl<'a> Lexer<'a> {
         err.at(self.position())
     }
 
+    /// Advance the lexer through the next lexeme id, and return it
     #[inline]
     pub fn read_id(&mut self) -> Result<LexemeId, LexerError> {
         let (result, rest) = read_id(self.data).map_err(|e| self.err_position(e))?;
@@ -278,12 +397,37 @@ impl<'a> Lexer<'a> {
     }
 
     #[inline]
-    pub fn next_token(&mut self) -> Result<Token<'a>, LexerError> {
+    pub fn next_id(&mut self) -> Result<Option<LexemeId>, LexerError> {
+        match read_id(self.data) {
+            Ok((result, rest)) => {
+                self.data = rest;
+                Ok(Some(result))
+            }
+            Err(LexError::Eof) if self.remainder().is_empty() => Ok(None),
+            Err(e) => Err(self.err_position(e)),
+        }
+    }
+
+    #[inline]
+    pub fn read_token(&mut self) -> Result<BinToken<'a>, LexerError> {
         let (result, rest) = read_token(self.data).map_err(|e| self.err_position(e))?;
         self.data = rest;
         Ok(result)
     }
 
+    #[inline]
+    pub fn next_token(&mut self) -> Result<Option<BinToken<'a>>, LexerError> {
+        match read_token(self.data) {
+            Ok((result, rest)) => {
+                self.data = rest;
+                Ok(Some(result))
+            }
+            Err(LexError::Eof) if self.remainder().is_empty() => Ok(None),
+            Err(e) => Err(self.err_position(e)),
+        }
+    }
+
+    /// Peek at the next [LexemeId] without advancing the [Lexer]
     #[inline]
     pub fn peek(&mut self) -> Option<LexemeId> {
         self.data
@@ -343,6 +487,12 @@ impl<'a> Lexer<'a> {
     #[inline]
     pub fn read_f64(&mut self) -> Result<[u8; 8], LexerError> {
         let (result, rest) = read_f64(self.data).map_err(|e| self.err_position(e))?;
+        self.data = rest;
+        Ok(result)
+    }
+
+    pub fn read_rgb(&mut self) -> Result<Rgb, LexerError> {
+        let (result, rest) = read_rgb(self.data).map_err(|e| self.err_position(e))?;
         self.data = rest;
         Ok(result)
     }
@@ -416,7 +566,7 @@ impl<'a> Lexer<'a> {
                 LexemeId::F64 => {
                     self.read_f64()?;
                 }
-                LexemeId::END => {
+                LexemeId::CLOSE => {
                     depth -= 1;
                     if depth == 0 {
                         return Ok(());
@@ -426,11 +576,5 @@ impl<'a> Lexer<'a> {
                 _ => {}
             }
         }
-    }
-
-    pub fn read_rgb(&mut self) -> Result<Rgb, LexerError> {
-        let (result, rest) = read_rgb(self.data).map_err(|e| self.err_position(e))?;
-        self.data = rest;
-        Ok(result)
     }
 }

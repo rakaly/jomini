@@ -317,7 +317,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                                 let (nd2, x) = self.parse_next_id(nd)?;
                                                 if x == $token {
                                                     nd = self.$fn(nd2)?;
-                                                } else if x == L::END {
+                                                } else if x == L::CLOSE {
                                                     data = nd2;
                                                     let end_idx = self.token_tape.len();
                                                     match unsafe {
@@ -398,7 +398,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             state = ParseState::KeyValueSeparator;
                         }
                     }
-                } else if token_id == L::END {
+                } else if token_id == L::CLOSE {
                     push_end!();
                     data = d;
                     continue;
@@ -503,7 +503,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             let (nd2, x) = self.parse_next_id(nd)?;
                             if x == L::I32 {
                                 nd = self.parse_i32(nd2)?;
-                            } else if x == L::END {
+                            } else if x == L::CLOSE {
                                 push_end!();
                                 data = nd2;
                                 break;
@@ -550,12 +550,12 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         // position eg: `a={b=c {} d=1}`. These occur in every
                         // EU4 save, even in 1.34.
                         match self.parse_next_id(d)? {
-                            (nd, L::END) => data = nd,
+                            (nd, L::CLOSE) => data = nd,
                             _ => return Err(self.empty_object_err(data)),
                         }
                     }
                 }
-                L::END => {
+                L::CLOSE => {
                     match state {
                         ParseState::KeyValueSeparator => {
                             // `a={b=c 10}`
@@ -1030,7 +1030,7 @@ mod tests {
         data.extend_from_slice(b"schools_initiated");
         data.extend_from_slice(&[0x01, 0x00, 0x0f, 0x00, 0x0b, 0x00]);
         data.extend_from_slice(b"1444.11.11\n");
-        data.extend_from_slice(&LexemeId::END.0.to_le_bytes());
+        data.extend_from_slice(&LexemeId::CLOSE.0.to_le_bytes());
         let tape = parse(&data[..]).unwrap();
         assert_eq!(
             tape.token_tape,
