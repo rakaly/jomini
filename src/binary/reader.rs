@@ -4,6 +4,7 @@ use super::{
 };
 use std::{fmt, io::Read};
 
+/// Scan for binary tokens in a [Read] implementation
 #[derive(Debug)]
 pub struct TokenReader<R> {
     reader: R,
@@ -92,7 +93,7 @@ where
     }
 
     #[inline]
-    pub fn skip_bytes(&mut self, bytes: usize) -> Result<&[u8], ReaderError> {
+    pub fn read_bytes(&mut self, bytes: usize) -> Result<&[u8], ReaderError> {
         while self.data_len() < bytes {
             let data_len = self.data_len();
             let consumed: usize = self.consumed_data();
@@ -199,8 +200,22 @@ where
         }
     }
 
+    /// Consume the token reader and return the internal buffer and reader. This
+    /// allows the buffer to be reused.
+    ///
+    /// ```rust
+    /// use jomini::binary::{TokenReader};
+    /// let data = b"EU4bin";
+    /// let mut reader = TokenReader::new(&data[..]);
+    /// assert_eq!(reader.read_bytes(6).unwrap(), &data[..]);
+    ///
+    /// let (buf, _) = reader.into_parts();
+    /// let data = b"HOI4bin";
+    /// let mut reader = TokenReader::builder().buffer(buf).build(&data[..]);
+    /// assert_eq!(reader.read_bytes(7).unwrap(), &data[..]);
+    /// ```
     #[inline]
-    fn into_parts(self) -> (Vec<u8>, R) {
+    pub fn into_parts(self) -> (Vec<u8>, R) {
         (self.buf, self.reader)
     }
 
@@ -312,7 +327,7 @@ impl TokenReaderBuilder {
 }
 
 #[derive(Debug)]
-enum ReaderErrorKind {
+pub enum ReaderErrorKind {
     Read { cause: std::io::Error },
     MaxBufferReached,
     Lexer { cause: LexError },
@@ -322,6 +337,21 @@ enum ReaderErrorKind {
 pub struct ReaderError {
     position: usize,
     kind: ReaderErrorKind,
+}
+
+impl ReaderError {
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    pub fn kind(&self) -> &ReaderErrorKind {
+        &self.kind
+    }
+
+    #[must_use]
+    pub fn into_kind(self) -> ReaderErrorKind {
+        self.kind
+    }
 }
 
 impl std::error::Error for ReaderError {
@@ -379,7 +409,7 @@ mod tests {
 
         let data_with_header: Vec<_> = b"EU4bin".iter().chain(data).copied().collect();
         let mut reader = TokenReader::new(data_with_header.as_slice());
-        assert_eq!(reader.skip_bytes(6).unwrap(), &b"EU4bin"[..]);
+        assert_eq!(reader.read_bytes(6).unwrap(), &b"EU4bin"[..]);
         eq(reader, expected);
 
         eq(
@@ -393,12 +423,18 @@ mod tests {
         let data = [0xe1, 0x00, 0x01, 0x00, 0x03, 0x00, 0x04, 0x00];
         test_reader(
             &data,
-            &[
-                Token::Other(0x00e1),
-                Token::Equal,
-                Token::Open,
-                Token::Close,
-            ],
+            &[Token::Id(0x00e1), Token::Equal, Token::Open, Token::Close],
         );
+    }
+
+    #[test]
+    fn test_not_enough_data() {
+        let mut reader = TokenReader::new(&[0x43][..]);
+        assert!(matches!(
+            reader.read().unwrap_err().kind(),
+            &ReaderErrorKind::Lexer {
+                cause: LexError::Eof
+            }
+        ));
     }
 }

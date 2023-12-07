@@ -1,5 +1,5 @@
 use crate::{
-    binary::{reader::ReaderError, LexError, LexerError},
+    binary::{LexError, LexerError, ReaderError},
     ScalarError,
 };
 use std::fmt;

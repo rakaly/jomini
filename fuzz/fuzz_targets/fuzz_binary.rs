@@ -62,6 +62,17 @@ fuzz_target!(|data: &[u8]| {
     hash.insert(0x354eu16, "selector");
     hash.insert(0x209u16, "localization");
 
+    let mut lexer = jomini::binary::Lexer::new(data);
+    let mut reader = jomini::binary::TokenReader::builder().init_buffer_len(100).build(data);
+
+    loop {
+        match (lexer.read_token(), reader.read()) {
+            (Ok(t1), Ok(t2)) => assert_eq!(t1, t2),
+            (Err(e1), Err(e2)) => { break; }
+            (x, y) => panic!("{:?} {:?}", x, y),
+        }
+    }
+
     let mut utape = jomini::BinaryTape::default();
     let ures =
         jomini::binary::BinaryTapeParser.parse_slice_into_tape_unoptimized(&data, &mut utape);

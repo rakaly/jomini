@@ -1,7 +1,6 @@
 use super::{
     lexer::{LexemeId, Lexer},
-    reader::{TokenReader, TokenReaderBuilder},
-    LexError, Token,
+    LexError, Token, TokenReader, TokenReaderBuilder,
 };
 use crate::{
     binary::{BinaryFlavor, FailedResolveStrategy, TokenResolver},
@@ -151,9 +150,9 @@ where
                 }
                 Token::F32(x) => return visitor.visit_f32(self.de.config.flavor.visit_f32(x)),
                 Token::F64(x) => return visitor.visit_f64(self.de.config.flavor.visit_f64(x)),
-                Token::RGB(x) => return visitor.visit_seq(ColorSequence::new(x)),
+                Token::Rgb(x) => return visitor.visit_seq(ColorSequence::new(x)),
                 Token::I64(x) => return visitor.visit_i64(x),
-                Token::Other(s) => {
+                Token::Id(s) => {
                     return match self.de.config.resolver.resolve(s) {
                         Some(id) => visitor.visit_borrowed_str(id),
                         None => match self.de.config.failed_resolve_strategy {
@@ -238,7 +237,7 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
     where
         V: Visitor<'de>,
     {
-        if let Token::Other(x) = &self.token {
+        if let Token::Id(x) = &self.token {
             visitor.visit_u16(*x)
         } else {
             self.deser(visitor)
@@ -403,7 +402,7 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
                 }
                 Ok(result)
             }
-            Token::RGB(x) => visitor.visit_seq(ColorSequence::new(x)),
+            Token::Rgb(x) => visitor.visit_seq(ColorSequence::new(x)),
             _ => self.deser(visitor),
         }
     }

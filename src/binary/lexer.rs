@@ -168,22 +168,51 @@ pub(crate) fn read_rgb(data: &[u8]) -> Result<(Rgb, &[u8]), LexError> {
     }
 }
 
+/// Binary token
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Token<'a> {
+    /// '{'
     Open,
+
+    /// '}'
     Close,
+
+    /// '='
     Equal,
+
+    /// 32bit unsigned integer
     U32(u32),
+
+    /// 64bit unsigned integer
     U64(u64),
+
+    /// 32bit signed integer
     I32(i32),
+
+    /// boolean
     Bool(bool),
+
+    /// quoted text
     Quoted(Scalar<'a>),
+
+    /// text that is not quoted
     Unquoted(Scalar<'a>),
+
+    /// 32bits of floating point data
     F32([u8; 4]),
+
+    /// 64bits of floating point data
     F64([u8; 8]),
-    RGB(Rgb),
+
+    /// Rgb data
+    Rgb(Rgb),
+
+    /// 64bit signed integer
     I64(i64),
-    Other(u16),
+
+    /// token id that can be resolved to a string via a
+    /// [TokenResolver](crate::binary::TokenResolver)
+    Id(u16),
 }
 
 #[inline]
@@ -201,9 +230,9 @@ pub(crate) fn read_token(data: &[u8]) -> Result<(Token, &[u8]), LexError> {
         LexemeId::UNQUOTED_STRING => read_string(data).map(|(x, d)| (Token::Unquoted(x), d)),
         LexemeId::F32 => read_f32(data).map(|(x, d)| (Token::F32(x), d)),
         LexemeId::F64 => read_f64(data).map(|(x, d)| (Token::F64(x), d)),
-        LexemeId::RGB => read_rgb(data).map(|(x, d)| (Token::RGB(x), d)),
+        LexemeId::RGB => read_rgb(data).map(|(x, d)| (Token::Rgb(x), d)),
         LexemeId::I64 => read_i64(data).map(|(x, d)| (Token::I64(x), d)),
-        LexemeId(id) => Ok((Token::Other(id), data)),
+        LexemeId(id) => Ok((Token::Id(id), data)),
     }
 }
 
@@ -334,7 +363,7 @@ impl std::fmt::Display for LexerError {
 /// # Ok::<(), jomini::binary::LexerError>(())
 /// ```
 ///
-/// Only at token boundaries can `token` functions be interpersed with the
+/// Only at token boundaries can `token` functions be intertwined with the
 /// individual lexeme functions.
 ///
 /// Errors reported will contain positional information.
@@ -385,7 +414,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// Advance the lexer through the next lexeme id, and return it
-    /// 
+    ///
     /// ```rust
     /// use jomini::binary::{Lexer, LexemeId, LexError};
     /// let mut lexer = Lexer::new(&[0x2d, 0x28]);
@@ -430,7 +459,7 @@ impl<'a> Lexer<'a> {
     /// ```rust
     /// use jomini::binary::{Lexer, LexError, Token};
     /// let mut lexer = Lexer::new(&[0x2d, 0x28]);
-    /// assert_eq!(lexer.read_token(), Ok(Token::Other(0x282d)));
+    /// assert_eq!(lexer.read_token(), Ok(Token::Id(0x282d)));
     /// assert_eq!(lexer.read_token().unwrap_err().kind(), &LexError::Eof);
     /// ```
     #[inline]
@@ -448,7 +477,7 @@ impl<'a> Lexer<'a> {
     /// ```rust
     /// use jomini::binary::{Lexer, Token, LexError};
     /// let mut lexer = Lexer::new(&[0x2d, 0x28]);
-    /// assert_eq!(lexer.next_token(), Ok(Some(Token::Other(0x282d))));
+    /// assert_eq!(lexer.next_token(), Ok(Some(Token::Id(0x282d))));
     /// assert_eq!(lexer.next_token(), Ok(None));
     ///
     /// let mut lexer = Lexer::new(&[0x2d]);
@@ -619,6 +648,17 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
+    /// Advance the lexer through an rgb value (with optional alpha channel)
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexError, Rgb};
+    /// let data = [0x03, 0x00, 0x14, 0x00, 0x6e, 0x00, 0x00, 0x00,
+    ///             0x14, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x14, 0x00,
+    ///             0x1b, 0x00, 0x00, 0x00, 0x04, 0x00];
+    /// let mut lexer = Lexer::new(&data[..]);
+    /// assert_eq!(lexer.read_rgb(), Ok(Rgb { r: 110, g: 27, b: 27, a: None }));
+    /// assert_eq!(lexer.read_rgb().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     pub fn read_rgb(&mut self) -> Result<Rgb, LexerError> {
         let (result, rest) = read_rgb(self.data).map_err(|e| self.err_position(e))?;
         self.data = rest;
@@ -644,6 +684,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Skip the value denoted by the [LexemeId]. Will skip entire containers.
     #[inline]
     pub fn skip_value(&mut self, id: LexemeId) -> Result<(), LexerError> {
         match id {
