@@ -132,14 +132,12 @@ pub(crate) fn read_i32(data: &[u8]) -> Result<(i32, &[u8]), LexError> {
 
 #[inline]
 pub(crate) fn read_f32(data: &[u8]) -> Result<([u8; 4], &[u8]), LexError> {
-    let (head, rest) = get_split::<4>(data).ok_or(LexError::Eof)?;
-    Ok((head, rest))
+    get_split::<4>(data).ok_or(LexError::Eof)
 }
 
 #[inline]
 pub(crate) fn read_f64(data: &[u8]) -> Result<([u8; 8], &[u8]), LexError> {
-    let (head, rest) = get_split::<8>(data).ok_or(LexError::Eof)?;
-    Ok((head, rest))
+    get_split::<8>(data).ok_or(LexError::Eof)
 }
 
 #[inline]
@@ -171,7 +169,7 @@ pub(crate) fn read_rgb(data: &[u8]) -> Result<(Rgb, &[u8]), LexError> {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum BinToken<'a> {
+pub enum Token<'a> {
     Open,
     Close,
     Equal,
@@ -179,8 +177,8 @@ pub enum BinToken<'a> {
     U64(u64),
     I32(i32),
     Bool(bool),
-    QuotedString(Scalar<'a>),
-    UnquotedString(Scalar<'a>),
+    Quoted(Scalar<'a>),
+    Unquoted(Scalar<'a>),
     F32([u8; 4]),
     F64([u8; 8]),
     RGB(Rgb),
@@ -189,25 +187,23 @@ pub enum BinToken<'a> {
 }
 
 #[inline]
-pub(crate) fn read_token(data: &[u8]) -> Result<(BinToken, &[u8]), LexError> {
+pub(crate) fn read_token(data: &[u8]) -> Result<(Token, &[u8]), LexError> {
     let (id, data) = read_id(data)?;
     match id {
-        LexemeId::OPEN => Ok((BinToken::Open, data)),
-        LexemeId::CLOSE => Ok((BinToken::Close, data)),
-        LexemeId::EQUAL => Ok((BinToken::Equal, data)),
-        LexemeId::U32 => read_u32(data).map(|(x, d)| (BinToken::U32(x), d)),
-        LexemeId::U64 => read_u64(data).map(|(x, d)| (BinToken::U64(x), d)),
-        LexemeId::I32 => read_i32(data).map(|(x, d)| (BinToken::I32(x), d)),
-        LexemeId::BOOL => read_bool(data).map(|(x, d)| (BinToken::Bool(x), d)),
-        LexemeId::QUOTED_STRING => read_string(data).map(|(x, d)| (BinToken::QuotedString(x), d)),
-        LexemeId::UNQUOTED_STRING => {
-            read_string(data).map(|(x, d)| (BinToken::UnquotedString(x), d))
-        }
-        LexemeId::F32 => read_f32(data).map(|(x, d)| (BinToken::F32(x), d)),
-        LexemeId::F64 => read_f64(data).map(|(x, d)| (BinToken::F64(x), d)),
-        LexemeId::RGB => read_rgb(data).map(|(x, d)| (BinToken::RGB(x), d)),
-        LexemeId::I64 => read_i64(data).map(|(x, d)| (BinToken::I64(x), d)),
-        LexemeId(id) => Ok((BinToken::Other(id), data)),
+        LexemeId::OPEN => Ok((Token::Open, data)),
+        LexemeId::CLOSE => Ok((Token::Close, data)),
+        LexemeId::EQUAL => Ok((Token::Equal, data)),
+        LexemeId::U32 => read_u32(data).map(|(x, d)| (Token::U32(x), d)),
+        LexemeId::U64 => read_u64(data).map(|(x, d)| (Token::U64(x), d)),
+        LexemeId::I32 => read_i32(data).map(|(x, d)| (Token::I32(x), d)),
+        LexemeId::BOOL => read_bool(data).map(|(x, d)| (Token::Bool(x), d)),
+        LexemeId::QUOTED_STRING => read_string(data).map(|(x, d)| (Token::Quoted(x), d)),
+        LexemeId::UNQUOTED_STRING => read_string(data).map(|(x, d)| (Token::Unquoted(x), d)),
+        LexemeId::F32 => read_f32(data).map(|(x, d)| (Token::F32(x), d)),
+        LexemeId::F64 => read_f64(data).map(|(x, d)| (Token::F64(x), d)),
+        LexemeId::RGB => read_rgb(data).map(|(x, d)| (Token::RGB(x), d)),
+        LexemeId::I64 => read_i64(data).map(|(x, d)| (Token::I64(x), d)),
+        LexemeId(id) => Ok((Token::Other(id), data)),
     }
 }
 
@@ -287,17 +283,17 @@ impl std::fmt::Display for LexerError {
 /// we want to count the max amount of nesting.
 ///
 /// ```rust
-/// use jomini::binary::{Lexer, BinToken};
+/// use jomini::binary::{Lexer, Token};
 /// let mut lexer = Lexer::new(&[0x2d, 0x28, 0x01, 0x00, 0x03, 0x00, 0x03, 0x00, 0x04, 0x00, 0x04, 0x00]);
 /// let mut max_depth = 0;
 /// let mut current_depth = 0;
 /// while let Some(token) = lexer.next_token()? {
 ///   match token {
-///     BinToken::Open => {
+///     Token::Open => {
 ///       current_depth += 1;
 ///       max_depth = max_depth.max(current_depth);
 ///     }
-///     BinToken::Close => current_depth -= 1,
+///     Token::Close => current_depth -= 1,
 ///     _ => {}
 ///   }
 /// }
@@ -389,6 +385,13 @@ impl<'a> Lexer<'a> {
     }
 
     /// Advance the lexer through the next lexeme id, and return it
+    /// 
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexemeId, LexError};
+    /// let mut lexer = Lexer::new(&[0x2d, 0x28]);
+    /// assert_eq!(lexer.read_id(), Ok(LexemeId::new(0x282d)));
+    /// assert_eq!(lexer.read_id().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     #[inline]
     pub fn read_id(&mut self) -> Result<LexemeId, LexerError> {
         let (result, rest) = read_id(self.data).map_err(|e| self.err_position(e))?;
@@ -396,6 +399,20 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
+    /// Attempt to advance through the [LexemeId]
+    ///
+    /// An EOF error can still be thrown if data is present but not enough
+    /// exists to decode the next [LexemeId]
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexemeId, LexError};
+    /// let mut lexer = Lexer::new(&[0x2d, 0x28]);
+    /// assert_eq!(lexer.next_id(), Ok(Some(LexemeId::new(0x282d))));
+    /// assert_eq!(lexer.next_id(), Ok(None));
+    ///
+    /// let mut lexer = Lexer::new(&[0x2d]);
+    /// assert_eq!(lexer.next_id().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     #[inline]
     pub fn next_id(&mut self) -> Result<Option<LexemeId>, LexerError> {
         match read_id(self.data) {
@@ -408,15 +425,37 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Assume more tokens exist in the data and read the next one.
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexError, Token};
+    /// let mut lexer = Lexer::new(&[0x2d, 0x28]);
+    /// assert_eq!(lexer.read_token(), Ok(Token::Other(0x282d)));
+    /// assert_eq!(lexer.read_token().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     #[inline]
-    pub fn read_token(&mut self) -> Result<BinToken<'a>, LexerError> {
+    pub fn read_token(&mut self) -> Result<Token<'a>, LexerError> {
         let (result, rest) = read_token(self.data).map_err(|e| self.err_position(e))?;
         self.data = rest;
         Ok(result)
     }
 
+    /// Attempt to advance through the next token or return `None` if no data remains
+    ///
+    /// An EOF error can still be thrown if data is present but not enough
+    /// exists to decode the next token.
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, Token, LexError};
+    /// let mut lexer = Lexer::new(&[0x2d, 0x28]);
+    /// assert_eq!(lexer.next_token(), Ok(Some(Token::Other(0x282d))));
+    /// assert_eq!(lexer.next_token(), Ok(None));
+    ///
+    /// let mut lexer = Lexer::new(&[0x2d]);
+    /// assert_eq!(lexer.next_token().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     #[inline]
-    pub fn next_token(&mut self) -> Result<Option<BinToken<'a>>, LexerError> {
+    pub fn next_token(&mut self) -> Result<Option<Token<'a>>, LexerError> {
         match read_token(self.data) {
             Ok((result, rest)) => {
                 self.data = rest;
@@ -427,14 +466,44 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Peek at the next [LexemeId] without advancing the [Lexer]
+    /// Peek at the next [LexemeId] without advancing the lexer
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexError, LexemeId};
+    /// let mut lexer = Lexer::new(&[0x01, 0x00][..]);
+    /// assert_eq!(lexer.peek_id(), Some(LexemeId::EQUAL));
+    /// assert_eq!(lexer.read_id(), Ok(LexemeId::EQUAL));
+    /// assert_eq!(lexer.peek_id(), None);
+    /// ```
     #[inline]
-    pub fn peek(&mut self) -> Option<LexemeId> {
+    pub fn peek_id(&mut self) -> Option<LexemeId> {
         self.data
             .get(..2)
             .map(|head| LexemeId::new(u16::from_le_bytes([head[0], head[1]])))
     }
 
+    /// Peek at the next [Token] without advancing the lexer
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexError, Token};
+    /// let mut lexer = Lexer::new(&[0x01, 0x00][..]);
+    /// assert_eq!(lexer.peek_token(), Some(Token::Equal));
+    /// assert_eq!(lexer.read_token(), Ok(Token::Equal));
+    /// assert_eq!(lexer.peek_token(), None);
+    /// ```
+    #[inline]
+    pub fn peek_token(&mut self) -> Option<Token<'a>> {
+        read_token(self.data).ok().map(|(t, _)| t)
+    }
+
+    /// Advance the lexer through a length prefixed string
+    ///
+    /// ```rust
+    /// use jomini::{Scalar, binary::{Lexer, LexError}};
+    /// let mut lexer = Lexer::new(&[0x03, 0x00, 0x45, 0x4e, 0x47][..]);
+    /// assert_eq!(lexer.read_string(), Ok(Scalar::new(b"ENG")));
+    /// assert_eq!(lexer.read_string().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     #[inline]
     pub fn read_string(&mut self) -> Result<Scalar<'a>, LexerError> {
         let (result, rest) = read_string(self.data).map_err(|e| self.err_position(e))?;
@@ -442,6 +511,15 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
+    /// Advance the lexer through a boolean
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexError};
+    /// let mut lexer = Lexer::new(&[0x01, 0x00][..]);
+    /// assert_eq!(lexer.read_bool(), Ok(true));
+    /// assert_eq!(lexer.read_bool(), Ok(false));
+    /// assert_eq!(lexer.read_bool().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     #[inline]
     pub fn read_bool(&mut self) -> Result<bool, LexerError> {
         let (result, rest) = read_bool(self.data).map_err(|e| self.err_position(e))?;
@@ -449,6 +527,14 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
+    /// Advance the lexer through unsigned little endian 32 bit integer
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexError};
+    /// let mut lexer = Lexer::new(&[0x59, 0x00, 0x00, 0x00][..]);
+    /// assert_eq!(lexer.read_u32(), Ok(89));
+    /// assert_eq!(lexer.read_u32().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     #[inline]
     pub fn read_u32(&mut self) -> Result<u32, LexerError> {
         let (result, rest) = read_u32(self.data).map_err(|e| self.err_position(e))?;
@@ -456,6 +542,14 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
+    /// Advance the lexer through unsigned little endian 64 bit integer
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexError};
+    /// let mut lexer = Lexer::new(&[0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00][..]);
+    /// assert_eq!(lexer.read_u64(), Ok(128));
+    /// assert_eq!(lexer.read_u64().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     #[inline]
     pub fn read_u64(&mut self) -> Result<u64, LexerError> {
         let (result, rest) = read_u64(self.data).map_err(|e| self.err_position(e))?;
@@ -463,6 +557,14 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
+    /// Advance the lexer through signed little endian 64 bit integer
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexError};
+    /// let mut lexer = Lexer::new(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff][..]);
+    /// assert_eq!(lexer.read_i64(), Ok(-1));
+    /// assert_eq!(lexer.read_i64().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     #[inline]
     pub fn read_i64(&mut self) -> Result<i64, LexerError> {
         let (result, rest) = read_i64(self.data).map_err(|e| self.err_position(e))?;
@@ -470,6 +572,14 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
+    /// Advance the lexer through signed little endian 32 bit integer
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexError};
+    /// let mut lexer = Lexer::new(&[0x59, 0x00, 0x00, 0x00][..]);
+    /// assert_eq!(lexer.read_i32(), Ok(89));
+    /// assert_eq!(lexer.read_i32().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     #[inline]
     pub fn read_i32(&mut self) -> Result<i32, LexerError> {
         let (result, rest) = read_i32(self.data).map_err(|e| self.err_position(e))?;
@@ -477,6 +587,15 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
+    /// Advance the lexer through 32 bits of floating point data and return the bytes
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexError};
+    /// let data = [0x17, 0x00, 0x00, 0x00];
+    /// let mut lexer = Lexer::new(&data[..]);
+    /// assert_eq!(lexer.read_f32(), Ok(data));
+    /// assert_eq!(lexer.read_f32().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     #[inline]
     pub fn read_f32(&mut self) -> Result<[u8; 4], LexerError> {
         let (result, rest) = read_f32(self.data).map_err(|e| self.err_position(e))?;
@@ -484,6 +603,15 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
+    /// Advance the lexer through 64 bits of floating point data and return the bytes
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexError};
+    /// let data = [0xc7, 0xe4, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    /// let mut lexer = Lexer::new(&data[..]);
+    /// assert_eq!(lexer.read_f64(), Ok(data));
+    /// assert_eq!(lexer.read_f64().unwrap_err().kind(), &LexError::Eof);
+    /// ```
     #[inline]
     pub fn read_f64(&mut self) -> Result<[u8; 8], LexerError> {
         let (result, rest) = read_f64(self.data).map_err(|e| self.err_position(e))?;
@@ -495,6 +623,25 @@ impl<'a> Lexer<'a> {
         let (result, rest) = read_rgb(self.data).map_err(|e| self.err_position(e))?;
         self.data = rest;
         Ok(result)
+    }
+
+    /// Advance a given number of bytes and return them
+    ///
+    /// ```rust
+    /// use jomini::binary::{Lexer, LexError};
+    /// let mut lexer = Lexer::new(b"EU4txt");
+    /// assert_eq!(lexer.read_bytes(6), Ok(&b"EU4txt"[..]));
+    /// assert_eq!(lexer.read_bytes(1).unwrap_err().kind(), &LexError::Eof);
+    /// ```
+    #[inline]
+    pub fn read_bytes(&mut self, bytes: usize) -> Result<&'a [u8], LexerError> {
+        if self.data.len() >= bytes {
+            let (head, rest) = self.data.split_at(bytes);
+            self.data = rest;
+            Ok(head)
+        } else {
+            Err(self.err_position(LexError::Eof))
+        }
     }
 
     #[inline]
