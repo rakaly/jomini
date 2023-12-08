@@ -392,8 +392,7 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
                 if !seq.hit_end {
                     // For when we are deserializing an array that doesn't read
                     // the closing token
-                    let ender = self.de.reader.read()?;
-                    if ender != Token::Close {
+                    if !matches!(self.de.reader.read()?, Token::Close) {
                         return Err(Error::invalid_syntax(
                             "Expected sequence to be terminated with an end token",
                             self.de.reader.position(),

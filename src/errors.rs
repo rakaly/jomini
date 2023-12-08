@@ -1,5 +1,6 @@
 use crate::{
-    binary::{LexError, LexerError, ReaderError},
+    binary::{LexError, LexerError, ReaderError as BinReaderError},
+    text::ReaderError as TextReaderError,
     ScalarError,
 };
 use std::fmt;
@@ -145,8 +146,14 @@ impl From<LexError> for Error {
     }
 }
 
-impl From<ReaderError> for Error {
-    fn from(_value: ReaderError) -> Self {
+impl From<BinReaderError> for Error {
+    fn from(_value: BinReaderError) -> Self {
+        Error::eof()
+    }
+}
+
+impl From<TextReaderError> for Error {
+    fn from(_value: TextReaderError) -> Self {
         Error::eof()
     }
 }

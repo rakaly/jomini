@@ -1,4 +1,4 @@
-use super::reader::ValuesIter;
+use super::{lexer::Token, reader::ValuesIter, TokenReader};
 use crate::{
     text::{ArrayReader, FieldsIter, ObjectReader, Operator, Reader, ScalarReader, ValueReader},
     DeserializeError, DeserializeErrorKind, Encoding, Error, TextTape, TextToken, Utf8Encoding,
@@ -8,6 +8,7 @@ use serde::de::{self, Deserialize, DeserializeSeed, Visitor};
 use std::{
     borrow::Cow,
     fmt::{self, Debug},
+    io::Read,
 };
 
 /// Represents the field value that contains an operator
@@ -128,6 +129,449 @@ where
     T: Deserialize<'a>,
 {
     TextDeserializer::from_utf8_slice(data)?.deserialize()
+}
+
+struct TextReaderDeserializer<R, E> {
+    reader: TokenReader<R>,
+    encoding: E,
+}
+
+impl<'de, R: Read, E: Encoding> de::Deserializer<'de> for &'_ mut TextReaderDeserializer<R, E> {
+    type Error = Error;
+
+    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "root deserializer can only work with key value pairs",
+            )),
+        }))
+    }
+
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_map(TextReaderMap::new(self, true))
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_map(visitor)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct enum ignored_any identifier
+    }
+}
+
+struct TextReaderMap<'a, R, E> {
+    de: &'a mut TextReaderDeserializer<R, E>,
+    root: bool,
+}
+
+impl<'a, R, E> TextReaderMap<'a, R, E> {
+    fn new(de: &'a mut TextReaderDeserializer<R, E>, root: bool) -> Self {
+        TextReaderMap { de, root }
+    }
+}
+
+impl<'de, 'a, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'a, R, E> {
+    type Error = Error;
+
+    #[inline]
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: DeserializeSeed<'de>,
+    {
+        let de = unsafe { &mut *(self.de as *mut _) };
+        match self.de.reader.next() {
+            Ok(Some(Token::Close)) => Ok(None),
+            Ok(Some(token)) => seed
+                .deserialize(TextReaderTokenDeserializer { de, token })
+                .map(Some),
+            Ok(None) if self.root => Ok(None),
+            Ok(None) => Err(self.de.reader.eof_error().into()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    #[inline]
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        let de = unsafe { &mut *(self.de as *mut _) };
+
+        let mut token = self.de.reader.read()?;
+        if matches!(token, Token::Operator(Operator::Equal)) {
+            token = self.de.reader.read()?;
+        }
+
+        seed.deserialize(TextReaderTokenDeserializer { de, token })
+    }
+}
+
+struct TextReaderTokenDeserializer<'a, R, E> {
+    de: &'a mut TextReaderDeserializer<R, E>,
+    token: Token<'a>,
+}
+
+impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
+    for TextReaderTokenDeserializer<'a, R, E>
+{
+    type Error = Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let mut tok = self.token;
+        loop {
+            match tok {
+                Token::Open => {
+                    let de = unsafe { &mut *(self.de as *mut _) };
+                    let next = self.de.reader.read()?;
+                    if matches!(next, Token::Close) {
+                        tok = self.de.reader.read()?;
+                    } else {
+                        todo!()
+                        // return visitor.visit_seq(TextReaderSeq2::new(de, next));
+                    }
+                }
+                Token::Close => {
+                    return Err(Error::invalid_syntax(
+                        "did not expect end",
+                        self.de.reader.position(),
+                    ))
+                }
+                Token::Operator(_) => {
+                    return Err(Error::invalid_syntax(
+                        "did not expect operator",
+                        self.de.reader.position(),
+                    ))
+                }
+                Token::Unquoted(s) | Token::Quoted(s) => {
+                    return match self.de.encoding.decode(s.as_bytes()) {
+                        Cow::Borrowed(x) => visitor.visit_str(x),
+                        Cow::Owned(x) => visitor.visit_string(x),
+                    }
+                }
+            }
+        }
+    }
+
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match self.token.as_scalar().and_then(|x| x.to_bool().ok()) {
+            Some(x) => visitor.visit_bool(x),
+            None => self.deserialize_any(visitor),
+        }
+    }
+
+    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_i64(visitor)
+    }
+
+    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_i64(visitor)
+    }
+
+    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_i64(visitor)
+    }
+
+    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match self.token.as_scalar().and_then(|x| x.to_i64().ok()) {
+            Some(x) => visitor.visit_i64(x),
+            None => self.deserialize_any(visitor),
+        }
+    }
+
+    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_u64(visitor)
+    }
+
+    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_u64(visitor)
+    }
+
+    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_u64(visitor)
+    }
+
+    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match self.token.as_scalar().and_then(|x| x.to_u64().ok()) {
+            Some(x) => visitor.visit_u64(x),
+            None => self.deserialize_any(visitor),
+        }
+    }
+
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_f64(visitor)
+    }
+
+    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match self.token.as_scalar().and_then(|x| dbg!(x).to_f64().ok()) {
+            Some(x) => visitor.visit_f64(x),
+            None => self.deserialize_any(visitor),
+        }
+    }
+
+    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_any(visitor)
+    }
+
+    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if let Some(s) = self.token.as_scalar() {
+            match self.de.encoding.decode(s.as_bytes()) {
+                Cow::Borrowed(x) => visitor.visit_str(x),
+                Cow::Owned(x) => visitor.visit_string(x),
+            }
+        } else {
+            self.deserialize_any(visitor)
+        }
+    }
+
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_str(visitor)
+    }
+
+    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match self.token.as_scalar() {
+            Some(s) => visitor.visit_bytes(s.as_bytes()),
+            None => self.deserialize_any(visitor),
+        }
+    }
+
+    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_bytes(visitor)
+    }
+
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_some(self)
+    }
+
+    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_ignored_any(visitor)
+    }
+
+    fn deserialize_unit_struct<V>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_ignored_any(visitor)
+    }
+
+    fn deserialize_newtype_struct<V>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_newtype_struct(self)
+    }
+
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let mut seq = TextReaderSeq::new(self.de);
+        let result = visitor.visit_seq(&mut seq)?;
+        if !seq.hit_end {
+            // For when we are deserializing an array that doesn't read
+            // the closing token
+            if !matches!(self.de.reader.read()?, Token::Close) {
+                return Err(Error::invalid_syntax(
+                    "Expected sequence to be terminated with an end token",
+                    self.de.reader.position(),
+                ));
+            }
+        }
+        Ok(result)
+    }
+
+    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_tuple_struct<V>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if matches!(self.token, Token::Open) {
+            visitor.visit_map(TextReaderMap::new(self.de, false))
+        } else {
+            self.deserialize_any(visitor)
+        }
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if name == "_internal_jomini_property" {
+            todo!()
+        }
+
+        self.deserialize_map(visitor)
+    }
+
+    fn deserialize_enum<V>(
+        self,
+        name: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        todo!()
+    }
+
+    fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_str(visitor)
+    }
+
+    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if matches!(self.token, Token::Open) {
+            self.de.reader.skip_container()?;
+            todo!();
+        }
+
+        visitor.visit_unit()
+    }
+}
+
+struct TextReaderSeq<'a, R, E> {
+    de: &'a mut TextReaderDeserializer<R, E>,
+    hit_end: bool,
+}
+
+impl<'a, R, E> TextReaderSeq<'a, R, E> {
+    fn new(de: &'a mut TextReaderDeserializer<R, E>) -> Self {
+        TextReaderSeq { de, hit_end: false }
+    }
+}
+
+impl<'de, 'a, R, E> de::SeqAccess<'de> for TextReaderSeq<'a, R, E>
+where
+    R: Read,
+    E: Encoding,
+{
+    type Error = Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        let de = unsafe { &mut *(self.de as *mut _) };
+        match self.de.reader.read()? {
+            Token::Close => {
+                self.hit_end = true;
+                Ok(None)
+            }
+            token => seed
+                .deserialize(TextReaderTokenDeserializer { de, token })
+                .map(Some),
+        }
+    }
 }
 
 /// A structure to deserialize text data into Rust values.
@@ -1075,11 +1519,10 @@ impl<'de> de::Deserializer<'de> for OperatorDeserializer {
 #[cfg(test)]
 mod tests {
     use crate::common::{Date, DateHour, UniformDate};
-
     use super::*;
     use jomini_derive::JominiDeserialize;
     use serde::{
-        de::{self, Deserializer},
+        de::{self, DeserializeOwned, Deserializer},
         Deserialize,
     };
     use std::fmt;
@@ -1092,6 +1535,24 @@ mod tests {
         Ok(super::from_windows1252_slice(data)?)
     }
 
+    fn from_owned<T>(data: &[u8]) -> T
+    where
+        T: DeserializeOwned + PartialEq + Debug,
+    {
+        let tape = TextTape::from_slice(data).unwrap();
+        let x1: T = TextDeserializer::from_windows1252_tape(&tape)
+            .deserialize()
+            .unwrap();
+        let reader = TokenReader::new(data);
+        let mut des = TextReaderDeserializer {
+            reader,
+            encoding: Windows1252Encoding,
+        };
+        let x2 = T::deserialize(&mut des).unwrap();
+        assert_eq!(x1, x2);
+        x1
+    }
+
     #[test]
     fn test_single_field() {
         let data = b"field1=ENG";
@@ -1101,7 +1562,7 @@ mod tests {
             field1: String,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -1150,7 +1611,7 @@ mod tests {
             name: String,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -1168,7 +1629,7 @@ mod tests {
             field1: bool,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { field1: false });
     }
 
@@ -1181,7 +1642,7 @@ mod tests {
             field1: bool,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { field1: true });
     }
 
@@ -1194,7 +1655,7 @@ mod tests {
             field1: u64,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { field1: 1000 });
     }
 
@@ -1207,7 +1668,7 @@ mod tests {
             field1: u32,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { field1: 1000 });
     }
 
@@ -1220,7 +1681,7 @@ mod tests {
             field1: u8,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { field1: 100 });
     }
 
@@ -1233,7 +1694,7 @@ mod tests {
             field1: u16,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { field1: 1000 });
     }
 
@@ -1246,7 +1707,7 @@ mod tests {
             field1: i8,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { field1: -100 });
     }
 
@@ -1259,7 +1720,7 @@ mod tests {
             field1: i16,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { field1: -1000 });
     }
 
@@ -1272,7 +1733,7 @@ mod tests {
             field1: i32,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { field1: -1000 });
     }
 
@@ -1285,7 +1746,7 @@ mod tests {
             field1: i64,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { field1: -1000 });
     }
 
@@ -1298,7 +1759,7 @@ mod tests {
             field1: f32,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { field1: -100.535 });
     }
 
@@ -1311,7 +1772,7 @@ mod tests {
             field1: f64,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { field1: -100.535 });
     }
 
@@ -1325,7 +1786,7 @@ mod tests {
             field2: bool,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -1343,7 +1804,7 @@ mod tests {
             dlc_enabled: Vec<String>,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
