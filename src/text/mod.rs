@@ -10,11 +10,11 @@
 #[cfg(feature = "derive")]
 pub mod de;
 mod fnv;
+mod lexer;
 mod operator;
 mod reader;
 mod tape;
 mod writer;
-mod lexer;
 
 #[cfg(feature = "derive")]
 #[doc(inline)]
@@ -26,4 +26,4 @@ pub use self::reader::{
 };
 pub use self::tape::{TextTape, TextTapeParser, TextToken};
 pub use self::writer::*;
-pub use lexer::{TokenReader, TokenReaderBuilder, ReaderError};
+pub use lexer::{ReaderError, TokenReader, TokenReaderBuilder};

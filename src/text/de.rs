@@ -196,14 +196,21 @@ impl<'de, 'a, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'a, R, 
         K: DeserializeSeed<'de>,
     {
         let de = unsafe { &mut *(self.de as *mut _) };
-        match self.de.reader.next() {
-            Ok(Some(Token::Close)) => Ok(None),
-            Ok(Some(token)) => seed
-                .deserialize(TextReaderTokenDeserializer { de, token })
-                .map(Some),
-            Ok(None) if self.root => Ok(None),
-            Ok(None) => Err(self.de.reader.eof_error().into()),
-            Err(e) => Err(e.into()),
+        loop {
+            match self.de.reader.next() {
+                Ok(Some(Token::Close)) => return Ok(None),
+                Ok(Some(Token::Open)) => {
+                    let _ = self.de.reader.read()?;
+                }
+                Ok(Some(token)) => {
+                    return seed
+                        .deserialize(TextReaderTokenDeserializer { de, token })
+                        .map(Some)
+                }
+                Ok(None) if self.root => return Ok(None),
+                Ok(None) => return Err(self.de.reader.eof_error().into()),
+                Err(e) => return Err(e.into()),
+            }
         }
     }
 
@@ -215,7 +222,7 @@ impl<'de, 'a, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'a, R, 
         let de = unsafe { &mut *(self.de as *mut _) };
 
         let mut token = self.de.reader.read()?;
-        if matches!(token, Token::Operator(Operator::Equal)) {
+        if matches!(token, Token::Operator(_)) {
             token = self.de.reader.read()?;
         }
 
@@ -241,14 +248,16 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
         loop {
             match tok {
                 Token::Open => {
-                    let de = unsafe { &mut *(self.de as *mut _) };
-                    let next = self.de.reader.read()?;
-                    if matches!(next, Token::Close) {
-                        tok = self.de.reader.read()?;
-                    } else {
-                        todo!()
+                    return visitor.visit_seq(TextReaderSeq::new(self.de));
+
+                    // let de = unsafe { &mut *(self.de as *mut _) };
+                    // let next = self.de.reader.read()?;
+                    // if matches!(next, Token::Close) {
+                    //     tok = self.de.reader.read()?;
+                    // } else {
+                    //     todo!()
                         // return visitor.visit_seq(TextReaderSeq2::new(de, next));
-                    }
+                    // }
                 }
                 Token::Close => {
                     return Err(Error::invalid_syntax(
@@ -1518,8 +1527,8 @@ impl<'de> de::Deserializer<'de> for OperatorDeserializer {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::{Date, DateHour, UniformDate};
     use super::*;
+    use crate::common::{Date, DateHour, UniformDate};
     use jomini_derive::JominiDeserialize;
     use serde::{
         de::{self, DeserializeOwned, Deserializer},
@@ -1837,7 +1846,7 @@ mod tests {
             name: Option<String>,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -1861,7 +1870,7 @@ mod tests {
             discovered_by: Vec<String>,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -1884,7 +1893,7 @@ mod tests {
             id: u32,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -1902,7 +1911,7 @@ mod tests {
             c: String,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -1923,7 +1932,7 @@ mod tests {
             e: String,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -1946,7 +1955,7 @@ mod tests {
             e: String,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -1972,7 +1981,7 @@ mod tests {
             c: Vec<String>,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -1990,7 +1999,7 @@ mod tests {
             field1: Option<String>,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -2003,7 +2012,7 @@ mod tests {
     fn test_deserialize_hashmap() {
         let data = b"-1=a\r\n-2=b";
 
-        let actual: HashMap<i32, String> = from_slice(&data[..]).unwrap();
+        let actual: HashMap<i32, String> = from_owned(&data[..]);
         let mut expected = HashMap::new();
         expected.insert(-1, String::from("a"));
         expected.insert(-2, String::from("b"));
@@ -2024,7 +2033,7 @@ mod tests {
             name: String,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         let mut expected = HashMap::new();
         expected.insert(
             -1,
@@ -2060,7 +2069,7 @@ mod tests {
             bar: String,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -2089,7 +2098,7 @@ mod tests {
             bar: String,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -2116,7 +2125,7 @@ mod tests {
             name: String,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
