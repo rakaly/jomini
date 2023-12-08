@@ -286,7 +286,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
             // or ignored to ease understanding. See PR #111 for a breakdown on
             // field and value frequency.
             if ENABLE_OPTIMIZATION && state == ParseState::Key {
-                if token_id > L::UNQUOTED_STRING || token_id == L(0xb) {
+                if token_id > L::UNQUOTED || token_id == L(0xb) {
                     // 65-90% of keys are tokens
                     // 5% of these keys are id (0xb)
                     if token_id != L::F64 && token_id != L::U64 {
@@ -354,11 +354,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                 // These three array types cover 99.6% of EU4 arrays
                                 if token_id4 == L::I32 {
                                     parse_array_field!(parse_i32, L::I32);
-                                } else if token_id4 == L::QUOTED_STRING {
-                                    parse_array_field!(parse_quoted_string, L::QUOTED_STRING);
+                                } else if token_id4 == L::QUOTED {
+                                    parse_array_field!(parse_quoted_string, L::QUOTED);
                                 } else if token_id4 == L::F32 {
                                     parse_array_field!(parse_f32, L::F32);
-                                } else if (token_id4 > L::UNQUOTED_STRING
+                                } else if (token_id4 > L::UNQUOTED
                                     && token_id4 != L::F64
                                     && token_id4 != L::U64)
                                     || token_id4 == L(0xb)
@@ -381,7 +381,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                     token_id = token_id4;
                                     state = ParseState::OpenFirst;
                                 }
-                            } else if token_id3 == L::QUOTED_STRING {
+                            } else if token_id3 == L::QUOTED {
                                 data = self.parse_quoted_string(d3)?;
                                 continue;
                             } else if token_id3 == L::F32 {
@@ -402,7 +402,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     push_end!();
                     data = d;
                     continue;
-                } else if token_id == L::QUOTED_STRING {
+                } else if token_id == L::QUOTED {
                     // over 20% of EU4 object keys are quoted strings and they
                     // nearly always are objects
                     let d2 = self.parse_quoted_string(d)?;
@@ -418,10 +418,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             (d, token_id) = self.parse_next_id(d4)?;
 
                             // Expect an object that follows a quoted string to start with a token
-                            if token_id > L::UNQUOTED_STRING
-                                && token_id != L::F64
-                                && token_id != L::U64
-                            {
+                            if token_id > L::UNQUOTED && token_id != L::F64 && token_id != L::U64 {
                                 self.token_tape.alloc().init(BinaryToken::Token(token_id.0));
                                 (d, token_id) = self.parse_next_id(d)?;
                                 if token_id == L::EQUAL {
@@ -432,7 +429,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                         data = self.parse_bool(d)?;
                                         state = ParseState::Key;
                                         continue;
-                                    } else if token_id == L::QUOTED_STRING {
+                                    } else if token_id == L::QUOTED {
                                         data = self.parse_quoted_string(d)?;
                                         state = ParseState::Key;
                                         continue;
@@ -519,11 +516,11 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     data = self.parse_bool(d)?;
                     state = Self::next_state(state);
                 }
-                L::QUOTED_STRING => {
+                L::QUOTED => {
                     data = self.parse_quoted_string(d)?;
                     state = Self::next_state(state);
                 }
-                L::UNQUOTED_STRING => {
+                L::UNQUOTED => {
                     data = self.parse_unquoted_string(d)?;
                     state = Self::next_state(state);
                 }

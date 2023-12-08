@@ -471,7 +471,10 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
     where
         V: Visitor<'de>,
     {
-        self.de.reader.skip_token(self.token)?;
+        if matches!(self.token, Token::Open) {
+            self.de.reader.skip_container()?;
+        }
+
         visitor.visit_unit()
     }
 }
@@ -760,7 +763,7 @@ where
         }
 
         match tok {
-            LexemeId::QUOTED_STRING | LexemeId::UNQUOTED_STRING => {
+            LexemeId::QUOTED | LexemeId::UNQUOTED => {
                 let data = self.de.parser.read_string()?;
                 match self.de.config.flavor.decode(data.as_bytes()) {
                     Cow::Borrowed(x) => visitor.visit_borrowed_str(x),
@@ -924,7 +927,7 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializ
     where
         V: Visitor<'de>,
     {
-        if self.token == LexemeId::QUOTED_STRING || self.token == LexemeId::UNQUOTED_STRING {
+        if self.token == LexemeId::QUOTED || self.token == LexemeId::UNQUOTED {
             let data = self.de.parser.read_string()?;
             match self.de.config.flavor.decode(data.as_bytes()) {
                 Cow::Borrowed(x) => visitor.visit_borrowed_str(x),
@@ -1219,7 +1222,7 @@ impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<
 /// map.insert(0x2d83, String::from("field2"));
 ///
 /// let builder = BinaryDeserializer::builder_flavor(BinaryTestFlavor);
-/// let mut deserializer = builder.from_slice(&data[..], &map)?;
+/// let mut deserializer = builder.from_slice(&data[..], &map);
 /// let a: StructA = deserializer.deserialize()?;
 /// assert_eq!(a, StructA {
 ///   field1: "ENG".to_string(),
@@ -1307,7 +1310,7 @@ where
         self,
         data: &'a [u8],
         resolver: &'res RES,
-    ) -> Result<OndemandBinaryDeserializer<'a, 'res, RES, F>, Error>
+    ) -> OndemandBinaryDeserializer<'a, 'res, RES, F>
     where
         RES: TokenResolver,
     {
@@ -1317,10 +1320,10 @@ where
             flavor: self.flavor,
         };
 
-        Ok(OndemandBinaryDeserializer {
+        OndemandBinaryDeserializer {
             parser: Lexer::new(data),
             config,
-        })
+        }
     }
 
     pub fn deserialize_slice<'data, 'res: 'data, RES, T>(
@@ -1332,7 +1335,7 @@ where
         T: Deserialize<'data>,
         RES: TokenResolver,
     {
-        self.from_slice(data, resolver)?.deserialize()
+        self.from_slice(data, resolver).deserialize()
     }
 
     /// Deserialize the given binary tape
@@ -2677,8 +2680,7 @@ mod tests {
         let map: HashMap<u16, String> = HashMap::new();
         let mut builder = eu4_builder();
         builder.on_failed_resolve(FailedResolveStrategy::Error);
-        let actual: Result<MyStruct, _> =
-            builder.from_slice(&data[..], &map).unwrap().deserialize();
+        let actual: Result<MyStruct, _> = builder.from_slice(&data[..], &map).deserialize();
         assert!(actual.is_err());
     }
 

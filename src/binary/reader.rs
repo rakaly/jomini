@@ -4,7 +4,29 @@ use super::{
 };
 use std::{fmt, io::Read};
 
-/// Scan for binary tokens in a [Read] implementation
+/// [Lexer](crate::binary::Lexer) that works over a [Read] implementation
+///
+/// Example of computing the max nesting depth using a [TokenReader].
+///
+/// ```rust
+/// use jomini::binary::{TokenReader, Token};
+/// let data = [0x2d, 0x28, 0x01, 0x00, 0x03, 0x00, 0x03, 0x00, 0x04, 0x00, 0x04, 0x00];
+/// let mut reader = TokenReader::new(&data[..]);
+/// let mut max_depth = 0;
+/// let mut current_depth = 0;
+/// while let Some(token) = reader.next()? {
+///   match token {
+///     Token::Open => {
+///       current_depth += 1;
+///       max_depth = max_depth.max(current_depth);
+///     }
+///     Token::Close => current_depth -= 1,
+///     _ => {}
+///   }
+/// }
+/// assert_eq!(max_depth, 2);
+/// # Ok::<(), jomini::binary::ReaderError>(())
+/// ```
 #[derive(Debug)]
 pub struct TokenReader<R> {
     reader: R,
@@ -25,6 +47,14 @@ where
         TokenReader::builder().build(reader)
     }
 
+    /// Returns the byte position of the data stream that has been processed.
+    ///
+    /// ```rust
+    /// use jomini::binary::{TokenReader, Token};
+    /// let mut reader = TokenReader::new(&[0xd2, 0x28, 0xff][..]);
+    /// assert_eq!(reader.read().unwrap(), Token::Id(0x28d2));
+    /// assert_eq!(reader.position(), 2);
+    /// ```
     #[inline]
     pub fn position(&self) -> usize {
         self.prior_reads + self.consumed_data()
@@ -68,7 +98,9 @@ where
                         // If we read nothing and there is no data left to parse
                         // we are done
                         return (None, None);
-                    } else if self.data == self.buf.as_ptr() {
+                    } else if data_len < self.buf.len() {
+                        return (None, Some(self.lex_error(LexError::Eof)));
+                    } else {
                         // If we parsing didn't progress, there must be a token that spans
                         // multiple buffers, so we will need to grow the buffer.
 
@@ -81,8 +113,7 @@ where
                         let new_len = self.buf.len().saturating_mul(2).min(self.max_buf_size);
                         self.buf.resize(new_len, 0);
                         self.data = self.buf.as_ptr();
-                    } else {
-                        return (None, Some(self.lex_error(LexError::Eof)));
+                        self.data_end = unsafe { self.data.add(data_len) };
                     }
                 }
                 Err(e) => {
@@ -92,6 +123,18 @@ where
         }
     }
 
+    /// Advance a given number of bytes and return them.
+    ///
+    /// The internal buffer must be large enough to accomodate all bytes.
+    ///
+    /// ```rust
+    /// use jomini::binary::{TokenReader, LexError, ReaderErrorKind};
+    /// let mut reader = TokenReader::new(&b"EU4bin"[..]);
+    /// assert_eq!(reader.read_bytes(6).unwrap(), &b"EU4bin"[..]);
+    /// assert!(matches!(reader.read_bytes(1).unwrap_err().kind(), ReaderErrorKind::Lexer {
+    ///     cause: LexError::Eof
+    /// }));
+    /// ```
     #[inline]
     pub fn read_bytes(&mut self, bytes: usize) -> Result<&[u8], ReaderError> {
         while self.data_len() < bytes {
@@ -117,12 +160,22 @@ where
         Ok(input)
     }
 
+    /// Advance through the containing block until the closing token is consumed
+    ///
+    /// ```rust
+    /// use jomini::binary::{TokenReader, Token};
+    /// let mut reader = TokenReader::new(&[
+    ///     0xd2, 0x28, 0x01, 0x00, 0x03, 0x00, 0x03, 0x00,
+    ///     0x04, 0x00, 0x04, 0x00, 0xff, 0xff
+    /// ][..]);
+    /// assert_eq!(reader.read().unwrap(), Token::Id(0x28d2));
+    /// assert_eq!(reader.read().unwrap(), Token::Equal);
+    /// assert_eq!(reader.read().unwrap(), Token::Open);
+    /// assert!(reader.skip_container().is_ok());
+    /// assert_eq!(reader.read().unwrap(), Token::Id(0xffff));
+    /// ```
     #[inline]
-    pub fn skip_token(&mut self, token: Token) -> Result<(), ReaderError> {
-        if token != Token::Open {
-            return Ok(());
-        }
-
+    pub fn skip_container(&mut self) -> Result<(), ReaderError> {
         let mut depth = 1;
         loop {
             loop {
@@ -157,12 +210,10 @@ where
                         Some(d) => self.data = d.as_ptr(),
                         None => break,
                     },
-                    LexemeId::QUOTED_STRING | LexemeId::UNQUOTED_STRING => {
-                        match read_string(data) {
-                            Ok((_, d)) => self.data = d.as_ptr(),
-                            Err(_) => break,
-                        }
-                    }
+                    LexemeId::QUOTED | LexemeId::UNQUOTED => match read_string(data) {
+                        Ok((_, d)) => self.data = d.as_ptr(),
+                        Err(_) => break,
+                    },
                     _ => self.data = data.as_ptr(),
                 }
             }
@@ -176,7 +227,9 @@ where
                         self.prior_reads += consumed;
                         self.data_end = unsafe { self.buf.as_ptr().add(data_len + read) };
                         self.data = self.buf.as_ptr();
-                    } else if self.data == self.buf.as_ptr() {
+                    } else if data_len < self.buf.len() {
+                        return Err(self.lex_error(LexError::Eof));
+                    } else {
                         // If we parsing didn't progress, there must be a token that spans
                         // multiple buffers, so we will need to grow the buffer.
 
@@ -189,8 +242,7 @@ where
                         let new_len = self.buf.len().saturating_mul(2).min(self.max_buf_size);
                         self.buf.resize(new_len, 0);
                         self.data = self.buf.as_ptr();
-                    } else {
-                        return Err(self.lex_error(LexError::Eof));
+                        self.data_end = unsafe { self.data.add(data_len) };
                     }
                 }
                 Err(e) => {
@@ -225,6 +277,22 @@ where
         self.read()
     }
 
+    /// Read the next token in the stream. Will error if not enough data remains
+    /// to decode a token.
+    ///
+    /// ```rust
+    /// use jomini::binary::{TokenReader, Token, ReaderErrorKind, LexError};
+    /// let mut reader = TokenReader::new(&[
+    ///     0xd2, 0x28, 0x01, 0x00, 0x03, 0x00, 0x04, 0x00
+    /// ][..]);
+    /// assert_eq!(reader.read().unwrap(), Token::Id(0x28d2));
+    /// assert_eq!(reader.read().unwrap(), Token::Equal);
+    /// assert_eq!(reader.read().unwrap(), Token::Open);
+    /// assert_eq!(reader.read().unwrap(), Token::Close);
+    /// assert!(matches!(reader.read().unwrap_err().kind(), ReaderErrorKind::Lexer {
+    ///     cause: LexError::Eof
+    /// }));
+    /// ```
     #[inline(always)]
     pub fn read(&mut self) -> Result<Token, ReaderError> {
         // Workaround for borrow checker :(
@@ -236,6 +304,19 @@ where
         }
     }
 
+    /// Read a token, returning none when all the data has been consumed
+    ///
+    /// ```rust
+    /// use jomini::binary::{TokenReader, Token};
+    /// let mut reader = TokenReader::new(&[
+    ///     0xd2, 0x28, 0x01, 0x00, 0x03, 0x00, 0x04, 0x00
+    /// ][..]);
+    /// assert_eq!(reader.next().unwrap(), Some(Token::Id(0x28d2)));
+    /// assert_eq!(reader.next().unwrap(), Some(Token::Equal));
+    /// assert_eq!(reader.next().unwrap(), Some(Token::Open));
+    /// assert_eq!(reader.next().unwrap(), Some(Token::Close));
+    /// assert_eq!(reader.next().unwrap(), None);
+    /// ```
     #[inline(always)]
     pub fn next(&mut self) -> Result<Option<Token>, ReaderError> {
         match self.next_opt() {
@@ -271,6 +352,7 @@ where
 }
 
 impl TokenReader<()> {
+    /// Initializes a default [TokenReaderBuilder]
     pub fn builder() -> TokenReaderBuilder {
         TokenReaderBuilder::default()
     }

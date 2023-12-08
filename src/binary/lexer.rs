@@ -30,10 +30,10 @@ impl LexemeId {
     pub const BOOL: LexemeId = LexemeId::new(0x000e);
 
     /// A binary string that is typically quoted
-    pub const QUOTED_STRING: LexemeId = LexemeId::new(0x000f);
+    pub const QUOTED: LexemeId = LexemeId::new(0x000f);
 
     /// A binary string that is typically without quotes
-    pub const UNQUOTED_STRING: LexemeId = LexemeId::new(0x0017);
+    pub const UNQUOTED: LexemeId = LexemeId::new(0x0017);
 
     /// A binary 32 bit floating point
     pub const F32: LexemeId = LexemeId::new(0x000d);
@@ -72,8 +72,8 @@ impl LexemeId {
                 | LexemeId::U64
                 | LexemeId::I32
                 | LexemeId::BOOL
-                | LexemeId::QUOTED_STRING
-                | LexemeId::UNQUOTED_STRING
+                | LexemeId::QUOTED
+                | LexemeId::UNQUOTED
                 | LexemeId::F32
                 | LexemeId::F64
                 | LexemeId::RGB
@@ -226,8 +226,8 @@ pub(crate) fn read_token(data: &[u8]) -> Result<(Token, &[u8]), LexError> {
         LexemeId::U64 => read_u64(data).map(|(x, d)| (Token::U64(x), d)),
         LexemeId::I32 => read_i32(data).map(|(x, d)| (Token::I32(x), d)),
         LexemeId::BOOL => read_bool(data).map(|(x, d)| (Token::Bool(x), d)),
-        LexemeId::QUOTED_STRING => read_string(data).map(|(x, d)| (Token::Quoted(x), d)),
-        LexemeId::UNQUOTED_STRING => read_string(data).map(|(x, d)| (Token::Unquoted(x), d)),
+        LexemeId::QUOTED => read_string(data).map(|(x, d)| (Token::Quoted(x), d)),
+        LexemeId::UNQUOTED => read_string(data).map(|(x, d)| (Token::Unquoted(x), d)),
         LexemeId::F32 => read_f32(data).map(|(x, d)| (Token::F32(x), d)),
         LexemeId::F64 => read_f64(data).map(|(x, d)| (Token::F64(x), d)),
         LexemeId::RGB => read_rgb(data).map(|(x, d)| (Token::Rgb(x), d)),
@@ -352,7 +352,7 @@ impl std::fmt::Display for LexerError {
 ///     LexemeId::U32 => { lexer.read_u32()?; }
 ///     LexemeId::I32 => { lexer.read_i32()?; }
 ///     LexemeId::BOOL => { lexer.read_bool()?; }
-///     LexemeId::QUOTED_STRING | LexemeId::UNQUOTED_STRING => { lexer.read_string()?; }
+///     LexemeId::QUOTED | LexemeId::UNQUOTED => { lexer.read_string()?; }
 ///     LexemeId::F32 => { lexer.read_f32()?; }
 ///     LexemeId::F64 => { lexer.read_f64()?; }
 ///     LexemeId::I64 => { lexer.read_i64()?; }
@@ -669,8 +669,8 @@ impl<'a> Lexer<'a> {
     ///
     /// ```rust
     /// use jomini::binary::{Lexer, LexError};
-    /// let mut lexer = Lexer::new(b"EU4txt");
-    /// assert_eq!(lexer.read_bytes(6), Ok(&b"EU4txt"[..]));
+    /// let mut lexer = Lexer::new(b"EU4bin");
+    /// assert_eq!(lexer.read_bytes(6), Ok(&b"EU4bin"[..]));
     /// assert_eq!(lexer.read_bytes(1).unwrap_err().kind(), &LexError::Eof);
     /// ```
     #[inline]
@@ -688,7 +688,7 @@ impl<'a> Lexer<'a> {
     #[inline]
     pub fn skip_value(&mut self, id: LexemeId) -> Result<(), LexerError> {
         match id {
-            LexemeId::QUOTED_STRING | LexemeId::UNQUOTED_STRING => {
+            LexemeId::QUOTED | LexemeId::UNQUOTED => {
                 self.read_string()?;
                 Ok(())
             }
@@ -730,7 +730,7 @@ impl<'a> Lexer<'a> {
         let mut depth = 1;
         loop {
             match self.read_id()? {
-                LexemeId::QUOTED_STRING | LexemeId::UNQUOTED_STRING => {
+                LexemeId::QUOTED | LexemeId::UNQUOTED => {
                     self.read_string()?;
                 }
                 LexemeId::U32 => {
