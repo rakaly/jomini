@@ -91,14 +91,21 @@ impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> MapAccess
         K: DeserializeSeed<'de>,
     {
         let de = unsafe { &mut *(self.de as *mut BinaryReaderDeserializer<'res, RES, F, R>) };
-        match self.de.reader.next() {
-            Ok(Some(Token::Close)) => Ok(None),
-            Ok(Some(token)) => seed
-                .deserialize(BinaryReaderTokenDeserializer { de, token })
-                .map(Some),
-            Ok(None) if self.root => Ok(None),
-            Ok(None) => Err(LexError::Eof.at(self.de.reader.position()).into()),
-            Err(e) => Err(e.into()),
+        loop {
+            match self.de.reader.next() {
+                Ok(Some(Token::Close)) => return Ok(None),
+                Ok(Some(Token::Open)) => {
+                    let _ = self.de.reader.read();
+                }
+                Ok(Some(token)) => {
+                    return seed
+                        .deserialize(BinaryReaderTokenDeserializer { de, token })
+                        .map(Some)
+                }
+                Ok(None) if self.root => return Ok(None),
+                Ok(None) => return Err(LexError::Eof.at(self.de.reader.position()).into()),
+                Err(e) => return Err(e.into()),
+            }
         }
     }
 
@@ -135,61 +142,42 @@ where
         V: de::Visitor<'de>,
         'res: 'de,
     {
-        let mut tok = self.token;
-        loop {
-            match tok {
-                Token::U32(x) => return visitor.visit_u32(x),
-                Token::U64(x) => return visitor.visit_u64(x),
-                Token::I32(x) => return visitor.visit_i32(x),
-                Token::Bool(x) => return visitor.visit_bool(x),
-                Token::Quoted(x) | Token::Unquoted(x) => {
-                    return match self.de.config.flavor.decode(x.as_bytes()) {
-                        Cow::Borrowed(x) => visitor.visit_str(x),
-                        Cow::Owned(x) => visitor.visit_string(x),
-                    }
-                }
-                Token::F32(x) => return visitor.visit_f32(self.de.config.flavor.visit_f32(x)),
-                Token::F64(x) => return visitor.visit_f64(self.de.config.flavor.visit_f64(x)),
-                Token::Rgb(x) => return visitor.visit_seq(ColorSequence::new(x)),
-                Token::I64(x) => return visitor.visit_i64(x),
-                Token::Id(s) => {
-                    return match self.de.config.resolver.resolve(s) {
-                        Some(id) => visitor.visit_borrowed_str(id),
-                        None => match self.de.config.failed_resolve_strategy {
-                            FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
-                                kind: DeserializeErrorKind::UnknownToken { token_id: s },
-                            })),
-                            FailedResolveStrategy::Stringify => {
-                                visitor.visit_string(format!("0x{:x}", s))
-                            }
-                            FailedResolveStrategy::Ignore => {
-                                visitor.visit_borrowed_str("__internal_identifier_ignore")
-                            }
-                        },
-                    }
-                }
-                Token::Close => {
-                    return Err(Error::invalid_syntax(
-                        "did not expect end",
-                        self.de.reader.position(),
-                    ))
-                }
-                Token::Equal => {
-                    return Err(Error::invalid_syntax(
-                        "did not expect equal",
-                        self.de.reader.position(),
-                    ))
-                }
-                Token::Open => {
-                    let de = unsafe { &mut *(self.de as *mut _) };
-                    let next = self.de.reader.read()?;
-                    if matches!(next, Token::Close) {
-                        tok = self.de.reader.unlikely_read()?;
-                    } else {
-                        return visitor.visit_seq(BinaryReaderSeq2::new(de, next));
-                    }
+        match self.token {
+            Token::U32(x) => visitor.visit_u32(x),
+            Token::U64(x) => visitor.visit_u64(x),
+            Token::I32(x) => visitor.visit_i32(x),
+            Token::Bool(x) => visitor.visit_bool(x),
+            Token::Quoted(x) | Token::Unquoted(x) => {
+                match self.de.config.flavor.decode(x.as_bytes()) {
+                    Cow::Borrowed(x) => visitor.visit_str(x),
+                    Cow::Owned(x) => visitor.visit_string(x),
                 }
             }
+            Token::F32(x) => visitor.visit_f32(self.de.config.flavor.visit_f32(x)),
+            Token::F64(x) => visitor.visit_f64(self.de.config.flavor.visit_f64(x)),
+            Token::Rgb(x) => visitor.visit_seq(ColorSequence::new(x)),
+            Token::I64(x) => visitor.visit_i64(x),
+            Token::Id(s) => match self.de.config.resolver.resolve(s) {
+                Some(id) => visitor.visit_borrowed_str(id),
+                None => match self.de.config.failed_resolve_strategy {
+                    FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::UnknownToken { token_id: s },
+                    })),
+                    FailedResolveStrategy::Stringify => visitor.visit_string(format!("0x{:x}", s)),
+                    FailedResolveStrategy::Ignore => {
+                        visitor.visit_borrowed_str("__internal_identifier_ignore")
+                    }
+                },
+            },
+            Token::Close => Err(Error::invalid_syntax(
+                "did not expect end",
+                self.de.reader.position(),
+            )),
+            Token::Equal => Err(Error::invalid_syntax(
+                "did not expect equal",
+                self.de.reader.position(),
+            )),
+            Token::Open => visitor.visit_seq(BinaryReaderSeq::new(self.de)),
         }
     }
 }
@@ -500,49 +488,6 @@ impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> SeqAccess
     {
         let de = unsafe { &mut *(self.de as *mut _) };
         match self.de.reader.read()? {
-            Token::Close => {
-                self.hit_end = true;
-                Ok(None)
-            }
-            token => seed
-                .deserialize(BinaryReaderTokenDeserializer { de, token })
-                .map(Some),
-        }
-    }
-}
-
-struct BinaryReaderSeq2<'a: 'a, 'res, RES: 'a, F, R> {
-    de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
-    first: Option<Token<'a>>,
-    hit_end: bool,
-}
-
-impl<'a, 'de: 'a, 'res: 'de, RES: 'a, F, R> BinaryReaderSeq2<'a, 'res, RES, F, R> {
-    fn new(de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>, first: Token<'a>) -> Self {
-        BinaryReaderSeq2 {
-            de,
-            hit_end: false,
-            first: Some(first),
-        }
-    }
-}
-
-impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> SeqAccess<'de>
-    for BinaryReaderSeq2<'a, 'res, RES, F, R>
-{
-    type Error = Error;
-
-    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
-    where
-        T: DeserializeSeed<'de>,
-    {
-        let de = unsafe { &mut *(self.de as *mut BinaryReaderDeserializer<'res, RES, F, R>) };
-        match self
-            .first
-            .take()
-            .map(Ok)
-            .unwrap_or_else(|| self.de.reader.read())?
-        {
             Token::Close => {
                 self.hit_end = true;
                 Ok(None)
@@ -1961,6 +1906,17 @@ mod tests {
         Ok(result)
     }
 
+    fn from_owned<'a, 'res: 'a, RES, T>(data: &'a [u8], resolver: &'res RES) -> Result<T, Error>
+    where
+        T: DeserializeOwned + PartialEq + std::fmt::Debug,
+        RES: TokenResolver,
+    {
+        let res = from_slice(data, resolver).unwrap();
+        let reader: T = eu4_builder().deserialize_reader(data, resolver).unwrap();
+        assert_eq!(reader, res);
+        Ok(res)
+    }
+
     #[test]
     fn test_single_field() {
         let data = [
@@ -1975,7 +1931,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, String::from("field1"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2038,7 +1994,7 @@ mod tests {
         map.insert(0x2d82, String::from("field1"));
         map.insert(0x284c, String::from("no"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2059,7 +2015,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, String::from("field1"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(actual, MyStruct { field1: 89 });
     }
 
@@ -2075,7 +2031,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, String::from("field1"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(actual, MyStruct { field1: 89 });
     }
 
@@ -2093,7 +2049,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x326b, String::from("field1"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(actual, MyStruct { field1: 128 });
     }
 
@@ -2111,7 +2067,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x326b, String::from("field1"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(actual, MyStruct { field1: -1 });
     }
 
@@ -2127,7 +2083,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, String::from("field1"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(actual, MyStruct { field1: 0.023 });
     }
 
@@ -2145,7 +2101,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, String::from("field1"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(actual, MyStruct { field1: 1.78732 });
     }
 
@@ -2163,7 +2119,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, String::from("field1"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2186,7 +2142,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, String::from("field1"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2207,7 +2163,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, String::from("field1"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2228,7 +2184,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, String::from("field1"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2256,7 +2212,7 @@ mod tests {
             }
         }
 
-        let actual: MyStruct = from_slice(&data[..], &NullResolver).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &NullResolver).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2283,7 +2239,7 @@ mod tests {
         map.insert(0x284c, String::from("yes"));
         map.insert(0x284b, String::from("no"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2312,7 +2268,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2ee1, String::from("dlc_enabled"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2348,7 +2304,7 @@ mod tests {
         map.insert(0x2ee1, String::from("dlc_enabled"));
         map.insert(0x2d82, String::from("field1"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2392,7 +2348,7 @@ mod tests {
         map.insert(0x2ec7, String::from("third"));
         map.insert(0x2ec8, String::from("fourth"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2435,7 +2391,7 @@ mod tests {
         map.insert(0x2ec7, String::from("third"));
         map.insert(0x2ec8, String::from("fourth"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2456,7 +2412,7 @@ mod tests {
         ];
 
         let map: HashMap<u16, String> = HashMap::new();
-        let actual: HashMap<i32, i32> = from_slice(&data[..], &map).unwrap();
+        let actual: HashMap<i32, i32> = from_owned(&data[..], &map).unwrap();
         assert_eq!(actual.len(), 1);
         assert_eq!(actual.get(&89), Some(&30));
     }
@@ -2483,7 +2439,7 @@ mod tests {
             String::from("1444.11.11"),
         );
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2514,7 +2470,7 @@ mod tests {
             String::from(r#"Joe "Captain" Rogers"#),
         );
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2545,7 +2501,7 @@ mod tests {
         map.insert(0x00e1, String::from("type"));
         map.insert(0x28be, String::from("general"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2569,7 +2525,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x00e1, String::from("type"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(actual, MyStruct { _type: vec![] });
     }
 
@@ -2596,7 +2552,7 @@ mod tests {
         map.insert(0x284c, String::from("yes"));
         map.insert(0x284b, String::from("no"));
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2632,7 +2588,7 @@ mod tests {
             field1: u64,
         }
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(actual, MyStruct { field1: 128 });
     }
 
@@ -2655,7 +2611,7 @@ mod tests {
         map.insert(0x2d82, "field1");
         map.insert(0x28e3, "second");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2713,7 +2669,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, "field1");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2744,7 +2700,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, "field1");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2841,7 +2797,7 @@ mod tests {
         map.insert(0x1b, "name");
         map.insert(0x165, "none");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2868,7 +2824,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, "field1");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2892,7 +2848,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, "field1");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2918,7 +2874,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x2d82, "field1");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2953,7 +2909,7 @@ mod tests {
         map.insert(0x2ec9, "savegame_version");
         map.insert(0x28e2, "first");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -2994,7 +2950,7 @@ mod tests {
         map.insert(0x2ec9, "savegame_version");
         map.insert(0x28e2, "field");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -3040,7 +2996,7 @@ mod tests {
         map.insert(0x2ec9, "savegame_version");
         map.insert(0x28e2, "field");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -3073,7 +3029,7 @@ mod tests {
         map.insert(0x2d82, "field1");
         map.insert(0x28e3, "second");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -3095,7 +3051,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x337f, "campaign_id");
 
-        let actual: Meta = from_slice(&data[..], &map).unwrap();
+        let actual: Meta = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             Meta {
@@ -3114,7 +3070,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x053a, "color");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -3184,7 +3140,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x053a, "color");
 
-        let actual: MyStruct = from_slice(&data[..], &map).unwrap();
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
         assert_eq!(
             actual,
             MyStruct {

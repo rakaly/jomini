@@ -4,7 +4,7 @@ use crate::{
     DeserializeError, DeserializeErrorKind, Encoding, Error, TextTape, TextToken, Utf8Encoding,
     Windows1252Encoding,
 };
-use serde::de::{self, Deserialize, DeserializeSeed, Visitor};
+use serde::de::{self, Deserialize, DeserializeOwned, DeserializeSeed, Visitor};
 use std::{
     borrow::Cow,
     fmt::{self, Debug},
@@ -123,6 +123,17 @@ where
     TextDeserializer::from_windows1252_slice(data)?.deserialize()
 }
 
+pub fn from_windows1252_reader<T, R>(reader: R) -> Result<T, Error>
+where
+    T: DeserializeOwned,
+    R: Read,
+{
+    T::deserialize(&mut TextReaderDeserializer {
+        reader: TokenReader::new(reader),
+        encoding: Windows1252Encoding,
+    })
+}
+
 /// Convenience method for parsing the given text data and deserializing as utf8 encoded.
 pub fn from_utf8_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
 where
@@ -200,7 +211,7 @@ impl<'de, 'a, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'a, R, 
             match self.de.reader.next() {
                 Ok(Some(Token::Close)) => return Ok(None),
                 Ok(Some(Token::Open)) => {
-                    let _ = self.de.reader.read()?;
+                    let _ = self.de.reader.unlikely_read()?;
                 }
                 Ok(Some(token)) => {
                     return seed
@@ -244,40 +255,20 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        let mut tok = self.token;
-        loop {
-            match tok {
-                Token::Open => {
-                    return visitor.visit_seq(TextReaderSeq::new(self.de));
-
-                    // let de = unsafe { &mut *(self.de as *mut _) };
-                    // let next = self.de.reader.read()?;
-                    // if matches!(next, Token::Close) {
-                    //     tok = self.de.reader.read()?;
-                    // } else {
-                    //     todo!()
-                        // return visitor.visit_seq(TextReaderSeq2::new(de, next));
-                    // }
-                }
-                Token::Close => {
-                    return Err(Error::invalid_syntax(
-                        "did not expect end",
-                        self.de.reader.position(),
-                    ))
-                }
-                Token::Operator(_) => {
-                    return Err(Error::invalid_syntax(
-                        "did not expect operator",
-                        self.de.reader.position(),
-                    ))
-                }
-                Token::Unquoted(s) | Token::Quoted(s) => {
-                    return match self.de.encoding.decode(s.as_bytes()) {
-                        Cow::Borrowed(x) => visitor.visit_str(x),
-                        Cow::Owned(x) => visitor.visit_string(x),
-                    }
-                }
-            }
+        match self.token {
+            Token::Open => visitor.visit_seq(TextReaderSeq::new(self.de)),
+            Token::Close => Err(Error::invalid_syntax(
+                "did not expect end",
+                self.de.reader.position(),
+            )),
+            Token::Operator(_) => Err(Error::invalid_syntax(
+                "did not expect operator",
+                self.de.reader.position(),
+            )),
+            Token::Unquoted(s) | Token::Quoted(s) => match self.de.encoding.decode(s.as_bytes()) {
+                Cow::Borrowed(x) => visitor.visit_str(x),
+                Cow::Owned(x) => visitor.visit_string(x),
+            },
         }
     }
 
@@ -364,7 +355,7 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        match self.token.as_scalar().and_then(|x| dbg!(x).to_f64().ok()) {
+        match self.token.as_scalar().and_then(|x| x.to_f64().ok()) {
             Some(x) => visitor.visit_f64(x),
             None => self.deserialize_any(visitor),
         }
@@ -518,14 +509,14 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
 
     fn deserialize_enum<V>(
         self,
-        name: &'static str,
-        variants: &'static [&'static str],
+        _name: &'static str,
+        _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        todo!()
+        visitor.visit_enum(TextReaderEnum::new(self.de, self.token))
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -539,11 +530,11 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        if matches!(self.token, Token::Open) {
-            self.de.reader.skip_container()?;
-            todo!();
+        match self.token {
+            Token::Open => self.de.reader.skip_container()?,
+            Token::Unquoted(_) => self.de.reader.skip_unquoted_value()?,
+            _ => {}
         }
-
         visitor.visit_unit()
     }
 }
@@ -580,6 +571,78 @@ where
                 .deserialize(TextReaderTokenDeserializer { de, token })
                 .map(Some),
         }
+    }
+}
+
+struct TextReaderEnum<'a, R, E> {
+    de: &'a mut TextReaderDeserializer<R, E>,
+    token: Token<'a>,
+}
+
+impl<'a, R, E> TextReaderEnum<'a, R, E> {
+    fn new(de: &'a mut TextReaderDeserializer<R, E>, token: Token<'a>) -> Self {
+        TextReaderEnum { de, token }
+    }
+}
+
+impl<'de, 'a, R: Read, E: Encoding> de::EnumAccess<'de> for TextReaderEnum<'a, R, E> {
+    type Error = Error;
+    type Variant = Self;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self), Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let variant = seed.deserialize(TextReaderTokenDeserializer {
+            de: self.de,
+            token: self.token,
+        })?;
+        Ok((variant, self))
+    }
+}
+
+impl<'de, 'a, R: Read, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'a, R, E> {
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unsupported enum deserialization. Please file issue",
+            )),
+        }))
+    }
+
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unsupported enum deserialization. Please file issue",
+            )),
+        }))
+    }
+
+    fn struct_variant<V>(
+        self,
+        _fields: &'static [&'static str],
+        _visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unsupported enum deserialization. Please file issue",
+            )),
+        }))
     }
 }
 
@@ -1921,6 +1984,24 @@ mod tests {
     }
 
     #[test]
+    fn test_skip_unwanted2() {
+        let data = b"a={ \"hello\" \"goodbye\" } \r\nc = d\r\ne = f";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            c: String,
+        }
+
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(
+            actual,
+            MyStruct {
+                c: String::from("d"),
+            }
+        );
+    }
+
+    #[test]
     fn test_consecutive_fields() {
         let data = b"a = b\r\nc = d1\r\nc = d2\r\ne = f";
 
@@ -2189,7 +2270,7 @@ mod tests {
     fn test_deserialize_enum_scalar() {
         let data = b"kind = infantry";
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -2401,7 +2482,7 @@ mod tests {
     fn test_deserialize_vec_pair() {
         let data = b"active_idea_groups = { a = 10 }";
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -2420,7 +2501,7 @@ mod tests {
     fn test_deserialize_vec_pair_empty() {
         let data = b"active_idea_groups = {}";
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -2439,7 +2520,7 @@ mod tests {
     fn test_deserialize_date_string() {
         let data = b"date=\"1444.11.11\"";
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -2457,7 +2538,7 @@ mod tests {
     fn test_deserialize_datehour_string() {
         let data = b"date=\"1936.1.1.24\"";
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -2475,7 +2556,7 @@ mod tests {
     fn test_deserialize_uniform_date() {
         let data = b"date=\"2200.2.30\"";
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -2493,7 +2574,7 @@ mod tests {
     fn test_deserialize_positive_num() {
         let data = b"pop_happiness = +0.10";
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual, MyStruct { pop_happiness: 0.1 });
 
         #[derive(Deserialize, Debug, PartialEq)]
@@ -2594,7 +2675,7 @@ mod tests {
         }
 
         let data = br#"field1=1 field2=invalid"#;
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -2680,7 +2761,7 @@ mod tests {
             ),
         ]);
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
