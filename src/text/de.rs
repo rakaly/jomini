@@ -215,7 +215,7 @@ impl<'de, 'a, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'a, R, 
                 }
                 Ok(Some(token)) => {
                     return seed
-                        .deserialize(TextReaderTokenDeserializer { de, token })
+                        .deserialize(TextReaderTokenDeserializer::new(de, token))
                         .map(Some)
                 }
                 Ok(None) if self.root => return Ok(None),
@@ -231,19 +231,30 @@ impl<'de, 'a, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'a, R, 
         V: DeserializeSeed<'de>,
     {
         let de = unsafe { &mut *(self.de as *mut _) };
+        let token = self.de.reader.read()?;
+        let deser = if let Token::Operator(op) = token {
+            let new_token = self.de.reader.read()?;
+            let mut deser = TextReaderTokenDeserializer::new(de, new_token);
+            deser.op = op;
+            deser
+        } else {
+            TextReaderTokenDeserializer::new(de, token)
+        };
 
-        let mut token = self.de.reader.read()?;
-        if matches!(token, Token::Operator(_)) {
-            token = self.de.reader.read()?;
-        }
-
-        seed.deserialize(TextReaderTokenDeserializer { de, token })
+        seed.deserialize(deser)
     }
 }
 
 struct TextReaderTokenDeserializer<'a, R, E> {
     de: &'a mut TextReaderDeserializer<R, E>,
     token: Token<'a>,
+    op: Operator,
+}
+
+impl<'a, R, E> TextReaderTokenDeserializer<'a, R, E> {
+    fn new(de: &'a mut TextReaderDeserializer<R, E>, token: Token<'a>) -> Self {
+        Self { de, token, op: Operator::Equal }
+    }
 }
 
 impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
@@ -501,10 +512,15 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
         V: Visitor<'de>,
     {
         if name == "_internal_jomini_property" {
-            todo!()
+            visitor.visit_map(PropertyReaderMap {
+                de: self.de,
+                token: self.token,
+                op: self.op,
+                state: 0,
+            })
+        } else {
+            self.deserialize_map(visitor)
         }
-
-        self.deserialize_map(visitor)
     }
 
     fn deserialize_enum<V>(
@@ -568,7 +584,7 @@ where
                 Ok(None)
             }
             token => seed
-                .deserialize(TextReaderTokenDeserializer { de, token })
+                .deserialize(TextReaderTokenDeserializer::new(de, token))
                 .map(Some),
         }
     }
@@ -593,10 +609,7 @@ impl<'de, 'a, R: Read, E: Encoding> de::EnumAccess<'de> for TextReaderEnum<'a, R
     where
         V: de::DeserializeSeed<'de>,
     {
-        let variant = seed.deserialize(TextReaderTokenDeserializer {
-            de: self.de,
-            token: self.token,
-        })?;
+        let variant = seed.deserialize(TextReaderTokenDeserializer::new(self.de, self.token))?;
         Ok((variant, self))
     }
 }
@@ -643,6 +656,45 @@ impl<'de, 'a, R: Read, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'a
                 "unsupported enum deserialization. Please file issue",
             )),
         }))
+    }
+}
+
+
+struct PropertyReaderMap<'a, R, E> {
+    de: &'a mut TextReaderDeserializer<R, E>,
+    op: Operator,
+    token: Token<'a>,
+    state: usize,
+}
+
+impl<'a, 'de, R, E> de::MapAccess<'de> for PropertyReaderMap<'a, R, E>
+where
+    E: Encoding,
+    R: Read
+{
+    type Error = Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: DeserializeSeed<'de>,
+    {
+        match self.state {
+            0 => seed.deserialize(StaticDeserializer("operator")).map(Some),
+            1 => seed.deserialize(StaticDeserializer("value")).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        self.state += 1;
+        if self.state == 1 {
+            seed.deserialize(OperatorDeserializer(self.op))
+        } else {
+            seed.deserialize(TextReaderTokenDeserializer::new(self.de, self.token))
+        }
     }
 }
 
@@ -1593,6 +1645,7 @@ mod tests {
     use super::*;
     use crate::common::{Date, DateHour, UniformDate};
     use jomini_derive::JominiDeserialize;
+    use rstest::rstest;
     use serde::{
         de::{self, DeserializeOwned, Deserializer},
         Deserialize,
@@ -2222,17 +2275,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_deserialize_ignore_operator() {
-        let data = b"val > 3 a = b";
-
+    #[rstest]
+    #[case(b"val < 3 a = b")]
+    #[case(b"val <= 3 a = b")]
+    #[case(b"val > 3 a = b")]
+    #[case(b"val >= 3 a = b")]
+    #[case(b"val == 3 a = b")]
+    #[case(b"val != 3 a = b")]
+    #[case(b"val ?= 3 a = b")]
+    fn test_deserialize_ignore_operator(#[case] data: &[u8]) {
         #[derive(Deserialize, PartialEq, Debug)]
         struct MyStruct {
             val: i32,
             a: String,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -2587,7 +2645,7 @@ mod tests {
     fn test_deserialize_operator() {
         let data = b"num_cities < 0.10";
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
@@ -2605,7 +2663,7 @@ mod tests {
     fn test_deserialize_operator2() {
         let data = b"modifier = { factor = 2 num_communications > 2 }";
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {

@@ -90,7 +90,7 @@ impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> MapAccess
     where
         K: DeserializeSeed<'de>,
     {
-        let de = unsafe { &mut *(self.de as *mut BinaryReaderDeserializer<'res, RES, F, R>) };
+        let de = unsafe { &mut *(self.de as *mut _) };
         loop {
             match self.de.reader.next() {
                 Ok(Some(Token::Close)) => return Ok(None),

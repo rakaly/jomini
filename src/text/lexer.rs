@@ -304,10 +304,60 @@ where
                                         return (Some(Token::Operator(Operator::Exact)), None);
                                     }
                                 }
-                                b'<' => todo!(),
-                                b'!' => todo!(),
-                                b'?' => todo!(),
-                                b'>' => todo!(),
+                                b'<' => {
+                                    ptr = ptr.add(1);
+                                    if ptr == end {
+                                        break 'eof (1, 0);
+                                    }
+
+                                    if *ptr != b'=' {
+                                        self.data = ptr;
+                                        return (Some(Token::Operator(Operator::LessThan)), None);
+                                    } else {
+                                        self.data = ptr.add(1);
+                                        return (Some(Token::Operator(Operator::LessThanEqual)), None);
+                                    }
+                                },
+                                b'!' => {
+                                    ptr = ptr.add(1);
+                                    if ptr == end {
+                                        break 'eof (1, 0);
+                                    }
+
+                                    if *ptr == b'=' {
+                                        ptr = ptr.add(1);
+                                    }
+
+                                    self.data = ptr;
+                                    return (Some(Token::Operator(Operator::NotEqual)), None);
+                                },
+                                b'?' => {
+                                    ptr = ptr.add(1);
+                                    if ptr == end {
+                                        break 'eof (1, 0);
+                                    }
+
+                                    if *ptr == b'=' {
+                                        ptr = ptr.add(1);
+                                    }
+
+                                    self.data = ptr;
+                                    return (Some(Token::Operator(Operator::Exists)), None);
+                                },
+                                b'>' => {
+                                    ptr = ptr.add(1);
+                                    if ptr == end {
+                                        break 'eof (1, 0);
+                                    }
+
+                                    if *ptr != b'=' {
+                                        self.data = ptr;
+                                        return (Some(Token::Operator(Operator::GreaterThan)), None);
+                                    } else {
+                                        self.data = ptr.add(1);
+                                        return (Some(Token::Operator(Operator::GreaterThanEqual)), None);
+                                    }
+                                },
                                 _ => {
                                     let start_ptr = ptr;
                                     ptr = ptr.add(1);
