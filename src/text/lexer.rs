@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::{io::Read, ops::Range};
 
 use super::Operator;
 use crate::{data::is_boundary, Scalar};
@@ -14,6 +14,7 @@ pub enum Token<'a> {
 }
 
 impl<'a> Token<'a> {
+    #[inline]
     pub fn as_scalar(&self) -> Option<Scalar<'a>> {
         match self {
             Token::Quoted(s) | Token::Unquoted(s) => Some(*s),
@@ -27,144 +28,95 @@ pub enum LexError<'a> {
     Eof(Option<Scalar<'a>>),
 }
 
-pub(crate) fn read_token(data: &[u8]) -> Result<(Token, &[u8]), LexError> {
-    let rng = data.as_ptr_range();
-    let mut ptr = rng.start;
-    let end = rng.end;
+#[derive(Debug)]
+struct BufferWindow {
+    buf: Box<[u8]>,
 
-    'eof: while ptr < end {
-        'inner: loop {
-            unsafe {
-                match *ptr {
-                    c @ b' ' | c @ b'\t' => {
-                        ptr = ptr.add(1);
-                        loop {
-                            if ptr == end {
-                                break 'eof;
-                            }
+    // start of window into buffer
+    start: *const u8,
 
-                            if *ptr != c {
-                                break;
-                            }
+    // end of window into buffer
+    end: *const u8,
+    prior_reads: usize,
+}
 
-                            ptr = ptr.add(1)
-                        }
-                    }
-                    b'\n' | b'\r' | b';' => {
-                        ptr = ptr.add(1);
-                        break 'inner;
-                    }
-                    b'#' => {
-                        ptr = ptr.add(1);
-                        loop {
-                            if ptr == end {
-                                break 'eof;
-                            }
+enum BufferError {
+    Io(std::io::Error),
+    BufferFull
+}
 
-                            if *ptr == b'\n' {
-                                break;
-                            }
-
-                            ptr = ptr.add(1)
-                        }
-                    }
-                    b'{' => {
-                        ptr = ptr.add(1);
-                        let rem_len = end.offset_from(ptr) as usize;
-                        let rest = std::slice::from_raw_parts(ptr, rem_len);
-                        return Ok((Token::Open, rest));
-                    }
-                    b'}' => {
-                        ptr = ptr.add(1);
-                        let rem_len = end.offset_from(ptr) as usize;
-                        let rest = std::slice::from_raw_parts(ptr, rem_len);
-                        return Ok((Token::Close, rest));
-                    }
-                    b']' => {}
-                    b'"' => {
-                        ptr = ptr.add(1);
-                        let start_ptr = ptr;
-                        loop {
-                            if ptr >= end {
-                                break 'eof;
-                            }
-
-                            if *ptr == b'\\' {
-                                ptr = ptr.add(2);
-                            } else if *ptr != b'"' {
-                                ptr = ptr.add(1);
-                            } else {
-                                let tok_len = ptr.offset_from(start_ptr) as usize;
-                                ptr = ptr.add(1);
-                                let rem_len = end.offset_from(ptr) as usize;
-                                let scalar =
-                                    Scalar::new(std::slice::from_raw_parts(start_ptr, tok_len));
-                                let rest = std::slice::from_raw_parts(ptr, rem_len);
-                                return Ok((Token::Quoted(scalar), rest));
-                            }
-                        }
-                    }
-                    b'@' => {
-                        todo!()
-                    }
-                    b'=' => {
-                        ptr = ptr.add(1);
-                        if ptr == end {
-                            break 'eof;
-                        }
-
-                        if *ptr != b'=' {
-                            let rem_len = end.offset_from(ptr) as usize;
-                            let rest = std::slice::from_raw_parts(ptr, rem_len);
-                            return Ok((Token::Operator(Operator::Equal), rest));
-                        } else {
-                            ptr = ptr.add(1);
-                            let rem_len = end.offset_from(ptr) as usize;
-                            let rest = std::slice::from_raw_parts(ptr, rem_len);
-                            return Ok((Token::Operator(Operator::Exact), rest));
-                        }
-                    }
-                    b'<' => todo!(),
-                    b'!' => todo!(),
-                    b'?' => todo!(),
-                    b'>' => todo!(),
-                    _ => {
-                        let start_ptr = ptr;
-                        ptr = ptr.add(1);
-                        loop {
-                            if ptr == end {
-                                let tok_len = ptr.offset_from(start_ptr) as usize;
-                                let scalar =
-                                    Scalar::new(std::slice::from_raw_parts(start_ptr, tok_len));
-                                return Err(LexError::Eof(Some(scalar)));
-                            } else if !is_boundary(*ptr) {
-                                ptr = ptr.add(1);
-                            } else {
-                                let tok_len = ptr.offset_from(start_ptr) as usize;
-                                let rem_len = end.offset_from(ptr) as usize;
-                                let scalar =
-                                    Scalar::new(std::slice::from_raw_parts(start_ptr, tok_len));
-                                let rest = std::slice::from_raw_parts(ptr, rem_len);
-                                return Ok((Token::Unquoted(scalar), rest));
-                            }
-                        }
-                    }
-                }
-            }
+impl BufferWindow {
+    #[inline]
+    pub fn with_capacity(amt: usize) -> Self {
+        let buf = vec![0u8; amt].into_boxed_slice();
+        let start = buf.as_ptr_range().start;
+        let end = buf.as_ptr_range().start;
+        BufferWindow {
+            buf,
+            start,
+            end,
+            prior_reads: 0,
         }
     }
 
-    Err(LexError::Eof(None))
+    #[inline]
+    pub fn advance_to(&mut self, ptr: *const u8) {
+        debug_assert!((self.start..=self.end).contains(&ptr));
+        self.start = ptr;
+    }
+
+    #[inline]
+    fn window_len(&self) -> usize {
+        unsafe { self.end.offset_from(self.start) as usize }
+    }
+
+    #[inline]
+    pub fn position(&self) -> usize {
+        self.prior_reads + self.consumed_data()
+    }
+
+    #[inline]
+    fn consumed_data(&self) -> usize {
+        unsafe { self.start.offset_from(self.buf.as_ptr()) as usize }
+    }
+
+    #[inline]
+    fn get(&self, range: Range<*const u8>) -> Scalar {
+        debug_assert!(range.start >= self.buf.as_ptr_range().start);
+        debug_assert!(range.end <= self.buf.as_ptr_range().end);
+        let len = unsafe { range.end.offset_from(range.start) as usize };
+        let sl = unsafe { std::slice::from_raw_parts(range.start, len) };
+        Scalar::new(sl)
+    }
+
+    #[inline]
+    pub fn fill_buf(&mut self, mut reader: impl Read) -> Result<usize, BufferError> {
+        let carry_over = unsafe { self.end.offset_from(self.start) } as usize;
+        if carry_over != 0 {
+            if carry_over == self.buf.len() {
+                return Err(BufferError::BufferFull);
+            }
+            unsafe { self.start.copy_to(self.buf.as_mut_ptr(), carry_over) };
+        }
+
+        self.start = self.buf.as_ptr();
+        self.end = unsafe { self.buf.as_ptr().add(carry_over) };
+        let offset = self.window_len();
+        match reader.read(&mut self.buf[offset..]) {
+            Ok(r) => {
+                self.end = unsafe { self.end.add(r) };
+                Ok(r)
+            }
+            Err(e) => Err(BufferError::Io(e)),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct TokenReader<R> {
     reader: R,
     max_buf_size: usize,
-    buf: Vec<u8>,
-    data: *const u8,
-    data_end: *const u8,
-    prior_reads: usize,
+    buf: BufferWindow,
 }
 
 impl<R> TokenReader<R>
@@ -178,17 +130,7 @@ where
 
     #[inline]
     pub fn position(&self) -> usize {
-        self.prior_reads + self.consumed_data()
-    }
-
-    #[inline]
-    fn consumed_data(&self) -> usize {
-        unsafe { self.data.offset_from(self.buf.as_ptr()) as usize }
-    }
-
-    #[inline]
-    fn data_len(&self) -> usize {
-        unsafe { self.data_end.offset_from(self.data) as usize }
+        self.buf.position()
     }
 
     #[inline(always)]
@@ -201,9 +143,9 @@ where
         }
 
         let mut state = ParseState::None;
-        let mut ptr = self.data;
+        let mut ptr = self.buf.start;
         loop {
-            let end = self.data_end;
+            let end = self.buf.end;
             let (carry_over, offset) = match state {
                 ParseState::None => {
                     'eof: loop {
@@ -232,11 +174,12 @@ where
                                     break 'inner;
                                 }
                                 b'#' => {
+                                    let start_ptr = ptr;
                                     ptr = ptr.add(1);
                                     loop {
                                         if ptr == end {
-                                            todo!();
-                                            // break 'eof;
+                                            let carry_over = end.offset_from(start_ptr) as usize;
+                                            break 'eof (carry_over, 0);
                                         }
 
                                         if *ptr == b'\n' {
@@ -247,14 +190,17 @@ where
                                     }
                                 }
                                 b'{' => {
-                                    self.data = ptr.add(1);
+                                    self.buf.advance_to(ptr.add(1));
                                     return (Some(Token::Open), None);
                                 }
                                 b'}' => {
-                                    self.data = ptr.add(1);
+                                    self.buf.advance_to(ptr.add(1));
                                     return (Some(Token::Close), None);
                                 }
-                                b']' => todo!(),
+                                b']' => {
+                                    self.buf.advance_to(ptr.add(1));
+                                    return (Some(Token::Close), None);
+                                },
                                 b'"' => {
                                     ptr = ptr.add(1);
                                     let start_ptr = ptr;
@@ -276,16 +222,14 @@ where
                                         } else if *ptr != b'"' {
                                             ptr = ptr.add(1);
                                         } else {
-                                            let tok_len = ptr.offset_from(start_ptr) as usize;
-                                            let scalar =
-                                                std::slice::from_raw_parts(start_ptr, tok_len);
-                                            self.data = ptr.add(1);
-                                            return (
-                                                Some(Token::Quoted(Scalar::new(scalar))),
-                                                None,
-                                            );
+                                            self.buf.advance_to(ptr.add(1));
+                                            let scalar = self.buf.get(start_ptr..ptr);
+                                            return (Some(Token::Quoted(scalar)), None);
                                         }
                                     }
+                                }
+                                b'[' => {
+                                    todo!()
                                 }
                                 b'@' => {
                                     todo!()
@@ -297,10 +241,10 @@ where
                                     }
 
                                     if *ptr != b'=' {
-                                        self.data = ptr;
+                                        self.buf.advance_to(ptr);
                                         return (Some(Token::Operator(Operator::Equal)), None);
                                     } else {
-                                        self.data = ptr.add(1);
+                                        self.buf.advance_to(ptr.add(1));
                                         return (Some(Token::Operator(Operator::Exact)), None);
                                     }
                                 }
@@ -311,13 +255,16 @@ where
                                     }
 
                                     if *ptr != b'=' {
-                                        self.data = ptr;
+                                        self.buf.advance_to(ptr);
                                         return (Some(Token::Operator(Operator::LessThan)), None);
                                     } else {
-                                        self.data = ptr.add(1);
-                                        return (Some(Token::Operator(Operator::LessThanEqual)), None);
+                                        self.buf.advance_to(ptr.add(1));
+                                        return (
+                                            Some(Token::Operator(Operator::LessThanEqual)),
+                                            None,
+                                        );
                                     }
-                                },
+                                }
                                 b'!' => {
                                     ptr = ptr.add(1);
                                     if ptr == end {
@@ -328,9 +275,9 @@ where
                                         ptr = ptr.add(1);
                                     }
 
-                                    self.data = ptr;
+                                    self.buf.advance_to(ptr);
                                     return (Some(Token::Operator(Operator::NotEqual)), None);
-                                },
+                                }
                                 b'?' => {
                                     ptr = ptr.add(1);
                                     if ptr == end {
@@ -341,9 +288,9 @@ where
                                         ptr = ptr.add(1);
                                     }
 
-                                    self.data = ptr;
+                                    self.buf.advance_to(ptr);
                                     return (Some(Token::Operator(Operator::Exists)), None);
-                                },
+                                }
                                 b'>' => {
                                     ptr = ptr.add(1);
                                     if ptr == end {
@@ -351,13 +298,19 @@ where
                                     }
 
                                     if *ptr != b'=' {
-                                        self.data = ptr;
-                                        return (Some(Token::Operator(Operator::GreaterThan)), None);
+                                        self.buf.advance_to(ptr);
+                                        return (
+                                            Some(Token::Operator(Operator::GreaterThan)),
+                                            None,
+                                        );
                                     } else {
-                                        self.data = ptr.add(1);
-                                        return (Some(Token::Operator(Operator::GreaterThanEqual)), None);
+                                        self.buf.advance_to(ptr.add(1));
+                                        return (
+                                            Some(Token::Operator(Operator::GreaterThanEqual)),
+                                            None,
+                                        );
                                     }
-                                },
+                                }
                                 _ => {
                                     let start_ptr = ptr;
                                     ptr = ptr.add(1);
@@ -369,14 +322,9 @@ where
                                         } else if !is_boundary(*ptr) {
                                             ptr = ptr.add(1);
                                         } else {
-                                            let tok_len = ptr.offset_from(start_ptr) as usize;
-                                            self.data = ptr;
-                                            let scalar =
-                                                std::slice::from_raw_parts(start_ptr, tok_len);
-                                            return (
-                                                Some(Token::Unquoted(Scalar::new(scalar))),
-                                                None,
-                                            );
+                                            self.buf.advance_to(ptr);
+                                            let scalar = self.buf.get(start_ptr..ptr);
+                                            return (Some(Token::Unquoted(scalar)), None);
                                         }
                                     }
                                 }
@@ -391,100 +339,81 @@ where
                         } else if *ptr != b'"' {
                             ptr = ptr.add(1);
                         } else {
-                            let tok_len = ptr.offset_from(self.data) as usize;
-                            let scalar = std::slice::from_raw_parts(self.data, tok_len);
-                            self.data = ptr.add(1);
-                            return (Some(Token::Quoted(Scalar::new(scalar))), None);
+                            self.buf.advance_to(ptr.add(1));
+                            let scalar = self.buf.get(self.buf.buf.as_ptr()..ptr);
+                            return (Some(Token::Quoted(scalar)), None);
                         }
                     }
 
                     // buffer or prior read too small
-                    (self.data_len(), self.data_len())
+                    (self.buf.window_len(), self.buf.window_len())
                 }
                 ParseState::Unquoted { .. } => {
                     while ptr < end {
                         if !is_boundary(*ptr) {
                             ptr = ptr.add(1);
                         } else {
-                            let tok_len = ptr.offset_from(self.data) as usize;
-                            let scalar = std::slice::from_raw_parts(self.data, tok_len);
-                            self.data = ptr;
-                            return (Some(Token::Unquoted(Scalar::new(scalar))), None);
+                            self.buf.advance_to(ptr);
+                            let scalar = self.buf.get(self.buf.buf.as_ptr()..ptr);
+                            return (Some(Token::Unquoted(scalar)), None);
                         }
                     }
 
                     // buffer or prior read too small
-                    (self.data_len(), self.data_len())
+                    (self.buf.window_len(), self.buf.window_len())
                 }
             };
 
-            self.data_end
-                .sub(carry_over)
-                .copy_to(self.buf.as_mut_ptr(), carry_over);
-
-
-            match self.reader.read(&mut self.buf[carry_over..]) {
+            self.buf.advance_to(self.buf.end.sub(carry_over));
+            match self.buf.fill_buf(&mut self.reader) {
                 Ok(read) => {
                     if read > 0 {
-                        self.prior_reads +=
-                            (self.data_end.offset_from(self.buf.as_ptr()) as usize) - carry_over;
-                        self.data_end = self.buf.as_ptr().add(carry_over + read);
-                        self.data = self.buf.as_ptr();
-                        ptr = self.data.add(offset);
-                    } else if carry_over != self.buf.len() {
+                        ptr = self.buf.start.add(offset);
+                    } else {
                         match state {
                             ParseState::None => return (None, None),
                             ParseState::Quote { .. } => {
-                                self.data = ptr;
                                 return (None, Some(self.eof_error()));
                             }
                             ParseState::Unquoted { .. } => {
-                                self.prior_reads +=
-                                    self.data_end.offset_from(self.buf.as_ptr()) as usize;
-                                let scalar =
-                                    std::slice::from_raw_parts(self.buf.as_ptr(), carry_over);
-                                self.data = self.buf.as_ptr().add(carry_over);
-                                self.data_end = self.data;
+                                let scalar = std::slice::from_raw_parts(self.buf.start, carry_over);
+                                self.buf.advance_to(self.buf.end);
                                 return (Some(Token::Unquoted(Scalar::new(scalar))), None);
                             }
                         }
-                    } else {
-                        // If we parsing didn't progress, there must be a token that spans
-                        // multiple buffers, so we will need to grow the buffer.
-                        todo!()
                     }
                 }
                 Err(e) => {
-                    return (None, Some(self.io_error(e)));
+                    return (None, Some(self.buffer_error(e)));
                 }
             }
         }
     }
 
-    #[inline]
-    pub fn read_bytes(&mut self, bytes: usize) -> Result<&[u8], ReaderError> {
-        while self.data_len() < bytes {
-            let data_len = self.data_len();
-            let consumed: usize = self.consumed_data();
-            self.buf.copy_within(consumed..consumed + data_len, 0);
-            match self.reader.read(&mut self.buf[data_len..]) {
-                Ok(read) => {
-                    if read > 0 {
-                        self.prior_reads += consumed;
-                        self.data_end = unsafe { self.buf.as_ptr().add(data_len + read) };
-                        self.data = self.buf.as_ptr();
-                    } else {
-                        return Err(self.eof_error());
-                    }
-                }
-                Err(e) => return Err(self.io_error(e)),
-            }
-        }
+    // #[inline]
+    // pub fn read_bytes(&mut self, bytes: usize) -> Result<&[u8], ReaderError> {
+    //     while self.buf.window_len() < bytes {
+    //         let data_len = self.data_len();
+    //         let consumed: usize = self.consumed_data();
+    //         self.buf.copy_within(consumed..consumed + data_len, 0);
+    //         match self.reader.read(&mut self.buf[data_len..]) {
+    //             Ok(read) => {
+    //                 if read > 0 {
+    //                     self.prior_reads += consumed;
+    //                     self.data_end = unsafe { self.buf.as_ptr().add(data_len + read) };
+    //                     self.data = self.buf.as_ptr();
+    //                 } else {
+    //                     return Err(self.eof_error());
+    //                 }
+    //             }
+    //             Err(e) => return Err(self.buffer_error(e)),
+    //         }
+    //     }
 
-        let input = unsafe { std::slice::from_raw_parts(self.data, bytes) };
-        self.data = unsafe { self.data.add(bytes) };
-        Ok(input)
-    }
+    //     let input = unsafe { std::slice::from_raw_parts(self.data, bytes) };
+    //     self.data = unsafe { self.data.add(bytes) };
+    //     Ok(input)
+    // }
 
     #[inline]
     pub fn skip_container(&mut self) -> Result<(), ReaderError> {
@@ -496,9 +425,9 @@ where
 
         let mut state = SkipState::None;
         let mut depth = 1;
-        let mut ptr = self.data;
+        let mut ptr = self.buf.start;
         loop {
-            let end = self.data_end;
+            let end = self.buf.end;
             unsafe {
                 'refill: loop {
                     match state {
@@ -514,7 +443,7 @@ where
                                 b'}' => {
                                     depth -= 1;
                                     if depth == 0 {
-                                        self.data = ptr;
+                                        self.buf.advance_to(ptr);
                                         return Ok(());
                                     }
                                 }
@@ -561,33 +490,59 @@ where
                 }
             }
 
+            self.buf.advance_to(self.buf.end);
             let overread = unsafe { ptr.offset_from(end) } as usize;
-            match self.reader.read(&mut self.buf) {
-                Ok(read) => {
-                    if read > 0 {
-                        self.prior_reads += self.consumed_data();
-                        self.data_end = unsafe { self.buf.as_ptr().add(read) };
-                        self.data = unsafe { self.buf.as_ptr().add(overread) };
-                        ptr = self.data;
-                    } else {
-                        return Err(self.eof_error());
+            match self.buf.fill_buf(&mut self.reader) {
+                Ok(0) => return Err(self.eof_error()),
+                Err(e) => return Err(self.buffer_error(e)),
+                Ok(_) => ptr = unsafe { self.buf.start.add(overread) },
+            }
+        }
+    }
+
+    #[inline]
+    pub fn skip_unquoted_value(&mut self) -> Result<(), ReaderError> {
+        loop {
+            unsafe {
+                let mut ptr = self.buf.start;
+                let end = self.buf.end;
+
+                if end.offset_from(ptr) >= 4 {
+                    let word = ptr.cast::<u32>().read_unaligned().to_le();
+
+                    // 50% of EU4 values followed by this whitespace sequence
+                    if word == 0x0909090A { // \n\t\t\t
+                        ptr = ptr.add(4);
                     }
                 }
-                Err(e) => {
-                    return Err(self.io_error(e));
+
+                while ptr < end {
+                    match *ptr {
+                        b'{' => {
+                            self.buf.advance_to(ptr.add(1));
+                            return self.skip_container();
+                        }
+                        b' ' | b'\t' | b'\n' | b'\r' | b';' => {
+                            ptr = ptr.add(1);
+                        }
+                        _ => return Ok(())
+                    }
+                }
+
+                self.buf.advance_to(end);
+                match self.buf.fill_buf(&mut self.reader) {
+                    Ok(0) => return Ok(()),
+                    Err(e) => return Err(self.buffer_error(e)),
+                    Ok(_) => {},
                 }
             }
         }
     }
 
-    pub fn skip_unquoted_value(&mut self) -> Result<(), ReaderError> {
-        Ok(())
-    }
-
-    #[inline]
-    pub fn into_parts(self) -> (Vec<u8>, R) {
-        (self.buf, self.reader)
-    }
+    // #[inline]
+    // pub fn into_parts(self) -> (Vec<u8>, R) {
+    //     (self.buf, self.reader)
+    // }
 
     #[cold]
     #[inline(never)]
@@ -617,15 +572,6 @@ where
 
     #[cold]
     #[inline(never)]
-    fn max_buffer_error(&self) -> ReaderError {
-        ReaderError {
-            position: self.position(),
-            kind: ReaderErrorKind::MaxBufferReached,
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
     pub(crate) fn eof_error(&self) -> ReaderError {
         ReaderError {
             position: self.position(),
@@ -635,10 +581,10 @@ where
 
     #[cold]
     #[inline(always)]
-    fn io_error(&self, e: std::io::Error) -> ReaderError {
+    fn buffer_error(&self, e: BufferError) -> ReaderError {
         ReaderError {
             position: self.position(),
-            kind: ReaderErrorKind::Read { cause: e },
+            kind: ReaderErrorKind::from(e),
         }
     }
 }
@@ -692,10 +638,7 @@ impl TokenReaderBuilder {
         TokenReader {
             reader,
             max_buf_size: self.max_buffer_len.max(buf.len()),
-            buf,
-            data,
-            data_end,
-            prior_reads: 0,
+            buf: BufferWindow::with_capacity(init_len),
         }
     }
 }
@@ -703,8 +646,18 @@ impl TokenReaderBuilder {
 #[derive(Debug)]
 pub enum ReaderErrorKind {
     Read { cause: std::io::Error },
-    MaxBufferReached,
+    BufferFull,
     Eof,
+}
+
+impl From<BufferError> for ReaderErrorKind {
+    #[inline]
+    fn from(value: BufferError) -> Self {
+        match value {
+            BufferError::Io(x) => ReaderErrorKind::Read { cause: x },
+            BufferError::BufferFull => ReaderErrorKind::BufferFull,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -718,30 +671,30 @@ mod test {
     use super::*;
     use rstest::*;
 
-    #[rstest]
-    #[case(b"\"hello world\"")]
-    #[case(b" \"hello world\"")]
-    #[case(b"  \"hello world\"")]
-    #[case(b"\t\"hello world\"")]
-    #[case(b"\t\t\"hello world\"")]
-    #[case(b"\r\n\"hello world\"")]
-    #[case(b"\r\n\r\n\"hello world\"")]
-    #[case(b"\n\"hello world\"")]
-    #[case(b"\n\n\"hello world\"")]
-    #[case(b" ; \"hello world\"")]
-    #[case(b" # good morning\n \"hello world\"")]
-    #[case(b" # good morning\r\n \"hello world\"")]
-    fn test_whitespace_quoted_scalar(#[case] input: &[u8]) {
-        let (token, rest) = read_token(input).unwrap();
-        assert_eq!(token, Token::Quoted(Scalar::new(b"hello world")));
-        assert_eq!(rest, &[]);
-    }
+    // #[rstest]
+    // #[case(b"\"hello world\"")]
+    // #[case(b" \"hello world\"")]
+    // #[case(b"  \"hello world\"")]
+    // #[case(b"\t\"hello world\"")]
+    // #[case(b"\t\t\"hello world\"")]
+    // #[case(b"\r\n\"hello world\"")]
+    // #[case(b"\r\n\r\n\"hello world\"")]
+    // #[case(b"\n\"hello world\"")]
+    // #[case(b"\n\n\"hello world\"")]
+    // #[case(b" ; \"hello world\"")]
+    // #[case(b" # good morning\n \"hello world\"")]
+    // #[case(b" # good morning\r\n \"hello world\"")]
+    // fn test_whitespace_quoted_scalar(#[case] input: &[u8]) {
+    //     let (token, rest) = read_token(input).unwrap();
+    //     assert_eq!(token, Token::Quoted(Scalar::new(b"hello world")));
+    //     assert_eq!(rest, &[]);
+    // }
 
-    #[test]
-    fn test_terminating_scalar() {
-        let er = read_token(b"  ab").unwrap_err();
-        assert_eq!(er, LexError::Eof(Some(Scalar::new(b"ab"))));
-    }
+    // #[test]
+    // fn test_terminating_scalar() {
+    //     let er = read_token(b"  ab").unwrap_err();
+    //     assert_eq!(er, LexError::Eof(Some(Scalar::new(b"ab"))));
+    // }
 
     #[rstest]
     #[case(b" a=b ", &[
@@ -779,21 +732,11 @@ mod test {
         Token::Close,
     ])]
     fn test_input(#[case] input: &[u8], #[case] expected: &[Token]) {
-        let mut data = input;
-        let mut reader = TokenReader::builder().build(input);
+        let mut reader = TokenReader::new(input);
         for e in expected.iter() {
-            let (actual, rest) = match read_token(data) {
-                Ok((actual, rest)) => (actual, rest),
-                Err(LexError::Eof(Some(s))) => (Token::Unquoted(s), &[][..]),
-                x => panic!("{:?}", x),
-            };
-
-            assert_eq!(*e, actual);
             assert_eq!(*e, reader.read().unwrap());
-            data = rest;
         }
 
-        assert!(read_token(data).is_err());
         assert!(reader.read().is_err());
     }
 
@@ -846,7 +789,10 @@ mod test {
             let mut reader = TokenReader::builder().init_buffer_len(i).build(input);
             reader.skip_container().unwrap();
 
-            assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"done")));
+            assert_eq!(
+                reader.read().unwrap(),
+                Token::Unquoted(Scalar::new(b"done"))
+            );
         }
     }
 }
