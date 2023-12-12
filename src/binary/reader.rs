@@ -28,18 +28,18 @@ use std::{fmt, io::Read};
 /// assert_eq!(max_depth, 2);
 /// # Ok::<(), jomini::binary::ReaderError>(())
 /// ```
-/// 
+///
 /// Unlike a [BinaryTape](crate::BinaryTape), which will skip ghost objects,
 /// pair open and close tokens together, and recognize if a container is an
 /// object, array, or mixed -- the tokens yielded from a [TokenReader] are not
 /// fully formed. This is a much more raw view of the data that can be used to
 /// construct higher level parsers, melters, and deserializers that operate over
 /// a stream of data.
-/// 
+///
 /// [TokenReader] operates over a fixed size buffer, so using a
 /// [BufRead](std::io::BufRead) affords no benefits. An error will be returned
 /// for tokens that are impossible to fit within the buffer (eg: if the provided
-/// with 100 byte buffer but there is a binary string that is 101 bytes long.)
+/// with 100 byte buffer but there is a binary string that is 101 bytes long).
 #[derive(Debug)]
 pub struct TokenReader<R> {
     reader: R,
@@ -182,7 +182,7 @@ where
     /// allows the buffer to be reused.
     ///
     /// ```rust
-    /// use jomini::binary::{TokenReader};
+    /// use jomini::binary::TokenReader;
     /// let data = b"EU4bin";
     /// let mut reader = TokenReader::new(&data[..]);
     /// assert_eq!(reader.read_bytes(6).unwrap(), &data[..]);
@@ -316,8 +316,14 @@ impl TokenReaderBuilder {
 /// The specific binary reader error type.
 #[derive(Debug)]
 pub enum ReaderErrorKind {
+    /// An underlying error from a [Read]er
     Read { cause: std::io::Error },
+
+    /// The internal buffer does not have enough room to store data for the next
+    /// token
     BufferFull,
+
+    /// The data is corrupted
     Lexer { cause: LexError },
 }
 

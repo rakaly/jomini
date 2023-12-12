@@ -78,6 +78,7 @@ impl BufferWindow {
             unsafe { self.start.copy_to(self.buf.as_mut_ptr(), carry_over) };
         }
 
+        self.prior_reads += self.consumed_data();
         self.start = self.buf.as_ptr();
         self.end = unsafe { self.buf.as_ptr().add(carry_over) };
 
@@ -100,9 +101,11 @@ pub struct BufferWindowBuilder {
 
 impl Default for BufferWindowBuilder {
     fn default() -> Self {
+        // Default buffer size of 32 KiB, same size that flate2 uses.
+        let buffer_len = 32 * 1024;
         Self {
             buffer: None,
-            buffer_len: 32 * 1024, // default buffer size in flate2
+            buffer_len,
         }
     }
 }

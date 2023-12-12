@@ -12,6 +12,7 @@ use serde::de::{
 };
 use std::{borrow::Cow, io::Read};
 
+/// Serde deserializer over a streaming binary reader
 pub struct BinaryReaderDeserializer<'res, RES, F, R> {
     reader: TokenReader<R>,
     config: BinaryConfig<'res, RES, F>,

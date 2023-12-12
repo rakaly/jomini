@@ -172,7 +172,7 @@ pub(crate) fn read_rgb(data: &[u8]) -> Result<(Rgb, &[u8]), LexError> {
 ///
 /// This binary token contains the yielded raw tokens, and won't match open and
 /// close tokens together, nor does it make a determination if open and close
-/// represents an array, object, or both. 
+/// represents an array, object, or both.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Token<'a> {
     /// '{'
@@ -243,7 +243,10 @@ pub(crate) fn read_token(data: &[u8]) -> Result<(Token, &[u8]), LexError> {
 /// Lexical error type without positional information
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LexError {
+    /// Data ended too soon
     Eof,
+
+    /// An invalid RGB block encountered
     InvalidRgb,
 }
 

@@ -1,4 +1,4 @@
-use super::{lexer::Token, reader::ValuesIter, TokenReader};
+use super::{reader::Token, dom::ValuesIter, TokenReader};
 use crate::{
     text::{ArrayReader, FieldsIter, ObjectReader, Operator, Reader, ScalarReader, ValueReader},
     DeserializeError, DeserializeErrorKind, Encoding, Error, TextTape, TextToken, Utf8Encoding,
@@ -123,15 +123,22 @@ where
     TextDeserializer::from_windows1252_slice(data)?.deserialize()
 }
 
+/// Convenience method for deserializing streaming windows1252 data into a Rust value
 pub fn from_windows1252_reader<T, R>(reader: R) -> Result<T, Error>
 where
     T: DeserializeOwned,
     R: Read,
 {
-    T::deserialize(&mut TextReaderDeserializer {
-        reader: TokenReader::new(reader),
-        encoding: Windows1252Encoding,
-    })
+    TextDeserializer::from_windows1252_reader(reader).deserialize()
+}
+
+/// Convenience method for deserializing streaming utf8 data into a Rust value
+pub fn from_utf8_reader<T, R>(reader: R) -> Result<T, Error>
+where
+    T: DeserializeOwned,
+    R: Read,
+{
+    TextDeserializer::from_utf8_reader(reader).deserialize()
 }
 
 /// Convenience method for parsing the given text data and deserializing as utf8 encoded.
@@ -142,9 +149,17 @@ where
     TextDeserializer::from_utf8_slice(data)?.deserialize()
 }
 
-struct TextReaderDeserializer<R, E> {
+/// A serde deserializer over streaming data
+pub struct TextReaderDeserializer<R, E> {
     reader: TokenReader<R>,
     encoding: E,
+}
+
+impl<R: Read, E: Encoding> TextReaderDeserializer<R, E> {
+    /// Deserialize into provided type
+    pub fn deserialize<T>(&mut self) -> Result<T, Error> where T: DeserializeOwned {
+        T::deserialize(self)
+    }
 }
 
 impl<'de, R: Read, E: Encoding> de::Deserializer<'de> for &'_ mut TextReaderDeserializer<R, E> {
@@ -280,8 +295,7 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
                 "did not expect operator",
                 self.de.reader.position(),
             )),
-            Token::Unquoted(s)
-            | Token::Quoted(s) => match self.de.encoding.decode(s.as_bytes()) {
+            Token::Unquoted(s) | Token::Quoted(s) => match self.de.encoding.decode(s.as_bytes()) {
                 Cow::Borrowed(x) => visitor.visit_str(x),
                 Cow::Owned(x) => visitor.visit_string(x),
             },
@@ -762,6 +776,26 @@ enum TextDeserializerKind<'a, 'b, E> {
     Owned { tape: TextTape<'a>, encoding: E },
     Borrowed { tape: &'b TextTape<'a>, encoding: E },
     Reader { reader: &'b ObjectReader<'a, 'b, E> },
+}
+
+impl TextDeserializer<'_, '_, Windows1252Encoding> {
+    /// Create a Windows1252 text deserializer over a reader
+    pub fn from_windows1252_reader<R>(reader: R) -> TextReaderDeserializer<R, Windows1252Encoding> where R: Read {
+        TextReaderDeserializer {
+            reader: TokenReader::new(reader),
+            encoding: Windows1252Encoding,
+        }
+    }
+}
+
+impl TextDeserializer<'_, '_, Utf8Encoding> {
+    /// Create a UTF8 text deserializer over a reader
+    pub fn from_utf8_reader<R>(reader: R) -> TextReaderDeserializer<R, Utf8Encoding> where R: Read {
+        TextReaderDeserializer {
+            reader: TokenReader::new(reader),
+            encoding: Utf8Encoding,
+        }
+    }
 }
 
 impl<'a, 'b> TextDeserializer<'a, 'b, Windows1252Encoding> {
