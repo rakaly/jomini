@@ -28,6 +28,18 @@ use std::{fmt, io::Read};
 /// assert_eq!(max_depth, 2);
 /// # Ok::<(), jomini::binary::ReaderError>(())
 /// ```
+/// 
+/// Unlike a [BinaryTape](crate::BinaryTape), which will skip ghost objects,
+/// pair open and close tokens together, and recognize if a container is an
+/// object, array, or mixed -- the tokens yielded from a [TokenReader] are not
+/// fully formed. This is a much more raw view of the data that can be used to
+/// construct higher level parsers, melters, and deserializers that operate over
+/// a stream of data.
+/// 
+/// [TokenReader] operates over a fixed size buffer, so using a
+/// [BufRead](std::io::BufRead) affords no benefits. An error will be returned
+/// for tokens that are impossible to fit within the buffer (eg: if the provided
+/// with 100 byte buffer but there is a binary string that is 101 bytes long.)
 #[derive(Debug)]
 pub struct TokenReader<R> {
     reader: R,
@@ -125,12 +137,7 @@ where
     pub fn skip_container(&mut self) -> Result<(), ReaderError> {
         let mut depth = 1;
         loop {
-            loop {
-                let (id, data) = match read_id(self.buf.window()) {
-                    Ok((x, data)) => (x, data),
-                    Err(_) => break,
-                };
-
+            while let Ok((id, data)) = read_id(self.buf.window()) {
                 match id {
                     LexemeId::CLOSE => {
                         self.buf.advance_to(data.as_ptr());
@@ -277,24 +284,28 @@ impl TokenReader<()> {
     }
 }
 
+/// Creates a binary token reader
 #[derive(Debug, Default)]
 pub struct TokenReaderBuilder {
     buffer: BufferWindowBuilder,
 }
 
 impl TokenReaderBuilder {
+    /// Set the fixed size buffer to the given buffer
     #[inline]
     pub fn buffer(mut self, val: Box<[u8]>) -> TokenReaderBuilder {
         self.buffer = self.buffer.buffer(val);
         self
     }
 
+    /// Set the length of the buffer if no buffer is provided
     #[inline]
     pub fn buffer_len(mut self, val: usize) -> TokenReaderBuilder {
         self.buffer = self.buffer.buffer_len(val);
         self
     }
 
+    /// Create a binary token reader around a given reader.
     #[inline]
     pub fn build<R>(self, reader: R) -> TokenReader<R> {
         let buf = self.buffer.build();
@@ -302,6 +313,7 @@ impl TokenReaderBuilder {
     }
 }
 
+/// The specific binary reader error type.
 #[derive(Debug)]
 pub enum ReaderErrorKind {
     Read { cause: std::io::Error },
@@ -309,6 +321,7 @@ pub enum ReaderErrorKind {
     Lexer { cause: LexError },
 }
 
+/// An binary lexing error over a `Read` implementation
 #[derive(Debug)]
 pub struct ReaderError {
     position: usize,
@@ -316,14 +329,17 @@ pub struct ReaderError {
 }
 
 impl ReaderError {
+    /// Return the byte position where the error occurred
     pub fn position(&self) -> usize {
         self.position
     }
 
+    /// Return a reference the error kind
     pub fn kind(&self) -> &ReaderErrorKind {
         &self.kind
     }
 
+    /// Consume self and return the error kind
     #[must_use]
     pub fn into_kind(self) -> ReaderErrorKind {
         self.kind

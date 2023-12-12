@@ -26,4 +26,4 @@ pub use self::reader::{
 };
 pub use self::tape::{TextTape, TextTapeParser, TextToken};
 pub use self::writer::*;
-pub use lexer::{ReaderError, TokenReader, TokenReaderBuilder};
+pub use lexer::{ReaderError, TokenReader, TokenReaderBuilder, Token};

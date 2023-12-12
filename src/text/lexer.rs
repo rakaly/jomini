@@ -13,18 +13,13 @@ pub enum Token<'a> {
     Operator(Operator),
     Unquoted(Scalar<'a>),
     Quoted(Scalar<'a>),
-    Parameter(Scalar<'a>),
-    UndefinedParameter(Scalar<'a>),
 }
 
 impl<'a> Token<'a> {
     #[inline]
     pub fn as_scalar(&self) -> Option<Scalar<'a>> {
         match self {
-            Token::Quoted(s)
-            | Token::Unquoted(s)
-            | Token::Parameter(s)
-            | Token::UndefinedParameter(s) => Some(*s),
+            Token::Quoted(s) | Token::Unquoted(s) => Some(*s),
             _ => None,
         }
     }
@@ -149,7 +144,7 @@ where
                                         if ptr >= end {
                                             state = ParseState::Quote;
                                             let carry_over = end.offset_from(start_ptr) as usize;
-                                            break 'eof (carry_over, carry_over.min(2) - 2);
+                                            break 'eof (carry_over, carry_over.max(2) - 2);
                                         }
                                     } else if *ptr != b'"' {
                                         ptr = ptr.add(1);
@@ -274,6 +269,7 @@ where
                                     Some([0xef, 0xbb, 0xbf]) => {
                                         self.utf8 = Utf8Status::Present;
                                         ptr = ptr.add(3);
+                                        break 'inner;
                                     }
                                     Some(_) => self.utf8 = Utf8Status::NotPresent,
                                     None => break 'eof (self.buf.window_len(), 0),
@@ -335,17 +331,15 @@ where
             match self.buf.fill_buf(&mut self.reader) {
                 Ok(0) => match state {
                     ParseState::None => {
+                        // if we carried over data that isn't a comment, we
+                        // should have made forward progress.
                         if carry_over == 0 || *self.buf.start == b'#' {
                             return (None, None);
                         } else {
-                            // if we carried over data that isn't a comment,
-                            // we must make forward progress, but we didn't.
                             return (None, Some(self.eof_error()));
                         }
                     }
-                    ParseState::Quote { .. } => {
-                        return (None, Some(self.eof_error()));
-                    }
+                    ParseState::Quote { .. } => return (None, Some(self.eof_error())),
                     ParseState::Unquoted { .. } => {
                         let scalar = std::slice::from_raw_parts(self.buf.start, carry_over);
                         self.buf.advance_to(self.buf.end);
@@ -458,6 +452,20 @@ where
         }
     }
 
+    /// Skip any trailing data associated with the unquoted value. Useful for
+    /// skipping an unquoted value that may be serving as a header.
+    /// 
+    /// ```rust
+    /// use jomini::{Scalar, text::{TokenReader, Token, Operator}};
+    /// let mut reader = TokenReader::new(&b"color = rgb { 1 2 3 }  foo=bar"[..]);
+    /// assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"color")));
+    /// assert_eq!(reader.read().unwrap(), Token::Operator(Operator::Equal));
+    /// assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"rgb")));
+    /// assert!(reader.skip_unquoted_value().is_ok());
+    /// assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"foo")));
+    /// assert_eq!(reader.read().unwrap(), Token::Operator(Operator::Equal));
+    /// assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"bar")));
+    /// ```
     #[inline]
     pub fn skip_unquoted_value(&mut self) -> Result<(), ReaderError> {
         loop {
@@ -498,10 +506,10 @@ where
         }
     }
 
-    // #[inline]
-    // pub fn into_parts(self) -> (Vec<u8>, R) {
-    //     (self.buf, self.reader)
-    // }
+    #[inline]
+    pub fn into_parts(self) -> (Box<[u8]>, R) {
+        (self.buf.buf, self.reader)
+    }
 
     #[cold]
     #[inline(never)]
@@ -866,5 +874,12 @@ mod test {
                 Token::Unquoted(Scalar::new(b"done"))
             );
         }
+    }
+
+    #[rstest]
+    #[case(b"\"\\")]
+    fn test_crash_regression(#[case] input: &[u8]) {
+        let mut reader = TokenReader::new(input);
+        while let Ok(Some(_)) = reader.next() {}
     }
 }

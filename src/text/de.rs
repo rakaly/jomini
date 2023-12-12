@@ -280,7 +280,8 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
                 "did not expect operator",
                 self.de.reader.position(),
             )),
-            Token::Unquoted(s) | Token::Quoted(s) | Token::Parameter(s) | Token::UndefinedParameter(s) => match self.de.encoding.decode(s.as_bytes()) {
+            Token::Unquoted(s)
+            | Token::Quoted(s) => match self.de.encoding.decode(s.as_bytes()) {
                 Cow::Borrowed(x) => visitor.visit_str(x),
                 Cow::Owned(x) => visitor.visit_string(x),
             },
