@@ -253,7 +253,11 @@ struct TextReaderTokenDeserializer<'a, R, E> {
 
 impl<'a, R, E> TextReaderTokenDeserializer<'a, R, E> {
     fn new(de: &'a mut TextReaderDeserializer<R, E>, token: Token<'a>) -> Self {
-        Self { de, token, op: Operator::Equal }
+        Self {
+            de,
+            token,
+            op: Operator::Equal,
+        }
     }
 }
 
@@ -276,7 +280,7 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
                 "did not expect operator",
                 self.de.reader.position(),
             )),
-            Token::Unquoted(s) | Token::Quoted(s) => match self.de.encoding.decode(s.as_bytes()) {
+            Token::Unquoted(s) | Token::Quoted(s) | Token::Parameter(s) | Token::UndefinedParameter(s) => match self.de.encoding.decode(s.as_bytes()) {
                 Cow::Borrowed(x) => visitor.visit_str(x),
                 Cow::Owned(x) => visitor.visit_string(x),
             },
@@ -659,7 +663,6 @@ impl<'de, 'a, R: Read, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'a
     }
 }
 
-
 struct PropertyReaderMap<'a, R, E> {
     de: &'a mut TextReaderDeserializer<R, E>,
     op: Operator,
@@ -670,7 +673,7 @@ struct PropertyReaderMap<'a, R, E> {
 impl<'a, 'de, R, E> de::MapAccess<'de> for PropertyReaderMap<'a, R, E>
 where
     E: Encoding,
-    R: Read
+    R: Read,
 {
     type Error = Error;
 

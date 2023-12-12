@@ -297,6 +297,7 @@ assert_eq!(&out, b"hello=world\nfoo=bar");
 // #![warn(missing_docs)]
 #![allow(dead_code)]
 pub mod binary;
+pub(crate) mod buffer;
 pub mod common;
 mod copyless;
 mod data;
