@@ -1,7 +1,15 @@
 //! Types for parsing clausewitz binary input
 //!
-//! See the top level module documentation for an overview that includes parsing
-//! and deserializing binary data.
+//! Main binary deserialization APIs:
+//!  - [BinaryFlavor::deserialize_slice]
+//!  - [BinaryFlavor::deserialize_reader]
+//!
+//! If the serde deserialization API is too high level, one can build
+//! abstractions ontop of.
+//!  - [BinaryTape::from_slice]: Realizes a pseudo AST onto
+//!    a linear tape. Cleans up and normalizes data.
+//!  - [TokenReader]: an incremental binary lexer designed for handling large
+//!    saves in a memory efficient manner.
 
 /// binary deserialization
 #[cfg(feature = "derive")]

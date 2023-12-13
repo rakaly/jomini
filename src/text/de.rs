@@ -1,4 +1,4 @@
-use super::{reader::Token, dom::ValuesIter, TokenReader};
+use super::{dom::ValuesIter, reader::Token, TokenReader};
 use crate::{
     text::{ArrayReader, FieldsIter, ObjectReader, Operator, Reader, ScalarReader, ValueReader},
     DeserializeError, DeserializeErrorKind, Encoding, Error, TextTape, TextToken, Utf8Encoding,
@@ -157,7 +157,10 @@ pub struct TextReaderDeserializer<R, E> {
 
 impl<R: Read, E: Encoding> TextReaderDeserializer<R, E> {
     /// Deserialize into provided type
-    pub fn deserialize<T>(&mut self) -> Result<T, Error> where T: DeserializeOwned {
+    pub fn deserialize<T>(&mut self) -> Result<T, Error>
+    where
+        T: DeserializeOwned,
+    {
         T::deserialize(self)
     }
 }
@@ -226,7 +229,7 @@ impl<'de, 'a, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'a, R, 
             match self.de.reader.next() {
                 Ok(Some(Token::Close)) => return Ok(None),
                 Ok(Some(Token::Open)) => {
-                    let _ = self.de.reader.unlikely_read()?;
+                    let _ = self.de.reader.read()?;
                 }
                 Ok(Some(token)) => {
                     return seed
@@ -780,7 +783,10 @@ enum TextDeserializerKind<'a, 'b, E> {
 
 impl TextDeserializer<'_, '_, Windows1252Encoding> {
     /// Create a Windows1252 text deserializer over a reader
-    pub fn from_windows1252_reader<R>(reader: R) -> TextReaderDeserializer<R, Windows1252Encoding> where R: Read {
+    pub fn from_windows1252_reader<R>(reader: R) -> TextReaderDeserializer<R, Windows1252Encoding>
+    where
+        R: Read,
+    {
         TextReaderDeserializer {
             reader: TokenReader::new(reader),
             encoding: Windows1252Encoding,
@@ -790,7 +796,10 @@ impl TextDeserializer<'_, '_, Windows1252Encoding> {
 
 impl TextDeserializer<'_, '_, Utf8Encoding> {
     /// Create a UTF8 text deserializer over a reader
-    pub fn from_utf8_reader<R>(reader: R) -> TextReaderDeserializer<R, Utf8Encoding> where R: Read {
+    pub fn from_utf8_reader<R>(reader: R) -> TextReaderDeserializer<R, Utf8Encoding>
+    where
+        R: Read,
+    {
         TextReaderDeserializer {
             reader: TokenReader::new(reader),
             encoding: Utf8Encoding,

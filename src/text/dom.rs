@@ -1,7 +1,6 @@
 use super::fnv::FnvBuildHasher;
 use crate::{
-    text::Operator, DeserializeError, DeserializeErrorKind, Encoding, Scalar, TextTape,
-    TextToken,
+    text::Operator, DeserializeError, DeserializeErrorKind, Encoding, Scalar, TextTape, TextToken,
 };
 use std::{
     borrow::Cow,

@@ -100,9 +100,7 @@ where
     /// use jomini::binary::{TokenReader, LexError, ReaderErrorKind};
     /// let mut reader = TokenReader::new(&b"EU4bin"[..]);
     /// assert_eq!(reader.read_bytes(6).unwrap(), &b"EU4bin"[..]);
-    /// assert!(matches!(reader.read_bytes(1).unwrap_err().kind(), ReaderErrorKind::Lexer {
-    ///     cause: LexError::Eof
-    /// }));
+    /// assert!(matches!(reader.read_bytes(1).unwrap_err().kind(), ReaderErrorKind::Lexer(LexError::Eof)));
     /// ```
     #[inline]
     pub fn read_bytes(&mut self, bytes: usize) -> Result<&[u8], ReaderError> {
@@ -197,12 +195,6 @@ where
         (self.buf.buf, self.reader)
     }
 
-    #[cold]
-    #[inline(never)]
-    pub(crate) fn unlikely_read(&mut self) -> Result<Token, ReaderError> {
-        self.read()
-    }
-
     /// Read the next token in the stream. Will error if not enough data remains
     /// to decode a token.
     ///
@@ -215,9 +207,7 @@ where
     /// assert_eq!(reader.read().unwrap(), Token::Equal);
     /// assert_eq!(reader.read().unwrap(), Token::Open);
     /// assert_eq!(reader.read().unwrap(), Token::Close);
-    /// assert!(matches!(reader.read().unwrap_err().kind(), ReaderErrorKind::Lexer {
-    ///     cause: LexError::Eof
-    /// }));
+    /// assert!(matches!(reader.read().unwrap_err().kind(), ReaderErrorKind::Lexer(LexError::Eof)));
     /// ```
     #[inline(always)]
     pub fn read(&mut self) -> Result<Token, ReaderError> {
@@ -266,15 +256,6 @@ where
     fn lex_error(&self, e: LexError) -> ReaderError {
         ReaderError::from(e.at(self.position()))
     }
-
-    #[cold]
-    #[inline(always)]
-    fn io_error(&self, e: std::io::Error) -> ReaderError {
-        ReaderError {
-            position: self.position(),
-            kind: ReaderErrorKind::Read { cause: e },
-        }
-    }
 }
 
 impl TokenReader<()> {
@@ -317,14 +298,14 @@ impl TokenReaderBuilder {
 #[derive(Debug)]
 pub enum ReaderErrorKind {
     /// An underlying error from a [Read]er
-    Read { cause: std::io::Error },
+    Read(std::io::Error),
 
     /// The internal buffer does not have enough room to store data for the next
     /// token
     BufferFull,
 
     /// The data is corrupted
-    Lexer { cause: LexError },
+    Lexer(LexError),
 }
 
 /// An binary lexing error over a `Read` implementation
@@ -355,7 +336,7 @@ impl ReaderError {
 impl std::error::Error for ReaderError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.kind {
-            ReaderErrorKind::Read { cause } => Some(cause),
+            ReaderErrorKind::Read(cause) => Some(cause),
             _ => None,
         }
     }
@@ -370,7 +351,7 @@ impl std::fmt::Display for ReaderError {
             ReaderErrorKind::BufferFull => {
                 write!(f, "max buffer size exceeded at position: {}", self.position)
             }
-            ReaderErrorKind::Lexer { cause } => {
+            ReaderErrorKind::Lexer(cause) => {
                 write!(f, "{} at position: {}", cause, self.position)
             }
         }
@@ -381,9 +362,7 @@ impl From<LexerError> for ReaderError {
     fn from(value: LexerError) -> Self {
         ReaderError {
             position: value.position(),
-            kind: ReaderErrorKind::Lexer {
-                cause: value.into_kind(),
-            },
+            kind: ReaderErrorKind::Lexer(value.into_kind()),
         }
     }
 }
@@ -391,7 +370,7 @@ impl From<LexerError> for ReaderError {
 impl From<BufferError> for ReaderErrorKind {
     fn from(value: BufferError) -> Self {
         match value {
-            BufferError::Io(x) => ReaderErrorKind::Read { cause: x },
+            BufferError::Io(x) => ReaderErrorKind::Read(x),
             BufferError::BufferFull => ReaderErrorKind::BufferFull,
         }
     }
@@ -434,9 +413,7 @@ mod tests {
         let mut reader = TokenReader::new(&[0x43][..]);
         assert!(matches!(
             reader.read().unwrap_err().kind(),
-            &ReaderErrorKind::Lexer {
-                cause: LexError::Eof
-            }
+            &ReaderErrorKind::Lexer(LexError::Eof)
         ));
     }
 }

@@ -1189,7 +1189,6 @@ pub struct BinaryDeserializer<'b, 'data: 'b, 'res: 'data, RES, F> {
 }
 
 enum BinaryDeserializerKind<'data, 'b> {
-    Owned(BinaryTape<'data>),
     Borrowed(&'b BinaryTape<'data>),
 }
 
@@ -1220,11 +1219,13 @@ where
         self
     }
 
+    /// Set the reader buffer config (unused for slice deserializations)
     pub fn reader_config(&mut self, val: TokenReaderBuilder) -> &mut Self {
         self.reader_config = val;
         self
     }
 
+    /// Create binary deserializer from reader
     pub fn from_reader<RES, R>(
         self,
         reader: R,
@@ -1243,6 +1244,7 @@ where
         BinaryReaderDeserializer { reader, config }
     }
 
+    /// Deserialize value from reader
     pub fn deserialize_reader<RES, T, R: Read>(self, reader: R, resolver: &RES) -> Result<T, Error>
     where
         T: DeserializeOwned,
@@ -1251,6 +1253,7 @@ where
         self.from_reader(reader, resolver).deserialize()
     }
 
+    /// Create a binary deserializer from a slice
     pub fn from_slice<'a, 'res: 'a, RES>(
         self,
         data: &'a [u8],
@@ -1271,6 +1274,7 @@ where
         }
     }
 
+    /// Deserialize value from slice
     pub fn deserialize_slice<'data, 'res: 'data, RES, T>(
         self,
         data: &'data [u8],
@@ -1304,6 +1308,7 @@ where
         }
     }
 
+    /// Deserialize the given binary tape
     pub fn deserialize_tape<'data, 'b, 'res: 'data, RES, T>(
         self,
         tape: &'b BinaryTape<'data>,
@@ -1369,13 +1374,12 @@ impl<'a, 'b, 'de, 'res, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'d
         V: Visitor<'de>,
     {
         match &self.tape {
-            BinaryDeserializerKind::Owned(x) | &BinaryDeserializerKind::Borrowed(x) => visitor
-                .visit_map(BinaryMap::new(
-                    &self.config,
-                    x.tokens(),
-                    0,
-                    x.tokens().len(),
-                )),
+            &BinaryDeserializerKind::Borrowed(x) => visitor.visit_map(BinaryMap::new(
+                &self.config,
+                x.tokens(),
+                0,
+                x.tokens().len(),
+            )),
         }
     }
 

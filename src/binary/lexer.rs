@@ -284,14 +284,17 @@ pub struct LexerError {
 }
 
 impl LexerError {
+    /// Return the byte position where the error occurred
     pub fn position(&self) -> usize {
         self.position
     }
 
+    /// Return a reference the error kind
     pub fn kind(&self) -> &LexError {
         &self.kind
     }
 
+    /// Consume self and return the error kind
     #[must_use]
     pub fn into_kind(self) -> LexError {
         self.kind

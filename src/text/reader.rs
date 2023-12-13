@@ -7,7 +7,7 @@ use crate::{
 use std::io::Read;
 
 /// Text token, the raw form of [TextToken](crate::text::TextToken)
-/// 
+///
 /// This binary tokens contains the yielded raw tokens, and won't match open and
 /// close tokens, nor does it make a determination if open and close represents
 /// an array, object, or both.
@@ -18,13 +18,13 @@ pub enum Token<'a> {
 
     /// '{' or ']'
     Close,
-    
+
     /// An operator (eg: `foo=bar`)
     Operator(Operator),
 
     /// value that is not surrounded by quotes
     Unquoted(Scalar<'a>),
-    
+
     /// value that is quoted
     Quoted(Scalar<'a>),
 }
@@ -38,11 +38,6 @@ impl<'a> Token<'a> {
             _ => None,
         }
     }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum LexError<'a> {
-    Eof(Option<Scalar<'a>>),
 }
 
 #[derive(Debug)]
@@ -536,7 +531,7 @@ where
 
     /// Skip any trailing data associated with the unquoted value. Useful for
     /// skipping an unquoted value that may be serving as a header.
-    /// 
+    ///
     /// In the below example the `rgb { 1 2 3 }` will first be parsed as
     /// unquoted `rgb`, but the `{ 1 2 3 }` needs to be skipped as well as it is
     /// tied to `rgb`.
@@ -611,12 +606,17 @@ where
         (self.buf.buf, self.reader)
     }
 
-    #[cold]
-    #[inline(never)]
-    pub(crate) fn unlikely_read(&mut self) -> Result<Token, ReaderError> {
-        self.read()
-    }
-
+    /// Read the next token in the stream. Will error if not enough data remains
+    /// to decode a token.
+    ///
+    /// ```rust
+    /// use jomini::{Scalar, text::{TokenReader, Token, ReaderErrorKind, Operator}};
+    /// let mut reader = TokenReader::new(&b"date=1444.11.11"[..]);
+    /// assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"date")));
+    /// assert_eq!(reader.read().unwrap(), Token::Operator(Operator::Equal));
+    /// assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"1444.11.11")));
+    /// assert!(matches!(reader.read().unwrap_err().kind(), ReaderErrorKind::Eof));
+    /// ```
     #[inline(always)]
     pub fn read(&mut self) -> Result<Token, ReaderError> {
         // Workaround for borrow checker :(
@@ -628,6 +628,16 @@ where
         }
     }
 
+    /// Read a token, returning none when all the data has been consumed
+    ///
+    /// ```rust
+    /// use jomini::{Scalar, text::{TokenReader, Token, Operator}};
+    /// let mut reader = TokenReader::new(&b"date=1444.11.11"[..]);
+    /// assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"date")));
+    /// assert_eq!(reader.read().unwrap(), Token::Operator(Operator::Equal));
+    /// assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"1444.11.11")));
+    /// assert_eq!(reader.next().unwrap(), None);
+    /// ```
     #[inline(always)]
     pub fn next(&mut self) -> Result<Option<Token>, ReaderError> {
         match unsafe { self.next_opt() } {
@@ -699,8 +709,14 @@ impl TokenReaderBuilder {
 /// The specific text reader error type.
 #[derive(Debug)]
 pub enum ReaderErrorKind {
-    Read { cause: std::io::Error },
+    /// An underlying error from a [Read]er
+    Read(std::io::Error),
+
+    /// The internal buffer does not have enough room to store data for the next
+    /// token
     BufferFull,
+
+    /// An early end of the data encountered
     Eof,
 }
 
@@ -708,7 +724,7 @@ impl From<BufferError> for ReaderErrorKind {
     #[inline]
     fn from(value: BufferError) -> Self {
         match value {
-            BufferError::Io(x) => ReaderErrorKind::Read { cause: x },
+            BufferError::Io(x) => ReaderErrorKind::Read(x),
             BufferError::BufferFull => ReaderErrorKind::BufferFull,
         }
     }

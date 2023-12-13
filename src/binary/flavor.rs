@@ -15,11 +15,13 @@ pub trait BinaryFlavor: crate::Encoding {
     /// Decode a f64 from 8 bytes of data
     fn visit_f64(&self, data: [u8; 8]) -> f64;
 
+    /// Create binary deserializer from this binary flavor
     #[cfg(feature = "derive")]
     fn deserializer(&self) -> BinaryDeserializerBuilder<&Self> {
         BinaryDeserializer::builder_flavor(self)
     }
 
+    /// Deserialize value from slice of data with this binary flavor
     #[cfg(feature = "derive")]
     fn deserialize_slice<'de, 'res: 'de, T, RES>(
         &self,
@@ -31,6 +33,17 @@ pub trait BinaryFlavor: crate::Encoding {
         RES: TokenResolver,
     {
         self.deserializer().deserialize_slice(data, resolver)
+    }
+
+    /// Deserialize value from stream of data with this binary flavor
+    #[cfg(feature = "derive")]
+    fn deserialize_reader<T, RES, R>(&self, reader: R, resolver: &RES) -> Result<T, Error>
+    where
+        T: serde::de::DeserializeOwned,
+        RES: TokenResolver,
+        R: std::io::Read,
+    {
+        self.deserializer().deserialize_reader(reader, resolver)
     }
 }
 
