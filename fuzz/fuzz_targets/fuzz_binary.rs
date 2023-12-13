@@ -63,7 +63,7 @@ fuzz_target!(|data: &[u8]| {
     hash.insert(0x209u16, "localization");
 
     let mut lexer = jomini::binary::Lexer::new(data);
-    let mut reader = jomini::binary::TokenReader::builder().init_buffer_len(100).build(data);
+    let mut reader = jomini::binary::TokenReader::builder().buffer_len(100).build(data);
 
     loop {
         match (lexer.read_token(), reader.read()) {
