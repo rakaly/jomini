@@ -102,38 +102,38 @@ fuzz_target!(|data: &[u8]| {
     while let Ok(Some(x)) = reader.next() {
     }
 
-    // let _: Result<Meta, _> = jomini::TextTape::from_slice(&data).and_then(|tape| {
-    //     let tokens = tape.tokens();
-    //     for (i, token) in tokens.iter().enumerate() {
-    //         match token {
-    //             TextToken::Array { end: ind, .. }
-    //             | TextToken::Object { end: ind, .. }
-    //             | TextToken::End(ind)
-    //                 if *ind == 0 =>
-    //             {
-    //                 panic!("zero ind encountered");
-    //             }
-    //             TextToken::Array { end: ind, .. } | TextToken::Object { end: ind, .. } => {
-    //                 match &tokens[*ind] {
-    //                     TextToken::End(ind2) => {
-    //                         assert_eq!(*ind2, i)
-    //                     }
-    //                     x => panic!("expected end not {:?}", x),
-    //                 }
-    //             }
-    //             _ => {}
-    //         }
-    //     }
+    let _: Result<Meta, _> = jomini::TextTape::from_slice(&data).and_then(|tape| {
+        let tokens = tape.tokens();
+        for (i, token) in tokens.iter().enumerate() {
+            match token {
+                TextToken::Array { end: ind, .. }
+                | TextToken::Object { end: ind, .. }
+                | TextToken::End(ind)
+                    if *ind == 0 =>
+                {
+                    panic!("zero ind encountered");
+                }
+                TextToken::Array { end: ind, .. } | TextToken::Object { end: ind, .. } => {
+                    match &tokens[*ind] {
+                        TextToken::End(ind2) => {
+                            assert_eq!(*ind2, i)
+                        }
+                        x => panic!("expected end not {:?}", x),
+                    }
+                }
+                _ => {}
+            }
+        }
 
-    //     #[cfg(feature = "json")]
-    //     tape.windows1252_reader().json().to_string();
+        #[cfg(feature = "json")]
+        tape.windows1252_reader().json().to_string();
 
-    //     iterate_object(tape.windows1252_reader());
+        iterate_object(tape.windows1252_reader());
 
-    //     unsafe {
-    //         GROUPED = true;
-    //     }
-    //     iterate_object2(tape.windows1252_reader());
-    //     TextDeserializer::from_windows1252_tape(&tape).deserialize()
-    // });
+        unsafe {
+            GROUPED = true;
+        }
+        iterate_object2(tape.windows1252_reader());
+        TextDeserializer::from_windows1252_tape(&tape).deserialize()
+    });
 });

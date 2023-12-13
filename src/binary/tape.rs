@@ -3,7 +3,7 @@ use super::{
         read_bool, read_f32, read_f64, read_i32, read_i64, read_id, read_rgb, read_string,
         read_u32, read_u64,
     },
-    LexemeId,
+    LexError, LexemeId,
 };
 use crate::{binary::Rgb, copyless::VecHelper, util::get_split, Error, ErrorKind, Scalar};
 
@@ -158,74 +158,76 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
     #[inline]
     fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], LexemeId), Error> {
-        Ok(read_id(data).map(|(id, rest)| (rest, id))?)
+        read_id(data)
+            .map(|(id, rest)| (rest, id))
+            .map_err(|e| self.err_position(e, data))
     }
 
     #[inline]
     fn parse_u32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (result, rest) = read_u32(data)?;
+        let (result, rest) = read_u32(data).map_err(|e| self.err_position(e, data))?;
         self.token_tape.alloc().init(BinaryToken::U32(result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_u64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (result, rest) = read_u64(data)?;
+        let (result, rest) = read_u64(data).map_err(|e| self.err_position(e, data))?;
         self.token_tape.alloc().init(BinaryToken::U64(result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_i64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (result, rest) = read_i64(data)?;
+        let (result, rest) = read_i64(data).map_err(|e| self.err_position(e, data))?;
         self.token_tape.alloc().init(BinaryToken::I64(result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_i32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (result, rest) = read_i32(data)?;
+        let (result, rest) = read_i32(data).map_err(|e| self.err_position(e, data))?;
         self.token_tape.alloc().init(BinaryToken::I32(result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (result, rest) = read_f32(data)?;
+        let (result, rest) = read_f32(data).map_err(|e| self.err_position(e, data))?;
         self.token_tape.alloc().init(BinaryToken::F32(result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_f64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (result, rest) = read_f64(data)?;
+        let (result, rest) = read_f64(data).map_err(|e| self.err_position(e, data))?;
         self.token_tape.alloc().init(BinaryToken::F64(result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_bool(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (result, rest) = read_bool(data)?;
+        let (result, rest) = read_bool(data).map_err(|e| self.err_position(e, data))?;
         self.token_tape.alloc().init(BinaryToken::Bool(result));
         Ok(rest)
     }
 
     fn parse_rgb(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (result, rest) = read_rgb(data)?;
+        let (result, rest) = read_rgb(data).map_err(|e| self.err_position(e, data))?;
         self.token_tape.alloc().init(BinaryToken::Rgb(result));
         Ok(rest)
     }
 
     #[inline(always)]
     fn parse_quoted_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (scalar, rest) = read_string(data)?;
+        let (scalar, rest) = read_string(data).map_err(|e| self.err_position(e, data))?;
         self.token_tape.alloc().init(BinaryToken::Quoted(scalar));
         Ok(rest)
     }
 
     #[inline(always)]
     fn parse_unquoted_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (scalar, rest) = read_string(data)?;
+        let (scalar, rest) = read_string(data).map_err(|e| self.err_position(e, data))?;
         self.token_tape.alloc().init(BinaryToken::Unquoted(scalar));
         Ok(rest)
     }
@@ -678,6 +680,14 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
         self.token_tape.alloc().init(BinaryToken::MixedContainer);
         self.token_tape.alloc().init(stashed1);
+    }
+
+    #[inline]
+    fn err_position(&self, err: LexError, data: &[u8]) -> Error {
+        match err {
+            LexError::Eof => Error::eof(),
+            LexError::InvalidRgb => Error::invalid_syntax("invalid rgb", self.offset(data)),
+        }
     }
 
     #[inline(never)]

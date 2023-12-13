@@ -73,45 +73,45 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    // let mut utape = jomini::BinaryTape::default();
-    // let ures =
-    //     jomini::binary::BinaryTapeParser.parse_slice_into_tape_unoptimized(&data, &mut utape);
+    let mut utape = jomini::BinaryTape::default();
+    let ures =
+        jomini::binary::BinaryTapeParser.parse_slice_into_tape_unoptimized(&data, &mut utape);
 
-    // let ores = jomini::BinaryTape::from_slice(&data);
-    // assert_eq!(ures.is_ok(), ores.is_ok());
-    // if !ures.is_ok() {
-    //     return;
-    // }
+    let ores = jomini::BinaryTape::from_slice(&data);
+    assert_eq!(ures.is_ok(), ores.is_ok());
+    if !ures.is_ok() {
+        return;
+    }
 
-    // let otape = ores.unwrap();
+    let otape = ores.unwrap();
 
-    // assert_eq!(utape.tokens(), otape.tokens());
+    assert_eq!(utape.tokens(), otape.tokens());
 
-    // let tokens = otape.tokens();
-    // for (i, token) in tokens.iter().enumerate() {
-    //     match token {
-    //         jomini::BinaryToken::Array(ind)
-    //         | jomini::BinaryToken::Object(ind)
-    //         | jomini::BinaryToken::End(ind)
-    //             if *ind == 0 =>
-    //         {
-    //             panic!("zero ind encountered");
-    //         }
-    //         jomini::BinaryToken::MixedContainer => {}
-    //         jomini::BinaryToken::Equal => {}
-    //         jomini::BinaryToken::Array(ind) | jomini::BinaryToken::Object(ind) => {
-    //             match tokens[*ind] {
-    //                 jomini::BinaryToken::End(ind2) => {
-    //                     assert_eq!(ind2, i)
-    //                 }
-    //                 _ => panic!("expected end"),
-    //             }
-    //         }
-    //         _ => {}
-    //     }
-    // }
-    // let _: Result<Meta, _> =
-    //     jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-    //         .from_tape(&otape, &hash)
-    //         .deserialize();
+    let tokens = otape.tokens();
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            jomini::BinaryToken::Array(ind)
+            | jomini::BinaryToken::Object(ind)
+            | jomini::BinaryToken::End(ind)
+                if *ind == 0 =>
+            {
+                panic!("zero ind encountered");
+            }
+            jomini::BinaryToken::MixedContainer => {}
+            jomini::BinaryToken::Equal => {}
+            jomini::BinaryToken::Array(ind) | jomini::BinaryToken::Object(ind) => {
+                match tokens[*ind] {
+                    jomini::BinaryToken::End(ind2) => {
+                        assert_eq!(ind2, i)
+                    }
+                    _ => panic!("expected end"),
+                }
+            }
+            _ => {}
+        }
+    }
+    let _: Result<Meta, _> =
+        jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+            .from_tape(&otape, &hash)
+            .deserialize();
 });

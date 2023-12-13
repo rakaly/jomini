@@ -79,6 +79,10 @@ pub enum ErrorKind {
 
     /// An error occurred when performing IO.
     Io(std::io::Error),
+
+    /// The internal buffer does not have enough room to store data for the next
+    /// token
+    BufferFull,
 }
 
 impl ErrorKind {
@@ -118,6 +122,9 @@ impl std::fmt::Display for Error {
             ),
             ErrorKind::Deserialize(ref err) => write!(f, "deserialize error: {}", err),
             ErrorKind::Io(ref err) => write!(f, "io error: {}", err),
+            ErrorKind::BufferFull => {
+                write!(f, "max buffer size exceeded")
+            },
         }
     }
 }
@@ -140,21 +147,27 @@ impl From<LexerError> for Error {
     }
 }
 
-impl From<LexError> for Error {
-    fn from(_value: LexError) -> Self {
-        Error::eof()
-    }
-}
-
 impl From<BinReaderError> for Error {
-    fn from(_value: BinReaderError) -> Self {
-        Error::eof()
+    fn from(value: BinReaderError) -> Self {
+        let pos = value.position();
+        match value.into_kind() {
+            crate::binary::ReaderErrorKind::Read(x) => Error::new(ErrorKind::Io(x)),
+            crate::binary::ReaderErrorKind::BufferFull => todo!(),
+            crate::binary::ReaderErrorKind::Lexer(LexError::Eof) => Error::eof(),
+            crate::binary::ReaderErrorKind::Lexer(LexError::InvalidRgb) => {
+                Error::invalid_syntax("invalid rgb", pos)
+            }
+        }
     }
 }
 
 impl From<TextReaderError> for Error {
-    fn from(_value: TextReaderError) -> Self {
-        Error::eof()
+    fn from(value: TextReaderError) -> Self {
+        match value.into_kind() {
+            crate::text::ReaderErrorKind::Read(x) => Error::new(ErrorKind::Io(x)),
+            crate::text::ReaderErrorKind::BufferFull => todo!(),
+            crate::text::ReaderErrorKind::Eof => Error::eof(),
+        }
     }
 }
 
