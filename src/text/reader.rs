@@ -459,26 +459,31 @@ where
                                 // latency of this function in EU4 saves by 50%
                                 // (a 7% reduction overall).
                                 let data = ptr.cast::<u64>().read_unaligned();
-                                let has_open = contains_zero_byte(data ^ repeat_byte(b'{'));
-                                let has_close = contains_zero_byte(data ^ repeat_byte(b'}'));
                                 let has_quote = contains_zero_byte(data ^ repeat_byte(b'"'));
                                 let has_comment = contains_zero_byte(data ^ repeat_byte(b'#'));
                                 if has_quote || has_comment {
                                     break;
-                                } else if !has_open && !has_close {
-                                    ptr = ptr.add(8);
-                                    continue;
                                 }
 
-                                // Counting is more expensive than checking
-                                // existence so we do it after we confirmation
-                                let opens = count_chunk(data, b'{') as i32;
-                                let closes = count_chunk(data, b'}') as i32;
+                                let has_close = contains_zero_byte(data ^ repeat_byte(b'}'));
+                                let closes = if has_close {
+                                    count_chunk(data, b'}') as i32
+                                } else {
+                                    0
+                                };
+
                                 if depth - closes < 1 {
                                     break;
                                 }
 
-                                depth = depth + opens - closes;
+                                let has_open = contains_zero_byte(data ^ repeat_byte(b'{'));
+                                let opens = if has_open {
+                                    count_chunk(data, b'{') as i32
+                                } else {
+                                    0
+                                };
+
+                                depth += opens - closes;
                                 ptr = ptr.add(8);
                             }
 
