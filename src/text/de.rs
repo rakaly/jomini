@@ -294,10 +294,7 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
                 "did not expect end",
                 self.de.reader.position(),
             )),
-            Token::Operator(_) => Err(Error::invalid_syntax(
-                "did not expect operator",
-                self.de.reader.position(),
-            )),
+            Token::Operator(x) => visitor.visit_str(x.symbol()),
             Token::Unquoted(s) | Token::Quoted(s) => match self.de.encoding.decode(s.as_bytes()) {
                 Cow::Borrowed(x) => visitor.visit_str(x),
                 Cow::Owned(x) => visitor.visit_string(x),
@@ -2583,34 +2580,17 @@ mod tests {
         })
     }
 
+    #[rstest]
+    #[case(b"active_idea_groups = { a = 10 }", vec![(String::from("a"), 10)])]
+    #[case(b"active_idea_groups = { }", vec![])]
+    #[case(b"active_idea_groups = { ]=0 defensive_ideas=2 }", vec![(String::from("]"), 0), (String::from("defensive_ideas"), 2)])]
     #[test]
-    fn test_deserialize_vec_pair() {
-        let data = b"active_idea_groups = { a = 10 }";
-
-        let actual: MyStruct = from_owned(&data[..]);
+    fn test_deserialize_vec_pair(#[case] input: &[u8], #[case] expected: Vec<(String, u8)>) {
+        let actual: MyStruct = from_owned(input);
         assert_eq!(
             actual,
             MyStruct {
-                active_idea_groups: vec![(String::from("a"), 10)]
-            }
-        );
-
-        #[derive(Deserialize, Debug, PartialEq)]
-        struct MyStruct {
-            #[serde(default, deserialize_with = "deserialize_vec_pair")]
-            active_idea_groups: Vec<(String, u8)>,
-        }
-    }
-
-    #[test]
-    fn test_deserialize_vec_pair_empty() {
-        let data = b"active_idea_groups = {}";
-
-        let actual: MyStruct = from_owned(&data[..]);
-        assert_eq!(
-            actual,
-            MyStruct {
-                active_idea_groups: Vec::new()
+                active_idea_groups: expected
             }
         );
 

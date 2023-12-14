@@ -175,14 +175,6 @@ where
                                 self.buf.advance_to(ptr.add(1));
                                 return (Some(Token::Close), None);
                             }
-                            b']' => {
-                                self.buf.advance_to(ptr.add(1));
-                                return (Some(Token::Close), None);
-                            }
-                            b'[' => {
-                                self.buf.advance_to(ptr.add(1));
-                                return (Some(Token::Open), None);
-                            }
                             b'"' => {
                                 ptr = ptr.add(1);
                                 let start_ptr = ptr;
