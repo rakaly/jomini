@@ -472,9 +472,11 @@ where
                                     0
                                 };
 
-                                if depth - closes < 1 {
+                                let new_depth = depth - closes;
+                                if new_depth < 1 {
                                     break;
                                 }
+                                depth = new_depth;
 
                                 let has_open = contains_zero_byte(data ^ repeat_byte(b'{'));
                                 let opens = if has_open {
@@ -483,7 +485,7 @@ where
                                     0
                                 };
 
-                                depth += opens - closes;
+                                depth += opens;
                                 ptr = ptr.add(8);
                             }
 
