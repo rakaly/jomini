@@ -45,10 +45,49 @@ pub(crate) fn contains_zero_byte(x: u64) -> bool {
     x.wrapping_sub(LO_U64) & !x & HI_U64 != 0
 }
 
+/// https://github.com/llogiq/bytecount/blob/934ea0ef4338f00c797500b10c39f03b3cfc1692/src/integer_simd.rs#L21-L27
+#[inline]
+const fn bytewise_equal(lhs: u64, rhs: u64) -> u64 {
+    let lo = u64::MAX / 0xFF;
+    let hi = lo << 7;
+
+    let x = lhs ^ rhs;
+    !((((x & !hi) + !hi) | x) >> 7) & lo
+}
+
+#[inline]
+const fn sum_usize(values: u64) -> u64 {
+    let every_other_byte_lo = u64::MAX / 0xFFFF;
+    let every_other_byte = every_other_byte_lo * 0xFF;
+
+    // Pairwise reduction to avoid overflow on next step.
+    let pair_sum: u64 = (values & every_other_byte) + ((values >> 8) & every_other_byte);
+
+    // Multiplication results in top two bytes holding sum.
+    pair_sum.wrapping_mul(every_other_byte_lo) >> ((core::mem::size_of::<u64>() - 2) * 8)
+}
+
+#[inline]
+pub(crate) const fn count_chunk(value: u64, byte: u8) -> u64 {
+    sum_usize(bytewise_equal(value, repeat_byte(byte)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rstest::*;
+
+    #[rstest]
+    #[case(*b"        ", 0)]
+    #[case(*b"   {    ", 1)]
+    #[case(*b"   {   {", 2)]
+    #[case(*b"{  {   {", 3)]
+    #[case(*b"{{{{{{{{", 8)]
+    fn test_count_chunk(#[case] input: [u8; 8], #[case] expected: u64) {
+        let lhs = u64::from_le_bytes(input);
+        let rhs = repeat_byte(b'{');
+        assert_eq!(sum_usize(bytewise_equal(lhs, rhs)), expected);
+    }
 
     #[rstest]
     #[case(*b"14441111", Some(14441111))]

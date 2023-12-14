@@ -99,7 +99,14 @@ where
 
 fuzz_target!(|data: &[u8]| {
     let mut reader = jomini::text::TokenReader::new(data);
+    let mut i = 0;
     while let Ok(Some(x)) = reader.next() {
+        if matches!(x, jomini::text::Token::Open) {
+            i += 1;
+            if i % 2 == 1 {
+                let _ = reader.skip_container();
+            }
+        }
     }
 
     let _: Result<Meta, _> = jomini::TextTape::from_slice(&data).and_then(|tape| {
