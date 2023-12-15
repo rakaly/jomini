@@ -395,6 +395,7 @@ where
             .map(Some)
         } else if !self.at_remainder && !self.fields.remainder().is_empty() {
             self.at_remainder = true;
+            self.value = None;
             seed.deserialize(StaticDeserializer("remainder")).map(Some)
         } else {
             Ok(None)
@@ -405,18 +406,15 @@ where
     where
         V: DeserializeSeed<'de>,
     {
-        if !self.at_remainder {
-            let value = self.value.take().unwrap();
-            seed.deserialize(ValueDeserializer {
-                kind: ValueKind::OperatorValue(value),
+        match &self.value {
+            Some(x) => seed.deserialize(ValueDeserializer {
+                kind: ValueKind::OperatorValue(x.clone()),
                 config: self.config,
-            })
-        } else {
-            let remainder = self.fields.remainder();
-            seed.deserialize(ValueDeserializer {
-                kind: ValueKind::Array(remainder),
+            }),
+            None => seed.deserialize(ValueDeserializer {
+                kind: ValueKind::Array(self.fields.remainder()),
                 config: self.config,
-            })
+            }),
         }
     }
 
@@ -2219,5 +2217,54 @@ mod tests {
                 dynasty_house: expected
             }
         );
+    }
+
+    // https://github.com/rakaly/jomini/issues/137
+    #[test]
+    fn test_double_next_value_no_panic() {
+        #[derive(Deserialize, Debug)]
+        struct Color((u8, u8, u8));
+
+        #[derive(Deserialize, Debug)]
+        enum ColorName {
+            Red,
+            Green,
+            Blue,
+        }
+
+        struct Container;
+
+        impl<'de> Deserialize<'de> for Container {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                struct TVisitor;
+                impl<'de> serde::de::Visitor<'de> for TVisitor {
+                    type Value = Container;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        formatter.write_str("{r g b} or name")
+                    }
+
+                    fn visit_map<A: serde::de::MapAccess<'de>>(
+                        self,
+                        mut map: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        while let Some(_) = map.next_key::<String>()? {
+                            if let Ok(_) = map.next_value::<Color>() {
+                            } else {
+                                let _ = map.next_value::<ColorName>()?;
+                            }
+                        }
+                        Ok(Container)
+                    }
+                }
+                deserializer.deserialize_map(TVisitor)
+            }
+        }
+
+        let data = r#"
+        color1 = Red
+        color2 = { 255 0 0 }
+        "#;
+        let _: Container = from_slice(data.as_bytes()).unwrap();
     }
 }
