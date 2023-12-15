@@ -306,7 +306,7 @@ fn split_at_scalar(d: &[u8]) -> (Scalar, &[u8]) {
         use core::arch::x86_64::*;
         let start_ptr = d.as_ptr();
         let loop_size = std::mem::size_of::<__m128i>();
-        let end_ptr = d[d.len()..].as_ptr().sub(loop_size);
+        let end_ptr = d.as_ptr_range().end.sub(loop_size.min(d.len()));
         let mut ptr = start_ptr;
 
         // Here we use SIMD instructions to detect certain bytes.
@@ -357,7 +357,7 @@ fn split_at_scalar(d: &[u8]) -> (Scalar, &[u8]) {
         //  { = 0x7b
         //  } = 0x7d
         // * = unknown if boundary character. Can be removed for perf
-        while ptr <= end_ptr {
+        while ptr < end_ptr {
             let input = _mm_loadu_si128(ptr as *const __m128i);
             let t0 = _mm_cmpeq_epi8(input, _mm_set1_epi8(9));
             let mut result = t0;
@@ -439,25 +439,26 @@ impl<'a, 'b> ParserState<'a, 'b> {
     #[inline]
     fn skip_ws_t(&mut self, data: &'a [u8]) -> Option<&'a [u8]> {
         unsafe {
-            let start_ptr = data.as_ptr();
-            let end_ptr = start_ptr.add(data.len());
-
+            let start_ptr = data.as_ptr_range().start;
+            let end_ptr = data.as_ptr_range().end;
             let mut ptr = start_ptr;
             while ptr < end_ptr {
                 match *ptr {
                     b' ' | b'\t' | b'\n' | b'\r' | b';' => {}
-                    b'#' => {
-                        ptr = ptr.offset(1);
-                        while ptr < end_ptr && *ptr != b'\n' {
-                            ptr = ptr.offset(1);
+                    b'#' => loop {
+                        ptr = ptr.add(1);
+                        if ptr == end_ptr {
+                            return None;
+                        } else if *ptr == b'\n' {
+                            break;
                         }
-                    }
+                    },
                     _ => {
                         let rest = std::slice::from_raw_parts(ptr, sub(end_ptr, ptr));
                         return Some(rest);
                     }
                 }
-                ptr = ptr.offset(1);
+                ptr = ptr.add(1);
             }
         }
 
