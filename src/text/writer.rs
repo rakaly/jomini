@@ -192,7 +192,7 @@ where
     pub fn write_operator(&mut self, data: Operator) -> Result<(), Error> {
         if self.mixed_mode == MixedMode::Disabled {
             if data == Operator::Equal {
-                write!(self.writer, "{}", data)?;
+                self.writer.write_all(b"=")?;
             } else {
                 write!(self.writer, " {} ", data)?;
             }
