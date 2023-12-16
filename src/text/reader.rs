@@ -187,8 +187,9 @@ where
                                     }
 
                                     if *ptr == b'\\' {
-                                        ptr = ptr.add(2);
-                                        if ptr >= end {
+                                        let advance = end.offset_from(ptr).min(2);
+                                        ptr = ptr.offset(advance);
+                                        if ptr == end {
                                             state = ParseState::Quote;
                                             let carry_over = end.offset_from(start_ptr) as usize;
                                             break 'eof (carry_over, carry_over.max(2) - 2);
@@ -345,7 +346,8 @@ where
                 ParseState::Quote { .. } => {
                     while ptr < end {
                         if *ptr == b'\\' {
-                            ptr = ptr.add(2);
+                            let advance = end.offset_from(ptr).min(2);
+                            ptr = ptr.offset(advance);
                         } else if *ptr != b'"' {
                             ptr = ptr.add(1);
                         } else {
@@ -516,11 +518,14 @@ where
                             }
                         },
                         SkipState::Quote => loop {
-                            if ptr >= end {
+                            if ptr == end {
                                 break 'refill;
                             }
 
                             if *ptr == b'\\' {
+                                if end.offset_from(ptr) <= 2 {
+                                    break 'refill;
+                                }
                                 ptr = ptr.add(2);
                             } else if *ptr != b'"' {
                                 ptr = ptr.add(1);
@@ -547,12 +552,11 @@ where
                 }
             }
 
-            self.buf.advance_to(self.buf.end);
-            let overread = unsafe { ptr.offset_from(end) } as usize;
+            self.buf.advance_to(ptr);
             match self.buf.fill_buf(&mut self.reader) {
                 Ok(0) => return Err(self.eof_error()),
                 Err(e) => return Err(self.buffer_error(e)),
-                Ok(_) => ptr = unsafe { self.buf.start.add(overread) },
+                Ok(_) => ptr = self.buf.start,
             }
         }
     }
