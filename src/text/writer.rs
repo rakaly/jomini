@@ -16,6 +16,7 @@ pub struct TextWriter<W> {
     mode: DepthMode,
     depth: Vec<DepthMode>,
     state: WriteState,
+    indents: [u8; 16],
     indent_char: u8,
     indent_factor: u8,
     needs_line_terminator: bool,
@@ -576,11 +577,17 @@ where
     /// Write the indent characters
     #[inline]
     fn write_indent(&mut self) -> Result<(), Error> {
-        for _ in 0..self.depth.len() * usize::from(self.indent_factor) {
-            self.writer.write_all(&[self.indent_char])?;
-        }
+        let indents = self.depth.len() * (self.indent_factor as usize);
+        match self.indents.get(..indents) {
+            Some(x) => Ok(self.writer.write_all(x)?),
+            None => {
+                for _ in 0..self.depth.len() * usize::from(self.indent_factor) {
+                    self.writer.write_all(&[self.indent_char])?;
+                }
 
-        Ok(())
+                Ok(())
+            }
+        }
     }
 
     /// Enter mixed mode for writing a container that is a list and an object
@@ -843,6 +850,7 @@ impl TextWriterBuilder {
             state: WriteState::Key,
             mode: DepthMode::Object,
             depth: Vec::with_capacity(16),
+            indents: [self.indent_char; 16],
             indent_char: self.indent_char,
             indent_factor: self.indent_factor,
             needs_line_terminator: false,
