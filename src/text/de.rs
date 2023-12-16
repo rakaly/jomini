@@ -123,7 +123,10 @@ where
     TextDeserializer::from_windows1252_slice(data)?.deserialize()
 }
 
-/// Convenience method for deserializing streaming windows1252 data into a Rust value
+/// (**Experimental**) Create a Windows1252 text value from a reader
+///
+/// Considered experimental as it uses a [TokenReader] under the hood, which
+/// uses a different parsing routine geared toward save files.
 pub fn from_windows1252_reader<T, R>(reader: R) -> Result<T, Error>
 where
     T: DeserializeOwned,
@@ -779,7 +782,10 @@ enum TextDeserializerKind<'a, 'b, E> {
 }
 
 impl TextDeserializer<'_, '_, Windows1252Encoding> {
-    /// Create a Windows1252 text deserializer over a reader
+    /// (**Experimental**) Create a Windows1252 text deserializer over a reader
+    ///
+    /// Considered experimental as it uses a [TokenReader] under the hood, which
+    /// uses a different parsing routine geared toward save files.
     pub fn from_windows1252_reader<R>(reader: R) -> TextReaderDeserializer<R, Windows1252Encoding>
     where
         R: Read,

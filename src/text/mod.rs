@@ -11,11 +11,8 @@
 //! abstractions ontop of:
 //!  - [TextTape::from_slice]: Realizes a pseudo AST onto
 //!    a linear tape. Cleans up and normalizes data.
-//!  - [TokenReader]: (**experimental** unlike the [binary
-//!    equivalent](crate::binary::TokenReader)) an incremental text lexer
-//!    designed for handling large saves in a memory efficient manner. It can
-//!    lex game files, but the best API for exposing esoteric game file syntax
-//!    has not yet been developed.
+//!  - [TokenReader]: (**experimental**) an incremental text lexer
+//!    designed for handling large saves in a memory efficient manner.
 //!
 //! Some additional APIs are available to make working with a [TextTape] more
 //! ergonomic for DOM-like use cases.

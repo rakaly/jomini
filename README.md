@@ -24,7 +24,9 @@ Converters](https://github.com/ParadoxGameConverters) and
 
 ## Quick Start
 
-Below is a demonstration on parsing plaintext data using jomini tools.
+Below is a demonstration of deserializing plaintext data using serde.
+Several additional serde-like attributes are used to reconcile the serde
+data model with structure of these files.
 
 ```rust
 use jomini::{
@@ -71,9 +73,9 @@ let actual: Model = jomini::text::de::from_windows1252_slice(data)?;
 assert_eq!(actual, expected);
 ```
 
-## Binary Parsing
+## Binary Deserialization
 
-Parsing data encoded in the binary format is done in a similar fashion but with a couple extra steps for the caller to supply:
+Deserializing data encoded in the binary format is done in a similar fashion but with a couple extra steps for the caller to supply:
 
 - How text should be decoded (typically Windows-1252 or UTF-8)
 - How rational (floating point) numbers are decoded
@@ -84,7 +86,7 @@ Implementors be warned, not only does each Paradox game have a different binary 
 Below is an example that defines a sample binary format and uses a hashmap token lookup.
 
 ```rust
-use jomini::{BinaryDeserializer, Encoding, JominiDeserialize, Windows1252Encoding};
+use jomini::{Encoding, JominiDeserialize, Windows1252Encoding, binary::BinaryFlavor};
 use std::{borrow::Cow, collections::HashMap};
 
 #[derive(JominiDeserialize, PartialEq, Debug)]
@@ -116,8 +118,7 @@ let data = [ 0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47 ];
 let mut map = HashMap::new();
 map.insert(0x2d82, "field1");
 
-let actual: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-    .deserialize_slice(&data[..], &map)?;
+let actual: MyStruct = BinaryTestFlavor.deserialize_slice(&data[..], &map)?;
 assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
 ```
 
@@ -126,59 +127,14 @@ without any duplication.
 
 One can configure the behavior when a token is unknown (ie: fail immediately or try to continue).
 
-### Ondemand Deserialization
-
-The ondemand deserializer is a one-shot deserialization mode is often faster
-and more memory efficient as it does not parse the input into an intermediate
-tape, and instead deserializes right from the input.
-
-It is instantiated and used similarly to `BinaryDeserializer`
-
-```rust
-use jomini::OndemandBinaryDeserializer;
-// [...snip code from previous example...]
-
-let actual: MyStruct = OndemandBinaryDeserializer::builder_flavor(BinaryTestFlavor)
-    .deserialize_slice(&data[..], &map)?;
-assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
-```
-
-### Direct identifier deserialization with `token` attribute
-
-There may be some performance loss during binary deserialization as
-tokens are resolved to strings via a `TokenResolver` and then matched against the
-string representations of a struct's fields.
-
-We can fix this issue by directly encoding the expected token value into the struct:
-
-```rust
-#[derive(JominiDeserialize, PartialEq, Debug)]
-struct MyStruct {
-    #[jomini(token = 0x2d82)]
-    field1: String,
-}
-
-// Empty token to string resolver
-let map = HashMap::<u16, String>::new();
-
-let actual: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-    .deserialize_slice(&data[..], &map)?;
-assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
-```
-
-Couple notes:
-
-- This does not obviate need for the token to string resolver as tokens may be used as values.
-- If the `token` attribute is specified on one field on a struct, it must be specified on all fields of that struct.
-
 ## Caveats
 
-Caller is responsible for:
+Before calling any Jomini API, callers are expected to:
 
-- Determining the correct format (text or binary) ahead of time
-- Stripping off any header that may be present (eg: `EU4txt` / `EU4bin`)
-- Providing the token resolver for the binary format
-- Providing the conversion to reconcile how, for example, a date may be encoded as an integer in
+- Determine the correct format (text or binary) ahead of time.
+- Strip off any header that may be present (eg: `EU4txt` / `EU4bin`)
+- Provide the token resolver for the binary format
+- Provide the conversion to reconcile how, for example, a date may be encoded as an integer in
   the binary format, but as a string when in plaintext.
 
 ## The Mid-level API
@@ -199,6 +155,9 @@ for (key, _op, value) in reader.fields() {
 }
 ```
 
+For even lower level of parisng, see the respective binary and text
+documentation.
+
 The mid-level API also provides the excellent utility of converting the
 plaintext Clausewitz format to JSON when the `json` feature is enabled.
 
@@ -210,28 +169,6 @@ let reader = tape.windows1252_reader();
 let actual = reader.json().to_string()?;
 assert_eq!(actual, r#"{"foo":"bar"}"#);
 ```
-
-## One Level Lower
-
-At the lowest layer, one can interact with the raw data directly via `TextTape`
-and `BinaryTape`.
-
-```rust
-use jomini::{TextTape, TextToken, Scalar};
-
-let data = b"foo=bar";
-
-assert_eq!(
-    TextTape::from_slice(&data[..])?.tokens(),
-    &[
-        TextToken::Unquoted(Scalar::new(b"foo")),
-        TextToken::Unquoted(Scalar::new(b"bar")),
-    ]
-);
-```
-
-If one will only use `TextTape` and `BinaryTape` then `jomini` can be compiled without default
-features, resulting in a build without dependencies.
 
 ## Write API
 
