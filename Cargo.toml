@@ -21,11 +21,13 @@ members = ["jomini_derive"]
 serde = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }
 jomini_derive = { path = "jomini_derive", version = "^0.2.3", optional = true }
+itoa = { version = "1.0", optional = true }
 
 [features]
-default = ["derive"]
+default = ["derive", "faster_writer"]
 derive = ["serde/derive", "jomini_derive"]
 json = ["serde", "serde_json"]
+faster_writer = ["dep:itoa"]
 
 [dev-dependencies]
 attohttpc = { version = "0.24", features = ["tls-vendored"] }

@@ -75,16 +75,28 @@ const WRITE_STATE_NEXT: [WriteState; 7] = [
     WriteState::KeyValueSeparator,
 ];
 
+#[cfg(feature = "faster_writer")]
+macro_rules! write_num {
+    ($self:ident, $data:expr) => { $self.write_unquoted(itoa::Buffer::new().format($data).as_bytes()) }
+}
+
+#[cfg(not(feature = "faster_writer"))]
+macro_rules! write_num {
+    ($self:ident, $data:expr) => { write!($self, "{}", $data) }
+}
+
 impl<W> TextWriter<W>
 where
     W: Write,
 {
     /// Get inner writer, keeping ownership
+    #[inline]
     pub fn inner(&mut self) -> &mut W {
         &mut self.writer
     }
 
     /// Consumes this Writer, returning the underlying writer
+    #[inline]
     pub fn into_inner(self) -> W {
         self.writer
     }
@@ -102,6 +114,7 @@ where
     }
 
     /// Write out the start of an object
+    #[inline]
     pub fn write_object_start(&mut self) -> Result<(), Error> {
         self.write_preamble()?;
         self.writer.write_all(b"{")?;
@@ -113,6 +126,7 @@ where
     }
 
     /// Write out the start of an array
+    #[inline]
     pub fn write_array_start(&mut self) -> Result<(), Error> {
         self.write_preamble()?;
         self.writer.write_all(b"{")?;
@@ -124,6 +138,7 @@ where
     }
 
     /// Write the end of an array or object
+    #[inline]
     pub fn write_end(&mut self) -> Result<(), Error> {
         let old_state = self.state;
         if let Some(mode) = self.depth.pop() {
@@ -164,6 +179,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_bool(&mut self, data: bool) -> Result<(), Error> {
         match data {
             true => write!(self, "yes"),
@@ -189,6 +205,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_operator(&mut self, data: Operator) -> Result<(), Error> {
         if self.mixed_mode == MixedMode::Disabled {
             if data == Operator::Equal {
@@ -223,6 +240,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_unquoted(&mut self, data: &[u8]) -> Result<(), Error> {
         self.write_preamble()?;
         self.writer.write_all(data)?;
@@ -249,6 +267,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_quoted(&mut self, data: &[u8]) -> Result<(), Error> {
         self.write_preamble()?;
         let esc_buf = self.scratch.split_off(0);
@@ -274,8 +293,9 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_i32(&mut self, data: i32) -> Result<(), Error> {
-        write!(self, "{}", data)
+        write_num!(self, data)
     }
 
     /// Write an unsigned 32bit integer.
@@ -291,8 +311,9 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_u32(&mut self, data: u32) -> Result<(), Error> {
-        write!(self, "{}", data)
+        write_num!(self, data)
     }
 
     /// Write an unsigned 64bit integer.
@@ -308,8 +329,9 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_u64(&mut self, data: u64) -> Result<(), Error> {
-        write!(self, "{}", data)
+        write_num!(self, data)
     }
 
     /// Write a signed 64bit integer.
@@ -325,8 +347,9 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_i64(&mut self, data: i64) -> Result<(), Error> {
-        write!(self, "{}", data)
+        write_num!(self, data)
     }
 
     /// Write a 32 bit floating point at full precision
@@ -342,6 +365,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_f32(&mut self, data: f32) -> Result<(), Error> {
         write!(self, "{}", data)
     }
@@ -359,6 +383,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_f32_precision(&mut self, data: f32, precision: usize) -> Result<(), Error> {
         write!(self, "{0:.1$}", data, precision)
     }
@@ -376,6 +401,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_f64(&mut self, data: f64) -> Result<(), Error> {
         write!(self, "{}", data)
     }
@@ -393,6 +419,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_f64_precision(&mut self, data: f64, precision: usize) -> Result<(), Error> {
         write!(self, "{0:.1$}", data, precision)
     }
@@ -419,6 +446,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_header(&mut self, header: &[u8]) -> Result<(), Error> {
         self.write_preamble()?;
         self.writer.write_all(header)?;
@@ -441,6 +469,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_date(&mut self, data: PdsDateFormatter) -> Result<(), Error> {
         write!(self, "{}", data)
     }
@@ -490,6 +519,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[inline]
     pub fn write_fmt(&mut self, fmt: Arguments) -> Result<(), Error> {
         self.write_preamble()?;
         self.writer.write_fmt(fmt)?;
@@ -497,6 +527,7 @@ where
         Ok(())
     }
 
+    #[inline]
     fn write_line_terminator(&mut self) -> Result<(), Error> {
         if self.needs_line_terminator {
             self.writer.write_all(b"\n")?;
@@ -506,6 +537,7 @@ where
         Ok(())
     }
 
+    #[inline]
     fn write_preamble(&mut self) -> Result<(), Error> {
         let just_wrote_line_terminator = self.needs_line_terminator;
         self.write_line_terminator()?;
@@ -542,6 +574,7 @@ where
     }
 
     /// Write the indent characters
+    #[inline]
     fn write_indent(&mut self) -> Result<(), Error> {
         for _ in 0..self.depth.len() * usize::from(self.indent_factor) {
             self.writer.write_all(&[self.indent_char])?;
@@ -551,6 +584,7 @@ where
     }
 
     /// Enter mixed mode for writing a container that is a list and an object
+    #[inline]
     pub fn start_mixed_mode(&mut self) {
         self.mode = DepthMode::Array;
         self.mixed_mode = MixedMode::Started;
