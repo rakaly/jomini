@@ -69,7 +69,7 @@ where
         self.buf.position()
     }
 
-    #[inline(always)]
+    #[inline]
     fn next_opt(&mut self) -> (Option<Token>, Option<ReaderError>) {
         loop {
             let window =
@@ -209,7 +209,7 @@ where
     /// assert_eq!(reader.read().unwrap(), Token::Close);
     /// assert!(matches!(reader.read().unwrap_err().kind(), ReaderErrorKind::Lexer(LexError::Eof)));
     /// ```
-    #[inline(always)]
+    #[inline]
     pub fn read(&mut self) -> Result<Token, ReaderError> {
         // Workaround for borrow checker :(
         let s = unsafe { &mut *(self as *mut TokenReader<R>) };
@@ -233,7 +233,7 @@ where
     /// assert_eq!(reader.next().unwrap(), Some(Token::Close));
     /// assert_eq!(reader.next().unwrap(), None);
     /// ```
-    #[inline(always)]
+    #[inline]
     pub fn next(&mut self) -> Result<Option<Token>, ReaderError> {
         match self.next_opt() {
             (Some(x), _) => Ok(Some(x)),
