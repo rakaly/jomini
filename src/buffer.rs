@@ -150,11 +150,12 @@ impl BufferWindowBuilder {
     }
 }
 
+/// An no-op read implementation used for TokenReaders
 #[derive(Debug)]
 pub struct SliceReader<'a>(PhantomData<&'a [u8]>);
 
 impl<'a> SliceReader<'a> {
-    pub fn new(_data: &'a [u8]) -> Self {
+    pub(crate) fn new(_data: &'a [u8]) -> Self {
         SliceReader(PhantomData)
     }
 }

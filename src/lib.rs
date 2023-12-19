@@ -238,6 +238,7 @@ mod scalar;
 pub mod text;
 pub(crate) mod util;
 
+pub use self::buffer::SliceReader;
 #[doc(inline)]
 pub use self::binary::{BinaryTape, BinaryToken};
 pub use self::encoding::*;
