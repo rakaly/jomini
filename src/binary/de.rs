@@ -2,7 +2,7 @@ use super::{tokens::*, Rgb};
 use crate::{
     binary::{BinaryFlavor, FailedResolveStrategy, TokenResolver},
     de::ColorSequence,
-    util::get_split,
+    util::split_first_chunk,
     BinaryTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error, ErrorKind,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, Visitor};
@@ -24,8 +24,8 @@ impl<'data> OndemandParser<'data> {
 
     #[inline]
     pub fn next(&mut self) -> Option<u16> {
-        let (data, token) =
-            get_split::<2>(self.data).map(|(head, rest)| (rest, u16::from_le_bytes(head)))?;
+        let (data, token) = split_first_chunk::<2>(self.data)
+            .map(|(head, rest)| (rest, u16::from_le_bytes(*head)))?;
         self.data = data;
         Some(token)
     }
@@ -37,8 +37,8 @@ impl<'data> OndemandParser<'data> {
 
     #[inline]
     pub fn read_string(&mut self) -> Result<&'data [u8], Error> {
-        let (head, rest) = get_split::<2>(self.data).ok_or_else(Error::eof)?;
-        let text_len = usize::from(u16::from_le_bytes(head));
+        let (head, rest) = split_first_chunk::<2>(self.data).ok_or_else(Error::eof)?;
+        let text_len = usize::from(u16::from_le_bytes(*head));
         if text_len <= rest.len() {
             let (text, rest) = rest.split_at(text_len);
             self.data = rest;
@@ -57,44 +57,44 @@ impl<'data> OndemandParser<'data> {
 
     #[inline]
     fn read_u32(&mut self) -> Result<u32, Error> {
-        let (head, rest) = get_split::<4>(self.data).ok_or_else(Error::eof)?;
+        let (head, rest) = split_first_chunk::<4>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
-        Ok(u32::from_le_bytes(head))
+        Ok(u32::from_le_bytes(*head))
     }
 
     #[inline]
     fn read_u64(&mut self) -> Result<u64, Error> {
-        let (head, rest) = get_split::<8>(self.data).ok_or_else(Error::eof)?;
+        let (head, rest) = split_first_chunk::<8>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
-        Ok(u64::from_le_bytes(head))
+        Ok(u64::from_le_bytes(*head))
     }
 
     #[inline]
     fn read_i64(&mut self) -> Result<i64, Error> {
-        let (head, rest) = get_split::<8>(self.data).ok_or_else(Error::eof)?;
+        let (head, rest) = split_first_chunk::<8>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
-        Ok(i64::from_le_bytes(head))
+        Ok(i64::from_le_bytes(*head))
     }
 
     #[inline]
     fn read_i32(&mut self) -> Result<i32, Error> {
-        let (head, rest) = get_split::<4>(self.data).ok_or_else(Error::eof)?;
+        let (head, rest) = split_first_chunk::<4>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
-        Ok(i32::from_le_bytes(head))
+        Ok(i32::from_le_bytes(*head))
     }
 
     #[inline]
     fn read_f32(&mut self) -> Result<[u8; 4], Error> {
-        let (head, rest) = get_split::<4>(self.data).ok_or_else(Error::eof)?;
+        let (head, rest) = split_first_chunk::<4>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
-        Ok(head)
+        Ok(*head)
     }
 
     #[inline]
     fn read_f64(&mut self) -> Result<[u8; 8], Error> {
-        let (head, rest) = get_split::<8>(self.data).ok_or_else(Error::eof)?;
+        let (head, rest) = split_first_chunk::<8>(self.data).ok_or_else(Error::eof)?;
         self.data = rest;
-        Ok(head)
+        Ok(*head)
     }
 
     #[inline]
