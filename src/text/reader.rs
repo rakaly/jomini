@@ -99,16 +99,7 @@ pub struct TokenReader<R> {
     utf8: Utf8Bom,
 }
 
-impl<R> TokenReader<R>
-where
-    R: Read,
-{
-    /// Create a new text reader
-    #[inline]
-    pub fn new(reader: R) -> Self {
-        TokenReader::builder().build(reader)
-    }
-
+impl TokenReader<()> {
     /// Read from a byte slice without memcpy's
     #[inline]
     pub fn from_slice(data: &[u8]) -> TokenReader<SliceReader<'_>> {
@@ -117,6 +108,17 @@ where
             buf: BufferWindow::from_slice(data),
             utf8: Utf8Bom::Unknown,
         }
+    }
+}
+
+impl<R> TokenReader<R>
+where
+    R: Read,
+{
+    /// Create a new text reader
+    #[inline]
+    pub fn new(reader: R) -> Self {
+        TokenReader::builder().build(reader)
     }
 
     /// Returns the byte position of the data stream that has been processed.

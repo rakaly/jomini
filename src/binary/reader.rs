@@ -46,6 +46,17 @@ pub struct TokenReader<R> {
     buf: BufferWindow,
 }
 
+impl TokenReader<()> {
+    /// Read from a byte slice without memcpy's
+    #[inline]
+    pub fn from_slice(data: &[u8]) -> TokenReader<SliceReader<'_>> {
+        TokenReader {
+            reader: SliceReader::new(data),
+            buf: BufferWindow::from_slice(data),
+        }
+    }
+}
+
 impl<R> TokenReader<R>
 where
     R: Read,
@@ -54,15 +65,6 @@ where
     #[inline]
     pub fn new(reader: R) -> Self {
         TokenReader::builder().build(reader)
-    }
-
-    /// Read from a byte slice without memcpy's
-    #[inline]
-    pub fn from_slice(data: &[u8]) -> TokenReader<SliceReader<'_>> {
-        TokenReader {
-            reader: SliceReader::new(data),
-            buf: BufferWindow::from_slice(data),
-        }
     }
 
     /// Returns the byte position of the data stream that has been processed.
