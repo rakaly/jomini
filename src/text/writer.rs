@@ -78,12 +78,16 @@ const WRITE_STATE_NEXT: [WriteState; 7] = [
 
 #[cfg(feature = "faster_writer")]
 macro_rules! write_num {
-    ($self:ident, $data:expr) => { $self.write_unquoted(itoa::Buffer::new().format($data).as_bytes()) }
+    ($self:ident, $data:expr) => {
+        $self.write_unquoted(itoa::Buffer::new().format($data).as_bytes())
+    };
 }
 
 #[cfg(not(feature = "faster_writer"))]
 macro_rules! write_num {
-    ($self:ident, $data:expr) => { write!($self, "{}", $data) }
+    ($self:ident, $data:expr) => {
+        write!($self, "{}", $data)
+    };
 }
 
 impl<W> TextWriter<W>
