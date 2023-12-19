@@ -132,7 +132,7 @@ where
     T: DeserializeOwned,
     R: Read,
 {
-    TextDeserializer::from_windows1252_reader(reader).deserialize()
+    TextDeserializer::from_windows1252_reader(TokenReader::new(reader)).deserialize()
 }
 
 /// Convenience method for deserializing streaming utf8 data into a Rust value
@@ -141,7 +141,7 @@ where
     T: DeserializeOwned,
     R: Read,
 {
-    TextDeserializer::from_utf8_reader(reader).deserialize()
+    TextDeserializer::from_utf8_reader(TokenReader::new(reader)).deserialize()
 }
 
 /// Convenience method for parsing the given text data and deserializing as utf8 encoded.
@@ -786,12 +786,14 @@ impl TextDeserializer<'_, '_, Windows1252Encoding> {
     ///
     /// Considered experimental as it uses a [TokenReader] under the hood, which
     /// uses a different parsing routine geared toward save files.
-    pub fn from_windows1252_reader<R>(reader: R) -> TextReaderDeserializer<R, Windows1252Encoding>
+    pub fn from_windows1252_reader<R>(
+        reader: TokenReader<R>,
+    ) -> TextReaderDeserializer<R, Windows1252Encoding>
     where
         R: Read,
     {
         TextReaderDeserializer {
-            reader: TokenReader::new(reader),
+            reader,
             encoding: Windows1252Encoding,
         }
     }
@@ -799,12 +801,12 @@ impl TextDeserializer<'_, '_, Windows1252Encoding> {
 
 impl TextDeserializer<'_, '_, Utf8Encoding> {
     /// Create a UTF8 text deserializer over a reader
-    pub fn from_utf8_reader<R>(reader: R) -> TextReaderDeserializer<R, Utf8Encoding>
+    pub fn from_utf8_reader<R>(reader: TokenReader<R>) -> TextReaderDeserializer<R, Utf8Encoding>
     where
         R: Read,
     {
         TextReaderDeserializer {
-            reader: TokenReader::new(reader),
+            reader,
             encoding: Utf8Encoding,
         }
     }
