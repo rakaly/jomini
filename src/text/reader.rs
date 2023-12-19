@@ -1,6 +1,6 @@
 use super::Operator;
 use crate::{
-    buffer::{BufferError, BufferWindow, BufferWindowBuilder},
+    buffer::{BufferError, BufferWindow, BufferWindowBuilder, SliceReader},
     data::is_boundary,
     util::{contains_zero_byte, count_chunk, repeat_byte},
     Scalar,
@@ -107,6 +107,16 @@ where
     #[inline]
     pub fn new(reader: R) -> Self {
         TokenReader::builder().build(reader)
+    }
+
+    /// Read from a byte slice without memcpy's
+    #[inline]
+    pub fn from_slice(data: &[u8]) -> TokenReader<SliceReader<'_>> {
+        TokenReader {
+            reader: SliceReader::new(data),
+            buf: BufferWindow::from_slice(data),
+            utf8: Utf8Bom::Unknown,
+        }
     }
 
     /// Returns the byte position of the data stream that has been processed.
