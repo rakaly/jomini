@@ -57,6 +57,7 @@ pub struct Scalar<'a> {
 
 impl<'a> Scalar<'a> {
     /// Create a new scalar backed by a byte slice
+    #[inline]
     pub fn new(data: &'a [u8]) -> Scalar<'a> {
         Scalar { data }
     }
