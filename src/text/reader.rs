@@ -134,7 +134,7 @@ where
         self.buf.position()
     }
 
-    #[inline(always)]
+    #[inline]
     unsafe fn next_opt(&mut self) -> (Option<Token>, Option<ReaderError>) {
         #[derive(Debug)]
         enum ParseState {
@@ -670,7 +670,7 @@ where
     /// assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"1444.11.11")));
     /// assert!(matches!(reader.read().unwrap_err().kind(), ReaderErrorKind::Eof));
     /// ```
-    #[inline(always)]
+    #[inline]
     pub fn read(&mut self) -> Result<Token, ReaderError> {
         // Workaround for borrow checker :(
         let s = unsafe { &mut *(self as *mut TokenReader<R>) };
@@ -691,7 +691,7 @@ where
     /// assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"1444.11.11")));
     /// assert_eq!(reader.next().unwrap(), None);
     /// ```
-    #[inline(always)]
+    #[inline]
     pub fn next(&mut self) -> Result<Option<Token>, ReaderError> {
         match unsafe { self.next_opt() } {
             (Some(x), _) => Ok(Some(x)),
