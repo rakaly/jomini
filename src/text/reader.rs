@@ -681,6 +681,17 @@ where
         }
     }
 
+    #[inline]
+    pub(crate) fn read_expect_equals(&mut self) -> Result<Token, ReaderError> {
+        match self.buf.window().first() {
+            Some(b'=') => {
+                self.buf.advance(1);
+                Ok(Token::Operator(Operator::Equal))
+            }
+            _ => self.read(),
+        }
+    }
+
     /// Read a token, returning none when all the data has been consumed
     ///
     /// ```rust

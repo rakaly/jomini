@@ -252,7 +252,7 @@ impl<'de, 'a, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'a, R, 
         V: DeserializeSeed<'de>,
     {
         let de = unsafe { &mut *(self.de as *mut _) };
-        let token = self.de.reader.read()?;
+        let token = self.de.reader.read_expect_equals()?;
         let deser = if let Token::Operator(op) = token {
             let new_token = self.de.reader.read()?;
             let mut deser = TextReaderTokenDeserializer::new(de, new_token);
