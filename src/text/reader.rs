@@ -801,6 +801,31 @@ pub struct ReaderError {
     kind: ReaderErrorKind,
 }
 
+impl std::fmt::Display for ReaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind() {
+            ReaderErrorKind::Read { .. } => {
+                write!(f, "failed to read past position: {}", self.position)
+            }
+            ReaderErrorKind::BufferFull => {
+                write!(f, "max buffer size exceeded at position: {}", self.position)
+            }
+            ReaderErrorKind::Eof => {
+                write!(f, "unexpected end of file at position: {}", self.position)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReaderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.kind() {
+            ReaderErrorKind::Read(x) => Some(x),
+            _ => None,
+        }
+    }
+}
+
 impl ReaderError {
     /// Return the byte position where the error occurred
     pub fn position(&self) -> usize {
