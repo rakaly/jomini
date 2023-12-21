@@ -1,3 +1,13 @@
+## v0.25.0 - 2023-12-21
+
+- Fix panic for multiple text deserialization value calls
+- Add `faster_writer` feature (based on itoa, enabled by default) for a significantly faster writer for numbers
+- Add deserialize implementations over `Read` instances
+- Add parsing implementations over `Read` instances
+- Add deserialization methods on `BinaryFlavor` instances
+- Change default binary byte slice deserialization algorithm to be ondemand instead of using the binary tape
+- Text decoding algorithms optimized for shorter text
+
 ## v0.24.0 - 2023-11-21
 
 - Fix incorrect date parsing for dates from years [-100, -999]
