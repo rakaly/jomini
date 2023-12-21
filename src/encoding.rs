@@ -1,7 +1,4 @@
-use crate::{
-    data::is_whitespace, data::WINDOWS_1252, util::contains_zero_byte, util::le_u64,
-    util::repeat_byte,
-};
+use crate::{data::WINDOWS_1252, util::contains_zero_byte, util::le_u64, util::repeat_byte};
 use std::borrow::Cow;
 
 /// An encoding for interpreting byte data as UTF-8 text
@@ -107,61 +104,40 @@ impl Encoding for Utf8Encoding {
     }
 }
 
-#[inline]
-fn trim_trailing_index(d: &[u8]) -> usize {
-    d.iter()
-        .rev()
-        .position(|x| !is_whitespace(*x))
-        .unwrap_or(d.len())
-}
+// https://github.com/rust-lang/rust/blob/767453eb7ca188e991ac5568c17b984dd4893e77/library/core/src/slice/ascii.rs#L159-L171
+const fn trim_ascii_end(data: &[u8]) -> &[u8] {
+    let mut bytes = data;
 
-#[inline]
-fn trim_trailing_whitepsace(d: &[u8]) -> &[u8] {
-    &d[..d.len() - trim_trailing_index(d)]
-}
-
-#[inline]
-fn trim_trailing_ascii_whitespace(original_data: &[u8], s: &mut String) {
-    // truncate the string's inner vector to remove any whitespace.
-    // We know this is safe as we only care about ascii whitespace.
-    let ind = trim_trailing_index(original_data);
-    let inner = unsafe { s.as_mut_vec() };
-    inner.truncate(inner.len() - ind);
+    // Note: A pattern matching based approach (instead of indexing) allows
+    // making the function const.
+    while let [rest @ .., last] = bytes {
+        if last.is_ascii_whitespace() {
+            bytes = rest;
+        } else {
+            break;
+        }
+    }
+    bytes
 }
 
 #[inline]
 pub(crate) fn decode_windows1252(d: &[u8]) -> Cow<str> {
-    // Then we iterate through the data in 8 byte chunks and ensure that each chunk
-    // is contained of ascii characters with no escape characters
-    let mut chunk_iter = d.chunks_exact(8);
-    let mut offset = 0;
-    for n in &mut chunk_iter {
-        let wide = le_u64(n);
-        if wide & 0x8080_8080_8080_8080 != 0 || contains_zero_byte(wide ^ repeat_byte(b'\\')) {
-            return Cow::Owned(windows_1252_create(d, offset));
-        }
-
-        offset += 8;
+    let bytes = trim_ascii_end(d);
+    let mut eject = false;
+    for x in bytes {
+        eject |= !x.is_ascii() || *x == b'\\'
     }
 
-    // Same logic as before but instead of operating on 8 bytes at a time, work bytewise
-    let remainder = chunk_iter.remainder();
-    for &byte in remainder {
-        if !byte.is_ascii() || byte == b'\\' {
-            return Cow::Owned(windows_1252_create(d, offset));
-        }
-
-        offset += 1;
+    if eject {
+        return Cow::Owned(windows_1252_create(bytes, 0));
     }
 
-    let d = trim_trailing_whitepsace(d);
-
-    // This is safe as we just checked that the data is ascii and ascii is a subset of utf8
-    debug_assert!(std::str::from_utf8(d).is_ok());
-    let s = unsafe { std::str::from_utf8_unchecked(d) };
+    debug_assert!(std::str::from_utf8(bytes).is_ok());
+    let s = unsafe { std::str::from_utf8_unchecked(bytes) };
     Cow::Borrowed(s)
 }
 
+#[inline(never)]
 fn windows_1252_create(d: &[u8], offset: usize) -> String {
     let (upto, rest) = d.split_at(offset);
 
@@ -175,7 +151,6 @@ fn windows_1252_create(d: &[u8], offset: usize) -> String {
         result.push(WINDOWS_1252[c as usize]);
     }
 
-    trim_trailing_ascii_whitespace(d, &mut result);
     result
 }
 
@@ -183,6 +158,7 @@ fn windows_1252_create(d: &[u8], offset: usize) -> String {
 pub(crate) fn decode_utf8(d: &[u8]) -> Cow<str> {
     // Then we iterate through the data in 8 byte chunks and ensure that each chunk
     // has no escape characters
+    let d = trim_ascii_end(d);
     let mut chunk_iter = d.chunks_exact(8);
     let mut offset = 0;
     let mut is_ascii = true;
@@ -207,7 +183,7 @@ pub(crate) fn decode_utf8(d: &[u8]) -> Cow<str> {
         offset += 1;
     }
 
-    let d = trim_trailing_whitepsace(d);
+    let d = trim_ascii_end(d);
 
     // Most the strings we'll be decoding are ascii, so we have an ascii fast path. If we don't
     // detect any non-ascii characters then we can immediately create the borrowed string without
@@ -234,10 +210,10 @@ fn utf8_create(d: &[u8], offset: usize) -> String {
         result.push(c);
     }
 
-    let mut result = String::from_utf8(result)
-        .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned());
-    trim_trailing_ascii_whitespace(d, &mut result);
-    result
+    match String::from_utf8(result) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(&e.into_bytes()).into_owned(),
+    }
 }
 
 #[cfg(test)]
