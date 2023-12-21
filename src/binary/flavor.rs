@@ -17,7 +17,10 @@ pub trait BinaryFlavor: crate::Encoding {
 
     /// Create binary deserializer from this binary flavor
     #[cfg(feature = "derive")]
-    fn deserializer(&self) -> BinaryDeserializerBuilder<&Self> {
+    fn deserializer(&self) -> BinaryDeserializerBuilder<&Self>
+    where
+        Self: Sized,
+    {
         BinaryDeserializer::builder_flavor(self)
     }
 
@@ -31,6 +34,7 @@ pub trait BinaryFlavor: crate::Encoding {
     where
         T: serde::de::Deserialize<'de>,
         RES: TokenResolver,
+        Self: Sized,
     {
         self.deserializer().deserialize_slice(data, resolver)
     }
@@ -42,6 +46,7 @@ pub trait BinaryFlavor: crate::Encoding {
         T: serde::de::DeserializeOwned,
         RES: TokenResolver,
         R: std::io::Read,
+        Self: Sized,
     {
         self.deserializer().deserialize_reader(reader, resolver)
     }
