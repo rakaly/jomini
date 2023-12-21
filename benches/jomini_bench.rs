@@ -3,11 +3,9 @@ use criterion::{
 };
 use flate2::read::GzDecoder;
 use jomini::{
-    binary::{
-        de::OndemandBinaryDeserializerBuilder, BinaryFlavor, BinaryTapeParser, TokenResolver,
-    },
+    binary::{BinaryFlavor, BinaryTapeParser, TokenResolver},
     common::Date,
-    BinaryDeserializer, BinaryTape, Encoding, Scalar, TextTape, Utf8Encoding, Windows1252Encoding,
+    BinaryTape, Encoding, Scalar, TextTape, Utf8Encoding, Windows1252Encoding,
 };
 use std::{borrow::Cow, io::Read};
 
@@ -125,15 +123,26 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("ondemand", |b| {
         b.iter(|| {
-            let _res: Gamestate = OndemandBinaryDeserializerBuilder::with_flavor(BinaryTestFlavor)
+            let _res: Gamestate = BinaryTestFlavor
+                .deserializer()
                 .deserialize_slice(&data[..], &MyBinaryResolver)
+                .unwrap();
+        })
+    });
+    group.bench_function("ondemand-reader", |b| {
+        b.iter(|| {
+            let _res: Gamestate = BinaryTestFlavor
+                .deserializer()
+                .deserialize_reader(&data[..], &MyBinaryResolver)
                 .unwrap();
         })
     });
     group.bench_function("tape", |b| {
         b.iter(|| {
-            let _res: Gamestate = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-                .deserialize_slice(&data[..], &MyBinaryResolver)
+            let tape = BinaryTape::from_slice(&data[..]).unwrap();
+            let _res: Gamestate = BinaryTestFlavor
+                .deserializer()
+                .deserialize_tape(&tape, &MyBinaryResolver)
                 .unwrap();
         })
     });

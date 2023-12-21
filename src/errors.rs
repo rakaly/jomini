@@ -1,4 +1,8 @@
-use crate::ScalarError;
+use crate::{
+    binary::{LexError, LexerError, ReaderError as BinReaderError},
+    text::ReaderError as TextReaderError,
+    ScalarError,
+};
 use std::fmt;
 
 /// An error that can occur when processing data
@@ -14,6 +18,17 @@ impl Error {
     #[cold]
     pub(crate) fn eof() -> Error {
         Self::new(ErrorKind::Eof)
+    }
+
+    #[cold]
+    pub(crate) fn invalid_syntax<T>(msg: T, position: usize) -> Error
+    where
+        T: Into<String>,
+    {
+        Self::new(ErrorKind::InvalidSyntax {
+            msg: msg.into(),
+            offset: position,
+        })
     }
 
     /// Return the specific type of error
@@ -64,6 +79,10 @@ pub enum ErrorKind {
 
     /// An error occurred when performing IO.
     Io(std::io::Error),
+
+    /// The internal buffer does not have enough room to store data for the next
+    /// token
+    BufferFull,
 }
 
 impl ErrorKind {
@@ -103,6 +122,9 @@ impl std::fmt::Display for Error {
             ),
             ErrorKind::Deserialize(ref err) => write!(f, "deserialize error: {}", err),
             ErrorKind::Io(ref err) => write!(f, "io error: {}", err),
+            ErrorKind::BufferFull => {
+                write!(f, "max buffer size exceeded")
+            },
         }
     }
 }
@@ -110,6 +132,42 @@ impl std::fmt::Display for Error {
 impl From<DeserializeError> for Error {
     fn from(error: DeserializeError) -> Self {
         Error::new(ErrorKind::Deserialize(error))
+    }
+}
+
+impl From<LexerError> for Error {
+    fn from(value: LexerError) -> Self {
+        match value.kind() {
+            LexError::Eof => Error::eof(),
+            _ => Error::new(ErrorKind::InvalidSyntax {
+                msg: format!("{}", value.kind()),
+                offset: value.position(),
+            }),
+        }
+    }
+}
+
+impl From<BinReaderError> for Error {
+    fn from(value: BinReaderError) -> Self {
+        let pos = value.position();
+        match value.into_kind() {
+            crate::binary::ReaderErrorKind::Read(x) => Error::new(ErrorKind::Io(x)),
+            crate::binary::ReaderErrorKind::BufferFull => todo!(),
+            crate::binary::ReaderErrorKind::Lexer(LexError::Eof) => Error::eof(),
+            crate::binary::ReaderErrorKind::Lexer(LexError::InvalidRgb) => {
+                Error::invalid_syntax("invalid rgb", pos)
+            }
+        }
+    }
+}
+
+impl From<TextReaderError> for Error {
+    fn from(value: TextReaderError) -> Self {
+        match value.into_kind() {
+            crate::text::ReaderErrorKind::Read(x) => Error::new(ErrorKind::Io(x)),
+            crate::text::ReaderErrorKind::BufferFull => todo!(),
+            crate::text::ReaderErrorKind::Eof => Error::eof(),
+        }
     }
 }
 

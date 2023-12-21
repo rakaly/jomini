@@ -1,4 +1,10 @@
-use super::tokens::*;
+use super::{
+    lexer::{
+        read_bool, read_f32, read_f64, read_i32, read_i64, read_id, read_rgb, read_string,
+        read_u32, read_u64,
+    },
+    LexError, LexemeId,
+};
 use crate::{binary::Rgb, copyless::VecHelper, util::get_split, Error, ErrorKind, Scalar};
 
 /// Represents any valid binary value
@@ -151,125 +157,77 @@ impl<'a, 'b> ParserState<'a, 'b> {
     }
 
     #[inline]
-    fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], u16), Error> {
-        self.parse_next_id_opt(data).ok_or_else(Error::eof)
+    fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], LexemeId), Error> {
+        read_id(data)
+            .map(|(id, rest)| (rest, id))
+            .map_err(|e| self.err_position(e, data))
     }
 
     #[inline]
     fn parse_u32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (head, rest) = get_split::<4>(data).ok_or_else(Error::eof)?;
-        let val = u32::from_le_bytes(head);
-        self.token_tape.alloc().init(BinaryToken::U32(val));
+        let (result, rest) = read_u32(data).map_err(|e| self.err_position(e, data))?;
+        self.token_tape.alloc().init(BinaryToken::U32(result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_u64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (head, rest) = get_split::<8>(data).ok_or_else(Error::eof)?;
-        let val = u64::from_le_bytes(head);
-        self.token_tape.alloc().init(BinaryToken::U64(val));
+        let (result, rest) = read_u64(data).map_err(|e| self.err_position(e, data))?;
+        self.token_tape.alloc().init(BinaryToken::U64(result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_i64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (head, rest) = get_split::<8>(data).ok_or_else(Error::eof)?;
-        let val = i64::from_le_bytes(head);
-        self.token_tape.alloc().init(BinaryToken::I64(val));
+        let (result, rest) = read_i64(data).map_err(|e| self.err_position(e, data))?;
+        self.token_tape.alloc().init(BinaryToken::I64(result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_i32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (head, rest) = get_split::<4>(data).ok_or_else(Error::eof)?;
-        let val = i32::from_le_bytes(head);
-        self.token_tape.alloc().init(BinaryToken::I32(val));
+        let (result, rest) = read_i32(data).map_err(|e| self.err_position(e, data))?;
+        self.token_tape.alloc().init(BinaryToken::I32(result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (head, rest) = get_split::<4>(data).ok_or_else(Error::eof)?;
-        self.token_tape.alloc().init(BinaryToken::F32(head));
+        let (result, rest) = read_f32(data).map_err(|e| self.err_position(e, data))?;
+        self.token_tape.alloc().init(BinaryToken::F32(result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_f64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (head, rest) = get_split::<8>(data).ok_or_else(Error::eof)?;
-        self.token_tape.alloc().init(BinaryToken::F64(head));
+        let (result, rest) = read_f64(data).map_err(|e| self.err_position(e, data))?;
+        self.token_tape.alloc().init(BinaryToken::F64(result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_bool(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let val = data.first().map(|&x| x != 0).ok_or_else(Error::eof)?;
-        self.token_tape.alloc().init(BinaryToken::Bool(val));
-        Ok(&data[1..])
+        let (result, rest) = read_bool(data).map_err(|e| self.err_position(e, data))?;
+        self.token_tape.alloc().init(BinaryToken::Bool(result));
+        Ok(rest)
     }
 
     fn parse_rgb(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let data = &data[2..];
-        let (data, r_tok) = self.parse_next_id(data)?;
-        let (r_data, data) = get_split::<4>(data).ok_or_else(Error::eof)?;
-        let r = u32::from_le_bytes(r_data);
-
-        let (data, g_tok) = self.parse_next_id(data)?;
-        let (g_data, data) = get_split::<4>(data).ok_or_else(Error::eof)?;
-        let g = u32::from_le_bytes(g_data);
-
-        let (data, b_tok) = self.parse_next_id(data)?;
-        let (b_data, data) = get_split::<4>(data).ok_or_else(Error::eof)?;
-        let b = u32::from_le_bytes(b_data);
-
-        if r_tok != U32 && g_tok != U32 && b_tok != U32 {
-            return Err(self.invalid_syntax("invalid rgb tokens", data));
-        }
-
-        let (data, next_tok) = self.parse_next_id(data)?;
-
-        let (data, a) = match next_tok {
-            U32 => {
-                let (a_data, data) = get_split::<4>(data).ok_or_else(Error::eof)?;
-                let a = u32::from_le_bytes(a_data);
-                let (data, end_tok) = self.parse_next_id(data)?;
-                if end_tok != END {
-                    return Err(self.invalid_syntax("expected end to follow rgb alpha", data));
-                }
-                (data, Some(a))
-            }
-            END => (data, None),
-            _ => return Err(self.invalid_syntax("invalid rgb end token", data)),
-        };
-
-        let val = Rgb { r, g, b, a };
-        self.token_tape.alloc().init(BinaryToken::Rgb(val));
-        Ok(data)
-    }
-
-    #[inline(always)]
-    fn parse_string_inner(&mut self, data: &'a [u8]) -> Result<(Scalar<'a>, &'a [u8]), Error> {
-        let (head, rest) = get_split::<2>(data).ok_or_else(Error::eof)?;
-        let text_len = usize::from(u16::from_le_bytes(head));
-        if text_len <= rest.len() {
-            let (text, rest) = rest.split_at(text_len);
-            let scalar = Scalar::new(text);
-            Ok((scalar, rest))
-        } else {
-            Err(Error::eof())
-        }
+        let (result, rest) = read_rgb(data).map_err(|e| self.err_position(e, data))?;
+        self.token_tape.alloc().init(BinaryToken::Rgb(result));
+        Ok(rest)
     }
 
     #[inline(always)]
     fn parse_quoted_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (scalar, rest) = self.parse_string_inner(data)?;
+        let (scalar, rest) = read_string(data).map_err(|e| self.err_position(e, data))?;
         self.token_tape.alloc().init(BinaryToken::Quoted(scalar));
         Ok(rest)
     }
 
     #[inline(always)]
     fn parse_unquoted_string(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (scalar, rest) = self.parse_string_inner(data)?;
+        let (scalar, rest) = read_string(data).map_err(|e| self.err_position(e, data))?;
         self.token_tape.alloc().init(BinaryToken::Unquoted(scalar));
         Ok(rest)
     }
@@ -294,6 +252,8 @@ impl<'a, 'b> ParserState<'a, 'b> {
     }
 
     fn parse<const ENABLE_OPTIMIZATION: bool>(&mut self) -> Result<(), Error> {
+        use super::LexemeId as L;
+
         let mut data = self.data;
         let mut state = ParseState::Key;
 
@@ -320,25 +280,27 @@ impl<'a, 'b> ParserState<'a, 'b> {
             };
         }
 
-        'outer: while let Some((mut d, mut token_id)) = self.parse_next_id_opt(data) {
+        'outer: while let Some((mut d, token_id)) = self.parse_next_id_opt(data) {
+            let mut token_id = LexemeId(token_id);
+
             // This conditional is purely an optimization to parse an entire
             // <key> = <value> in one iteration of the loop, and can be removed
             // or ignored to ease understanding. See PR #111 for a breakdown on
             // field and value frequency.
             if ENABLE_OPTIMIZATION && state == ParseState::Key {
-                if token_id > UNQUOTED_STRING || token_id == 0xb {
+                if token_id > L::UNQUOTED || token_id == L(0xb) {
                     // 65-90% of keys are tokens
                     // 5% of these keys are id (0xb)
-                    if token_id != F64 && token_id != U64 {
-                        self.token_tape.alloc().init(BinaryToken::Token(token_id));
+                    if token_id != L::F64 && token_id != L::U64 {
+                        self.token_tape.alloc().init(BinaryToken::Token(token_id.0));
 
                         let (d2, token_id2) = self.parse_next_id(d)?;
-                        if token_id2 == EQUAL {
+                        if token_id2 == L::EQUAL {
                             let (d3, token_id3) = self.parse_next_id(d2)?;
-                            if token_id3 == I32 {
+                            if token_id3 == L::I32 {
                                 data = self.parse_i32(d3)?;
                                 continue;
-                            } else if token_id3 == OPEN {
+                            } else if token_id3 == L::OPEN {
                                 // We could be looking at a primitive array
                                 // so we should attempt to parse it in one go
                                 let ind = self.token_tape.len();
@@ -357,7 +319,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                                 let (nd2, x) = self.parse_next_id(nd)?;
                                                 if x == $token {
                                                     nd = self.$fn(nd2)?;
-                                                } else if x == END {
+                                                } else if x == L::CLOSE {
                                                     data = nd2;
                                                     let end_idx = self.token_tape.len();
                                                     match unsafe {
@@ -392,20 +354,22 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                 }
 
                                 // These three array types cover 99.6% of EU4 arrays
-                                if token_id4 == I32 {
-                                    parse_array_field!(parse_i32, I32);
-                                } else if token_id4 == QUOTED_STRING {
-                                    parse_array_field!(parse_quoted_string, QUOTED_STRING);
-                                } else if token_id4 == F32 {
-                                    parse_array_field!(parse_f32, F32);
-                                } else if (token_id4 > UNQUOTED_STRING
-                                    && token_id4 != F64
-                                    && token_id4 != U64)
-                                    || token_id4 == 0xb
+                                if token_id4 == L::I32 {
+                                    parse_array_field!(parse_i32, L::I32);
+                                } else if token_id4 == L::QUOTED {
+                                    parse_array_field!(parse_quoted_string, L::QUOTED);
+                                } else if token_id4 == L::F32 {
+                                    parse_array_field!(parse_f32, L::F32);
+                                } else if (token_id4 > L::UNQUOTED
+                                    && token_id4 != L::F64
+                                    && token_id4 != L::U64)
+                                    || token_id4 == L(0xb)
                                 {
-                                    self.token_tape.alloc().init(BinaryToken::Token(token_id4));
+                                    self.token_tape
+                                        .alloc()
+                                        .init(BinaryToken::Token(token_id4.0));
                                     let (d4, token_id4) = self.parse_next_id(d4)?;
-                                    if token_id4 == EQUAL {
+                                    if token_id4 == L::EQUAL {
                                         unsafe { self.set_parent_to_object(parent_ind) };
                                         state = ParseState::ObjectValue;
                                         (d, token_id) = self.parse_next_id(d4)?;
@@ -419,10 +383,10 @@ impl<'a, 'b> ParserState<'a, 'b> {
                                     token_id = token_id4;
                                     state = ParseState::OpenFirst;
                                 }
-                            } else if token_id3 == QUOTED_STRING {
+                            } else if token_id3 == L::QUOTED {
                                 data = self.parse_quoted_string(d3)?;
                                 continue;
-                            } else if token_id3 == F32 {
+                            } else if token_id3 == L::F32 {
                                 data = self.parse_f32(d3)?;
                                 continue;
                             } else {
@@ -436,19 +400,19 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             state = ParseState::KeyValueSeparator;
                         }
                     }
-                } else if token_id == END {
+                } else if token_id == L::CLOSE {
                     push_end!();
                     data = d;
                     continue;
-                } else if token_id == QUOTED_STRING {
+                } else if token_id == L::QUOTED {
                     // over 20% of EU4 object keys are quoted strings and they
                     // nearly always are objects
                     let d2 = self.parse_quoted_string(d)?;
                     let (d3, token_id2) = self.parse_next_id(d2)?;
-                    if token_id2 == EQUAL {
+                    if token_id2 == L::EQUAL {
                         let (d4, token_id3) = self.parse_next_id(d3)?;
 
-                        if token_id3 == OPEN {
+                        if token_id3 == L::OPEN {
                             let ind = self.token_tape.len();
                             self.token_tape.alloc().init(BinaryToken::Array(parent_ind));
                             parent_ind = ind;
@@ -456,18 +420,18 @@ impl<'a, 'b> ParserState<'a, 'b> {
                             (d, token_id) = self.parse_next_id(d4)?;
 
                             // Expect an object that follows a quoted string to start with a token
-                            if token_id > UNQUOTED_STRING && token_id != F64 && token_id != U64 {
-                                self.token_tape.alloc().init(BinaryToken::Token(token_id));
+                            if token_id > L::UNQUOTED && token_id != L::F64 && token_id != L::U64 {
+                                self.token_tape.alloc().init(BinaryToken::Token(token_id.0));
                                 (d, token_id) = self.parse_next_id(d)?;
-                                if token_id == EQUAL {
+                                if token_id == L::EQUAL {
                                     unsafe { self.set_parent_to_object(parent_ind) };
                                     state = ParseState::ObjectValue;
                                     (d, token_id) = self.parse_next_id(d)?;
-                                    if token_id == BOOL {
+                                    if token_id == L::BOOL {
                                         data = self.parse_bool(d)?;
                                         state = ParseState::Key;
                                         continue;
-                                    } else if token_id == QUOTED_STRING {
+                                    } else if token_id == L::QUOTED {
                                         data = self.parse_quoted_string(d)?;
                                         state = ParseState::Key;
                                         continue;
@@ -486,15 +450,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         token_id = token_id2;
                         state = ParseState::KeyValueSeparator;
                     }
-                } else if token_id == I32 {
+                } else if token_id == L::I32 {
                     // 8% of Vic3 and EU4 object keys are i32
                     // 96% of i32 keys have an i32 value
                     let d2 = self.parse_i32(d)?;
                     let (d3, token_id2) = self.parse_next_id(d2)?;
-                    if token_id2 == EQUAL {
+                    if token_id2 == L::EQUAL {
                         let (d4, token_id3) = self.parse_next_id(d3)?;
 
-                        if token_id3 == I32 {
+                        if token_id3 == L::I32 {
                             data = self.parse_i32(d4)?;
                             continue;
                         } else {
@@ -520,15 +484,15 @@ impl<'a, 'b> ParserState<'a, 'b> {
             }
 
             match token_id {
-                U32 => {
+                L::U32 => {
                     data = self.parse_u32(d)?;
                     state = Self::next_state(state);
                 }
-                U64 => {
+                L::U64 => {
                     data = self.parse_u64(d)?;
                     state = Self::next_state(state);
                 }
-                I32 => {
+                L::I32 => {
                     data = self.parse_i32(d)?;
                     state = Self::next_state(state);
 
@@ -536,9 +500,9 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         let mut nd = data;
                         loop {
                             let (nd2, x) = self.parse_next_id(nd)?;
-                            if x == I32 {
+                            if x == L::I32 {
                                 nd = self.parse_i32(nd2)?;
-                            } else if x == END {
+                            } else if x == L::CLOSE {
                                 push_end!();
                                 data = nd2;
                                 break;
@@ -550,28 +514,28 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         }
                     }
                 }
-                BOOL => {
+                L::BOOL => {
                     data = self.parse_bool(d)?;
                     state = Self::next_state(state);
                 }
-                QUOTED_STRING => {
+                L::QUOTED => {
                     data = self.parse_quoted_string(d)?;
                     state = Self::next_state(state);
                 }
-                UNQUOTED_STRING => {
+                L::UNQUOTED => {
                     data = self.parse_unquoted_string(d)?;
                     state = Self::next_state(state);
                 }
-                F32 => {
+                L::F32 => {
                     data = self.parse_f32(d)?;
                     state = Self::next_state(state);
                 }
-                F64 => {
+                L::F64 => {
                     data = self.parse_f64(d)?;
                     state = Self::next_state(state);
                 }
 
-                OPEN => {
+                L::OPEN => {
                     if state != ParseState::Key {
                         let ind = self.token_tape.len();
                         self.token_tape.alloc().init(BinaryToken::Array(parent_ind));
@@ -585,12 +549,12 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         // position eg: `a={b=c {} d=1}`. These occur in every
                         // EU4 save, even in 1.34.
                         match self.parse_next_id(d)? {
-                            (nd, END) => data = nd,
+                            (nd, L::CLOSE) => data = nd,
                             _ => return Err(self.empty_object_err(data)),
                         }
                     }
                 }
-                END => {
+                L::CLOSE => {
                     match state {
                         ParseState::KeyValueSeparator => {
                             // `a={b=c 10}`
@@ -608,7 +572,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
                     push_end!();
                     data = d;
                 }
-                EQUAL => {
+                L::EQUAL => {
                     data = d;
                     if state == ParseState::KeyValueSeparator {
                         state = ParseState::ObjectValue;
@@ -657,17 +621,17 @@ impl<'a, 'b> ParserState<'a, 'b> {
                         return Err(self.equal_key_error(data));
                     }
                 }
-                RGB if state == ParseState::ObjectValue => {
+                L::RGB if state == ParseState::ObjectValue => {
                     data = self.parse_rgb(d)?;
                     state = ParseState::Key;
                 }
-                I64 => {
+                L::I64 => {
                     data = self.parse_i64(d)?;
                     state = Self::next_state(state);
                 }
                 x => {
                     data = d;
-                    self.token_tape.alloc().init(BinaryToken::Token(x));
+                    self.token_tape.alloc().init(BinaryToken::Token(x.0));
                     state = Self::next_state(state);
                 }
             }
@@ -716,6 +680,14 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
         self.token_tape.alloc().init(BinaryToken::MixedContainer);
         self.token_tape.alloc().init(stashed1);
+    }
+
+    #[inline]
+    fn err_position(&self, err: LexError, data: &[u8]) -> Error {
+        match err {
+            LexError::Eof => Error::eof(),
+            LexError::InvalidRgb => Error::invalid_syntax("invalid rgb", self.offset(data)),
+        }
     }
 
     #[inline(never)]
@@ -768,15 +740,6 @@ impl<'a, 'b> ParserState<'a, 'b> {
     fn end_valid_err(&mut self, data: &[u8]) -> Error {
         Error::new(ErrorKind::InvalidSyntax {
             msg: String::from("END only valid for object or array"),
-            offset: self.offset(data),
-        })
-    }
-
-    #[inline(never)]
-    #[cold]
-    fn invalid_syntax<T: Into<String>>(&self, msg: T, data: &[u8]) -> Error {
-        Error::new(ErrorKind::InvalidSyntax {
-            msg: msg.into(),
             offset: self.offset(data),
         })
     }
@@ -1074,7 +1037,7 @@ mod tests {
         data.extend_from_slice(b"schools_initiated");
         data.extend_from_slice(&[0x01, 0x00, 0x0f, 0x00, 0x0b, 0x00]);
         data.extend_from_slice(b"1444.11.11\n");
-        data.extend_from_slice(&END.to_le_bytes());
+        data.extend_from_slice(&LexemeId::CLOSE.0.to_le_bytes());
         let tape = parse(&data[..]).unwrap();
         assert_eq!(
             tape.token_tape,

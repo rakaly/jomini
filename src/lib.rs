@@ -14,7 +14,7 @@ Converters](https://github.com/ParadoxGameConverters) and
 ## Features
 
 - ✔ Versatile: Handle both plaintext and binary encoded data
-- ✔ Fast: Parse data at 1 GB/s
+- ✔ Fast: Parse data at over 1 GB/s
 - ✔ Small: Compile with zero dependencies
 - ✔ Safe: Extensively fuzzed against potential malicious input
 - ✔ Ergonomic: Use [serde](https://serde.rs/derive.html)-like macros to have parsing logic automatically implemented
@@ -22,7 +22,9 @@ Converters](https://github.com/ParadoxGameConverters) and
 
 ## Quick Start
 
-Below is a demonstration on parsing plaintext data using jomini tools.
+Below is a demonstration of deserializing plaintext data using serde.
+Several additional serde-like attributes are used to reconcile the serde
+data model with structure of these files.
 
 ```rust
 # #[cfg(feature = "derive")] {
@@ -72,9 +74,9 @@ assert_eq!(actual, expected);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Binary Parsing
+## Binary Deserialization
 
-Parsing data encoded in the binary format is done in a similar fashion but with a couple extra steps for the caller to supply:
+Deserializing data encoded in the binary format is done in a similar fashion but with a couple extra steps for the caller to supply:
 
 - How text should be decoded (typically Windows-1252 or UTF-8)
 - How rational (floating point) numbers are decoded
@@ -86,7 +88,7 @@ Below is an example that defines a sample binary format and uses a hashmap token
 
 ```rust
 # #[cfg(feature = "derive")] {
-use jomini::{BinaryDeserializer, Encoding, JominiDeserialize, Windows1252Encoding};
+use jomini::{Encoding, JominiDeserialize, Windows1252Encoding, binary::BinaryFlavor};
 use std::{borrow::Cow, collections::HashMap};
 
 #[derive(JominiDeserialize, PartialEq, Debug)]
@@ -97,7 +99,7 @@ struct MyStruct {
 #[derive(Debug, Default)]
 pub struct BinaryTestFlavor;
 
-impl jomini::binary::BinaryFlavor for BinaryTestFlavor {
+impl BinaryFlavor for BinaryTestFlavor {
     fn visit_f32(&self, data: [u8; 4]) -> f32 {
         f32::from_le_bytes(data)
     }
@@ -118,8 +120,7 @@ let data = [ 0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47 ];
 let mut map = HashMap::new();
 map.insert(0x2d82, "field1");
 
-let actual: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-    .deserialize_slice(&data[..], &map)?;
+let actual: MyStruct = BinaryTestFlavor.deserialize_slice(&data[..], &map)?;
 assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
 # }
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -130,120 +131,14 @@ without any duplication.
 
 One can configure the behavior when a token is unknown (ie: fail immediately or try to continue).
 
-### Ondemand Deserialization
-
-The ondemand deserializer is a one-shot deserialization mode is often faster
-and more memory efficient as it does not parse the input into an intermediate
-tape, and instead deserializes right from the input.
-
-It is instantiated and used similarly to `BinaryDeserializer`
-
-```rust
-# #[cfg(feature = "derive")] {
-use jomini::OndemandBinaryDeserializer;
-# use jomini::{Encoding, JominiDeserialize, Windows1252Encoding};
-# use std::{borrow::Cow, collections::HashMap};
-#
-# #[derive(JominiDeserialize, PartialEq, Debug)]
-# struct MyStruct {
-#     field1: String,
-# }
-#
-# #[derive(Debug, Default)]
-# pub struct BinaryTestFlavor;
-#
-# impl jomini::binary::BinaryFlavor for BinaryTestFlavor {
-#     fn visit_f32(&self, data: [u8; 4]) -> f32 {
-#         f32::from_le_bytes(data)
-#     }
-#
-#     fn visit_f64(&self, data: [u8; 8]) -> f64 {
-#         f64::from_le_bytes(data)
-#     }
-# }
-#
-# impl Encoding for BinaryTestFlavor {
-#     fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
-#         Windows1252Encoding::decode(data)
-#     }
-# }
-#
-# let data = [ 0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47 ];
-#
-# let mut map = HashMap::new();
-# map.insert(0x2d82, "field1");
-// [...snip code from previous example...]
-
-let actual: MyStruct = OndemandBinaryDeserializer::builder_flavor(BinaryTestFlavor)
-    .deserialize_slice(&data[..], &map)?;
-assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
-# }
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-### Direct identifier deserialization with `token` attribute
-
-There may be some performance loss during binary deserialization as
-tokens are resolved to strings via a `TokenResolver` and then matched against the
-string representations of a struct's fields.
-
-We can fix this issue by directly encoding the expected token value into the struct:
-
-```rust
-# #[cfg(feature = "derive")] {
-# use jomini::{Encoding, JominiDeserialize, Windows1252Encoding, BinaryDeserializer};
-# use std::{borrow::Cow, collections::HashMap};
-#
-# #[derive(Debug, Default)]
-# pub struct BinaryTestFlavor;
-#
-# impl jomini::binary::BinaryFlavor for BinaryTestFlavor {
-#     fn visit_f32(&self, data: [u8; 4]) -> f32 {
-#         f32::from_le_bytes(data)
-#     }
-#
-#     fn visit_f64(&self, data: [u8; 8]) -> f64 {
-#         f64::from_le_bytes(data)
-#     }
-# }
-#
-# impl Encoding for BinaryTestFlavor {
-#     fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
-#         Windows1252Encoding::decode(data)
-#     }
-# }
-#
-# let data = [ 0x82, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47 ];
-#
-#[derive(JominiDeserialize, PartialEq, Debug)]
-struct MyStruct {
-    #[jomini(token = 0x2d82)]
-    field1: String,
-}
-
-// Empty token to string resolver
-let map = HashMap::<u16, String>::new();
-
-let actual: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-    .deserialize_slice(&data[..], &map)?;
-assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
-# }
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-Couple notes:
-
-- This does not obviate need for the token to string resolver as tokens may be used as values.
-- If the `token` attribute is specified on one field on a struct, it must be specified on all fields of that struct.
-
 ## Caveats
 
-Caller is responsible for:
+Before calling any Jomini API, callers are expected to:
 
-- Determining the correct format (text or binary) ahead of time
-- Stripping off any header that may be present (eg: `EU4txt` / `EU4bin`)
-- Providing the token resolver for the binary format
-- Providing the conversion to reconcile how, for example, a date may be encoded as an integer in
+- Determine the correct format (text or binary) ahead of time.
+- Strip off any header that may be present (eg: `EU4txt` / `EU4bin`)
+- Provide the token resolver for the binary format
+- Provide the conversion to reconcile how, for example, a date may be encoded as an integer in
   the binary format, but as a string when in plaintext.
 
 ## The Mid-level API
@@ -263,6 +158,8 @@ for (key, _op, value) in reader.fields() {
     println!("{:?}={:?}", key.read_str(), value.read_str().unwrap());
 }
 ```
+
+For even lower level of parisng, see the respective [binary] and [text] module documentation.
 
 */
 #![cfg_attr(
@@ -287,28 +184,6 @@ assert_eq!(actual, r#"{"foo":"bar"}"#);
 "##
 )]
 /*!
-## One Level Lower
-
-At the lowest layer, one can interact with the raw data directly via `TextTape`
-and `BinaryTape`.
-
-```rust
-use jomini::{TextTape, TextToken, Scalar};
-
-let data = b"foo=bar";
-
-assert_eq!(
-    TextTape::from_slice(&data[..])?.tokens(),
-    &[
-        TextToken::Unquoted(Scalar::new(b"foo")),
-        TextToken::Unquoted(Scalar::new(b"bar")),
-    ]
-);
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-If one will only use `TextTape` and `BinaryTape` then `jomini` can be compiled without default
-features, resulting in a build without dependencies.
 
 ## Write API
 
@@ -349,6 +224,7 @@ assert_eq!(&out, b"hello=world\nfoo=bar");
 */
 #![warn(missing_docs)]
 pub mod binary;
+pub(crate) mod buffer;
 pub mod common;
 mod copyless;
 mod data;
@@ -362,17 +238,17 @@ mod scalar;
 pub mod text;
 pub(crate) mod util;
 
+#[doc(inline)]
 pub use self::binary::{BinaryTape, BinaryToken};
+pub use self::buffer::SliceReader;
 pub use self::encoding::*;
 pub use self::errors::*;
 pub use self::scalar::{Scalar, ScalarError};
+#[doc(inline)]
 pub use self::text::{TextTape, TextToken, TextWriter, TextWriterBuilder};
 
 #[cfg(feature = "derive")]
 #[doc(inline)]
-pub use self::{
-    binary::de::{BinaryDeserializer, OndemandBinaryDeserializer},
-    text::de::TextDeserializer,
-};
+pub use self::{binary::de::BinaryDeserializer, text::de::TextDeserializer};
 #[cfg(feature = "derive")]
 pub use jomini_derive::*;
