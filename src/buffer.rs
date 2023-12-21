@@ -5,6 +5,8 @@ use std::{io::Read, marker::PhantomData, ops::Range};
 pub struct BufferWindow {
     pub buf: Box<[u8]>,
 
+    start_buf: *const u8,
+
     // start of window into buffer
     pub start: *const u8,
 
@@ -25,6 +27,7 @@ impl BufferWindow {
     pub fn from_slice(data: &[u8]) -> Self {
         Self {
             buf: Box::new([]),
+            start_buf: data.as_ptr(),
             start: data.as_ptr(),
             end: data.as_ptr_range().end,
             prior_reads: 0,
@@ -61,13 +64,13 @@ impl BufferWindow {
 
     #[inline]
     pub fn consumed_data(&self) -> usize {
-        unsafe { self.start.offset_from(self.buf.as_ptr()) as usize }
+        unsafe { self.start.offset_from(self.start_buf) as usize }
     }
 
     #[inline]
     pub fn get(&self, range: Range<*const u8>) -> Scalar {
-        debug_assert!(range.start >= self.buf.as_ptr_range().start);
-        debug_assert!(range.end <= self.buf.as_ptr_range().end);
+        debug_assert!(range.start >= self.start_buf);
+        debug_assert!(range.end <= self.end);
         let len = unsafe { range.end.offset_from(range.start) as usize };
         let sl = unsafe { std::slice::from_raw_parts(range.start, len) };
         Scalar::new(sl)
@@ -79,6 +82,12 @@ impl BufferWindow {
     /// start.
     #[inline]
     pub fn fill_buf(&mut self, mut reader: impl Read) -> Result<usize, BufferError> {
+        // No buffer means we are reading from a slice and there is nothing more
+        // to fill
+        if self.buf.len() == 0 {
+            return Ok(0)
+        }
+
         // Copy over the unconsumed bytes to the start of the buffer
         let carry_over = self.window_len();
         if carry_over != 0 {
@@ -141,9 +150,11 @@ impl BufferWindowBuilder {
             .unwrap_or_else(|| vec![0; init_len].into_boxed_slice());
         let start = buf.as_ptr_range().start;
         let end = buf.as_ptr_range().start;
+        let start_buf = start;
         BufferWindow {
             buf,
             start,
+            start_buf,
             end,
             prior_reads: 0,
         }
