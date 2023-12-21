@@ -1,3 +1,7 @@
+## v0.25.1 - 2023-12-21
+
+- Implement reader error translation logic
+
 ## v0.25.0 - 2023-12-21
 
 - Fix panic for multiple text deserialization value calls
