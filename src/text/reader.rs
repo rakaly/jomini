@@ -372,8 +372,9 @@ where
                         } else if *ptr != b'"' {
                             ptr = ptr.add(1);
                         } else {
+                            let start_ptr = self.buf.start;
                             self.buf.advance_to(ptr.add(1));
-                            let scalar = self.buf.get(self.buf.buf.as_ptr()..ptr);
+                            let scalar = self.buf.get(start_ptr..ptr);
                             return (Some(Token::Quoted(scalar)), None);
                         }
                     }
@@ -386,8 +387,9 @@ where
                         if !is_boundary(*ptr) {
                             ptr = ptr.add(1);
                         } else {
+                            let start_ptr = self.buf.start;
                             self.buf.advance_to(ptr);
-                            let scalar = self.buf.get(self.buf.buf.as_ptr()..ptr);
+                            let scalar = self.buf.get(start_ptr..ptr);
                             return (Some(Token::Unquoted(scalar)), None);
                         }
                     }
@@ -404,6 +406,7 @@ where
                         // if we carried over data that isn't a comment, we
                         // should have made forward progress.
                         if carry_over == 0 || *self.buf.start == b'#' {
+                            self.buf.advance(carry_over);
                             return (None, None);
                         } else {
                             return (None, Some(self.eof_error()));
@@ -1047,6 +1050,15 @@ mod test {
         }
 
         reader.read().unwrap_err();
+        assert_eq!(reader.position(), input.len());
+
+        let mut reader = TokenReader::from_slice(input);
+        for (i, e) in expected.iter().enumerate() {
+            assert_eq!(*e, reader.read().unwrap(), "failure at token idx: {}", i);
+        }
+
+        reader.read().unwrap_err();
+        assert_eq!(reader.position(), input.len());
     }
 
     #[rstest]
