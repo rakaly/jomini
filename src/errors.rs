@@ -152,7 +152,7 @@ impl From<BinReaderError> for Error {
         let pos = value.position();
         match value.into_kind() {
             crate::binary::ReaderErrorKind::Read(x) => Error::new(ErrorKind::Io(x)),
-            crate::binary::ReaderErrorKind::BufferFull => todo!(),
+            crate::binary::ReaderErrorKind::BufferFull => Error::new(ErrorKind::BufferFull),
             crate::binary::ReaderErrorKind::Lexer(LexError::Eof) => Error::eof(),
             crate::binary::ReaderErrorKind::Lexer(LexError::InvalidRgb) => {
                 Error::invalid_syntax("invalid rgb", pos)
@@ -165,7 +165,7 @@ impl From<TextReaderError> for Error {
     fn from(value: TextReaderError) -> Self {
         match value.into_kind() {
             crate::text::ReaderErrorKind::Read(x) => Error::new(ErrorKind::Io(x)),
-            crate::text::ReaderErrorKind::BufferFull => todo!(),
+            crate::text::ReaderErrorKind::BufferFull => Error::new(ErrorKind::BufferFull),
             crate::text::ReaderErrorKind::Eof => Error::eof(),
         }
     }

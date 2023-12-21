@@ -85,7 +85,7 @@ impl BufferWindow {
         // No buffer means we are reading from a slice and there is nothing more
         // to fill
         if self.buf.len() == 0 {
-            return Ok(0)
+            return Ok(0);
         }
 
         // Copy over the unconsumed bytes to the start of the buffer
