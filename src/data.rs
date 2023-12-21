@@ -263,11 +263,6 @@ pub(crate) const OPERATOR: u8 = 4;
 pub(crate) const COMMENT: u8 = 8;
 
 #[inline]
-pub(crate) fn is_whitespace(b: u8) -> bool {
-    b.is_ascii_whitespace()
-}
-
-#[inline]
 pub(crate) fn is_boundary(b: u8) -> bool {
     CHARACTER_CLASS[usize::from(b)] != 0
 }

@@ -19,6 +19,7 @@ struct Stats {
     token: u32,
     rgb: u32,
     i64: u32,
+    frequencies: Vec<u64>,
 }
 
 impl Stats {
@@ -34,8 +35,14 @@ impl Stats {
             BinaryToken::U64(_) => self.u64 += 1,
             BinaryToken::I64(_) => self.i64 += 1,
             BinaryToken::I32(_) => self.i32 += 1,
-            BinaryToken::Quoted(_) => self.quoted += 1,
-            BinaryToken::Unquoted(_) => self.unquoted += 1,
+            BinaryToken::Quoted(x) => {
+                self.frequencies[x.as_bytes().len()] += 1;
+                self.quoted += 1
+            }
+            BinaryToken::Unquoted(x) => {
+                self.frequencies[x.as_bytes().len()] += 1;
+                self.unquoted += 1
+            }
             BinaryToken::F32(_) => self.f32 += 1,
             BinaryToken::F64(_) => self.f64 += 1,
             BinaryToken::Token(_) => self.token += 1,
@@ -182,6 +189,28 @@ impl std::fmt::Display for Stats {
 
         writeln!(f, "total:\t\t{:<8}", total)?;
 
+        let count = self.frequencies.iter().sum::<u64>();
+        let sum = self
+            .frequencies
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (i as u64) * *x)
+            .sum::<u64>();
+        let median_ind = (count + 1) / 2;
+        let mut counter = 0;
+        let mut median = 0;
+        for (i, freq) in self.frequencies.iter().enumerate() {
+            counter += *freq;
+            if counter > median_ind {
+                median = i;
+                break;
+            }
+        }
+
+        writeln!(f, "text count: {}", count)?;
+        writeln!(f, "text average length: {:.2}", sum as f64 / count as f64)?;
+        writeln!(f, "text median length: {:.2}", median)?;
+
         Ok(())
     }
 }
@@ -255,6 +284,9 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     let mut keys = Stats::default();
     let mut values = Stats::default();
     let mut array = Stats::default();
+    keys.frequencies = vec![0; 100];
+    values.frequencies = vec![0; 100];
+    array.frequencies = vec![0; 100];
     let tokens = tape.tokens();
     read_object(&mut keys, &mut values, &mut array, tokens, 0..tokens.len());
     println!("Object key tokens:");
