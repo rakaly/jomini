@@ -245,6 +245,7 @@ where
     /// assert_eq!(reader.next().unwrap(), None);
     /// ```
     #[inline]
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Token>, ReaderError> {
         match self.next_opt() {
             (Some(x), _) => Ok(Some(x)),
