@@ -80,7 +80,7 @@ jobs:
       run: |
         rustup toolchain install nightly --component miri
         cargo miri setup
-        MIRIFLAGS="-Zmiri-disable-stacked-borrows" cargo miri test
+        cargo miri test
 
     - name: Compile fuzz
       if: matrix.build == 'nightly'

@@ -82,19 +82,17 @@ impl BufferWindow {
     /// start.
     #[inline]
     pub fn fill_buf(&mut self, mut reader: impl Read) -> Result<usize, BufferError> {
-        // No buffer means we are reading from a slice and there is nothing more
-        // to fill
-        if self.buf.len() == 0 {
+        let carry_over = self.window_len();
+        if carry_over >= self.buf.len() {
             return Ok(0);
         }
 
         // Copy over the unconsumed bytes to the start of the buffer
-        let carry_over = self.window_len();
         if carry_over != 0 {
             if carry_over >= self.buf.len() {
                 return Err(BufferError::BufferFull);
             }
-            unsafe { self.start.copy_to(self.buf.as_mut_ptr(), carry_over) };
+            self.buf.copy_within(self.consumed_data().., 0);
         }
 
         self.prior_reads += self.consumed_data();
@@ -104,6 +102,7 @@ impl BufferWindow {
         // Have the reader start filling in bytes after unconsumed bytes
         match reader.read(&mut self.buf[carry_over..]) {
             Ok(r) => {
+                self.start = self.buf.as_ptr();
                 self.end = unsafe { self.end.add(r) };
                 Ok(r)
             }

@@ -263,8 +263,8 @@ impl<'a, 'b> ParserState<'a, 'b> {
         macro_rules! push_end {
             () => {
                 let end_idx = self.token_tape.len();
-                match unsafe { self.token_tape.get_unchecked_mut(parent_ind) } {
-                    BinaryToken::Array(end) | BinaryToken::Object(end) => {
+                match self.token_tape.get_mut(parent_ind) {
+                    Some(BinaryToken::Array(end) | BinaryToken::Object(end)) => {
                         let grand_ind = *end;
                         *end = end_idx;
                         let val = BinaryToken::End(parent_ind);

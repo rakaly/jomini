@@ -48,7 +48,8 @@ impl<'a, 'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::Deser
     where
         V: Visitor<'de>,
     {
-        visitor.visit_map(BinaryReaderMap::new(self, true))
+        let me = std::ptr::addr_of!(self);
+        visitor.visit_map(BinaryReaderMap::new(me, true))
     }
 
     fn deserialize_struct<V>(
@@ -71,12 +72,12 @@ impl<'a, 'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::Deser
 }
 
 struct BinaryReaderMap<'a: 'a, 'res, RES: 'a, F, R> {
-    de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
+    de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
     root: bool,
 }
 
 impl<'a, 'res, RES: 'a, F, R> BinaryReaderMap<'a, 'res, RES, F, R> {
-    fn new(de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>, root: bool) -> Self {
+    fn new(de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>, root: bool) -> Self {
         BinaryReaderMap { de, root }
     }
 }
@@ -91,20 +92,23 @@ impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> MapAccess
     where
         K: DeserializeSeed<'de>,
     {
-        let de = unsafe { &mut *(self.de as *mut _) };
         loop {
-            match self.de.reader.next() {
+            match unsafe { self.de.read() }.reader.next() {
                 Ok(Some(Token::Close)) => return Ok(None),
                 Ok(Some(Token::Open)) => {
-                    let _ = self.de.reader.read();
+                    let _ = unsafe { self.de.read() }.reader.read();
                 }
                 Ok(Some(token)) => {
                     return seed
-                        .deserialize(BinaryReaderTokenDeserializer { de, token })
+                        .deserialize(BinaryReaderTokenDeserializer { de: self.de, token })
                         .map(Some)
                 }
                 Ok(None) if self.root => return Ok(None),
-                Ok(None) => return Err(LexError::Eof.at(self.de.reader.position()).into()),
+                Ok(None) => {
+                    return Err(LexError::Eof
+                        .at(unsafe { self.de.read() }.reader.position())
+                        .into())
+                }
                 Err(e) => return Err(e.into()),
             }
         }
@@ -115,18 +119,17 @@ impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> MapAccess
     where
         V: DeserializeSeed<'de>,
     {
-        let de = unsafe { &mut *(self.de as *mut _) };
-        let mut token = self.de.reader.read()?;
+        let mut token = unsafe { self.de.read() }.reader.read()?;
         if matches!(token, Token::Equal) {
-            token = self.de.reader.read()?;
+            token = unsafe { self.de.read() }.reader.read()?;
         }
 
-        seed.deserialize(BinaryReaderTokenDeserializer { de, token })
+        seed.deserialize(BinaryReaderTokenDeserializer { de: self.de, token })
     }
 }
 
 struct BinaryReaderTokenDeserializer<'a, 'res, RES: 'a, F, R> {
-    de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
+    de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
     token: Token<'a>,
 }
 
@@ -148,18 +151,22 @@ where
             Token::I32(x) => visitor.visit_i32(x),
             Token::Bool(x) => visitor.visit_bool(x),
             Token::Quoted(x) | Token::Unquoted(x) => {
-                match self.de.config.flavor.decode(x.as_bytes()) {
+                match unsafe { self.de.read() }.config.flavor.decode(x.as_bytes()) {
                     Cow::Borrowed(x) => visitor.visit_str(x),
                     Cow::Owned(x) => visitor.visit_string(x),
                 }
             }
-            Token::F32(x) => visitor.visit_f32(self.de.config.flavor.visit_f32(x)),
-            Token::F64(x) => visitor.visit_f64(self.de.config.flavor.visit_f64(x)),
+            Token::F32(x) => {
+                visitor.visit_f32(unsafe { self.de.read() }.config.flavor.visit_f32(x))
+            }
+            Token::F64(x) => {
+                visitor.visit_f64(unsafe { self.de.read() }.config.flavor.visit_f64(x))
+            }
             Token::Rgb(x) => visitor.visit_seq(ColorSequence::new(x)),
             Token::I64(x) => visitor.visit_i64(x),
-            Token::Id(s) => match self.de.config.resolver.resolve(s) {
+            Token::Id(s) => match unsafe { self.de.read() }.config.resolver.resolve(s) {
                 Some(id) => visitor.visit_borrowed_str(id),
-                None => match self.de.config.failed_resolve_strategy {
+                None => match unsafe { self.de.read() }.config.failed_resolve_strategy {
                     FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
                         kind: DeserializeErrorKind::UnknownToken { token_id: s },
                     })),
@@ -171,11 +178,11 @@ where
             },
             Token::Close => Err(Error::invalid_syntax(
                 "did not expect end",
-                self.de.reader.position(),
+                unsafe { self.de.read() }.reader.position(),
             )),
             Token::Equal => Err(Error::invalid_syntax(
                 "did not expect equal",
-                self.de.reader.position(),
+                unsafe { self.de.read() }.reader.position(),
             )),
             Token::Open => visitor.visit_seq(BinaryReaderSeq::new(self.de)),
         }
@@ -286,7 +293,7 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
         V: Visitor<'de>,
     {
         if let Token::F32(x) = &self.token {
-            visitor.visit_f32(self.de.config.flavor.visit_f32(*x))
+            visitor.visit_f32(unsafe { self.de.read() }.config.flavor.visit_f32(*x))
         } else {
             self.deser(visitor)
         }
@@ -298,7 +305,7 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
         V: Visitor<'de>,
     {
         if let Token::F64(x) = &self.token {
-            visitor.visit_f64(self.de.config.flavor.visit_f64(*x))
+            visitor.visit_f64(unsafe { self.de.read() }.config.flavor.visit_f64(*x))
         } else {
             self.deser(visitor)
         }
@@ -319,7 +326,7 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
     {
         match self.token {
             Token::Quoted(x) | Token::Unquoted(x) => {
-                match self.de.config.flavor.decode(x.as_bytes()) {
+                match unsafe { self.de.read() }.config.flavor.decode(x.as_bytes()) {
                     Cow::Borrowed(x) => visitor.visit_str(x),
                     Cow::Owned(x) => visitor.visit_string(x),
                 }
@@ -380,10 +387,10 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
                 if !seq.hit_end {
                     // For when we are deserializing an array that doesn't read
                     // the closing token
-                    if !matches!(self.de.reader.read()?, Token::Close) {
+                    if !matches!(unsafe { self.de.read() }.reader.read()?, Token::Close) {
                         return Err(Error::invalid_syntax(
                             "Expected sequence to be terminated with an end token",
-                            self.de.reader.position(),
+                            unsafe { self.de.read() }.reader.position(),
                         ));
                     }
                 }
@@ -459,7 +466,7 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
         V: Visitor<'de>,
     {
         if matches!(self.token, Token::Open) {
-            self.de.reader.skip_container()?;
+            unsafe { self.de.read() }.reader.skip_container()?;
         }
 
         visitor.visit_unit()
@@ -467,12 +474,12 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
 }
 
 struct BinaryReaderSeq<'a: 'a, 'res, RES: 'a, F, R> {
-    de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
+    de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
     hit_end: bool,
 }
 
 impl<'a, 'de: 'a, 'res: 'de, RES: 'a, F, R> BinaryReaderSeq<'a, 'res, RES, F, R> {
-    fn new(de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>) -> Self {
+    fn new(de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>) -> Self {
         BinaryReaderSeq { de, hit_end: false }
     }
 }
@@ -486,26 +493,25 @@ impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> SeqAccess
     where
         T: DeserializeSeed<'de>,
     {
-        let de = unsafe { &mut *(self.de as *mut _) };
-        match self.de.reader.read()? {
+        match unsafe { self.de.read() }.reader.read()? {
             Token::Close => {
                 self.hit_end = true;
                 Ok(None)
             }
             token => seed
-                .deserialize(BinaryReaderTokenDeserializer { de, token })
+                .deserialize(BinaryReaderTokenDeserializer { de: self.de, token })
                 .map(Some),
         }
     }
 }
 
 struct BinaryReaderEnum<'a, 'res, RES: 'a, F, R> {
-    de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
+    de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
     token: Token<'a>,
 }
 
 impl<'a, 'res, RES: 'a, F, R> BinaryReaderEnum<'a, 'res, RES, F, R> {
-    fn new(de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>, token: Token<'a>) -> Self {
+    fn new(de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>, token: Token<'a>) -> Self {
         BinaryReaderEnum { de, token }
     }
 }
