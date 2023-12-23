@@ -2,7 +2,7 @@ use super::{
     lexer::{read_id, read_string, read_token},
     LexError, LexemeId, LexerError, Token,
 };
-use crate::buffer::{BufferError, BufferWindow, BufferWindowBuilder, SliceReader};
+use crate::buffer::{BufferError, BufferWindow, BufferWindowBuilder};
 use std::{fmt, io::Read};
 
 /// [Lexer](crate::binary::Lexer) that works over a [Read] implementation
@@ -49,9 +49,9 @@ pub struct TokenReader<R> {
 impl TokenReader<()> {
     /// Read from a byte slice without memcpy's
     #[inline]
-    pub fn from_slice(data: &[u8]) -> TokenReader<SliceReader<'_>> {
+    pub fn from_slice(data: &[u8]) -> TokenReader<&'_ [u8]> {
         TokenReader {
-            reader: SliceReader::new(data),
+            reader: data,
             buf: BufferWindow::from_slice(data),
         }
     }
