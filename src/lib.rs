@@ -240,7 +240,6 @@ pub(crate) mod util;
 
 #[doc(inline)]
 pub use self::binary::{BinaryTape, BinaryToken};
-pub use self::buffer::SliceReader;
 pub use self::encoding::*;
 pub use self::errors::*;
 pub use self::scalar::{Scalar, ScalarError};

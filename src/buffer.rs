@@ -1,5 +1,5 @@
 use crate::Scalar;
-use std::{io::Read, marker::PhantomData, ops::Range};
+use std::{io::Read, ops::Range};
 
 #[derive(Debug)]
 pub struct BufferWindow {
@@ -157,21 +157,5 @@ impl BufferWindowBuilder {
             end,
             prior_reads: 0,
         }
-    }
-}
-
-/// An no-op read implementation used for TokenReaders
-#[derive(Debug)]
-pub struct SliceReader<'a>(PhantomData<&'a [u8]>);
-
-impl<'a> SliceReader<'a> {
-    pub(crate) fn new(_data: &'a [u8]) -> Self {
-        SliceReader(PhantomData)
-    }
-}
-
-impl<'a> Read for SliceReader<'a> {
-    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-        Ok(0)
     }
 }
