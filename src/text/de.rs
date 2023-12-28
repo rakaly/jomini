@@ -186,7 +186,8 @@ impl<'de, R: Read, E: Encoding> de::Deserializer<'de> for &'_ mut TextReaderDese
     where
         V: Visitor<'de>,
     {
-        visitor.visit_map(TextReaderMap::new(self, true))
+        let me = std::ptr::addr_of!(self);
+        visitor.visit_map(TextReaderMap::new(me, true))
     }
 
     fn deserialize_struct<V>(
@@ -209,12 +210,12 @@ impl<'de, R: Read, E: Encoding> de::Deserializer<'de> for &'_ mut TextReaderDese
 }
 
 struct TextReaderMap<'a, R, E> {
-    de: &'a mut TextReaderDeserializer<R, E>,
+    de: *const &'a mut TextReaderDeserializer<R, E>,
     root: bool,
 }
 
 impl<'a, R, E> TextReaderMap<'a, R, E> {
-    fn new(de: &'a mut TextReaderDeserializer<R, E>, root: bool) -> Self {
+    fn new(de: *const &'a mut TextReaderDeserializer<R, E>, root: bool) -> Self {
         TextReaderMap { de, root }
     }
 }
@@ -227,20 +228,19 @@ impl<'de, 'a, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'a, R, 
     where
         K: DeserializeSeed<'de>,
     {
-        let de = unsafe { &mut *(self.de as *mut _) };
         loop {
-            match self.de.reader.next() {
+            match unsafe { self.de.read() }.reader.next() {
                 Ok(Some(Token::Close)) => return Ok(None),
                 Ok(Some(Token::Open)) => {
-                    let _ = self.de.reader.read()?;
+                    unsafe { self.de.read() }.reader.skip_container()?;
                 }
                 Ok(Some(token)) => {
                     return seed
-                        .deserialize(TextReaderTokenDeserializer::new(de, token))
+                        .deserialize(TextReaderTokenDeserializer::new(self.de, token))
                         .map(Some)
                 }
                 Ok(None) if self.root => return Ok(None),
-                Ok(None) => return Err(self.de.reader.eof_error().into()),
+                Ok(None) => return Err(unsafe { self.de.read() }.reader.eof_error().into()),
                 Err(e) => return Err(e.into()),
             }
         }
@@ -251,15 +251,14 @@ impl<'de, 'a, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'a, R, 
     where
         V: DeserializeSeed<'de>,
     {
-        let de = unsafe { &mut *(self.de as *mut _) };
-        let token = self.de.reader.read_expect_equals()?;
+        let token = unsafe { self.de.read() }.reader.read_expect_equals()?;
         let deser = if let Token::Operator(op) = token {
-            let new_token = self.de.reader.read()?;
-            let mut deser = TextReaderTokenDeserializer::new(de, new_token);
+            let new_token = unsafe { self.de.read() }.reader.read()?;
+            let mut deser = TextReaderTokenDeserializer::new(self.de, new_token);
             deser.op = op;
             deser
         } else {
-            TextReaderTokenDeserializer::new(de, token)
+            TextReaderTokenDeserializer::new(self.de, token)
         };
 
         seed.deserialize(deser)
@@ -267,13 +266,13 @@ impl<'de, 'a, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'a, R, 
 }
 
 struct TextReaderTokenDeserializer<'a, R, E> {
-    de: &'a mut TextReaderDeserializer<R, E>,
+    de: *const &'a mut TextReaderDeserializer<R, E>,
     token: Token<'a>,
     op: Operator,
 }
 
 impl<'a, R, E> TextReaderTokenDeserializer<'a, R, E> {
-    fn new(de: &'a mut TextReaderDeserializer<R, E>, token: Token<'a>) -> Self {
+    fn new(de: *const &'a mut TextReaderDeserializer<R, E>, token: Token<'a>) -> Self {
         Self {
             de,
             token,
@@ -295,13 +294,15 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
             Token::Open => visitor.visit_seq(TextReaderSeq::new(self.de)),
             Token::Close => Err(Error::invalid_syntax(
                 "did not expect end",
-                self.de.reader.position(),
+                unsafe { self.de.read() }.reader.position(),
             )),
             Token::Operator(x) => visitor.visit_str(x.symbol()),
-            Token::Unquoted(s) | Token::Quoted(s) => match self.de.encoding.decode(s.as_bytes()) {
-                Cow::Borrowed(x) => visitor.visit_str(x),
-                Cow::Owned(x) => visitor.visit_string(x),
-            },
+            Token::Unquoted(s) | Token::Quoted(s) => {
+                match unsafe { self.de.read() }.encoding.decode(s.as_bytes()) {
+                    Cow::Borrowed(x) => visitor.visit_str(x),
+                    Cow::Owned(x) => visitor.visit_string(x),
+                }
+            }
         }
     }
 
@@ -406,7 +407,7 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
         V: Visitor<'de>,
     {
         if let Some(s) = self.token.as_scalar() {
-            match self.de.encoding.decode(s.as_bytes()) {
+            match unsafe { self.de.read() }.encoding.decode(s.as_bytes()) {
                 Cow::Borrowed(x) => visitor.visit_str(x),
                 Cow::Owned(x) => visitor.visit_string(x),
             }
@@ -484,10 +485,10 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
         if !seq.hit_end {
             // For when we are deserializing an array that doesn't read
             // the closing token
-            if !matches!(self.de.reader.read()?, Token::Close) {
+            if !matches!(unsafe { self.de.read() }.reader.read()?, Token::Close) {
                 return Err(Error::invalid_syntax(
                     "Expected sequence to be terminated with an end token",
-                    self.de.reader.position(),
+                    unsafe { self.de.read() }.reader.position(),
                 ));
             }
         }
@@ -568,22 +569,20 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        match self.token {
-            Token::Open => self.de.reader.skip_container()?,
-            Token::Unquoted(_) => self.de.reader.skip_unquoted_value()?,
-            _ => {}
+        if matches!(self.token, Token::Open) {
+            unsafe { self.de.read() }.reader.skip_container()?;
         }
         visitor.visit_unit()
     }
 }
 
 struct TextReaderSeq<'a, R, E> {
-    de: &'a mut TextReaderDeserializer<R, E>,
+    de: *const &'a mut TextReaderDeserializer<R, E>,
     hit_end: bool,
 }
 
 impl<'a, R, E> TextReaderSeq<'a, R, E> {
-    fn new(de: &'a mut TextReaderDeserializer<R, E>) -> Self {
+    fn new(de: *const &'a mut TextReaderDeserializer<R, E>) -> Self {
         TextReaderSeq { de, hit_end: false }
     }
 }
@@ -599,26 +598,25 @@ where
     where
         T: DeserializeSeed<'de>,
     {
-        let de = unsafe { &mut *(self.de as *mut _) };
-        match self.de.reader.read()? {
+        match unsafe { self.de.read() }.reader.read()? {
             Token::Close => {
                 self.hit_end = true;
                 Ok(None)
             }
             token => seed
-                .deserialize(TextReaderTokenDeserializer::new(de, token))
+                .deserialize(TextReaderTokenDeserializer::new(self.de, token))
                 .map(Some),
         }
     }
 }
 
 struct TextReaderEnum<'a, R, E> {
-    de: &'a mut TextReaderDeserializer<R, E>,
+    de: *const &'a mut TextReaderDeserializer<R, E>,
     token: Token<'a>,
 }
 
 impl<'a, R, E> TextReaderEnum<'a, R, E> {
-    fn new(de: &'a mut TextReaderDeserializer<R, E>, token: Token<'a>) -> Self {
+    fn new(de: *const &'a mut TextReaderDeserializer<R, E>, token: Token<'a>) -> Self {
         TextReaderEnum { de, token }
     }
 }
@@ -682,7 +680,7 @@ impl<'de, 'a, R: Read, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'a
 }
 
 struct PropertyReaderMap<'a, R, E> {
-    de: &'a mut TextReaderDeserializer<R, E>,
+    de: *const &'a mut TextReaderDeserializer<R, E>,
     op: Operator,
     token: Token<'a>,
     state: usize,
@@ -2072,7 +2070,7 @@ mod tests {
 
     #[test]
     fn test_skip_unwanted() {
-        let data = b"a = b\r\nc = d\r\ne = f";
+        let data = b"color = rgb { 10 20 30 }\r\nc = d\r\ne = f";
 
         #[derive(Deserialize, PartialEq, Debug)]
         struct MyStruct {

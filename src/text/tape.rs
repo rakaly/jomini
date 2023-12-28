@@ -1604,6 +1604,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // too slow
     fn test_too_heavily_nested() {
         let mut data = Vec::new();
         data.extend_from_slice(b"foo=");
@@ -1750,6 +1751,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // too slow
     fn test_many_line_comment() {
         let mut data = Vec::new();
         data.extend_from_slice(b"foo=1.000\n");

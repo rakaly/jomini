@@ -675,11 +675,10 @@ where
     /// ```
     #[inline]
     pub fn read(&mut self) -> Result<Token, ReaderError> {
-        // Workaround for borrow checker :(
-        let s = unsafe { &mut *(self as *mut TokenReader<R>) };
+        let s = std::ptr::addr_of!(self);
         match unsafe { self.next_opt() } {
             (Some(x), _) => Ok(x),
-            (None, None) => Err(s.eof_error()),
+            (None, None) => Err(unsafe { (*s).eof_error() }),
             (None, Some(e)) => Err(e),
         }
     }
