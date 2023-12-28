@@ -1,3 +1,9 @@
+## v0.25.2 - 2023-12-28
+
+- Fix remaining soundness issues identified by MIRI
+- Add `binary::Token::write` for outputting binary data
+- Remove the short lived, internal `SliceReader` type
+
 ## v0.25.1 - 2023-12-21
 
 - Implement reader error translation logic
