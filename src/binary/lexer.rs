@@ -219,6 +219,81 @@ pub enum Token<'a> {
     Id(u16),
 }
 
+impl<'a> Token<'a> {
+    fn write_u32(mut wtr: impl std::io::Write, num: u32) -> Result<(), std::io::Error> {
+        wtr.write_all(&LexemeId::U32.0.to_le_bytes())?;
+        wtr.write_all(&num.to_le_bytes())
+    }
+
+    /// Write the binary representation of a token to a writer
+    ///
+    /// ```rust
+    /// use jomini::binary::Token;
+    /// let out = Vec::new();
+    /// let mut cursor = std::io::Cursor::new(out);
+    /// for token in &[Token::Id(0x00e1), Token::Equal, Token::U32(10)] {
+    ///     token.write(&mut cursor)?;
+    /// }
+    ///
+    /// assert_eq!(&cursor.into_inner(), &[0xe1, 0x00, 0x01, 0x00, 0x14, 0x00, 0x0a, 0x00, 0x00, 0x00]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn write(&self, mut wtr: impl std::io::Write) -> Result<(), std::io::Error> {
+        match self {
+            Token::Open => wtr.write_all(&LexemeId::OPEN.0.to_le_bytes()),
+            Token::Close => wtr.write_all(&LexemeId::CLOSE.0.to_le_bytes()),
+            Token::Equal => wtr.write_all(&LexemeId::EQUAL.0.to_le_bytes()),
+            Token::U32(x) => Token::write_u32(wtr, *x),
+            Token::U64(x) => {
+                wtr.write_all(&LexemeId::U64.0.to_le_bytes())?;
+                wtr.write_all(&x.to_le_bytes())
+            }
+            Token::I32(x) => {
+                wtr.write_all(&LexemeId::I32.0.to_le_bytes())?;
+                wtr.write_all(&x.to_le_bytes())
+            }
+            Token::Bool(x) => {
+                wtr.write_all(&LexemeId::BOOL.0.to_le_bytes())?;
+                wtr.write_all(&[if *x { 1u8 } else { 0 }])
+            }
+            Token::Quoted(x) => {
+                wtr.write_all(&LexemeId::QUOTED.0.to_le_bytes())?;
+                wtr.write_all(&(x.as_bytes().len() as u16).to_le_bytes())?;
+                wtr.write_all(x.as_bytes())
+            }
+            Token::Unquoted(x) => {
+                wtr.write_all(&LexemeId::UNQUOTED.0.to_le_bytes())?;
+                wtr.write_all(&(x.as_bytes().len() as u16).to_le_bytes())?;
+                wtr.write_all(x.as_bytes())
+            }
+            Token::F32(x) => {
+                wtr.write_all(&LexemeId::F32.0.to_le_bytes())?;
+                wtr.write_all(x)
+            }
+            Token::F64(x) => {
+                wtr.write_all(&LexemeId::F64.0.to_le_bytes())?;
+                wtr.write_all(x)
+            }
+            Token::Rgb(x) => {
+                wtr.write_all(&LexemeId::RGB.0.to_le_bytes())?;
+                wtr.write_all(&LexemeId::OPEN.0.to_le_bytes())?;
+                Token::write_u32(&mut wtr, x.r)?;
+                Token::write_u32(&mut wtr, x.g)?;
+                Token::write_u32(&mut wtr, x.b)?;
+                if let Some(a) = x.a.as_ref() {
+                    Token::write_u32(&mut wtr, *a)?;
+                }
+                wtr.write_all(&LexemeId::CLOSE.0.to_le_bytes())
+            }
+            Token::I64(x) => {
+                wtr.write_all(&LexemeId::I64.0.to_le_bytes())?;
+                wtr.write_all(&x.to_le_bytes())
+            }
+            Token::Id(x) => wtr.write_all(&x.to_le_bytes()),
+        }
+    }
+}
+
 #[inline]
 pub(crate) fn read_token(data: &[u8]) -> Result<(Token, &[u8]), LexError> {
     let (id, data) = read_id(data)?;

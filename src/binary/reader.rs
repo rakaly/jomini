@@ -391,33 +391,104 @@ impl From<BufferError> for ReaderErrorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{binary::Rgb, Scalar};
+    use rstest::*;
 
-    fn test_reader(data: &[u8], expected: &[Token]) {
-        fn eq<R>(mut reader: TokenReader<R>, expected: &[Token])
-        where
-            R: Read,
-        {
-            for token in expected {
-                assert_eq!(reader.next().unwrap(), Some(*token));
-            }
-            assert_eq!(reader.next().unwrap(), None);
+    #[rstest]
+    #[case(&[
+        Token::Id(0x2838),
+        Token::Equal,
+        Token::Open,
+        Token::Id(0x2863),
+        Token::Equal,
+        Token::Unquoted(Scalar::new(b"western")),
+        Token::Quoted(Scalar::new(b"1446.5.31")),
+        Token::Equal,
+        Token::Id(0x2838),
+        Token::Close,
+    ])]
+    #[case(&[
+        Token::Id(0x2ec9),
+        Token::Equal,
+        Token::Open,
+        Token::Id(0x28e2),
+        Token::Equal,
+        Token::I32(1),
+        Token::Id(0x28e3),
+        Token::Equal,
+        Token::I32(11),
+        Token::Id(0x2ec7),
+        Token::Equal,
+        Token::I32(4),
+        Token::Id(0x2ec8),
+        Token::Equal,
+        Token::I32(0),
+        Token::Close,
+    ])]
+    #[case(&[
+        Token::Id(0x053a),
+        Token::Equal,
+        Token::Rgb(Rgb {
+            r: 110,
+            g: 28,
+            b: 27,
+            a: None
+        })
+    ])]
+    #[case(&[
+        Token::Id(0x053a),
+        Token::Equal,
+        Token::Rgb(Rgb {
+            r: 110,
+            g: 28,
+            b: 27,
+            a: Some(128),
+        })
+    ])]
+    #[case(&[
+        Token::Id(0x326b), Token::Equal, Token::U64(128),
+        Token::Id(0x326b), Token::Equal, Token::I64(-1),
+        Token::Id(0x2d82), Token::Equal, Token::F64([0xc7, 0xe4, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        Token::Id(0x2d82), Token::Equal, Token::F32([0x8f, 0xc2, 0x75, 0x3e]),
+        Token::Id(0x2d82), Token::Equal, Token::U32(89)
+    ])]
+    fn test_roundtrip(#[case] input: &[Token]) {
+        let data = Vec::new();
+        let mut writer = std::io::Cursor::new(data);
+        for tok in input {
+            tok.write(&mut writer).unwrap();
         }
 
-        eq(TokenReader::new(data), expected);
+        let data = writer.into_inner();
 
-        let data_with_header: Vec<_> = b"EU4bin".iter().chain(data).copied().collect();
-        let mut reader = TokenReader::new(data_with_header.as_slice());
-        assert_eq!(reader.read_bytes(6).unwrap(), &b"EU4bin"[..]);
-        eq(reader, expected);
-    }
+        // `Read`
+        let mut reader = TokenReader::new(data.as_slice());
+        for (i, e) in input.iter().enumerate() {
+            assert_eq!(*e, reader.read().unwrap(), "failure at token idx: {}", i);
+        }
 
-    #[test]
-    fn test_binary_token_reader() {
-        let data = [0xe1, 0x00, 0x01, 0x00, 0x03, 0x00, 0x04, 0x00];
-        test_reader(
-            &data,
-            &[Token::Id(0x00e1), Token::Equal, Token::Open, Token::Close],
-        );
+        reader.read().unwrap_err();
+        assert_eq!(reader.position(), data.len());
+
+        // `from_slice`
+        let mut reader = TokenReader::from_slice(data.as_slice());
+        for (i, e) in input.iter().enumerate() {
+            assert_eq!(*e, reader.read().unwrap(), "failure at token idx: {}", i);
+        }
+
+        reader.read().unwrap_err();
+        assert_eq!(reader.position(), data.len());
+
+        // reader buffer size
+        for i in 30..40 {
+            let mut reader = TokenReader::builder().buffer_len(i).build(data.as_slice());
+            for e in input {
+                assert_eq!(*e, reader.read().unwrap(), "failure at token idx: {}", i);
+            }
+
+            reader.read().unwrap_err();
+            assert_eq!(reader.position(), data.len());
+        }
     }
 
     #[test]
