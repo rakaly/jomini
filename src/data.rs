@@ -44,33 +44,34 @@ const fn create_windows_1252_table() -> [char; 256] {
 }
 
 pub(crate) static WINDOWS_1252: [char; 256] = create_windows_1252_table();
-pub(crate) const BOUNDARY: u8 = 1;
-pub(crate) const WHITESPACE: u8 = 2;
-pub(crate) const OPERATOR: u8 = 4;
-pub(crate) const COMMENT: u8 = 8;
 
 #[inline]
 pub(crate) fn is_boundary(b: u8) -> bool {
-    CHARACTER_CLASS[usize::from(b)] != 0
+    boundary(b) != 0
+}
+
+#[inline]
+pub(crate) fn boundary(b: u8) -> u8 {
+    CHARACTER_CLASS[usize::from(b)]
 }
 
 const fn create_character_class_table() -> [u8; 256] {
     let mut table = [0u8; 256];
-    table[b'\t' as usize] = WHITESPACE;
-    table[b'\n' as usize] = WHITESPACE;
-    table[b'\x0b' as usize] = WHITESPACE; // \v
-    table[b'\x0c' as usize] = WHITESPACE; // \f
-    table[b'\r' as usize] = WHITESPACE;
-    table[b' ' as usize] = WHITESPACE;
-    table[b'!' as usize] = OPERATOR;
-    table[b'#' as usize] = COMMENT;
-    table[b'<' as usize] = OPERATOR;
-    table[b'=' as usize] = OPERATOR;
-    table[b'>' as usize] = OPERATOR;
-    table[b'[' as usize] = BOUNDARY;
-    table[b']' as usize] = BOUNDARY;
-    table[b'}' as usize] = BOUNDARY;
-    table[b'{' as usize] = BOUNDARY;
+    table[b'\t' as usize] = 1;
+    table[b'\n' as usize] = 1;
+    table[b'\x0b' as usize] = 1; // \v
+    table[b'\x0c' as usize] = 1; // \f
+    table[b'\r' as usize] = 1;
+    table[b' ' as usize] = 1;
+    table[b'!' as usize] = 1;
+    table[b'#' as usize] = 1;
+    table[b'<' as usize] = 1;
+    table[b'=' as usize] = 1;
+    table[b'>' as usize] = 1;
+    table[b'[' as usize] = 1;
+    table[b']' as usize] = 1;
+    table[b'}' as usize] = 1;
+    table[b'{' as usize] = 1;
     table
 }
 

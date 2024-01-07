@@ -72,10 +72,30 @@ pub(crate) const fn count_chunk(value: u64, byte: u8) -> u64 {
     sum_usize(bytewise_equal(value, repeat_byte(byte)))
 }
 
+#[inline]
+pub(crate) fn leading_whitespace(value: u64) -> u32 {
+    let mask1 = repeat_byte(b'\t');
+    let mask2 = repeat_byte(b'\n');
+    let res1 = value ^ mask1;
+    let res2 = value ^ mask2;
+    (res1 & res2).trailing_zeros() >> 3
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rstest::*;
+
+    #[rstest]
+    #[case(*b"\t\t\t\t\t\t\t\t", 8)]
+    #[case(*b"a\t\t\t\t\t\t\t", 0)]
+    #[case(*b"\t       ", 1)]
+    #[case(*b"\n\na     ", 2)]
+    #[case(*b"\n\ta     ", 2)]
+    fn test_leading_whitespace(#[case] input: [u8; 8], #[case] expected: u32) {
+        let lhs = u64::from_le_bytes(input);
+        assert_eq!(leading_whitespace(lhs), expected);
+    }
 
     #[rstest]
     #[case(*b"        ", 0)]
