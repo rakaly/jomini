@@ -2,7 +2,7 @@ use super::Operator;
 use crate::{
     buffer::{BufferError, BufferWindow, BufferWindowBuilder},
     data::is_boundary,
-    util::{contains_zero_byte, count_chunk, repeat_byte},
+    util::{contains_zero_byte, count_chunk, leading_whitespace, repeat_byte},
     Scalar,
 };
 use std::io::Read;
@@ -134,8 +134,7 @@ where
         self.buf.position()
     }
 
-    #[inline]
-    unsafe fn next_opt(&mut self) -> (Option<Token>, Option<ReaderError>) {
+    unsafe fn next_opt_fallback(&mut self) -> (Option<Token>, Option<ReaderError>) {
         #[derive(Debug)]
         enum ParseState {
             None,
@@ -155,21 +154,7 @@ where
 
                     'inner: loop {
                         match *ptr {
-                            c @ b' ' | c @ b'\t' => {
-                                ptr = ptr.add(1);
-                                loop {
-                                    if ptr == end {
-                                        break 'eof (0, 0);
-                                    }
-
-                                    if *ptr != c {
-                                        break;
-                                    }
-
-                                    ptr = ptr.add(1)
-                                }
-                            }
-                            b'\n' | b'\r' | b';' => {
+                            b' ' | b'\t' | b'\n' | b'\r' | b';' => {
                                 ptr = ptr.add(1);
                                 break 'inner;
                             }
@@ -423,6 +408,91 @@ where
                 Err(e) => return (None, Some(self.buffer_error(e))),
             }
         }
+    }
+
+    #[inline]
+    unsafe fn next_opt(&mut self) -> (Option<Token>, Option<ReaderError>) {
+        let mut ptr = self.buf.start;
+        let end = self.buf.end;
+
+        if end.offset_from(ptr) < 9 {
+            return self.next_opt_fallback();
+        }
+
+        // 3.4 million newlines followed by an average of 3.3 tabs
+        let data = ptr.cast::<u64>().read_unaligned().to_le();
+        ptr = ptr.add(leading_whitespace(data) as usize);
+
+        // Eagerly check for brackets, there'll be millions of them
+        if *ptr == b'{' {
+            self.buf.advance_to(ptr.add(1));
+            return (Some(Token::Open), None);
+        } else if *ptr == b'}' {
+            self.buf.advance_to(ptr.add(1));
+            return (Some(Token::Close), None);
+        }
+        // unquoted values are the most frequent type of values in
+        // text so if we see something that is alphanumeric or a
+        // dash (for negative numbers) we eagerly attempt to match
+        // against it. Loop unrolling is used to minimize the number
+        // of access to the boundary lookup table.
+        else if matches!(*ptr, b'a'..=b'z' | b'0'..=b'9' | b'A'..=b'Z' | b'-') {
+            let start_ptr = ptr;
+            let mut opt_ptr = start_ptr.add(1);
+            while end.offset_from(opt_ptr) > 8 {
+                for _ in 0..8 {
+                    if is_boundary(*opt_ptr) {
+                        self.buf.advance_to(opt_ptr);
+
+                        // for space delimited arrays, advance one
+                        if *opt_ptr == b' ' {
+                            self.buf.advance(1);
+                        }
+
+                        let scalar = self.buf.get(start_ptr..opt_ptr);
+                        return (Some(Token::Unquoted(scalar)), None);
+                    }
+                    opt_ptr = opt_ptr.add(1);
+                }
+            }
+
+            // optimization failed, fallback to inner parsing loop
+        } else if *ptr == b'\"' {
+            let start_ptr = ptr.add(1);
+            let mut opt_ptr = start_ptr;
+            let mut escaped = false;
+            while end.offset_from(opt_ptr) > 8 {
+                let data = opt_ptr.cast::<u64>().read_unaligned().to_le();
+                escaped |= contains_zero_byte(data ^ repeat_byte(b'\\'));
+
+                // http://0x80.pl/notesen/2023-03-06-swar-find-any.html#faster-swar-procedure
+                let mask = repeat_byte(0x7f);
+                let lobits = data & mask;
+                let x0 = (lobits ^ repeat_byte(b'\"')) + mask;
+                let t0 = x0 | data;
+                let t1 = t0 & repeat_byte(0x80);
+                let t2 = t1 ^ repeat_byte(0x80);
+
+                if t2 != 0 {
+                    let quote_ind = t2.trailing_zeros() >> 3;
+
+                    if !escaped {
+                        opt_ptr = opt_ptr.add(quote_ind as usize);
+                        self.buf.advance_to(opt_ptr.add(1));
+                        let scalar = self.buf.get(start_ptr..opt_ptr);
+                        return (Some(Token::Quoted(scalar)), None);
+                    } else {
+                        break;
+                    }
+                } else {
+                    opt_ptr = opt_ptr.add(8);
+                }
+            }
+
+            // optimization failed, fallback to inner parsing loop
+        }
+
+        self.next_opt_fallback()
     }
 
     /// Advance a given number of bytes and return them.
