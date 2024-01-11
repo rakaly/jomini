@@ -1,3 +1,7 @@
+## v0.25.3 - 2023-01-11
+
+- Performance improvement (~20%) to `text::TokenReader` for save files
+
 ## v0.25.2 - 2023-12-28
 
 - Fix remaining soundness issues identified by MIRI
