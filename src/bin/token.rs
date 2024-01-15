@@ -1,20 +1,65 @@
-use jomini::BinaryToken;
-use std::error;
-use std::io::{self, Read};
+use jomini::binary;
+use std::{error, io};
+
+#[derive(Debug)]
+enum Needle {
+    Token(u16),
+    String(String),
+}
+
+impl PartialEq<binary::Token<'_>> for Needle {
+    fn eq(&self, other: &binary::Token<'_>) -> bool {
+        match other {
+            binary::Token::Unquoted(tok) => match self {
+                Needle::String(val) => tok.as_bytes() == val.as_bytes(),
+                _ => false,
+            },
+            binary::Token::Id(tok) => match self {
+                Needle::Token(val) => val == tok,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+}
 
 fn main() -> Result<(), Box<dyn error::Error>> {
-    let mut data = Vec::new();
-    io::stdin().read_to_end(&mut data)?;
-    let tape = jomini::BinaryTape::from_slice(&data)?;
-    let tokens = tape.tokens();
-    for (i, token) in tokens.iter().enumerate() {
-        if matches!(token, BinaryToken::Token(0x3145)) {
-            let offset = match tokens[i + 1] {
-                BinaryToken::Array { .. } | BinaryToken::Object { .. } => 2,
-                _ => 1,
-            };
+    let args: Vec<String> = std::env::args().collect();
+    let needle = match args.get(1) {
+        Some(x) => match x.strip_prefix("0x") {
+            Some(hex) => Needle::Token(u16::from_str_radix(hex, 16).expect("hex")),
+            None => match u16::from_str_radix(x, 10) {
+                Ok(token) => Needle::Token(token),
+                Err(_) => Needle::String(String::from(x)),
+            },
+        },
+        None => Needle::Token(0),
+    };
 
-            println!("{:?}", tokens[i + offset]);
+    let stdin = io::stdin();
+    let lock = stdin.lock();
+
+    let mut reader = jomini::binary::TokenReader::new(lock);
+    let mut state = 0;
+    while let Some(token) = reader.next()? {
+        match token {
+            jomini::binary::Token::Equal => {
+                if state == 1 {
+                    state = 2;
+                }
+            }
+            token => match state {
+                0 if needle == token => state = 1,
+                1 => {
+                    println!("value");
+                    state = 0;
+                }
+                2 => {
+                    println!("{:?}", token);
+                    state = 0;
+                }
+                _ => {}
+            },
         }
     }
 
