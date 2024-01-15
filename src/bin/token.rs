@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     let needle = match args.get(1) {
         Some(x) => match x.strip_prefix("0x") {
             Some(hex) => Needle::Token(u16::from_str_radix(hex, 16).expect("hex")),
-            None => match u16::from_str_radix(x, 10) {
+            None => match x.parse::<u16>() {
                 Ok(token) => Needle::Token(token),
                 Err(_) => Needle::String(String::from(x)),
             },
