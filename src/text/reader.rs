@@ -48,6 +48,13 @@ enum Utf8Bom {
     Present,
 }
 
+#[derive(Debug)]
+enum ParseState {
+    None,
+    Quote,
+    Unquoted,
+}
+
 /// Scan a [Read] implementation for text [Token]s
 ///
 /// Example of computing the max nesting depth using a [TokenReader].
@@ -134,225 +141,40 @@ where
         self.buf.position()
     }
 
-    unsafe fn next_opt_fallback(&mut self) -> (Option<Token>, Option<ReaderError>) {
-        #[derive(Debug)]
-        enum ParseState {
-            None,
-            Quote,
-            Unquoted,
-        }
-
-        let mut state = ParseState::None;
-        let mut ptr = self.buf.start;
-        loop {
-            let end = self.buf.end;
-            let (carry_over, offset) = match state {
-                ParseState::None => 'eof: loop {
-                    if ptr == end {
-                        break (0, 0);
+    unsafe fn next_opt_refill(
+        &mut self,
+        state: ParseState,
+        carry_over: usize,
+        offset: usize,
+    ) -> (Option<Token>, Option<ReaderError>) {
+        self.buf.advance_to(self.buf.end.sub(carry_over));
+        match self.buf.fill_buf(&mut self.reader) {
+            Ok(0) => match state {
+                ParseState::None => {
+                    // if we carried over data that isn't a comment, we
+                    // should have made forward progress.
+                    if carry_over == 0 || *self.buf.start == b'#' {
+                        self.buf.advance(carry_over);
+                        (None, None)
+                    } else {
+                        (None, Some(self.eof_error()))
                     }
+                }
+                ParseState::Quote => (None, Some(self.eof_error())),
+                ParseState::Unquoted => {
+                    let scalar = std::slice::from_raw_parts(self.buf.start, carry_over);
+                    self.buf.advance_to(self.buf.end);
+                    (Some(Token::Unquoted(Scalar::new(scalar))), None)
+                }
+            },
+            Ok(_) => match state {
+                ParseState::None => self.next_opt_fallback(),
+                ParseState::Quote => {
+                    let mut ptr = self.buf.start.add(offset);
 
-                    'inner: loop {
-                        match *ptr {
-                            b' ' | b'\t' | b'\n' | b'\r' | b';' => {
-                                ptr = ptr.add(1);
-                                break 'inner;
-                            }
-                            b'#' => {
-                                let start_ptr = ptr;
-                                ptr = ptr.add(1);
-                                loop {
-                                    if ptr == end {
-                                        let carry_over = end.offset_from(start_ptr) as usize;
-                                        break 'eof (carry_over, 0);
-                                    }
-
-                                    if *ptr == b'\n' {
-                                        break;
-                                    }
-
-                                    ptr = ptr.add(1)
-                                }
-                            }
-                            b'{' => {
-                                self.buf.advance_to(ptr.add(1));
-                                return (Some(Token::Open), None);
-                            }
-                            b'}' => {
-                                self.buf.advance_to(ptr.add(1));
-                                return (Some(Token::Close), None);
-                            }
-                            b'"' => {
-                                ptr = ptr.add(1);
-                                let start_ptr = ptr;
-                                loop {
-                                    if ptr == end {
-                                        state = ParseState::Quote;
-                                        let carry_over = end.offset_from(start_ptr) as usize;
-                                        break 'eof (carry_over, carry_over);
-                                    }
-
-                                    if *ptr == b'\\' {
-                                        let advance = end.offset_from(ptr).min(2);
-                                        ptr = ptr.offset(advance);
-                                        if ptr == end {
-                                            state = ParseState::Quote;
-                                            let carry_over = end.offset_from(start_ptr) as usize;
-                                            break 'eof (carry_over, carry_over.max(2) - 2);
-                                        }
-                                    } else if *ptr != b'"' {
-                                        ptr = ptr.add(1);
-                                    } else {
-                                        self.buf.advance_to(ptr.add(1));
-                                        let scalar = self.buf.get(start_ptr..ptr);
-                                        return (Some(Token::Quoted(scalar)), None);
-                                    }
-                                }
-                            }
-                            b'@' => {
-                                let start_ptr = ptr;
-                                ptr = ptr.add(1);
-                                if ptr == end {
-                                    break 'eof (1, 0);
-                                }
-
-                                if *ptr == b'[' {
-                                    ptr = ptr.add(1);
-                                    loop {
-                                        if ptr == end {
-                                            let carry_over = end.offset_from(start_ptr) as usize;
-                                            break 'eof (carry_over, 0);
-                                        } else if *ptr == b']' {
-                                            ptr = ptr.add(1);
-                                            self.buf.advance_to(ptr);
-                                            let scalar = self.buf.get(start_ptr..ptr);
-                                            return (Some(Token::Unquoted(scalar)), None);
-                                        } else {
-                                            ptr = ptr.add(1);
-                                        }
-                                    }
-                                } else {
-                                    loop {
-                                        if ptr == end {
-                                            let carry_over = end.offset_from(start_ptr) as usize;
-                                            state = ParseState::Unquoted;
-                                            break 'eof (carry_over, carry_over);
-                                        } else if !is_boundary(*ptr) {
-                                            ptr = ptr.add(1);
-                                        } else {
-                                            self.buf.advance_to(ptr);
-                                            let scalar = self.buf.get(start_ptr..ptr);
-                                            return (Some(Token::Unquoted(scalar)), None);
-                                        }
-                                    }
-                                }
-                            }
-                            b'=' => {
-                                ptr = ptr.add(1);
-                                if ptr == end {
-                                    break 'eof (1, 0);
-                                }
-
-                                if *ptr != b'=' {
-                                    self.buf.advance_to(ptr);
-                                    return (Some(Token::Operator(Operator::Equal)), None);
-                                } else {
-                                    self.buf.advance_to(ptr.add(1));
-                                    return (Some(Token::Operator(Operator::Exact)), None);
-                                }
-                            }
-                            b'<' => {
-                                ptr = ptr.add(1);
-                                if ptr == end {
-                                    break 'eof (1, 0);
-                                }
-
-                                if *ptr != b'=' {
-                                    self.buf.advance_to(ptr);
-                                    return (Some(Token::Operator(Operator::LessThan)), None);
-                                } else {
-                                    self.buf.advance_to(ptr.add(1));
-                                    return (Some(Token::Operator(Operator::LessThanEqual)), None);
-                                }
-                            }
-                            b'!' => {
-                                ptr = ptr.add(1);
-                                if ptr == end {
-                                    break 'eof (1, 0);
-                                }
-
-                                if *ptr == b'=' {
-                                    ptr = ptr.add(1);
-                                }
-
-                                self.buf.advance_to(ptr);
-                                return (Some(Token::Operator(Operator::NotEqual)), None);
-                            }
-                            b'?' => {
-                                ptr = ptr.add(1);
-                                if ptr == end {
-                                    break 'eof (1, 0);
-                                }
-
-                                if *ptr == b'=' {
-                                    ptr = ptr.add(1);
-                                }
-
-                                self.buf.advance_to(ptr);
-                                return (Some(Token::Operator(Operator::Exists)), None);
-                            }
-                            b'>' => {
-                                ptr = ptr.add(1);
-                                if ptr == end {
-                                    break 'eof (1, 0);
-                                }
-
-                                if *ptr != b'=' {
-                                    self.buf.advance_to(ptr);
-                                    return (Some(Token::Operator(Operator::GreaterThan)), None);
-                                } else {
-                                    self.buf.advance_to(ptr.add(1));
-                                    return (
-                                        Some(Token::Operator(Operator::GreaterThanEqual)),
-                                        None,
-                                    );
-                                }
-                            }
-                            b'\xef' if matches!(self.utf8, Utf8Bom::Unknown) => {
-                                match self.buf.window().get(..3) {
-                                    Some([0xef, 0xbb, 0xbf]) => {
-                                        self.utf8 = Utf8Bom::Present;
-                                        ptr = ptr.add(3);
-                                        break 'inner;
-                                    }
-                                    Some(_) => self.utf8 = Utf8Bom::NotPresent,
-                                    None => break 'eof (self.buf.window_len(), 0),
-                                }
-                            }
-                            _ => {
-                                let start_ptr = ptr;
-                                ptr = ptr.add(1);
-                                loop {
-                                    if ptr == end {
-                                        state = ParseState::Unquoted;
-                                        let carry_over = end.offset_from(start_ptr) as usize;
-                                        break 'eof (carry_over, carry_over);
-                                    } else if !is_boundary(*ptr) {
-                                        ptr = ptr.add(1);
-                                    } else {
-                                        self.buf.advance_to(ptr);
-                                        let scalar = self.buf.get(start_ptr..ptr);
-                                        return (Some(Token::Unquoted(scalar)), None);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                ParseState::Quote { .. } => {
-                    while ptr < end {
+                    while ptr < self.buf.end {
                         if *ptr == b'\\' {
-                            let advance = end.offset_from(ptr).min(2);
+                            let advance = self.buf.end.offset_from(ptr).min(2);
                             ptr = ptr.offset(advance);
                         } else if *ptr != b'"' {
                             ptr = ptr.add(1);
@@ -365,10 +187,12 @@ where
                     }
 
                     // buffer or prior read too small
-                    (self.buf.window_len(), self.buf.window_len())
+                    let len = self.buf.window_len();
+                    self.next_opt_refill(ParseState::Quote, len, len)
                 }
-                ParseState::Unquoted { .. } => {
-                    while ptr < end {
+                ParseState::Unquoted => {
+                    let mut ptr = self.buf.start.add(offset);
+                    while ptr < self.buf.end {
                         if !is_boundary(*ptr) {
                             ptr = ptr.add(1);
                         } else {
@@ -380,32 +204,210 @@ where
                     }
 
                     // buffer or prior read too small
-                    (self.buf.window_len(), self.buf.window_len())
+                    let len = self.buf.window_len();
+                    self.next_opt_refill(ParseState::Unquoted, len, len)
                 }
-            };
+            },
+            Err(e) => (None, Some(self.buffer_error(e))),
+        }
+    }
 
-            self.buf.advance_to(self.buf.end.sub(carry_over));
-            match self.buf.fill_buf(&mut self.reader) {
-                Ok(0) => match state {
-                    ParseState::None => {
-                        // if we carried over data that isn't a comment, we
-                        // should have made forward progress.
-                        if carry_over == 0 || *self.buf.start == b'#' {
-                            self.buf.advance(carry_over);
-                            return (None, None);
-                        } else {
-                            return (None, Some(self.eof_error()));
+    unsafe fn next_opt_fallback(&mut self) -> (Option<Token>, Option<ReaderError>) {
+        let mut ptr = self.buf.start;
+        let end = self.buf.end;
+
+        loop {
+            if ptr == end {
+                return self.next_opt_refill(ParseState::None, 0, 0);
+            }
+
+            match *ptr {
+                b' ' | b'\t' | b'\n' | b'\r' | b';' => ptr = ptr.add(1),
+                b'#' => {
+                    let start_ptr = ptr;
+                    loop {
+                        ptr = ptr.add(1);
+                        if ptr == end {
+                            let carry_over = end.offset_from(start_ptr) as usize;
+                            return self.next_opt_refill(ParseState::None, carry_over, 0);
+                        } else if *ptr == b'\n' {
+                            break;
                         }
                     }
-                    ParseState::Quote { .. } => return (None, Some(self.eof_error())),
-                    ParseState::Unquoted { .. } => {
-                        let scalar = std::slice::from_raw_parts(self.buf.start, carry_over);
-                        self.buf.advance_to(self.buf.end);
-                        return (Some(Token::Unquoted(Scalar::new(scalar))), None);
+                }
+
+                b'{' => {
+                    self.buf.advance_to(ptr.add(1));
+                    return (Some(Token::Open), None);
+                }
+                b'}' => {
+                    self.buf.advance_to(ptr.add(1));
+                    return (Some(Token::Close), None);
+                }
+                b'"' => {
+                    ptr = ptr.add(1);
+                    let start_ptr = ptr;
+                    loop {
+                        if ptr == end {
+                            let carry_over = end.offset_from(start_ptr) as usize;
+                            return self.next_opt_refill(ParseState::Quote, carry_over, carry_over);
+                        }
+
+                        if *ptr == b'\\' {
+                            let advance = end.offset_from(ptr).min(2);
+                            ptr = ptr.offset(advance);
+                            if ptr == end {
+                                let carry_over = end.offset_from(start_ptr) as usize;
+                                return self.next_opt_refill(
+                                    ParseState::Quote,
+                                    carry_over,
+                                    carry_over.max(2) - 2,
+                                );
+                            }
+                        } else if *ptr != b'"' {
+                            ptr = ptr.add(1);
+                        } else {
+                            self.buf.advance_to(ptr.add(1));
+                            let scalar = self.buf.get(start_ptr..ptr);
+                            return (Some(Token::Quoted(scalar)), None);
+                        }
                     }
-                },
-                Ok(_) => ptr = self.buf.start.add(offset),
-                Err(e) => return (None, Some(self.buffer_error(e))),
+                }
+                b'@' => {
+                    let start_ptr = ptr;
+                    ptr = ptr.add(1);
+                    if ptr == end {
+                        return self.next_opt_refill(ParseState::None, 1, 0);
+                    }
+
+                    if *ptr == b'[' {
+                        ptr = ptr.add(1);
+                        loop {
+                            if ptr == end {
+                                let carry_over = end.offset_from(start_ptr) as usize;
+                                return self.next_opt_refill(ParseState::None, carry_over, 0);
+                            } else if *ptr == b']' {
+                                ptr = ptr.add(1);
+                                self.buf.advance_to(ptr);
+                                let scalar = self.buf.get(start_ptr..ptr);
+                                return (Some(Token::Unquoted(scalar)), None);
+                            } else {
+                                ptr = ptr.add(1);
+                            }
+                        }
+                    } else {
+                        loop {
+                            if ptr == end {
+                                let carry_over = end.offset_from(start_ptr) as usize;
+                                return self.next_opt_refill(
+                                    ParseState::Unquoted,
+                                    carry_over,
+                                    carry_over,
+                                );
+                            } else if !is_boundary(*ptr) {
+                                ptr = ptr.add(1);
+                            } else {
+                                self.buf.advance_to(ptr);
+                                let scalar = self.buf.get(start_ptr..ptr);
+                                return (Some(Token::Unquoted(scalar)), None);
+                            }
+                        }
+                    }
+                }
+                b'=' => {
+                    ptr = ptr.add(1);
+                    if ptr == end {
+                        return self.next_opt_refill(ParseState::None, 1, 0);
+                    } else if *ptr != b'=' {
+                        self.buf.advance_to(ptr);
+                        return (Some(Token::Operator(Operator::Equal)), None);
+                    } else {
+                        self.buf.advance_to(ptr.add(1));
+                        return (Some(Token::Operator(Operator::Exact)), None);
+                    }
+                }
+                b'<' => {
+                    ptr = ptr.add(1);
+                    if ptr == end {
+                        return self.next_opt_refill(ParseState::None, 1, 0);
+                    } else if *ptr != b'=' {
+                        self.buf.advance_to(ptr);
+                        return (Some(Token::Operator(Operator::LessThan)), None);
+                    } else {
+                        self.buf.advance_to(ptr.add(1));
+                        return (Some(Token::Operator(Operator::LessThanEqual)), None);
+                    }
+                }
+                b'!' => {
+                    ptr = ptr.add(1);
+                    if ptr == end {
+                        return self.next_opt_refill(ParseState::None, 1, 0);
+                    }
+
+                    if *ptr == b'=' {
+                        ptr = ptr.add(1);
+                    }
+
+                    self.buf.advance_to(ptr);
+                    return (Some(Token::Operator(Operator::NotEqual)), None);
+                }
+                b'?' => {
+                    ptr = ptr.add(1);
+                    if ptr == end {
+                        return self.next_opt_refill(ParseState::None, 1, 0);
+                    }
+
+                    if *ptr == b'=' {
+                        ptr = ptr.add(1);
+                    }
+
+                    self.buf.advance_to(ptr);
+                    return (Some(Token::Operator(Operator::Exists)), None);
+                }
+                b'>' => {
+                    ptr = ptr.add(1);
+                    if ptr == end {
+                        return self.next_opt_refill(ParseState::None, 1, 0);
+                    }
+
+                    if *ptr != b'=' {
+                        self.buf.advance_to(ptr);
+                        return (Some(Token::Operator(Operator::GreaterThan)), None);
+                    } else {
+                        self.buf.advance_to(ptr.add(1));
+                        return (Some(Token::Operator(Operator::GreaterThanEqual)), None);
+                    }
+                }
+                b'\xef' if matches!(self.utf8, Utf8Bom::Unknown) => {
+                    match self.buf.window().get(..3) {
+                        Some([0xef, 0xbb, 0xbf]) => {
+                            self.utf8 = Utf8Bom::Present;
+                            ptr = ptr.add(3);
+                        }
+                        Some(_) => self.utf8 = Utf8Bom::NotPresent,
+                        None => {
+                            return self.next_opt_refill(ParseState::None, self.buf.window_len(), 0)
+                        }
+                    }
+                }
+                _ => {
+                    let start_ptr = ptr;
+                    loop {
+                        ptr = ptr.add(1);
+                        if ptr == end {
+                            let carry_over = end.offset_from(start_ptr) as usize;
+                            return self.next_opt_refill(
+                                ParseState::Unquoted,
+                                carry_over,
+                                carry_over,
+                            );
+                        } else if is_boundary(*ptr) {
+                            self.buf.advance_to(ptr);
+                            let scalar = self.buf.get(start_ptr..ptr);
+                            return (Some(Token::Unquoted(scalar)), None);
+                        }
+                    }
+                }
             }
         }
     }
