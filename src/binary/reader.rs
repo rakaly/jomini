@@ -80,29 +80,6 @@ where
         self.buf.position()
     }
 
-    #[inline]
-    fn next_opt(&mut self) -> (Option<Token>, Option<ReaderError>) {
-        loop {
-            let window =
-                unsafe { std::slice::from_raw_parts(self.buf.start, self.buf.window_len()) };
-            match read_token(window) {
-                Ok((tok, new_data)) => {
-                    self.buf.advance_to(new_data.as_ptr());
-                    return (Some(tok), None);
-                }
-                Err(LexError::Eof) => {}
-                Err(e) => return (None, Some(self.lex_error(e))),
-            }
-
-            match self.buf.fill_buf(&mut self.reader) {
-                Ok(0) if self.buf.window_len() == 0 => return (None, None),
-                Ok(0) => return (None, Some(self.lex_error(LexError::Eof))),
-                Ok(_) => {}
-                Err(e) => return (None, Some(self.buffer_error(e))),
-            }
-        }
-    }
-
     /// Advance a given number of bytes and return them.
     ///
     /// The internal buffer must be large enough to accomodate all bytes.
@@ -223,10 +200,16 @@ where
     #[inline]
     pub fn read(&mut self) -> Result<Token, ReaderError> {
         let s = std::ptr::addr_of!(self);
-        match self.next_opt() {
-            (Some(x), _) => Ok(x),
-            (None, None) => Err(unsafe { (*s).lex_error(LexError::Eof) }),
-            (None, Some(e)) => Err(e),
+        self.next()?
+            .ok_or_else(|| unsafe { s.read().lex_error(LexError::Eof) })
+    }
+
+    fn refill_next(&mut self) -> Result<Option<Token>, ReaderError> {
+        match self.buf.fill_buf(&mut self.reader) {
+            Ok(0) if self.buf.window_len() == 0 => Ok(None),
+            Ok(0) => Err(self.lex_error(LexError::Eof)),
+            Ok(_) => self.next(),
+            Err(e) => Err(self.buffer_error(e)),
         }
     }
 
@@ -246,10 +229,14 @@ where
     #[inline]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Token>, ReaderError> {
-        match self.next_opt() {
-            (Some(x), _) => Ok(Some(x)),
-            (None, None) => Ok(None),
-            (None, Some(e)) => Err(e),
+        let window = unsafe { std::slice::from_raw_parts(self.buf.start, self.buf.window_len()) };
+        match read_token(window) {
+            Ok((tok, new_data)) => {
+                self.buf.advance_to(new_data.as_ptr());
+                Ok(Some(tok))
+            }
+            Err(LexError::Eof) => self.refill_next(),
+            Err(e) => Err(self.lex_error(e)),
         }
     }
 
