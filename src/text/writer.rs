@@ -64,9 +64,20 @@ enum WriteState {
     ArrayValue = 4,
     ArrayValueFirst = 5,
     FirstKey = 6,
+    FirstUnknown = 7,
 }
 
-const WRITE_STATE_NEXT: [WriteState; 7] = [
+impl WriteState {
+    #[inline]
+    fn no_data_encountered_yet(&self) -> bool {
+        matches!(
+            self,
+            WriteState::ArrayValueFirst | WriteState::FirstKey | WriteState::FirstUnknown
+        )
+    }
+}
+
+const WRITE_STATE_NEXT: [WriteState; 8] = [
     WriteState::Error,
     WriteState::KeyValueSeparator,
     WriteState::Key,
@@ -74,6 +85,7 @@ const WRITE_STATE_NEXT: [WriteState; 7] = [
     WriteState::ArrayValue,
     WriteState::ArrayValue,
     WriteState::KeyValueSeparator,
+    WriteState::ArrayValue,
 ];
 
 #[cfg(feature = "faster_writer")]
@@ -112,19 +124,37 @@ where
         matches!(self.state, WriteState::Key | WriteState::FirstKey)
     }
 
+    /// Returns true if at the start of an unknown container type
+    #[inline]
+    pub fn at_unknown_start(&self) -> bool {
+        matches!(self.state, WriteState::FirstUnknown)
+    }
+
     /// Returns the number of objects deep the writer is from the root object
     #[inline]
     pub fn depth(&self) -> usize {
         self.depth.len()
     }
 
-    /// Write out the start of an object
+    /// Write out the start of container ('{')
+    ///
+    /// If the type of the container is known to be an array or object, prefer
+    /// [`write_object_start`] or [`write_array_start`]
     #[inline]
-    pub fn write_object_start(&mut self) -> Result<(), Error> {
+    pub fn write_start(&mut self) -> Result<(), Error> {
         self.write_preamble()?;
         self.writer.write_all(b"{")?;
         self.depth.push(self.mode);
         self.needs_line_terminator = true;
+        self.mode = DepthMode::Array;
+        self.state = WriteState::FirstUnknown;
+        Ok(())
+    }
+
+    /// Write out the start of an object
+    #[inline]
+    pub fn write_object_start(&mut self) -> Result<(), Error> {
+        self.write_start()?;
         self.mode = DepthMode::Object;
         self.state = WriteState::FirstKey;
         Ok(())
@@ -133,12 +163,9 @@ where
     /// Write out the start of an array
     #[inline]
     pub fn write_array_start(&mut self) -> Result<(), Error> {
-        self.write_preamble()?;
-        self.writer.write_all(b"{")?;
-        self.depth.push(self.mode);
+        self.write_start()?;
         self.mode = DepthMode::Array;
         self.state = WriteState::ArrayValueFirst;
-        self.needs_line_terminator = true;
         Ok(())
     }
 
@@ -156,11 +183,11 @@ where
             return Err(Error::new(ErrorKind::StackEmpty { offset: 0 }));
         }
 
-        if old_state != WriteState::ArrayValueFirst && old_state != WriteState::FirstKey {
+        if old_state.no_data_encountered_yet() {
+            self.writer.write_all(b" ")?;
+        } else {
             self.writer.write_all(b"\n")?;
             self.write_indent()?;
-        } else {
-            self.writer.write_all(b" ")?;
         }
 
         self.writer.write_all(b"}")?;
@@ -562,7 +589,7 @@ where
             WriteState::KeyValueSeparator => {
                 self.writer.write_all(b"=")?;
             }
-            WriteState::ArrayValueFirst | WriteState::FirstKey => {
+            x if x.no_data_encountered_yet() => {
                 self.write_indent()?;
             }
             _ => {}
@@ -1442,6 +1469,37 @@ mod tests {
         let mut writer = TextWriterBuilder::new().from_writer(&mut out);
         writer.write_tape(&tape)?;
         assert_eq!(&out, data);
+        Ok(())
+    }
+
+    #[test]
+    fn test_unknown_start() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_unquoted(b"data")?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_start()?;
+        assert!(writer.at_unknown_start());
+        writer.write_unquoted(b"hello")?;
+        assert!(!writer.at_unknown_start());
+        writer.write_end()?;
+
+        writer.write_unquoted(b"data2")?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_object_start()?;
+        assert!(!writer.at_unknown_start());
+        writer.write_end()?;
+
+        writer.write_unquoted(b"data3")?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_array_start()?;
+        assert!(!writer.at_unknown_start());
+        writer.write_end()?;
+
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "data={\n  hello\n}\ndata2={ }\ndata3={ }"
+        );
         Ok(())
     }
 }
