@@ -3165,6 +3165,25 @@ mod tests {
     }
 
     #[test]
+    fn test_deserialize_skip_rgb() {
+        let data = [
+            0x3a, 0x05, 0x01, 0x00, 0x43, 0x02, 0x03, 0x00, 0x14, 0x00, 0x6e, 0x00, 0x00, 0x00,
+            0x14, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x14, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x04, 0x00,
+        ];
+
+        let mut map = HashMap::new();
+        map.insert(0x053a, "color");
+
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
+        assert_eq!(actual, MyStruct { something: None });
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            something: Option<i32>,
+        }
+    }
+
+    #[test]
     fn test_object_len() {
         let tokens = vec![
             BinaryToken::Token(0x0000),

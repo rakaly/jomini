@@ -806,6 +806,10 @@ impl<'a> Lexer<'a> {
                 Ok(())
             }
             LexemeId::OPEN => self.skip_container(),
+            LexemeId::RGB => {
+                self.read_rgb()?;
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
