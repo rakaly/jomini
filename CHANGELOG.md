@@ -1,4 +1,9 @@
-## v0.25.3 - 2023-01-11
+## v0.25.4 - 2024-02-24
+
+- Fix incorrect lexer skip of rgb data for binary slices
+- Small optimizations to binary and text readers
+
+## v0.25.3 - 2024-01-11
 
 - Performance improvement (~20%) to `text::TokenReader` for save files
 
