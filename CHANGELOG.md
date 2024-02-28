@@ -1,3 +1,31 @@
+## v0.25.5 - 2024-02-27
+
+Support generic type parameter for `JominiDeserialize`:
+
+```rust
+pub struct Manager<Of> {
+    value: Of,
+}
+```
+and
+```rust
+pub struct Manager<Of> where Of: DeserializeOwned {
+    #[jomini(deserialize_with = "maybe_option")]
+    value: Option<Of>,
+    #[jomini(deserialize_with = "maybe_option")]
+    value2: Option<Of>,
+}
+
+fn maybe_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>
+{
+    todo!()
+}
+```
+Lots of edge cases still exist, but this should unlock downstream usages
+
 ## v0.25.4 - 2024-02-24
 
 - Fix incorrect lexer skip of rgb data for binary slices
