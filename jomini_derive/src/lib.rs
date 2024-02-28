@@ -1,6 +1,9 @@
-use proc_macro::TokenStream;
+use proc_macro::{Span, TokenStream};
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, DeriveInput, Field, Ident, Lit, Meta, NestedMeta, Type};
+use syn::{
+    parse_macro_input, parse_quote, DeriveInput, Field, GenericParam, Ident, Lifetime, LifetimeDef,
+    Lit, Meta, NestedMeta, Type,
+};
 
 fn is_duplicated(f: &Field) -> bool {
     f.attrs
@@ -269,6 +272,52 @@ pub fn derive(input: TokenStream) -> TokenStream {
         _ => panic!("Expected named fields"),
     };
 
+    let mut generics = dinput.generics;
+    let mut base_generics = generics.clone();
+    base_generics.params = std::iter::once(syn::GenericParam::Lifetime(LifetimeDef::new(
+        Lifetime::new("'de", Span::call_site().into()),
+    )))
+    .chain(base_generics.params)
+    .collect();
+    let (base_impl, _, base_where) = base_generics.split_for_impl();
+
+    // A poor man approach to know if we need to add the Deserialize<'de> trait
+    // bounds to the generic type. Those that are `DeserializedOwned` shouldn't
+    // have the constraint
+    let is_deserialized_owned = !generics.params.is_empty() && base_where.is_none();
+    if is_deserialized_owned {
+        for param in &mut generics.params {
+            if let GenericParam::Type(ref mut type_param) = *param {
+                type_param
+                    .bounds
+                    .push(parse_quote!(::serde::Deserialize<'de>));
+            }
+        }
+    }
+
+    let (_, ty_generics, where_clause) = generics.split_for_impl();
+
+    let mut de_generics = generics.clone();
+    de_generics.params = std::iter::once(syn::GenericParam::Lifetime(LifetimeDef::new(
+        Lifetime::new("'de", Span::call_site().into()),
+    )))
+    .chain(de_generics.params)
+    .collect();
+    let (de_impl, _, _) = de_generics.split_for_impl();
+
+    let mut visitor_generics = quote! { #ty_generics };
+    if visitor_generics.is_empty() {
+        visitor_generics = quote! { <()> };
+    }
+
+    // The visitor implementation should have a 'de lifetime except if what we
+    // are deserializing is DeserializedOwned.
+    let visitor_impl = if is_deserialized_owned {
+        &de_impl
+    } else {
+        &base_impl
+    };
+
     let builder_init = named_fields.named.iter().map(|f| {
         let name = &f.ident;
         let x = &f.ty;
@@ -295,10 +344,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
             let des = if let Some(ident) = can_deserialize_with(f) {
                 let fncall = quote! { #ident(__deserializer) };
                 quote! {{
-                    struct __DeserializeWith {
+                    struct __DeserializeWith #ty_generics #where_clause {
                         value: #x,
                     }
-                    impl<'de> ::serde::Deserialize<'de> for __DeserializeWith {
+                    impl #base_impl ::serde::Deserialize<'de> for __DeserializeWith #ty_generics #where_clause {
                         fn deserialize<__D>(
                             __deserializer: __D,
                         ) -> ::std::result::Result<Self, __D::Error>
@@ -309,7 +358,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                         }
                     }
                     ::serde::de::MapAccess::next_value::<
-                        __DeserializeWith,
+                        __DeserializeWith #ty_generics,
                     >(&mut __map).map(|x| x.value)
                 }}
             } else {
@@ -441,7 +490,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         .collect();
 
     let output = quote! {
-        impl<'de> ::serde::Deserialize<'de> for #struct_ident {
+        impl #de_impl ::serde::Deserialize<'de> for #struct_ident #ty_generics #where_clause {
             fn deserialize<__D>(__deserializer: __D) -> ::std::result::Result<Self, __D::Error>
             where __D: ::serde::Deserializer<'de> {
                 #[allow(non_camel_case_types)]
@@ -497,10 +546,12 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     }
                 }
 
-                struct __Visitor;
+                struct __Visitor #ty_generics #where_clause {
+                    marker: ::core::marker::PhantomData #visitor_generics,
+                };
 
-                impl<'de> ::serde::de::Visitor<'de> for __Visitor {
-                    type Value = #struct_ident;
+                impl #visitor_impl ::serde::de::Visitor<'de> for __Visitor #ty_generics #where_clause {
+                    type Value = #struct_ident #ty_generics;
 
                     fn expecting(&self, formatter: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
                         write!(formatter, #expecting)
@@ -536,7 +587,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     __deserializer,
                     #struct_ident_str,
                     FIELDS,
-                    __Visitor
+                    __Visitor {
+                        marker: ::core::marker::PhantomData,
+                    }
                 )
             }
         }
