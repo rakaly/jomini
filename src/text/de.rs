@@ -2865,7 +2865,7 @@ mod tests {
     #[test]
     fn test_double_next_value_no_panic() {
         #[derive(Deserialize, Debug)]
-        struct Color((u8, u8, u8));
+        struct Color(#[allow(unused)] (u8, u8, u8));
 
         #[derive(Deserialize, Debug)]
         enum ColorName {
