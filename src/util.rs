@@ -6,8 +6,8 @@ fn take<const N: usize>(data: &[u8]) -> [u8; N] {
 }
 
 #[inline]
-pub(crate) fn get_split<const N: usize>(data: &[u8]) -> Option<([u8; N], &[u8])> {
-    data.get(N..).map(|d| (take::<N>(data), d))
+pub(crate) fn get_split<const N: usize>(data: &[u8]) -> Option<(&[u8; N], &[u8])> {
+    data.split_first_chunk::<N>()
 }
 
 /// https://youtu.be/wlvKAT7SZIQ?si=EndNPTY6f8oEBS--&t=2426
