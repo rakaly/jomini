@@ -127,6 +127,34 @@ without any duplication.
 
 One can configure the behavior when a token is unknown (ie: fail immediately or try to continue).
 
+### Direct identifier deserialization with `token` attribute
+
+There may be some performance loss during binary deserialization as
+tokens are resolved to strings via a `TokenResolver` and then matched against the
+string representations of a struct's fields.
+
+We can fix this issue by directly encoding the expected token value into the struct:
+
+```rust
+#[derive(JominiDeserialize, PartialEq, Debug)]
+struct MyStruct {
+    #[jomini(token = 0x2d82)]
+    field1: String,
+}
+
+// Empty token to string resolver
+let map = HashMap::<u16, String>::new();
+
+let actual: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+    .deserialize_slice(&data[..], &map)?;
+assert_eq!(actual, MyStruct { field1: "ENG".to_string() });
+```
+
+Couple notes:
+
+- This does not obviate need for the token to string resolver as tokens may be used as values.
+- If the `token` attribute is specified on one field on a struct, it must be specified on all fields of that struct.
+
 ## Caveats
 
 Before calling any Jomini API, callers are expected to:
