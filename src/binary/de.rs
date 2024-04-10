@@ -659,18 +659,27 @@ impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
     where
         K: DeserializeSeed<'de>,
     {
-        match self.de.parser.read_id() {
-            Ok(LexemeId::CLOSE) => Ok(None),
-            Ok(token) => seed
-                .deserialize(OndemandTokenDeserializer {
-                    de: &mut *self.de,
-                    token,
-                })
-                .map(Some),
-            Err(e) => match e.kind() {
-                LexError::Eof if self.root => Ok(None),
-                _ => Err(e.into()),
-            },
+        loop {
+            match self.de.parser.read_id() {
+                Ok(LexemeId::CLOSE) => return Ok(None),
+                Ok(LexemeId::OPEN) => {
+                    let _ = self.de.parser.read_id()?;
+                }
+                Ok(token) => {
+                    return seed
+                        .deserialize(OndemandTokenDeserializer {
+                            de: &mut *self.de,
+                            token,
+                        })
+                        .map(Some)
+                }
+                Err(e) => {
+                    return match e.kind() {
+                        LexError::Eof if self.root => Ok(None),
+                        _ => Err(e.into()),
+                    }
+                }
+            }
         }
     }
 
@@ -704,15 +713,7 @@ where
     where
         V: de::Visitor<'de>,
     {
-        let mut tok = self.token;
-
-        // Skip empty objects masquerading as keys
-        while tok == LexemeId::OPEN && matches!(self.de.parser.peek_id(), Some(LexemeId::CLOSE)) {
-            self.de.parser.read_id()?;
-            tok = self.de.parser.read_id()?;
-        }
-
-        match tok {
+        match self.token {
             LexemeId::QUOTED | LexemeId::UNQUOTED => {
                 let data = self.de.parser.read_string()?;
                 match self.de.config.flavor.decode(data.as_bytes()) {
@@ -2411,6 +2412,36 @@ mod tests {
                     third: 4,
                     fourth: 0,
                 }
+            }
+        );
+    }
+
+    #[test]
+    fn test_trailing_empty_object() {
+        let data = [
+            0xc9, 0x2e, 0x01, 0x00, 0x03, 0x00, 0xe2, 0x28, 0x01, 0x00, 0x0c, 0x00, 0x01, 0x00,
+            0x00, 0x00, 0x03, 0x00, 0x04, 0x00, 0x04, 0x00,
+        ];
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            savegame_version: Version,
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Version {
+            first: i32,
+        }
+
+        let mut map = HashMap::new();
+        map.insert(0x2ec9, String::from("savegame_version"));
+        map.insert(0x28e2, String::from("first"));
+
+        let actual: MyStruct = from_owned(&data[..], &map).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                savegame_version: Version { first: 1 }
             }
         );
     }
