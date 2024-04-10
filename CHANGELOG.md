@@ -1,3 +1,7 @@
+## v0.25.6 - 2024-04-09
+
+- Fix trailing empty object causing the binary ondemand deserializer to raise an error
+
 ## v0.25.5 - 2024-02-27
 
 Support generic type parameter for `JominiDeserialize`:
