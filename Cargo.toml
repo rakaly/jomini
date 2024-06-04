@@ -30,14 +30,14 @@ json = ["serde", "serde_json"]
 faster_writer = ["dep:itoa"]
 
 [dev-dependencies]
-attohttpc = { version = "0.24", features = ["tls-vendored"] }
+attohttpc = { version = "0.28", features = ["tls-vendored"] }
 encoding_rs = "0.8"
 criterion = "< 0.4"
 quickcheck = "1"
 quickcheck_macros = "1"
 flate2 = "1"
-serde_with = "2.3.1"
-rstest = "0.18.2"
+serde_with = "3.8.1"
+rstest = "0.19.0"
 
 [[bin]]
 name = "json"
