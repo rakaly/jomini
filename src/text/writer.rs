@@ -64,7 +64,12 @@ enum WriteState {
     ArrayValue = 4,
     ArrayValueFirst = 5,
     FirstKey = 6,
+
+    // The state after calling `write_start`.
     FirstUnknown = 7,
+
+    // The state after the first unknown. We still don't know if we are dealing
+    // with an array or object.
     SecondUnknown = 8,
 }
 
