@@ -65,6 +65,7 @@ enum WriteState {
     ArrayValueFirst = 5,
     FirstKey = 6,
     FirstUnknown = 7,
+    SecondUnknown = 8,
 }
 
 impl WriteState {
@@ -77,7 +78,7 @@ impl WriteState {
     }
 }
 
-const WRITE_STATE_NEXT: [WriteState; 8] = [
+const WRITE_STATE_NEXT: [WriteState; 9] = [
     WriteState::Error,
     WriteState::KeyValueSeparator,
     WriteState::Key,
@@ -85,6 +86,7 @@ const WRITE_STATE_NEXT: [WriteState; 8] = [
     WriteState::ArrayValue,
     WriteState::ArrayValue,
     WriteState::KeyValueSeparator,
+    WriteState::SecondUnknown,
     WriteState::ArrayValue,
 ];
 
@@ -128,6 +130,12 @@ where
     #[inline]
     pub fn at_unknown_start(&self) -> bool {
         matches!(self.state, WriteState::FirstUnknown)
+    }
+
+    /// Returns true if the writer is prepared to write an array value
+    #[inline]
+    pub fn at_array_value(&self) -> bool {
+        matches!(self.state, WriteState::ArrayValue)
     }
 
     /// Returns the number of objects deep the writer is from the root object
@@ -574,7 +582,7 @@ where
         let just_wrote_line_terminator = self.needs_line_terminator;
         self.write_line_terminator()?;
         match self.state {
-            WriteState::ArrayValue => {
+            WriteState::ArrayValue | WriteState::SecondUnknown => {
                 if just_wrote_line_terminator {
                     self.write_indent()?;
                 } else if self.mixed_mode == MixedMode::Keyed {
@@ -1499,6 +1507,32 @@ mod tests {
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
             "data={\n  hello\n}\ndata2={ }\ndata3={ }"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_unknown_start_mixed() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_unquoted(b"data")?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_start()?;
+        writer.write_unquoted(b"10")?;
+
+        writer.start_mixed_mode();
+        writer.write_unquoted(b"0")?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_unquoted(b"1")?;
+
+        writer.write_unquoted(b"2")?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_unquoted(b"3")?;
+        writer.write_end()?;
+
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "data={\n  10 0=1 2=3\n}"
         );
         Ok(())
     }
