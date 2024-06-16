@@ -1,3 +1,8 @@
+## v0.26.0 - 2024-06-16
+
+- Add optional `TokenResolver::is_empty` implementation for resolvers to signal no token support.
+- Add more ergonomic streaming write support with `TextWriter::write_start` when it is unknown if the block being written belongs to an array or object.
+
 ## v0.25.6 - 2024-04-09
 
 - Fix trailing empty object causing the binary ondemand deserializer to raise an error
