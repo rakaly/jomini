@@ -30,9 +30,9 @@ pub trait TokenResolver {
     fn resolve(&self, token: u16) -> Option<&str>;
 
     /// Return whether [`TokenResolver::resolve`] will always return `None`.
-    /// 
+    ///
     /// By default this returns `false`
-    /// 
+    ///
     /// This method is not used by jomini itself, but rather targeted at
     /// downstream save file libraries, who accept an application configured
     /// [`TokenResolver`]. If the application is not configured for ironman
@@ -43,7 +43,7 @@ pub trait TokenResolver {
     /// file libraries can raise a more descriptive "binary file encountered but
     /// tokens are not configured", as only they know if a non-zero amount of
     /// tokens need to be resolved for a successful deserialization.
-    /// 
+    ///
     /// There's not a way for jomini to know whether an empty [`TokenResolver`]
     /// constitutes an error, as the client may only be deserializing data from
     /// keys that are already strings. Or, alternatively, direct token
@@ -71,7 +71,7 @@ impl<T: TokenResolver> TokenResolver for &'_ T {
     fn resolve(&self, token: u16) -> Option<&str> {
         (**self).resolve(token)
     }
-    
+
     fn is_empty(&self) -> bool {
         (**self).is_empty()
     }
