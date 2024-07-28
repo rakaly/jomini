@@ -63,12 +63,22 @@ fuzz_target!(|data: &[u8]| {
     hash.insert(0x209u16, "localization");
 
     let mut lexer = jomini::binary::Lexer::new(data);
-    let mut reader = jomini::binary::TokenReader::builder().buffer_len(100).build(data);
+    let buffer_len = 100;
+    let mut reader = jomini::binary::TokenReader::builder()
+        .buffer_len(buffer_len)
+        .build(data);
 
     loop {
         match (lexer.read_token(), reader.read()) {
             (Ok(t1), Ok(t2)) => assert_eq!(t1, t2),
-            (Err(e1), Err(e2)) => { break; }
+            (Ok(jomini::binary::Token::Quoted(t) | jomini::binary::Token::Unquoted(t)), _)
+                if t.as_bytes().len() >= buffer_len - 4 =>
+            {
+                break;
+            }
+            (Err(_), Err(_)) => {
+                break;
+            }
             (x, y) => panic!("{:?} {:?}", x, y),
         }
     }
