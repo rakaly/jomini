@@ -271,6 +271,8 @@ pub struct TokenReaderBuilder {
 
 impl TokenReaderBuilder {
     /// Set the fixed size buffer to the given buffer
+    ///
+    /// See [buffer_len](Self::buffer_len) for more information
     #[inline]
     pub fn buffer(mut self, val: Box<[u8]>) -> TokenReaderBuilder {
         self.buffer = self.buffer.buffer(val);
@@ -278,6 +280,21 @@ impl TokenReaderBuilder {
     }
 
     /// Set the length of the buffer if no buffer is provided
+    ///
+    /// The size of the buffer must be large enough to decode an entire binary
+    /// token, not just the contained binary data. For instance, for quoted
+    /// scalars there are 4 bytes of additional data to the token (2 bytes for
+    /// token discriminant and 2 to the string size).
+    ///
+    /// With how the binary format is laid out, a minimal buffer size that can
+    /// handle all inputs can be derived
+    ///
+    /// ```rust
+    /// use jomini::binary::TokenReader;
+    /// let len = usize::from(u16::MAX) + 4;
+    /// let reader = TokenReader::builder().buffer_len(len);
+    /// # let _reader2 = reader;
+    /// ```
     #[inline]
     pub fn buffer_len(mut self, val: usize) -> TokenReaderBuilder {
         self.buffer = self.buffer.buffer_len(val);
