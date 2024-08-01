@@ -160,10 +160,8 @@ fuzz_target!(|data: &[u8]| {
             jomini::binary::BinaryTapeParser.parse_slice_into_tape_unoptimized(&data, &mut utape);
 
         match (ures, ores) {
-            (Ok(t1), Ok(t2)) => assert_eq!(t1.tokens(), t2.tokens()),
-            (Err(_), Err(_)) => {
-                break;
-            }
+            (Ok(_), Ok(t2)) => assert_eq!(utape.tokens(), t2.tokens()),
+            (Err(_), Err(_)) => {}
             (x, y) => panic!("{:?} {:?}", x, y),
         }
     }
