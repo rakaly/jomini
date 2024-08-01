@@ -62,17 +62,42 @@ fuzz_target!(|data: &[u8]| {
     hash.insert(0x354eu16, "selector");
     hash.insert(0x209u16, "localization");
 
+    // Fuzz equality between the lexer and reader when the reader has a buffer
+    // large enough to hold all possible binary tokens
+    let mut lexer = jomini::binary::Lexer::new(data);
+    let mut reader = jomini::binary::TokenReader::builder()
+        .buffer_len(usize::from(u16::MAX) + 4)
+        .build(data);
+
+    loop {
+        match (lexer.next_token(), reader.next()) {
+            (Ok(None), Ok(None)) => {
+                break;
+            }
+            (Ok(Some(t1)), Ok(Some(t2))) => assert_eq!(t1, t2),
+            (Err(e1), Err(e2)) => match e2.kind() {
+                jomini::binary::ReaderErrorKind::Lexer(e) => {
+                    assert_eq!(e1.kind(), e);
+                    break;
+                }
+                _ => panic!("different errors"),
+            },
+            (x, y) => panic!("{:?} {:?}", x, y),
+        }
+    }
+
+    // Fuzz equality when reader doesn't have enough space to hold everything
     let mut lexer = jomini::binary::Lexer::new(data);
     let buffer_len = 100;
     let mut reader = jomini::binary::TokenReader::builder()
-        .buffer_len(buffer_len)
+        .buffer_len(buffer_len + 4)
         .build(data);
 
     loop {
         match (lexer.read_token(), reader.read()) {
             (Ok(t1), Ok(t2)) => assert_eq!(t1, t2),
             (Ok(jomini::binary::Token::Quoted(t) | jomini::binary::Token::Unquoted(t)), _)
-                if t.as_bytes().len() >= buffer_len - 4 =>
+                if t.as_bytes().len() >= buffer_len =>
             {
                 break;
             }
@@ -83,44 +108,63 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    let mut utape = jomini::BinaryTape::default();
-    let ures =
-        jomini::binary::BinaryTapeParser.parse_slice_into_tape_unoptimized(&data, &mut utape);
+    // Fuzz tape parsing
+    let ores = jomini::BinaryTape::from_slice(data);
 
-    let ores = jomini::BinaryTape::from_slice(&data);
-    assert_eq!(ures.is_ok(), ores.is_ok());
-    if !ures.is_ok() {
-        return;
+    // Fuzz binary deserializers
+    let _: Result<Meta, _> = jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .from_slice(data, &hash)
+        .deserialize();
+
+    let _: Result<Meta, _> = jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .from_reader(data, &hash)
+        .deserialize();
+
+    if let Ok(tape) = &ores {
+        let _: Result<Meta, _> = jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+            .from_tape(tape, &hash)
+            .deserialize();
     }
 
-    let otape = ores.unwrap();
-
-    assert_eq!(utape.tokens(), otape.tokens());
-
-    let tokens = otape.tokens();
-    for (i, token) in tokens.iter().enumerate() {
-        match token {
-            jomini::BinaryToken::Array(ind)
-            | jomini::BinaryToken::Object(ind)
-            | jomini::BinaryToken::End(ind)
-                if *ind == 0 =>
-            {
-                panic!("zero ind encountered");
-            }
-            jomini::BinaryToken::MixedContainer => {}
-            jomini::BinaryToken::Equal => {}
-            jomini::BinaryToken::Array(ind) | jomini::BinaryToken::Object(ind) => {
-                match tokens[*ind] {
-                    jomini::BinaryToken::End(ind2) => {
-                        assert_eq!(ind2, i)
-                    }
-                    _ => panic!("expected end"),
+    // Fuzz structure of binary AST
+    if let Ok(tape) = &ores {
+        let tokens = tape.tokens();
+        for (i, token) in tokens.iter().enumerate() {
+            match token {
+                jomini::BinaryToken::Array(ind)
+                | jomini::BinaryToken::Object(ind)
+                | jomini::BinaryToken::End(ind)
+                    if *ind == 0 =>
+                {
+                    panic!("zero ind encountered");
                 }
+                jomini::BinaryToken::MixedContainer => {}
+                jomini::BinaryToken::Equal => {}
+                jomini::BinaryToken::Array(ind) | jomini::BinaryToken::Object(ind) => {
+                    match tokens[*ind] {
+                        jomini::BinaryToken::End(ind2) => {
+                            assert_eq!(ind2, i)
+                        }
+                        _ => panic!("expected end"),
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
-    let _: Result<Meta, _> = jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .from_tape(&otape, &hash)
-        .deserialize();
+
+    #[cfg(unoptimized_build)]
+    {
+        let mut utape = jomini::BinaryTape::default();
+        let ures =
+            jomini::binary::BinaryTapeParser.parse_slice_into_tape_unoptimized(&data, &mut utape);
+
+        match (ures, ores) {
+            (Ok(t1), Ok(t2)) => assert_eq!(t1.tokens(), t2.tokens()),
+            (Err(_), Err(_)) => {
+                break;
+            }
+            (x, y) => panic!("{:?} {:?}", x, y),
+        }
+    }
 });
