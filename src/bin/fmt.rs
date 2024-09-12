@@ -1,8 +1,7 @@
 use std::{error, io};
 
 fn main() -> Result<(), Box<dyn error::Error>> {
-    let stdin = io::stdin().lock();
-    let mut reader = jomini::text::TokenReader::new(stdin);
+    let mut reader = jomini::text::TokenReader::new(io::stdin().lock());
 
     let stdout = io::stdout().lock();
     let mut writer = jomini::TextWriterBuilder::new().from_writer(stdout);

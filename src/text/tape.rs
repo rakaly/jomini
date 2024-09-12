@@ -437,7 +437,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
     /// Skips whitespace that may terminate the file
     #[inline]
-    fn skip_ws_t(&mut self, data: &'a [u8]) -> Option<&'a [u8]> {
+    fn skip_ws_t(&self, data: &'a [u8]) -> Option<&'a [u8]> {
         unsafe {
             let start_ptr = data.as_ptr_range().start;
             let end_ptr = data.as_ptr_range().end;

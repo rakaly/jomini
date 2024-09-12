@@ -590,7 +590,7 @@ impl<'a> Lexer<'a> {
     /// assert_eq!(lexer.peek_id(), None);
     /// ```
     #[inline]
-    pub fn peek_id(&mut self) -> Option<LexemeId> {
+    pub fn peek_id(&self) -> Option<LexemeId> {
         self.data
             .get(..2)
             .map(|head| LexemeId::new(u16::from_le_bytes([head[0], head[1]])))
@@ -606,7 +606,7 @@ impl<'a> Lexer<'a> {
     /// assert_eq!(lexer.peek_token(), None);
     /// ```
     #[inline]
-    pub fn peek_token(&mut self) -> Option<Token<'a>> {
+    pub fn peek_token(&self) -> Option<Token<'a>> {
         read_token(self.data).ok().map(|(t, _)| t)
     }
 

@@ -37,9 +37,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     };
 
     let stdin = io::stdin();
-    let lock = stdin.lock();
-
-    let mut reader = jomini::binary::TokenReader::new(lock);
+    let mut reader = jomini::binary::TokenReader::new(stdin.lock());
     let mut state = 0;
     while let Some(token) = reader.next()? {
         match token {

@@ -152,12 +152,12 @@ impl<'a, 'b> ParserState<'a, 'b> {
     }
 
     #[inline]
-    fn parse_next_id_opt(&mut self, data: &'a [u8]) -> Option<(&'a [u8], u16)> {
+    fn parse_next_id_opt(&self, data: &'a [u8]) -> Option<(&'a [u8], u16)> {
         get_split::<2>(data).map(|(head, rest)| (rest, u16::from_le_bytes(head)))
     }
 
     #[inline]
-    fn parse_next_id(&mut self, data: &'a [u8]) -> Result<(&'a [u8], LexemeId), Error> {
+    fn parse_next_id(&self, data: &'a [u8]) -> Result<(&'a [u8], LexemeId), Error> {
         read_id(data)
             .map(|(id, rest)| (rest, id))
             .map_err(|e| self.err_position(e, data))
@@ -692,7 +692,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
     #[inline(never)]
     #[cold]
-    fn equal_key_error(&mut self, data: &[u8]) -> Error {
+    fn equal_key_error(&self, data: &[u8]) -> Error {
         Error::new(ErrorKind::InvalidSyntax {
             msg: String::from("EQUAL not valid for a key"),
             offset: self.offset(data),
@@ -701,7 +701,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
     #[inline(never)]
     #[cold]
-    fn end_location_error(&mut self, data: &[u8]) -> Error {
+    fn end_location_error(&self, data: &[u8]) -> Error {
         Error::new(ErrorKind::InvalidSyntax {
             msg: String::from("END token must be accompanies by an array or object token"),
             offset: self.offset(data),
@@ -710,7 +710,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
     #[inline(never)]
     #[cold]
-    fn empty_object_err(&mut self, data: &[u8]) -> Error {
+    fn empty_object_err(&self, data: &[u8]) -> Error {
         Error::new(ErrorKind::InvalidSyntax {
             msg: String::from("expected an empty object"),
             offset: self.offset(data),
@@ -719,7 +719,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
     #[inline(never)]
     #[cold]
-    fn equal_in_array_err(&mut self, data: &[u8]) -> Error {
+    fn equal_in_array_err(&self, data: &[u8]) -> Error {
         Error::new(ErrorKind::InvalidSyntax {
             msg: String::from("EQUAL in an array should come after a scalar"),
             offset: self.offset(data),
@@ -728,7 +728,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
     #[inline(never)]
     #[cold]
-    fn open_empty_err(&mut self, data: &[u8]) -> Error {
+    fn open_empty_err(&self, data: &[u8]) -> Error {
         Error::new(ErrorKind::InvalidSyntax {
             msg: String::from("Starting open token is not valid"),
             offset: self.offset(data),
@@ -737,7 +737,7 @@ impl<'a, 'b> ParserState<'a, 'b> {
 
     #[inline(never)]
     #[cold]
-    fn end_valid_err(&mut self, data: &[u8]) -> Error {
+    fn end_valid_err(&self, data: &[u8]) -> Error {
         Error::new(ErrorKind::InvalidSyntax {
             msg: String::from("END only valid for object or array"),
             offset: self.offset(data),
