@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, io::BufRead};
+
+use crate::Error;
 
 /// Resolves binary 16bit tokens to field names
 ///
@@ -98,4 +100,70 @@ pub enum FailedResolveStrategy {
 
     /// Ignore the token
     Ignore,
+}
+
+/// A basic token resolver that facilitates loading tokens from an external
+/// source.
+///
+/// This token resolver is geared towards testing use cases and iteration.
+///
+/// It is recommended to use a different implementation if performance is a
+/// concern.
+pub struct BasicTokenResolver {
+    lookup: HashMap<u16, String>,
+}
+
+impl BasicTokenResolver {
+    /// Create resolver from a `BufRead` implementation over a space delimited
+    /// text format:
+    ///
+    /// ```plain
+    /// 0xffff my_test_token
+    /// 0xeeee my_test_token2
+    /// ```
+    pub fn from_text_lines<T>(mut reader: T) -> Result<Self, Error>
+    where
+        T: BufRead,
+    {
+        let mut lookup = HashMap::new();
+        let mut line = String::new();
+        let mut pos = 0;
+        while reader.read_line(&mut line)? != 0 {
+            let (num, text) = line
+                .split_once(' ')
+                .ok_or_else(|| Error::invalid_syntax("expected to split line", pos))?;
+
+            let z = u16::from_str_radix(num.trim_start_matches("0x"), 16)
+                .map_err(|_| Error::invalid_syntax("invalid ironman token", pos))?;
+
+            pos += line.len();
+            lookup.insert(z, String::from(text.trim_ascii_end()));
+            line.clear();
+        }
+
+        Ok(Self { lookup })
+    }
+}
+
+impl TokenResolver for BasicTokenResolver {
+    fn resolve(&self, token: u16) -> Option<&str> {
+        self.lookup.get(&token).map(|x| x.as_str())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.lookup.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn can_create_resolve() {
+        let data = b"0xffff my_test_token\n0xeeee my_test_token2";
+        let resolver = BasicTokenResolver::from_text_lines(&data[..]).unwrap();
+        assert_eq!(resolver.resolve(0xffff), Some("my_test_token"));
+        assert_eq!(resolver.resolve(0xeeee), Some("my_test_token2"));
+    }
 }
