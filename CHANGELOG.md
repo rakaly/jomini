@@ -1,3 +1,7 @@
+## v0.27.0 - 2024-09-13
+
+- Add `BasicTokenResolver`, a `TokenResolver` that facilitates token ingestion from space delimited text lines. It's intended to be ergonomic enough to be used in tests without the prohibited compile cost of generating a 10 thousand line match statement.
+
 ## v0.26.0 - 2024-06-16
 
 - Add optional `TokenResolver::is_empty` implementation for resolvers to signal no token support.
