@@ -133,8 +133,7 @@ struct BinaryReaderTokenDeserializer<'a, 'res, RES: 'a, F, R> {
     token: Token<'a>,
 }
 
-impl<'a, 'res, RES: TokenResolver, F: BinaryFlavor, R>
-    BinaryReaderTokenDeserializer<'a, 'res, RES, F, R>
+impl<'a, 'res, RES: TokenResolver, F, R> BinaryReaderTokenDeserializer<'a, 'res, RES, F, R>
 where
     F: BinaryFlavor,
     R: Read,
@@ -706,8 +705,6 @@ struct OndemandTokenDeserializer<'a, 'de: 'a, 'res: 'de, RES: 'a, F> {
 
 impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor>
     OndemandTokenDeserializer<'a, 'de, 'res, RES, F>
-where
-    F: BinaryFlavor,
 {
     fn deser<V>(self, visitor: V) -> Result<V::Value, Error>
     where

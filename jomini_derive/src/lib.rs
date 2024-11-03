@@ -382,10 +382,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 syn::Type::Path(ty) => &ty.path,
                 _ => panic!("expected path"),
             };
-            let seg = match path.segments.last() {
-                Some(seg) => seg,
-                None => panic!("expected segment"),
-            };
+            let seg = path.segments.last().expect("segment");
             let args = match &seg.arguments {
                 syn::PathArguments::AngleBracketed(bracketed) => &bracketed.args,
                 _ => panic!("expected brackets"),
@@ -446,14 +443,12 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let field_enum_token_match = named_fields.named.iter().filter_map(|f| {
         let name = &f.ident;
-        if let Some(match_arm) = binary_token(f) {
+        binary_token(f).map(|match_arm| {
             let field_ident = quote! { __Field::#name };
             Some(quote! {
                 #match_arm => Ok(#field_ident),
             })
-        } else {
-            None
-        }
+        })
     });
 
     let token_count = named_fields.named.iter().filter_map(binary_token).count();

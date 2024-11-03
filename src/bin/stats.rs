@@ -254,7 +254,7 @@ fn read_object(
     while ind < range.end {
         let token = tokens[ind];
         keys.update(&token);
-        if let BinaryToken::MixedContainer = token {
+        if token == BinaryToken::MixedContainer {
             break;
         }
 
