@@ -390,8 +390,16 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
             let farg = &args[0];
 
-            quote! {
-                #match_arm => { (#name).push(serde::de::MapAccess::next_value::<#farg>(&mut __map)?); }
+            match farg {
+                syn::GenericArgument::Type(Type::Array(type_array)) => {
+                    let elem = &type_array.elem;
+                    quote! {
+                        #match_arm => { (#name).push(serde::de::MapAccess::next_value::<#elem>(&mut __map)?); }
+                    }
+                },
+                _ => quote! {
+                    #match_arm => { (#name).push(serde::de::MapAccess::next_value::<#farg>(&mut __map)?); }
+                }
             }
         }
     });
