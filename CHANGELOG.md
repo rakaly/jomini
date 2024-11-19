@@ -1,3 +1,7 @@
+## v0.27.2 - 2024-11-19
+
+- Fix incorrect v0.27.1 release
+
 ## v0.27.1 - 2024-11-19
 
 - Add support for `#[duplicated]` smallvec deserialization:
