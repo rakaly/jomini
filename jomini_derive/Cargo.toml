@@ -1,6 +1,6 @@
 [package]
 name = "jomini_derive"
-version = "0.2.4"
+version = "0.2.5"
 authors = ["Nick Babcock <nbabcock19@hotmail.com>"]
 license = "MIT"
 edition = "2018"
