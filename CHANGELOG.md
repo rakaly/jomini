@@ -1,3 +1,14 @@
+## v0.27.1 - 2024-11-19
+
+- Add support for `#[duplicated]` smallvec deserialization:
+  ```rust
+  #[derive(JominiDeserialize)]
+  pub struct Model {
+      #[jomini(duplicated)]
+      lst: smallvec::SmallVec<[u8; 4]>,
+  }
+  ```
+
 ## v0.27.0 - 2024-09-13
 
 - Add `BasicTokenResolver`, a `TokenResolver` that facilitates token ingestion from space delimited text lines. It's intended to be ergonomic enough to be used in tests without the prohibited compile cost of generating a 10 thousand line match statement.
