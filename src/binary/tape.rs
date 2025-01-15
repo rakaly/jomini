@@ -146,7 +146,7 @@ enum ParseState {
     OpenSecond = 128,
 }
 
-impl<'a, 'b> ParserState<'a, 'b> {
+impl<'a> ParserState<'a, '_> {
     fn offset(&self, data: &[u8]) -> usize {
         self.original_length - data.len()
     }

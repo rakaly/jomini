@@ -158,7 +158,7 @@ pub struct TextTape<'a> {
     utf8_bom: bool,
 }
 
-impl<'a> TextTape<'a> {
+impl TextTape<'_> {
     /// Creates a windows 1252 object reader from the parsed tape
     pub fn windows1252_reader(&self) -> ObjectReader<Windows1252Encoding> {
         ObjectReader::new(self, Windows1252Encoding::new())
@@ -430,7 +430,7 @@ impl<'a> TextTape<'a> {
     }
 }
 
-impl<'a, 'b> ParserState<'a, 'b> {
+impl<'a> ParserState<'a, '_> {
     fn offset(&self, data: &[u8]) -> usize {
         self.original_length - data.len()
     }

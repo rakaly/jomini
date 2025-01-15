@@ -89,7 +89,7 @@ pub struct GroupEntryIter<'data, 'tokens, 'parent, E> {
     parent: &'parent GroupEntry<'data, 'tokens, E>,
 }
 
-impl<'data, 'tokens, 'parent, E> Iterator for GroupEntryIter<'data, 'tokens, 'parent, E>
+impl<'data, 'tokens, E> Iterator for GroupEntryIter<'data, 'tokens, '_, E>
 where
     E: Clone,
 {
@@ -201,7 +201,7 @@ pub enum Reader<'data, 'tokens, E> {
     Value(ValueReader<'data, 'tokens, E>),
 }
 
-impl<'data, 'tokens, E> Reader<'data, 'tokens, E>
+impl<'data, E> Reader<'data, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -660,7 +660,7 @@ pub struct ValueReader<'data, 'tokens, E> {
     encoding: E,
 }
 
-impl<'data, 'tokens, E> ValueReader<'data, 'tokens, E> {
+impl<'data, E> ValueReader<'data, '_, E> {
     /// Return the token that the reader is abstracting
     #[inline]
     pub fn token(&self) -> &TextToken<'data> {
@@ -674,7 +674,7 @@ impl<'data, 'tokens, E> ValueReader<'data, 'tokens, E> {
     }
 }
 
-impl<'data, 'tokens, E> Encoding for ValueReader<'data, 'tokens, E>
+impl<E> Encoding for ValueReader<'_, '_, E>
 where
     E: Encoding,
 {

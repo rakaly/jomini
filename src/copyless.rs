@@ -7,7 +7,7 @@ pub struct VecAllocation<'a, T: 'a> {
     index: usize,
 }
 
-impl<'a, T> VecAllocation<'a, T> {
+impl<T> VecAllocation<'_, T> {
     /// Consumes self and writes the given value into the allocation.
     // writing is safe because alloc() ensured enough capacity
     // and `Allocation` holds a mutable borrow to prevent anyone else

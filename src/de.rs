@@ -14,7 +14,7 @@ impl ColorSequence {
     }
 }
 
-impl<'de, 'r> de::Deserializer<'de> for &'r mut ColorSequence {
+impl<'de> de::Deserializer<'de> for &'_ mut ColorSequence {
     type Error = Error;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -73,7 +73,7 @@ impl InnerColorSequence {
     }
 }
 
-impl<'de, 'r> de::Deserializer<'de> for &'r mut InnerColorSequence {
+impl<'de> de::Deserializer<'de> for &'_ mut InnerColorSequence {
     type Error = Error;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
