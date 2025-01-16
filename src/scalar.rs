@@ -149,13 +149,13 @@ impl<'a> Scalar<'a> {
     }
 }
 
-impl<'a> fmt::Debug for Scalar<'a> {
+impl fmt::Debug for Scalar<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Scalar {{ {} }}", self)
     }
 }
 
-impl<'a> fmt::Display for Scalar<'a> {
+impl fmt::Display for Scalar<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_ascii() {
             write!(f, "{}", decode_windows1252(self.data))

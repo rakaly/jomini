@@ -918,7 +918,7 @@ enum ReuseVec<'a> {
     Borrowed((&'a [u8], Vec<u8>)),
 }
 
-impl<'a> ReuseVec<'a> {
+impl ReuseVec<'_> {
     fn buffer(self) -> Vec<u8> {
         match self {
             ReuseVec::Owned(x) => x,
@@ -927,7 +927,7 @@ impl<'a> ReuseVec<'a> {
     }
 }
 
-impl<'a> Deref for ReuseVec<'a> {
+impl Deref for ReuseVec<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {

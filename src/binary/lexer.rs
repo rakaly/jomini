@@ -219,7 +219,7 @@ pub enum Token<'a> {
     Id(u16),
 }
 
-impl<'a> Token<'a> {
+impl Token<'_> {
     fn write_u32(mut wtr: impl std::io::Write, num: u32) -> Result<(), std::io::Error> {
         wtr.write_all(&LexemeId::U32.0.to_le_bytes())?;
         wtr.write_all(&num.to_le_bytes())

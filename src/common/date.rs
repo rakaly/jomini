@@ -1163,7 +1163,7 @@ mod datederive {
 
     struct DateVisitor;
 
-    impl<'de> Visitor<'de> for DateVisitor {
+    impl Visitor<'_> for DateVisitor {
         type Value = Date;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -1213,7 +1213,7 @@ mod datederive {
 
     struct DateHourVisitor;
 
-    impl<'de> Visitor<'de> for DateHourVisitor {
+    impl Visitor<'_> for DateHourVisitor {
         type Value = DateHour;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -1254,7 +1254,7 @@ mod datederive {
 
     struct UniformDateVisitor;
 
-    impl<'de> Visitor<'de> for UniformDateVisitor {
+    impl Visitor<'_> for UniformDateVisitor {
         type Value = UniformDate;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {

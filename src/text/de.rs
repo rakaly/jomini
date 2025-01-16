@@ -220,7 +220,7 @@ impl<'a, R, E> TextReaderMap<'a, R, E> {
     }
 }
 
-impl<'de, 'a, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'a, R, E> {
+impl<'de, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'_, R, E> {
     type Error = Error;
 
     #[inline]
@@ -587,7 +587,7 @@ impl<'a, R, E> TextReaderSeq<'a, R, E> {
     }
 }
 
-impl<'de, 'a, R, E> de::SeqAccess<'de> for TextReaderSeq<'a, R, E>
+impl<'de, R, E> de::SeqAccess<'de> for TextReaderSeq<'_, R, E>
 where
     R: Read,
     E: Encoding,
@@ -621,7 +621,7 @@ impl<'a, R, E> TextReaderEnum<'a, R, E> {
     }
 }
 
-impl<'de, 'a, R: Read, E: Encoding> de::EnumAccess<'de> for TextReaderEnum<'a, R, E> {
+impl<'de, R: Read, E: Encoding> de::EnumAccess<'de> for TextReaderEnum<'_, R, E> {
     type Error = Error;
     type Variant = Self;
 
@@ -634,7 +634,7 @@ impl<'de, 'a, R: Read, E: Encoding> de::EnumAccess<'de> for TextReaderEnum<'a, R
     }
 }
 
-impl<'de, 'a, R: Read, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'a, R, E> {
+impl<'de, R: Read, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'_, R, E> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<(), Self::Error> {
@@ -686,7 +686,7 @@ struct PropertyReaderMap<'a, R, E> {
     state: usize,
 }
 
-impl<'a, 'de, R, E> de::MapAccess<'de> for PropertyReaderMap<'a, R, E>
+impl<'de, R, E> de::MapAccess<'de> for PropertyReaderMap<'_, R, E>
 where
     E: Encoding,
     R: Read,
@@ -814,7 +814,7 @@ impl<'a, 'b> TextDeserializer<'a, 'b, Windows1252Encoding> {
     /// Convenience method for parsing the given text data and deserializing as windows1252 encoded.
     pub fn from_windows1252_slice(
         data: &'a [u8],
-    ) -> Result<TextDeserializer<Windows1252Encoding>, Error> {
+    ) -> Result<TextDeserializer<'a, 'b, Windows1252Encoding>, Error> {
         let tape = TextTape::from_slice(data)?;
         Ok(TextDeserializer {
             kind: TextDeserializerKind::Owned {
@@ -839,7 +839,9 @@ impl<'a, 'b> TextDeserializer<'a, 'b, Windows1252Encoding> {
 
 impl<'a, 'b> TextDeserializer<'a, 'b, Utf8Encoding> {
     /// Convenience method for parsing the given text data and deserializing as utf8 encoded.
-    pub fn from_utf8_slice(data: &'a [u8]) -> Result<TextDeserializer<Utf8Encoding>, Error> {
+    pub fn from_utf8_slice(
+        data: &'a [u8],
+    ) -> Result<TextDeserializer<'a, 'b, Utf8Encoding>, Error> {
         let tape = TextTape::from_slice(data)?;
         Ok(TextDeserializer {
             kind: TextDeserializerKind::Owned {
@@ -896,7 +898,7 @@ where
     }
 }
 
-impl<'de, 'a, 'tokens, E> de::Deserializer<'de> for &'a TextDeserializer<'de, 'tokens, E>
+impl<'de, E> de::Deserializer<'de> for &'_ TextDeserializer<'de, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -990,7 +992,7 @@ where
     }
 }
 
-impl<'de, 'tokens, E> de::MapAccess<'de> for MapAccess<'de, 'tokens, E>
+impl<'de, E> de::MapAccess<'de> for MapAccess<'de, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -1115,7 +1117,7 @@ macro_rules! deserialize_any_value {
     };
 }
 
-impl<'de, 'tokens, E> de::Deserializer<'de> for ValueDeserializer<'de, 'tokens, E>
+impl<'de, E> de::Deserializer<'de> for ValueDeserializer<'de, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -1483,7 +1485,7 @@ struct PropertyMap<'de, 'tokens, E> {
     state: usize,
 }
 
-impl<'de, 'tokens, E> de::MapAccess<'de> for PropertyMap<'de, 'tokens, E>
+impl<'de, E> de::MapAccess<'de> for PropertyMap<'de, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -1522,7 +1524,7 @@ struct SeqAccess<'de, 'tokens, E> {
     values: ValuesIter<'de, 'tokens, E>,
 }
 
-impl<'de, 'tokens, E> de::SeqAccess<'de> for SeqAccess<'de, 'tokens, E>
+impl<'de, E> de::SeqAccess<'de> for SeqAccess<'de, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -1614,7 +1616,7 @@ where
     }
 }
 
-impl<'de, 'tokens, E> de::VariantAccess<'de> for VariantDeserializer<'de, 'tokens, E>
+impl<'de, E> de::VariantAccess<'de> for VariantDeserializer<'de, '_, E>
 where
     E: Encoding + Clone,
 {

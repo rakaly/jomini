@@ -18,7 +18,7 @@ pub struct BinaryReaderDeserializer<'res, RES, F, R> {
     config: BinaryConfig<'res, RES, F>,
 }
 
-impl<'res, RES: TokenResolver, E: BinaryFlavor, R: Read> BinaryReaderDeserializer<'res, RES, E, R> {
+impl<RES: TokenResolver, E: BinaryFlavor, R: Read> BinaryReaderDeserializer<'_, RES, E, R> {
     /// Deserialize into provided type
     pub fn deserialize<T>(&mut self) -> Result<T, Error>
     where
@@ -28,8 +28,8 @@ impl<'res, RES: TokenResolver, E: BinaryFlavor, R: Read> BinaryReaderDeserialize
     }
 }
 
-impl<'a, 'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::Deserializer<'de>
-    for &'a mut BinaryReaderDeserializer<'res, RES, F, R>
+impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::Deserializer<'de>
+    for &'_ mut BinaryReaderDeserializer<'res, RES, F, R>
 {
     type Error = Error;
 
@@ -82,8 +82,8 @@ impl<'a, 'res, RES: 'a, F, R> BinaryReaderMap<'a, 'res, RES, F, R> {
     }
 }
 
-impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> MapAccess<'de>
-    for BinaryReaderMap<'a, 'res, RES, F, R>
+impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> MapAccess<'de>
+    for BinaryReaderMap<'_, 'res, RES, F, R>
 {
     type Error = Error;
 
@@ -133,7 +133,7 @@ struct BinaryReaderTokenDeserializer<'a, 'res, RES: 'a, F, R> {
     token: Token<'a>,
 }
 
-impl<'a, 'res, RES: TokenResolver, F, R> BinaryReaderTokenDeserializer<'a, 'res, RES, F, R>
+impl<'res, RES: TokenResolver, F, R> BinaryReaderTokenDeserializer<'_, 'res, RES, F, R>
 where
     F: BinaryFlavor,
     R: Read,
@@ -477,14 +477,14 @@ struct BinaryReaderSeq<'a: 'a, 'res, RES: 'a, F, R> {
     hit_end: bool,
 }
 
-impl<'a, 'de: 'a, 'res: 'de, RES: 'a, F, R> BinaryReaderSeq<'a, 'res, RES, F, R> {
+impl<'a, 'res, RES: 'a, F, R> BinaryReaderSeq<'a, 'res, RES, F, R> {
     fn new(de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>) -> Self {
         BinaryReaderSeq { de, hit_end: false }
     }
 }
 
-impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> SeqAccess<'de>
-    for BinaryReaderSeq<'a, 'res, RES, F, R>
+impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> SeqAccess<'de>
+    for BinaryReaderSeq<'_, 'res, RES, F, R>
 {
     type Error = Error;
 
@@ -515,8 +515,8 @@ impl<'a, 'res, RES: 'a, F, R> BinaryReaderEnum<'a, 'res, RES, F, R> {
     }
 }
 
-impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::EnumAccess<'de>
-    for BinaryReaderEnum<'a, 'res, RES, F, R>
+impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::EnumAccess<'de>
+    for BinaryReaderEnum<'_, 'res, RES, F, R>
 {
     type Error = Error;
     type Variant = Self;
@@ -533,8 +533,8 @@ impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::EnumA
     }
 }
 
-impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R> de::VariantAccess<'de>
-    for BinaryReaderEnum<'a, 'res, RES, F, R>
+impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R> de::VariantAccess<'de>
+    for BinaryReaderEnum<'_, 'res, RES, F, R>
 {
     type Error = Error;
 
@@ -586,7 +586,7 @@ pub struct OndemandBinaryDeserializer<'data, 'res: 'data, RES, F> {
     config: BinaryConfig<'res, RES, F>,
 }
 
-impl<'de, 'res, RES: TokenResolver, E: BinaryFlavor> OndemandBinaryDeserializer<'de, 'res, RES, E> {
+impl<'de, RES: TokenResolver, E: BinaryFlavor> OndemandBinaryDeserializer<'de, '_, RES, E> {
     /// Deserialize into provided type
     pub fn deserialize<T>(&mut self) -> Result<T, Error>
     where
@@ -596,8 +596,8 @@ impl<'de, 'res, RES: TokenResolver, E: BinaryFlavor> OndemandBinaryDeserializer<
     }
 }
 
-impl<'a, 'de, 'res, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
-    for &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>
+impl<'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
+    for &'_ mut OndemandBinaryDeserializer<'de, '_, RES, F>
 {
     type Error = Error;
 
@@ -649,8 +649,8 @@ impl<'a, 'de: 'a, 'res: 'de, RES: 'a, F> OndemandMap<'a, 'de, 'res, RES, F> {
     }
 }
 
-impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
-    for OndemandMap<'a, 'de, 'res, RES, F>
+impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
+    for OndemandMap<'_, 'de, 'res, RES, F>
 {
     type Error = Error;
 
@@ -1023,8 +1023,8 @@ impl<'a, 'de: 'a, 'res: 'de, RES: 'a, F> OndemandSeq<'a, 'de, 'res, RES, F> {
     }
 }
 
-impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> SeqAccess<'de>
-    for OndemandSeq<'a, 'de, 'res, RES, F>
+impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> SeqAccess<'de>
+    for OndemandSeq<'_, 'de, 'res, RES, F>
 {
     type Error = Error;
 
@@ -1057,8 +1057,8 @@ impl<'a, 'de: 'a, 'res: 'de, RES: 'a, F> OndemandEnum<'a, 'de, 'res, RES, F> {
     }
 }
 
-impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::EnumAccess<'de>
-    for OndemandEnum<'a, 'de, 'res, RES, F>
+impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::EnumAccess<'de>
+    for OndemandEnum<'_, 'de, 'res, RES, F>
 {
     type Error = Error;
     type Variant = Self;
@@ -1075,8 +1075,8 @@ impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::EnumAccess<'de
     }
 }
 
-impl<'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
-    for OndemandEnum<'a, 'de, 'res, RES, F>
+impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
+    for OndemandEnum<'_, 'de, 'res, RES, F>
 {
     type Error = Error;
 
@@ -1325,7 +1325,7 @@ where
     }
 }
 
-impl<'b, 'de, 'res, RES: TokenResolver, E: BinaryFlavor> BinaryDeserializer<'b, 'de, 'res, RES, E> {
+impl<'de, RES: TokenResolver, E: BinaryFlavor> BinaryDeserializer<'_, 'de, '_, RES, E> {
     /// Deserialize into provided type
     pub fn deserialize<T>(&self) -> Result<T, Error>
     where
@@ -1356,8 +1356,8 @@ struct BinaryConfig<'res, RES, F> {
     flavor: F,
 }
 
-impl<'a, 'b, 'de, 'res, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
-    for &'a BinaryDeserializer<'b, 'de, 'res, RES, F>
+impl<'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
+    for &'_ BinaryDeserializer<'_, 'de, '_, RES, F>
 {
     type Error = Error;
 
@@ -1430,8 +1430,8 @@ impl<'c, 'a, 'de, 'res: 'de, RES, E> BinaryMap<'c, 'a, 'de, 'res, RES, E> {
     }
 }
 
-impl<'c, 'de, 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
-    for BinaryMap<'c, 'a, 'de, 'res, RES, F>
+impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
+    for BinaryMap<'_, '_, 'de, 'res, RES, F>
 {
     type Error = Error;
 
@@ -1524,8 +1524,8 @@ fn visit_key<'b, 'de: 'b, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, V: Vis
     }
 }
 
-impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
-    for KeyDeserializer<'b, 'de, 'res, RES, E>
+impl<'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
+    for KeyDeserializer<'_, 'de, 'res, RES, E>
 {
     type Error = Error;
 
@@ -1560,8 +1560,8 @@ struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES, E> {
     tokens: &'c [BinaryToken<'de>],
 }
 
-impl<'c, 'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
-    for ValueDeserializer<'c, 'b, 'de, 'res, RES, E>
+impl<'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
+    for ValueDeserializer<'_, '_, 'de, 'res, RES, E>
 {
     type Error = Error;
 
@@ -1710,7 +1710,7 @@ struct EnumAccess<'b, 'de: 'b, 'res: 'de, RES, E> {
     idx: usize,
 }
 
-impl<'b, 'de, 'tokens, RES, E> de::EnumAccess<'de> for EnumAccess<'b, 'de, 'tokens, RES, E>
+impl<'de, RES, E> de::EnumAccess<'de> for EnumAccess<'_, 'de, '_, RES, E>
 where
     RES: TokenResolver,
     E: BinaryFlavor,
@@ -1787,8 +1787,8 @@ struct BinarySequence<'b, 'de: 'b, 'res: 'de, RES, E> {
     end_idx: usize,
 }
 
-impl<'b, 'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> SeqAccess<'de>
-    for BinarySequence<'b, 'de, 'res, RES, E>
+impl<'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> SeqAccess<'de>
+    for BinarySequence<'_, 'de, 'res, RES, E>
 {
     type Error = Error;
 
