@@ -1489,14 +1489,4 @@ mod tests {
             iterate_object(reader);
         }
     }
-
-    // #[test]
-    // fn text_reader_regression4() {
-    //     let data = include_bytes!("/home/nick/projects/jomini/fuzz/artifacts/fuzz_text/crash-a14643c9a89c0f4ab665815c99a07b15de3544a5");
-    //     // let data = b"a={{ b c == == = d e=f}}";
-    //     if let Ok(tape) = TextTape::from_slice(data) {
-    //         let reader = tape.windows1252_reader();
-    //         iterate_object(reader);
-    //     }
-    // }
 }
