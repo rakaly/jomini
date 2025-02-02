@@ -1,6 +1,4 @@
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use flate2::read::GzDecoder;
 use jomini::{
     binary::{BinaryFlavor, BinaryTapeParser, TokenResolver},
@@ -177,13 +175,38 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     for game in &["eu4", "ck3", "v3"] {
         let data = request(&format!("jomini/{game}-bin"));
         group.throughput(Throughput::Bytes(data.len() as u64));
-        group.sampling_mode(SamplingMode::Flat);
-        group.bench_function(BenchmarkId::new("binary", game), |b| {
+        group.bench_function(BenchmarkId::new("tape", game), |b| {
             let mut tape = BinaryTape::default();
             b.iter(|| {
                 BinaryTapeParser
                     .parse_slice_into_tape(data.as_slice(), &mut tape)
                     .unwrap();
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("lexer", game), |b| {
+            b.iter(|| {
+                let mut lexer = jomini::binary::Lexer::new(data.as_slice());
+                let mut counter = 0;
+                while let Ok(Some(token)) = lexer.next_token() {
+                    if matches!(token, jomini::binary::Token::Id(_)) {
+                        counter += 1;
+                    }
+                }
+                black_box(counter);
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("reader", game), |b| {
+            b.iter(|| {
+                let mut reader = jomini::binary::TokenReader::new(data.as_slice());
+                let mut counter = 0;
+                while let Ok(Some(token)) = reader.next() {
+                    if matches!(token, jomini::binary::Token::Id(_)) {
+                        counter += 1;
+                    }
+                }
+                black_box(counter);
             })
         });
     }
