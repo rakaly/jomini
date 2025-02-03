@@ -123,39 +123,43 @@ where
     pub fn skip_container(&mut self) -> Result<(), ReaderError> {
         let mut depth = 1;
         loop {
-            while let Ok((id, data)) = read_id(self.buf.window()) {
+            let mut window =
+                unsafe { std::slice::from_raw_parts(self.buf.start, self.buf.window_len()) };
+            while let Ok((id, data)) = read_id(window) {
                 match id {
                     LexemeId::CLOSE => {
-                        self.buf.advance_to(data.as_ptr());
                         depth -= 1;
                         if depth == 0 {
+                            self.buf.advance_to(data.as_ptr());
                             return Ok(());
                         }
+                        window = data;
                     }
                     LexemeId::OPEN => {
-                        self.buf.advance_to(data.as_ptr());
+                        window = data;
                         depth += 1
                     }
                     LexemeId::BOOL => match data.get(1..) {
-                        Some(d) => self.buf.advance_to(d.as_ptr()),
+                        Some(d) => window = d,
                         None => break,
                     },
                     LexemeId::F32 | LexemeId::U32 | LexemeId::I32 => match data.get(4..) {
-                        Some(d) => self.buf.advance_to(d.as_ptr()),
+                        Some(d) => window = d,
                         None => break,
                     },
                     LexemeId::F64 | LexemeId::I64 | LexemeId::U64 => match data.get(8..) {
-                        Some(d) => self.buf.advance_to(d.as_ptr()),
+                        Some(d) => window = d,
                         None => break,
                     },
                     LexemeId::QUOTED | LexemeId::UNQUOTED => match read_string(data) {
-                        Ok((_, d)) => self.buf.advance_to(d.as_ptr()),
+                        Ok((_, d)) => window = d,
                         Err(_) => break,
                     },
-                    _ => self.buf.advance_to(data.as_ptr()),
+                    _ => window = data,
                 }
             }
 
+            self.buf.advance_to(window.as_ptr());
             match self.buf.fill_buf(&mut self.reader) {
                 Ok(0) => return Err(self.lex_error(LexError::Eof)),
                 Ok(_) => {}
