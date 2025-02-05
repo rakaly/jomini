@@ -421,6 +421,7 @@ where
 /// # }
 /// ```
 pub struct FieldsIter<'data, 'tokens, E> {
+    start_ind: usize,
     token_ind: usize,
     end_ind: usize,
     tokens: &'tokens [TextToken<'data>],
@@ -433,6 +434,7 @@ where
 {
     fn new(reader: &ObjectReader<'data, 'tokens, E>) -> Self {
         FieldsIter {
+            start_ind: reader.start_ind.saturating_sub(1),
             token_ind: reader.start_ind,
             end_ind: reader.end_ind,
             tokens: reader.tokens,
@@ -509,6 +511,7 @@ where
         };
 
         let value_reader = ValueReader {
+            parent_ind: self.start_ind,
             value_ind,
             tokens: self.tokens,
             encoding: self.encoding.clone(),
@@ -655,6 +658,7 @@ where
 /// A text reader for a text value
 #[derive(Debug, Clone)]
 pub struct ValueReader<'data, 'tokens, E> {
+    parent_ind: usize,
     value_ind: usize,
     tokens: &'tokens [TextToken<'data>],
     encoding: E,
@@ -743,6 +747,16 @@ where
                 tokens: self.tokens,
                 start_ind: end,
                 end_ind: end,
+                encoding: self.encoding.clone(),
+            }),
+
+            TextToken::MixedContainer => Ok(ObjectReader {
+                tokens: self.tokens,
+                start_ind: self.value_ind + 1,
+                end_ind: match self.tokens[self.parent_ind] {
+                    TextToken::Array { end, .. } | TextToken::Object { end, .. } => end,
+                    _ => self.tokens.len(),
+                },
                 encoding: self.encoding.clone(),
             }),
 
@@ -838,6 +852,7 @@ where
 /// # }
 /// ```
 pub struct ValuesIter<'data, 'tokens, E> {
+    start_ind: usize,
     token_ind: usize,
     end_ind: usize,
     tokens: &'tokens [TextToken<'data>],
@@ -850,6 +865,7 @@ where
 {
     fn new(reader: &ArrayReader<'data, 'tokens, E>) -> Self {
         ValuesIter {
+            start_ind: reader.start_ind.saturating_sub(1),
             token_ind: reader.start_ind,
             end_ind: reader.end_ind,
             tokens: reader.tokens,
@@ -869,6 +885,7 @@ where
             let value_ind = self.token_ind;
             self.token_ind = next_idx_values(self.tokens, self.token_ind);
             Some(ValueReader {
+                parent_ind: self.start_ind,
                 value_ind,
                 tokens: self.tokens,
                 encoding: self.encoding.clone(),
@@ -1364,6 +1381,52 @@ mod tests {
             &TextToken::Unquoted(Scalar::new(b"4384"))
         );
         assert!(values.next().is_none());
+    }
+
+    #[test]
+    fn test_issue_168() {
+        let data = br#"has_leviathans = {
+            optimize_memory
+            host_has_dlc = "Leviathans Story Pack"
+        }"#;
+
+        let tt = TextTape::from_slice(data).unwrap();
+
+        let mut fields = tt.utf8_reader().fields();
+        let (key, op, val) = fields.next().unwrap();
+        assert_eq!(key.read_str(), "has_leviathans");
+        assert_eq!(op, None);
+
+        let object = match val.token() {
+            TextToken::Object { .. } => val.read_object().unwrap(),
+            TextToken::Array { .. } => {
+                let mut values = val.read_array().unwrap().values();
+                loop {
+                    let Some(val) = values.next() else {
+                        panic!("end of the line");
+                    };
+
+                    match val.token() {
+                        TextToken::MixedContainer => break val.read_object().unwrap(),
+                        _ => {}
+                    }
+                }
+            }
+            _ => panic!("expected object"),
+        };
+
+        {
+            let mut fields = object.fields();
+
+            let (key, op, val) = fields.next().unwrap();
+            assert_eq!(key.read_str(), "host_has_dlc");
+            assert_eq!(op, Some(Operator::Equal));
+            assert_eq!(val.read_str().unwrap(), "Leviathans Story Pack");
+
+            assert!(fields.next().is_none());
+        }
+
+        assert!(fields.next().is_none());
     }
 
     #[test]
