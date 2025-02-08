@@ -1,3 +1,8 @@
+## v0.27.3 - 2025-02-08
+
+- Allow calling `ValueReader::read_object` on a `TextToken::MixedContainer` value
+- Improve performance of `binary::TokenReader::skip_container`
+
 ## v0.27.2 - 2024-11-19
 
 - Fix incorrect v0.27.1 release
