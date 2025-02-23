@@ -475,7 +475,7 @@ impl<'a> ParserState<'a, '_> {
     #[inline(never)]
     fn parse_variable(&mut self, d: &'a [u8]) -> Result<&'a [u8], Error> {
         // detect if the variable is interpolated
-        if d.get(1).map_or(false, |&x| x == b'[') {
+        if d.get(1).is_some_and(|&x| x == b'[') {
             let mut pos = 2;
             while pos < d.len() {
                 if d[pos] == b']' {
@@ -509,7 +509,7 @@ impl<'a> ParserState<'a, '_> {
         let mut data = self.data;
         let mut state = ParseState::Key;
 
-        self.utf8_bom = data.get(..3).map_or(false, |x| x == [0xef, 0xbb, 0xbf]);
+        self.utf8_bom = data.get(..3).is_some_and(|x| x == [0xef, 0xbb, 0xbf]);
         if self.utf8_bom {
             data = &data[3..];
         }
@@ -1088,7 +1088,7 @@ unsafe fn forward_search<F: Fn(u8) -> bool>(
 mod tests {
     use super::*;
 
-    fn parse<'a>(data: &'a [u8]) -> Result<TextTape<'a>, Error> {
+    fn parse(data: &[u8]) -> Result<TextTape<'_>, Error> {
         TextTape::from_slice(data)
     }
 

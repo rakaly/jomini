@@ -772,7 +772,7 @@ impl<'a> BinaryTape<'a> {
 mod tests {
     use super::*;
 
-    fn parse<'a>(data: &'a [u8]) -> Result<BinaryTape<'a>, Error> {
+    fn parse(data: &[u8]) -> Result<BinaryTape<'_>, Error> {
         BinaryTape::from_slice(data)
     }
 
@@ -791,21 +791,17 @@ mod tests {
     fn test_parse_offset() {
         let data = [0x82, 0x2d, 0x01, 0x00, 0x4c, 0x28, 0x01, 0x00, 0x4c, 0x28];
         let err = BinaryTape::from_slice(&data[..]).unwrap_err();
-        match err.kind() {
-            ErrorKind::InvalidSyntax { offset, .. } => {
-                assert_eq!(*offset, 8);
-            }
-            _ => assert!(false),
-        }
+        let ErrorKind::InvalidSyntax { offset, .. } = err.kind() else {
+            panic!("expected InvalidSyntax error");
+        };
+        assert_eq!(*offset, 8);
 
         let data2 = [0x82, 0x2d, 0x01, 0x00, 0x01, 0x00];
         let err = BinaryTape::from_slice(&data2[..]).unwrap_err();
-        match err.kind() {
-            ErrorKind::InvalidSyntax { offset, .. } => {
-                assert_eq!(*offset, 6);
-            }
-            _ => assert!(false),
-        }
+        let ErrorKind::InvalidSyntax { offset, .. } = err.kind() else {
+            panic!("expected InvalidSyntax error");
+        };
+        assert_eq!(*offset, 6);
     }
 
     #[test]
