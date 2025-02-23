@@ -1112,7 +1112,7 @@ mod tests {
         assert_eq!(key.read_string(), String::from("name"));
         assert_eq!(values.len(), 1);
         assert_eq!(
-            values.values().nth(0).unwrap().1.read_string().unwrap(),
+            values.values().next().unwrap().1.read_string().unwrap(),
             String::from("aaa")
         );
 
@@ -1120,7 +1120,7 @@ mod tests {
         assert_eq!(key.read_string(), String::from("unit"));
         assert_eq!(values.len(), 2);
 
-        let bbb = values.values().nth(0).unwrap().1.read_object().unwrap();
+        let bbb = values.values().next().unwrap().1.read_object().unwrap();
         let mut bbb_fields = bbb.fields();
         let (key, _, value) = bbb_fields.next().unwrap();
         assert_eq!(key.read_string(), String::from("name"));
@@ -1140,7 +1140,7 @@ mod tests {
         assert_eq!(key.read_string(), String::from("name"));
         assert_eq!(values.len(), 1);
         assert_eq!(
-            values.values().nth(0).unwrap().1.read_string().unwrap(),
+            values.values().next().unwrap().1.read_string().unwrap(),
             String::from("ddd")
         );
 
@@ -1148,7 +1148,7 @@ mod tests {
         assert_eq!(key.read_string(), String::from("unit"));
         assert_eq!(values.len(), 1);
 
-        let eee = values.values().nth(0).unwrap().1.read_object().unwrap();
+        let eee = values.values().next().unwrap().1.read_object().unwrap();
         let mut eee_fields = eee.fields();
         let (key, _, value) = eee_fields.next().unwrap();
         assert_eq!(key.read_string(), String::from("name"));
@@ -1162,7 +1162,7 @@ mod tests {
         let reader = tape.windows1252_reader();
         let mut count = 0;
         for (_key, entries) in reader.field_groups() {
-            for (_i, (_op, value)) in entries.values().enumerate() {
+            for (_op, value) in entries.values() {
                 count += value.read_scalar().map(|_| 1).unwrap_or(0);
             }
         }
@@ -1229,7 +1229,7 @@ mod tests {
         let mut keys = vec![];
         let brittany = value.read_object().unwrap();
         let mut fields = brittany.fields();
-        while let Some((key, _op, _value)) = fields.next() {
+        for (key, _op, _value) in fields.by_ref() {
             keys.push(key.read_str())
         }
 
@@ -1406,9 +1406,8 @@ mod tests {
                         panic!("end of the line");
                     };
 
-                    match val.token() {
-                        TextToken::MixedContainer => break val.read_object().unwrap(),
-                        _ => {}
+                    if val.token() == &TextToken::MixedContainer {
+                        break val.read_object().unwrap();
                     }
                 }
             }

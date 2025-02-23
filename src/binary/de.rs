@@ -3089,7 +3089,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0x337f, "campaign_id");
 
-        let actual: Meta = from_owned(&data[..], &map).unwrap();
+        let actual: Meta = from_owned(data, &map).unwrap();
         assert_eq!(
             actual,
             Meta {

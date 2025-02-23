@@ -277,7 +277,7 @@ fn test_binary_meta_deserialization() {
     let data = &data["EU4bin".len()..];
     let hash = create_bin_lookup();
     let actual: Meta = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .deserialize_slice(&data, &hash)
+        .deserialize_slice(data, &hash)
         .unwrap();
     assert_eq!(
         actual.date.game_fmt().to_string(),
@@ -302,7 +302,7 @@ fn test_token_attribute_deserialization() {
     hash.remove(&0x284d);
     hash.remove(&0x2a38);
     let actual: Meta = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .deserialize_slice(&data, &hash)
+        .deserialize_slice(data, &hash)
         .unwrap();
     assert_eq!(
         actual.date.game_fmt().to_string(),
@@ -326,7 +326,7 @@ fn test_binary_meta_deserialization_boxed() {
     let hash = Box::new(create_bin_lookup());
     let flavor = Box::new(BinaryTestFlavor);
     let actual: Meta = BinaryDeserializer::builder_flavor(&flavor)
-        .deserialize_slice(&data, &hash)
+        .deserialize_slice(data, &hash)
         .unwrap();
     assert_eq!(
         actual.date.game_fmt().to_string(),

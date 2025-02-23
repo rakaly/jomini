@@ -7,8 +7,8 @@ use jomini::{
 };
 use std::{borrow::Cow, io::Read};
 
-const METADATA_TXT: &'static [u8] = include_bytes!("../tests/fixtures/meta.txt");
-const CK3_TXT: &'static [u8] = include_bytes!("../tests/fixtures/ck3-header.txt");
+const METADATA_TXT: &[u8] = include_bytes!("../tests/fixtures/meta.txt");
+const CK3_TXT: &[u8] = include_bytes!("../tests/fixtures/ck3-header.txt");
 
 pub fn windows1252_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("windows1252");
@@ -31,8 +31,8 @@ pub fn windows1252_benchmark(c: &mut Criterion) {
 pub fn utf8_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("utf8");
     for size in [2, 4, 8, 16, 32, 64, 128, 256, 512].iter() {
-        let mut ascii_str = String::with_capacity(*size as usize);
-        let mut utf8_str = String::with_capacity(*size / 2 as usize);
+        let mut ascii_str = String::with_capacity(*size);
+        let mut utf8_str = String::with_capacity(*size / 2_usize);
         for _ in 0..*size {
             ascii_str.push('a');
         }
@@ -46,10 +46,10 @@ pub fn utf8_benchmark(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("ascii-to-utf8", size),
             size,
-            |b, &_size| b.iter(|| Utf8Encoding::decode(&data)),
+            |b, &_size| b.iter(|| Utf8Encoding::decode(data)),
         );
         group.bench_with_input(BenchmarkId::new("utf8-to-utf8", size), size, |b, &_size| {
-            b.iter(|| Utf8Encoding::decode(&data2))
+            b.iter(|| Utf8Encoding::decode(data2))
         });
     }
     group.finish();
@@ -117,7 +117,7 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
     }
 
     let mut group = c.benchmark_group("binary-deserialize");
-    let data = request(&format!("jomini/eu4-bin"));
+    let data = request("jomini/eu4-bin");
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("ondemand", |b| {
         b.iter(|| {
@@ -158,7 +158,7 @@ pub fn text_deserialize_benchmark(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("text", |b| {
         b.iter(|| {
-            let _res: Meta = jomini::text::de::from_windows1252_slice(&data[..]).unwrap();
+            let _res: Meta = jomini::text::de::from_windows1252_slice(data).unwrap();
         })
     });
     group.finish();
@@ -173,7 +173,7 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse");
 
     for game in &["eu4", "ck3", "v3"] {
-        let data = request(&format!("jomini/{game}-bin"));
+        let data = request(format!("jomini/{game}-bin"));
         group.throughput(Throughput::Bytes(data.len() as u64));
         group.bench_function(BenchmarkId::new("tape", game), |b| {
             let mut tape = BinaryTape::default();
@@ -222,18 +222,18 @@ pub fn text_parse_benchmark(c: &mut Criterion) {
         let mut tape = TextTape::default();
         b.iter(|| {
             TextTape::parser()
-                .parse_slice_into_tape(&data[..], &mut tape)
+                .parse_slice_into_tape(data, &mut tape)
                 .unwrap();
         })
     });
 
-    let data = &CK3_TXT[..];
+    let data = CK3_TXT;
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function(BenchmarkId::new("text", "ck3"), |b| {
         let mut tape = TextTape::default();
         b.iter(|| {
             TextTape::parser()
-                .parse_slice_into_tape(&data[..], &mut tape)
+                .parse_slice_into_tape(data, &mut tape)
                 .unwrap();
         })
     });

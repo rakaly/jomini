@@ -1709,7 +1709,7 @@ mod tests {
     where
         T: Deserialize<'a>,
     {
-        Ok(super::from_windows1252_slice(data)?)
+        super::from_windows1252_slice(data)
     }
 
     fn from_owned<T>(data: &[u8]) -> T
@@ -2342,7 +2342,7 @@ mod tests {
             a: String,
         }
 
-        let actual: MyStruct = from_owned(&data[..]);
+        let actual: MyStruct = from_owned(data);
         assert_eq!(
             actual,
             MyStruct {
@@ -2736,7 +2736,7 @@ mod tests {
         }
 
         struct MaybeI32Visitor;
-        impl<'de> de::Visitor<'de> for MaybeI32Visitor {
+        impl de::Visitor<'_> for MaybeI32Visitor {
             type Value = MaybeI32;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -2892,9 +2892,8 @@ mod tests {
                         self,
                         mut map: A,
                     ) -> Result<Self::Value, A::Error> {
-                        while let Some(_) = map.next_key::<String>()? {
-                            if let Ok(_) = map.next_value::<Color>() {
-                            } else {
+                        while map.next_key::<String>()?.is_some() {
+                            if map.next_value::<Color>().is_err() {
                                 let _ = map.next_value::<ColorName>()?;
                             }
                         }
