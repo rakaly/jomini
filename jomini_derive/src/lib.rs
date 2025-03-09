@@ -2,7 +2,7 @@ use proc_macro::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{
     parse_macro_input, parse_quote, DeriveInput, GenericParam, Ident, Lifetime, LifetimeParam,
-    LitInt, LitStr, Type,
+    LitInt, LitStr, Token, Type,
 };
 
 enum DefaultFallback {
@@ -158,11 +158,12 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     } else if meta.path.is_ident("take_last") {
                         take_last = true;
                     } else if meta.path.is_ident("default") {
-                        if meta.input.is_empty() {
-                            default = DefaultFallback::Yes;
-                        } else {
-                            let lit: LitStr = meta.value()?.parse()?;
+                        if meta.input.peek(Token![=]) {
+                            let val = meta.value()?;
+                            let lit: LitStr = val.parse()?;
                             default = DefaultFallback::Path(lit.parse()?);
+                        } else {
+                            default = DefaultFallback::Yes;
                         }
                     } else if meta.path.is_ident("deserialize_with") {
                         let lit: LitStr = meta.value()?.parse()?;
