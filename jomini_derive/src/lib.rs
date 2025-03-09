@@ -1,170 +1,14 @@
 use proc_macro::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, parse_quote, DeriveInput, Field, GenericParam, Ident, Lifetime, LifetimeDef,
-    Lit, Meta, NestedMeta, Type,
+    parse_macro_input, parse_quote, DeriveInput, GenericParam, Ident, Lifetime, LifetimeParam,
+    LitInt, LitStr, Type,
 };
-
-fn is_duplicated(f: &Field) -> bool {
-    f.attrs
-        .iter()
-        .filter(|attr| attr.path.is_ident("jomini"))
-        .map(|attr| attr.parse_meta().unwrap())
-        .filter_map(|meta| match meta {
-            Meta::List(x) => Some(x),
-            _ => None,
-        })
-        .flat_map(|x| x.nested)
-        .filter_map(|x| match x {
-            NestedMeta::Meta(m) => Some(m.path().clone()),
-            _ => None,
-        })
-        .filter(|p| p.is_ident("duplicated"))
-        .any(|_| true)
-}
-
-fn is_take_last(f: &Field) -> bool {
-    f.attrs
-        .iter()
-        .filter(|attr| attr.path.is_ident("jomini"))
-        .map(|attr| attr.parse_meta().unwrap())
-        .filter_map(|meta| match meta {
-            Meta::List(x) => Some(x),
-            _ => None,
-        })
-        .flat_map(|x| x.nested)
-        .filter_map(|x| match x {
-            NestedMeta::Meta(m) => Some(m.path().clone()),
-            _ => None,
-        })
-        .filter(|p| p.is_ident("take_last"))
-        .any(|_| true)
-}
 
 enum DefaultFallback {
     Path(Ident),
     Yes,
     No,
-}
-
-fn can_default(f: &Field) -> DefaultFallback {
-    if let Type::Path(x) = ungroup(&f.ty) {
-        for segment in x.path.segments.iter() {
-            if segment.ident == Ident::new("Option", segment.ident.span()) {
-                return DefaultFallback::Yes;
-            }
-        }
-    }
-
-    let defattr = f
-        .attrs
-        .iter()
-        .filter(|attr| attr.path.is_ident("jomini"))
-        .map(|attr| attr.parse_meta().unwrap())
-        .filter_map(|meta| match meta {
-            Meta::List(x) => Some(x),
-            _ => None,
-        })
-        .flat_map(|x| x.nested)
-        .filter_map(|x| match x {
-            NestedMeta::Meta(m) => Some(m),
-            _ => None,
-        })
-        .find(|m| m.path().is_ident("default"));
-
-    defattr
-        .map(|meta| match meta {
-            Meta::NameValue(mnv) => {
-                if let Lit::Str(lit) = mnv.lit {
-                    DefaultFallback::Path(lit.parse().unwrap())
-                } else {
-                    panic!("expected default function to be a string");
-                }
-            }
-            _ => DefaultFallback::Yes,
-        })
-        .unwrap_or(DefaultFallback::No)
-}
-
-fn can_deserialize_with(f: &Field) -> Option<Ident> {
-    let defattr = f
-        .attrs
-        .iter()
-        .filter(|attr| attr.path.is_ident("jomini"))
-        .map(|attr| attr.parse_meta().unwrap())
-        .filter_map(|meta| match meta {
-            Meta::List(x) => Some(x),
-            _ => None,
-        })
-        .flat_map(|x| x.nested)
-        .filter_map(|x| match x {
-            NestedMeta::Meta(m) => Some(m),
-            _ => None,
-        })
-        .find(|m| m.path().is_ident("deserialize_with"));
-
-    defattr.map(|meta| match meta {
-        Meta::NameValue(mnv) => {
-            if let Lit::Str(lit) = mnv.lit {
-                lit.parse().unwrap()
-            } else {
-                panic!("expected deserialize_with function to be a string");
-            }
-        }
-        _ => panic!("expected name value for deserialize_with"),
-    })
-}
-
-fn alias(f: &Field) -> Option<String> {
-    f.attrs
-        .iter()
-        .filter(|attr| attr.path.is_ident("jomini"))
-        .map(|attr| attr.parse_meta().unwrap())
-        .filter_map(|meta| match meta {
-            Meta::List(x) => Some(x),
-            _ => None,
-        })
-        .flat_map(|x| x.nested)
-        .filter_map(|x| match x {
-            NestedMeta::Meta(m) => Some(m),
-            _ => None,
-        })
-        .filter(|m| m.path().is_ident("alias"))
-        .filter_map(|meta| match meta {
-            Meta::NameValue(mnv) => Some(mnv),
-            _ => None,
-        })
-        .filter_map(|mnv| match mnv.lit {
-            Lit::Str(s) => Some(s.value()),
-            _ => None,
-        })
-        .next()
-}
-
-fn binary_token(f: &Field) -> Option<u16> {
-    f.attrs
-        .iter()
-        .filter(|attr| attr.path.is_ident("jomini"))
-        .map(|attr| attr.parse_meta().unwrap())
-        .filter_map(|meta| match meta {
-            Meta::List(x) => Some(x),
-            _ => None,
-        })
-        .flat_map(|x| x.nested)
-        .filter_map(|x| match x {
-            NestedMeta::Meta(m) => Some(m),
-            _ => None,
-        })
-        .filter(|m| m.path().is_ident("token"))
-        .filter_map(|meta| match meta {
-            Meta::NameValue(mnv) => Some(mnv),
-            _ => None,
-        })
-        .filter_map(|mnv| match mnv.lit {
-            Lit::Int(s) => s.base10_parse::<u16>().ok(),
-            _ => None,
-        })
-        .next()
 }
 
 fn ungroup(mut ty: &Type) -> &Type {
@@ -272,9 +116,94 @@ pub fn derive(input: TokenStream) -> TokenStream {
         _ => panic!("Expected named fields"),
     };
 
+    struct FieldAttr {
+        ident: Ident,
+        display: String,
+        typ: Type,
+        alias: Option<String>,
+        duplicated: bool,
+        take_last: bool,
+        default: DefaultFallback,
+        deserialize_with: Option<Ident>,
+        token: Option<u16>,
+    }
+
+    let field_attrs: Vec<_> = named_fields
+        .named
+        .iter()
+        .map(|f| {
+            let mut duplicated = false;
+            let mut take_last = false;
+            let mut default = DefaultFallback::No;
+            let mut deserialize_with = None;
+            let mut alias = None;
+            let mut token = None;
+
+            if let Type::Path(x) = ungroup(&f.ty) {
+                for segment in x.path.segments.iter() {
+                    if segment.ident == Ident::new("Option", segment.ident.span()) {
+                        default = DefaultFallback::Yes;
+                    }
+                }
+            }
+
+            for attr in &f.attrs {
+                if !attr.path().is_ident("jomini") {
+                    continue;
+                }
+
+                attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("duplicated") {
+                        duplicated = true;
+                    } else if meta.path.is_ident("take_last") {
+                        take_last = true;
+                    } else if meta.path.is_ident("default") {
+                        if meta.input.is_empty() {
+                            default = DefaultFallback::Yes;
+                        } else {
+                            let lit: LitStr = meta.value()?.parse()?;
+                            default = DefaultFallback::Path(lit.parse()?);
+                        }
+                    } else if meta.path.is_ident("deserialize_with") {
+                        let lit: LitStr = meta.value()?.parse()?;
+                        deserialize_with = Some(lit.parse()?);
+                    } else if meta.path.is_ident("alias") {
+                        let lit: LitStr = meta.value()?.parse()?;
+                        alias = Some(lit.value());
+                    } else if meta.path.is_ident("token") {
+                        let lit: LitInt = meta.value()?.parse()?;
+                        token = Some(lit.base10_parse()?);
+                        return Ok(());
+                    }
+
+                    Ok(())
+                })
+                .expect("failed to parse binary token attribute");
+            }
+
+            let attr = FieldAttr {
+                ident: f.ident.clone().unwrap(),
+                display: f.ident.as_ref().unwrap().to_string(),
+                typ: f.ty.clone(),
+                alias,
+                duplicated,
+                take_last,
+                default,
+                deserialize_with,
+                token,
+            };
+
+            if attr.duplicated && attr.take_last {
+                panic!("Cannot have both duplicated and take_last attributes on a field");
+            }
+
+            attr
+        })
+        .collect();
+
     let mut generics = dinput.generics;
     let mut base_generics = generics.clone();
-    base_generics.params = std::iter::once(syn::GenericParam::Lifetime(LifetimeDef::new(
+    base_generics.params = std::iter::once(syn::GenericParam::Lifetime(LifetimeParam::new(
         Lifetime::new("'de", Span::call_site().into()),
     )))
     .chain(base_generics.params)
@@ -298,7 +227,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let (_, ty_generics, where_clause) = generics.split_for_impl();
 
     let mut de_generics = generics.clone();
-    de_generics.params = std::iter::once(syn::GenericParam::Lifetime(LifetimeDef::new(
+    de_generics.params = std::iter::once(syn::GenericParam::Lifetime(LifetimeParam::new(
         Lifetime::new("'de", Span::call_site().into()),
     )))
     .chain(de_generics.params)
@@ -318,30 +247,27 @@ pub fn derive(input: TokenStream) -> TokenStream {
         &base_impl
     };
 
-    let builder_init = named_fields.named.iter().map(|f| {
+    let builder_init = field_attrs.iter().map(|f| {
         let name = &f.ident;
-        let x = &f.ty;
-        if !is_duplicated(f) {
-            let field_name_opt = format_ident!("{}_opt", name.as_ref().unwrap());
+        let x = &f.typ;
+        if !f.duplicated {
+            let field_name_opt = format_ident!("{}_opt", name);
             quote! { let mut #field_name_opt : ::std::option::Option<#x> = None }
         } else {
             quote! { let mut #name : #x = Default::default() }
         }
     });
 
-    let builder_fields = named_fields.named.iter().map(|f| {
+    let builder_fields = field_attrs.iter().map(|f| {
         let name = &f.ident;
-        let x = &f.ty;
-        let name_str = name
-            .as_ref()
-            .map(|x| x.to_string())
-            .unwrap_or_else(|| String::from("unknown"));
+        let x = &f.typ;
+        let name_str = &f.display;
         let match_arm = quote! { __Field::#name };
 
-        if !is_duplicated(f) {
-            let field_name_opt = format_ident!("{}_opt", name.as_ref().unwrap());
+        if !f.duplicated {
+            let field_name_opt = format_ident!("{}_opt", name);
 
-            let des = if let Some(ident) = can_deserialize_with(f) {
+            let des = if let Some(ident) = f.deserialize_with.as_ref() {
                 let fncall = quote! { #ident(__deserializer) };
                 quote! {{
                     struct __DeserializeWith #ty_generics #where_clause {
@@ -365,7 +291,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 quote! { serde::de::MapAccess::next_value::<#x>(&mut __map) }
             };
 
-            if !is_take_last(f) {
+            if !f.take_last {
                 quote! {
                     #match_arm => match #field_name_opt {
                         None => #field_name_opt = Some(#des?),
@@ -404,15 +330,12 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     });
 
-    let field_extract =  named_fields.named.iter().filter(|x| !is_duplicated(x)).map(|f| {
+    let field_extract = field_attrs.iter().filter(|x| !x.duplicated).map(|f| {
         let name = &f.ident;
-        let field_name_opt = format_ident!("{}_opt", name.as_ref().unwrap());
-        let name_str = name
-            .as_ref()
-            .map(|x| x.to_string())
-            .unwrap_or_else(|| String::from("unknown"));
+        let field_name_opt = format_ident!("{}_opt", name);
+        let name_str = &f.display;
 
-        match can_default(f) {
+        match &f.default {
             DefaultFallback::Yes => quote! {
                 let #name = (#field_name_opt).unwrap_or_default();
             },
@@ -422,7 +345,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             DefaultFallback::No => quote! {
                 let #name = (#field_name_opt)
                     .ok_or_else(|| <__A::Error as ::serde::de::Error>::missing_field(#name_str))?;
-            }
+            },
         }
     });
 
@@ -436,30 +359,26 @@ pub fn derive(input: TokenStream) -> TokenStream {
         quote! { #name }
     });
 
-    let field_enum_match = named_fields.named.iter().map(|f| {
+    let field_enum_match = field_attrs.iter().map(|f| {
         let name = &f.ident;
-        let name_str = name
-            .as_ref()
-            .map(|x| x.to_string())
-            .unwrap_or_else(|| String::from("unknown"));
-        let match_arm = alias(f).unwrap_or_else(|| name_str.to_string());
+        let match_arm = f.alias.clone().unwrap_or_else(|| f.display.clone());
         let field_ident = quote! { __Field::#name };
         quote! {
             #match_arm => Ok(#field_ident)
         }
     });
 
-    let field_enum_token_match = named_fields.named.iter().filter_map(|f| {
-        let name = &f.ident;
-        binary_token(f).map(|match_arm| {
+    let field_enum_token_match = field_attrs.iter().filter_map(|f| {
+        f.token.map(|token| {
+            let name = &f.ident;
             let field_ident = quote! { __Field::#name };
-            Some(quote! {
-                #match_arm => Ok(#field_ident),
-            })
+            quote! {
+                #token => Ok(#field_ident),
+            }
         })
     });
 
-    let token_count = named_fields.named.iter().filter_map(binary_token).count();
+    let token_count = field_attrs.iter().filter_map(|x| x.token).count();
     if token_count > 0 && token_count < named_fields.named.len() {
         panic!(
             "{} does not have #[jomini(token = x)] defined for all fields",
@@ -480,17 +399,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let expecting = format!("struct {}", struct_ident);
     let struct_ident_str = struct_ident.to_string();
 
-    let field_names: Vec<_> = named_fields
-        .named
-        .iter()
-        .map(|field| {
-            field
-                .ident
-                .as_ref()
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| String::from("unknown"))
-        })
-        .collect();
+    let field_names: Vec<_> = field_attrs.iter().map(|f| f.display.clone()).collect();
 
     let output = quote! {
         impl #de_impl ::serde::Deserialize<'de> for #struct_ident #ty_generics #where_clause {
