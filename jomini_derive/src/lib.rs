@@ -124,7 +124,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         duplicated: bool,
         take_last: bool,
         default: DefaultFallback,
-        deserialize_with: Option<Ident>,
+        deserialize_with: Option<syn::ExprPath>,
         token: Option<u16>,
     }
 
@@ -178,7 +178,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
                     Ok(())
                 })
-                .expect("failed to parse binary token attribute");
+                .expect("failed to parse jomini attribute");
             }
 
             let attr = FieldAttr {
