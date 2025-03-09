@@ -18,8 +18,8 @@ all-features = true
 members = ["jomini_derive"]
 
 [dependencies]
-serde = { version = "1", optional = true }
-serde_json = { version = "1", optional = true }
+serde = { version = "1.0.195", optional = true }
+serde_json = { version = "1.0.114", optional = true }
 jomini_derive = { path = "jomini_derive", version = "^0.2.5", optional = true }
 itoa = { version = "1.0", optional = true }
 
@@ -32,10 +32,10 @@ faster_writer = ["dep:itoa"]
 [dev-dependencies]
 attohttpc = { version = "0.28", features = ["tls-vendored"] }
 encoding_rs = "0.8"
-criterion = "< 0.4"
+criterion = "0.3.6"
 quickcheck = "1"
 quickcheck_macros = "1"
-flate2 = "1"
+flate2 = "1.0.28"
 serde_with = "3.8.1"
 rstest = "0.19.0"
 
