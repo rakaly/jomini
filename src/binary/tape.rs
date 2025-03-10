@@ -153,7 +153,7 @@ impl<'a> ParserState<'a, '_> {
 
     #[inline]
     fn parse_next_id_opt(&self, data: &'a [u8]) -> Option<(&'a [u8], u16)> {
-        get_split::<2>(data).map(|(head, rest)| (rest, u16::from_le_bytes(head)))
+        get_split::<2>(data).map(|(head, rest)| (rest, u16::from_le_bytes(*head)))
     }
 
     #[inline]
@@ -194,14 +194,14 @@ impl<'a> ParserState<'a, '_> {
     #[inline]
     fn parse_f32(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let (result, rest) = read_f32(data).map_err(|e| self.err_position(e, data))?;
-        self.token_tape.alloc().init(BinaryToken::F32(result));
+        self.token_tape.alloc().init(BinaryToken::F32(*result));
         Ok(rest)
     }
 
     #[inline]
     fn parse_f64(&mut self, data: &'a [u8]) -> Result<&'a [u8], Error> {
         let (result, rest) = read_f64(data).map_err(|e| self.err_position(e, data))?;
-        self.token_tape.alloc().init(BinaryToken::F64(result));
+        self.token_tape.alloc().init(BinaryToken::F64(*result));
         Ok(rest)
     }
 

@@ -85,13 +85,13 @@ impl LexemeId {
 #[inline]
 pub(crate) fn read_id(data: &[u8]) -> Result<(LexemeId, &[u8]), LexError> {
     let (head, rest) = get_split::<2>(data).ok_or(LexError::Eof)?;
-    Ok((LexemeId::new(u16::from_le_bytes(head)), rest))
+    Ok((LexemeId::new(u16::from_le_bytes(*head)), rest))
 }
 
 #[inline]
 pub(crate) fn read_string(data: &[u8]) -> Result<(Scalar, &[u8]), LexError> {
     let (head, rest) = get_split::<2>(data).ok_or(LexError::Eof)?;
-    let text_len = usize::from(u16::from_le_bytes(head));
+    let text_len = usize::from(u16::from_le_bytes(*head));
     if text_len <= rest.len() {
         let (text, rest) = rest.split_at(text_len);
         Ok((Scalar::new(text), rest))
@@ -109,34 +109,34 @@ pub(crate) fn read_bool(data: &[u8]) -> Result<(bool, &[u8]), LexError> {
 #[inline]
 pub(crate) fn read_u32(data: &[u8]) -> Result<(u32, &[u8]), LexError> {
     let (head, rest) = get_split::<4>(data).ok_or(LexError::Eof)?;
-    Ok((u32::from_le_bytes(head), rest))
+    Ok((u32::from_le_bytes(*head), rest))
 }
 
 #[inline]
 pub(crate) fn read_u64(data: &[u8]) -> Result<(u64, &[u8]), LexError> {
     let (head, rest) = get_split::<8>(data).ok_or(LexError::Eof)?;
-    Ok((u64::from_le_bytes(head), rest))
+    Ok((u64::from_le_bytes(*head), rest))
 }
 
 #[inline]
 pub(crate) fn read_i64(data: &[u8]) -> Result<(i64, &[u8]), LexError> {
     let (head, rest) = get_split::<8>(data).ok_or(LexError::Eof)?;
-    Ok((i64::from_le_bytes(head), rest))
+    Ok((i64::from_le_bytes(*head), rest))
 }
 
 #[inline]
 pub(crate) fn read_i32(data: &[u8]) -> Result<(i32, &[u8]), LexError> {
     let (head, rest) = get_split::<4>(data).ok_or(LexError::Eof)?;
-    Ok((i32::from_le_bytes(head), rest))
+    Ok((i32::from_le_bytes(*head), rest))
 }
 
 #[inline]
-pub(crate) fn read_f32(data: &[u8]) -> Result<([u8; 4], &[u8]), LexError> {
+pub(crate) fn read_f32(data: &[u8]) -> Result<(&[u8; 4], &[u8]), LexError> {
     get_split::<4>(data).ok_or(LexError::Eof)
 }
 
 #[inline]
-pub(crate) fn read_f64(data: &[u8]) -> Result<([u8; 8], &[u8]), LexError> {
+pub(crate) fn read_f64(data: &[u8]) -> Result<(&[u8; 8], &[u8]), LexError> {
     get_split::<8>(data).ok_or(LexError::Eof)
 }
 
@@ -307,8 +307,8 @@ pub(crate) fn read_token(data: &[u8]) -> Result<(Token, &[u8]), LexError> {
         LexemeId::BOOL => read_bool(data).map(|(x, d)| (Token::Bool(x), d)),
         LexemeId::QUOTED => read_string(data).map(|(x, d)| (Token::Quoted(x), d)),
         LexemeId::UNQUOTED => read_string(data).map(|(x, d)| (Token::Unquoted(x), d)),
-        LexemeId::F32 => read_f32(data).map(|(x, d)| (Token::F32(x), d)),
-        LexemeId::F64 => read_f64(data).map(|(x, d)| (Token::F64(x), d)),
+        LexemeId::F32 => read_f32(data).map(|(x, d)| (Token::F32(*x), d)),
+        LexemeId::F64 => read_f64(data).map(|(x, d)| (Token::F64(*x), d)),
         LexemeId::RGB => read_rgb(data).map(|(x, d)| (Token::Rgb(x), d)),
         LexemeId::I64 => read_i64(data).map(|(x, d)| (Token::I64(x), d)),
         LexemeId(id) => Ok((Token::Id(id), data)),
@@ -714,7 +714,7 @@ impl<'a> Lexer<'a> {
     pub fn read_f32(&mut self) -> Result<[u8; 4], LexerError> {
         let (result, rest) = read_f32(self.data).map_err(|e| self.err_position(e))?;
         self.data = rest;
-        Ok(result)
+        Ok(*result)
     }
 
     /// Advance the lexer through 64 bits of floating point data and return the bytes
@@ -730,7 +730,7 @@ impl<'a> Lexer<'a> {
     pub fn read_f64(&mut self) -> Result<[u8; 8], LexerError> {
         let (result, rest) = read_f64(self.data).map_err(|e| self.err_position(e))?;
         self.data = rest;
-        Ok(result)
+        Ok(*result)
     }
 
     /// Advance the lexer through an rgb value (with optional alpha channel)
