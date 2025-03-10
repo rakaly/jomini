@@ -1,3 +1,10 @@
+## v0.28.0 - 2025-03-09
+
+- Update to syn2
+- `#[jomini(deserialize_with = "")]` now support const generics 
+- Bump minimum dependencies to those released within the last year
+- Bump minimum Rust version to 1.77
+
 ## v0.27.3 - 2025-02-08
 
 - Allow calling `ValueReader::read_object` on a `TextToken::MixedContainer` value
