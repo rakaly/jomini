@@ -1,8 +1,8 @@
 use proc_macro::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, parse_quote, DeriveInput, GenericParam, Ident, Lifetime, LifetimeParam,
-    LitInt, LitStr, Token, Type,
+    parse_macro_input, parse_quote, spanned::Spanned, DeriveInput, Error, GenericParam, Ident,
+    Lifetime, LifetimeParam, LitInt, LitStr, Result, Token, Type,
 };
 
 enum DefaultFallback {
@@ -104,16 +104,25 @@ fn ungroup(mut ty: &Type) -> &Type {
 #[proc_macro_derive(JominiDeserialize, attributes(jomini))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let dinput = parse_macro_input!(input as DeriveInput);
-    let struct_ident = dinput.ident;
+
+    match derive_impl(dinput) {
+        Ok(output) => output,
+        Err(err) => err.into_compile_error().into(),
+    }
+}
+
+fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
+    let struct_ident = dinput.ident.clone();
+    let span = struct_ident.span();
 
     let syn_struct = match dinput.data {
         syn::Data::Struct(x) => x,
-        _ => panic!("Expected struct"),
+        _ => return Err(Error::new(span, "Expected struct")),
     };
 
     let named_fields = match syn_struct.fields {
         syn::Fields::Named(x) => x,
-        _ => panic!("Expected named fields"),
+        _ => return Err(Error::new(span, "Expected named fields")),
     };
 
     struct FieldAttr {
@@ -128,79 +137,92 @@ pub fn derive(input: TokenStream) -> TokenStream {
         token: Option<u16>,
     }
 
-    let field_attrs: Vec<_> = named_fields
-        .named
-        .iter()
-        .map(|f| {
-            let mut duplicated = false;
-            let mut take_last = false;
-            let mut default = DefaultFallback::No;
-            let mut deserialize_with = None;
-            let mut alias = None;
-            let mut token = None;
+    let mut field_attrs = Vec::new();
+    for f in &named_fields.named {
+        let field_span = f.ident.as_ref().map_or(span, |id| id.span());
+        let field_name = f
+            .ident
+            .as_ref()
+            .ok_or_else(|| Error::new(field_span, "Unnamed field in struct"))?
+            .to_string();
 
-            if let Type::Path(x) = ungroup(&f.ty) {
-                for segment in x.path.segments.iter() {
-                    if segment.ident == Ident::new("Option", segment.ident.span()) {
+        let mut duplicated = false;
+        let mut take_last = false;
+        let mut default = DefaultFallback::No;
+        let mut deserialize_with = None;
+        let mut alias = None;
+        let mut token = None;
+
+        if let Type::Path(x) = ungroup(&f.ty) {
+            for segment in x.path.segments.iter() {
+                if segment.ident == Ident::new("Option", segment.ident.span()) {
+                    default = DefaultFallback::Yes;
+                }
+            }
+        }
+
+        for attr in &f.attrs {
+            if !attr.path().is_ident("jomini") {
+                continue;
+            }
+
+            let parse_result = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("duplicated") {
+                    duplicated = true;
+                } else if meta.path.is_ident("take_last") {
+                    take_last = true;
+                } else if meta.path.is_ident("default") {
+                    if meta.input.peek(Token![=]) {
+                        let val = meta.value()?;
+                        let lit: LitStr = val.parse()?;
+                        default = DefaultFallback::Path(lit.parse()?);
+                    } else {
                         default = DefaultFallback::Yes;
                     }
+                } else if meta.path.is_ident("deserialize_with") {
+                    let lit: LitStr = meta.value()?.parse()?;
+                    deserialize_with = Some(lit.parse()?);
+                } else if meta.path.is_ident("alias") {
+                    let lit: LitStr = meta.value()?.parse()?;
+                    alias = Some(lit.value());
+                } else if meta.path.is_ident("token") {
+                    let lit: LitInt = meta.value()?.parse()?;
+                    token = Some(lit.base10_parse()?);
+                    return Ok(());
                 }
+
+                Ok(())
+            });
+
+            if let Err(e) = parse_result {
+                return Err(Error::new(
+                    field_span,
+                    format!("Failed to parse jomini attribute: {}", e),
+                ));
             }
+        }
 
-            for attr in &f.attrs {
-                if !attr.path().is_ident("jomini") {
-                    continue;
-                }
+        let attr = FieldAttr {
+            ident: f.ident.clone().unwrap(),
+            display: field_name,
+            typ: f.ty.clone(),
+            alias,
+            duplicated,
+            take_last,
+            default,
+            deserialize_with,
+            token,
+        };
 
-                attr.parse_nested_meta(|meta| {
-                    if meta.path.is_ident("duplicated") {
-                        duplicated = true;
-                    } else if meta.path.is_ident("take_last") {
-                        take_last = true;
-                    } else if meta.path.is_ident("default") {
-                        if meta.input.peek(Token![=]) {
-                            let val = meta.value()?;
-                            let lit: LitStr = val.parse()?;
-                            default = DefaultFallback::Path(lit.parse()?);
-                        } else {
-                            default = DefaultFallback::Yes;
-                        }
-                    } else if meta.path.is_ident("deserialize_with") {
-                        let lit: LitStr = meta.value()?.parse()?;
-                        deserialize_with = Some(lit.parse()?);
-                    } else if meta.path.is_ident("alias") {
-                        let lit: LitStr = meta.value()?.parse()?;
-                        alias = Some(lit.value());
-                    } else if meta.path.is_ident("token") {
-                        let lit: LitInt = meta.value()?.parse()?;
-                        token = Some(lit.base10_parse()?);
-                        return Ok(());
-                    }
+        if attr.duplicated && attr.take_last {
+            return Err(Error::new(
+                field_span,
+                "Cannot have both duplicated and take_last attributes on a field",
+            ));
+        }
 
-                    Ok(())
-                })
-                .expect("failed to parse jomini attribute");
-            }
-
-            let attr = FieldAttr {
-                ident: f.ident.clone().unwrap(),
-                display: f.ident.as_ref().unwrap().to_string(),
-                typ: f.ty.clone(),
-                alias,
-                duplicated,
-                take_last,
-                default,
-                deserialize_with,
-                token,
-            };
-
-            if attr.duplicated && attr.take_last {
-                panic!("Cannot have both duplicated and take_last attributes on a field");
-            }
-
-            attr
-        })
-        .collect();
+        field_attrs.push(attr);
+    }
 
     let mut generics = dinput.generics;
     let mut base_generics = generics.clone();
@@ -293,31 +315,39 @@ pub fn derive(input: TokenStream) -> TokenStream {
             };
 
             if !f.take_last {
-                quote! {
+                Ok(quote! {
                     #match_arm => match #field_name_opt {
                         None => #field_name_opt = Some(#des?),
                         _ => { return Err(<__A::Error as ::serde::de::Error>::duplicate_field(#name_str)); }
                     }
-                }
+                })
             } else {
-                quote! {
+                Ok(quote! {
                     #match_arm => #field_name_opt = Some(#des?)
-                }
+                })
             }
         } else {
             let path = match ungroup(x) {
                 syn::Type::Path(ty) => &ty.path,
-                _ => panic!("expected path"),
+                _ => return Err(Error::new(x.span(), "duplicated attribute can only be used with path types like Vec<T>")),
             };
-            let seg = path.segments.last().expect("segment");
+
+            let seg = match path.segments.last() {
+                Some(seg) => seg,
+                None => return Err(Error::new(path.segments.span(), "expected path segment")),
+            };
             let args = match &seg.arguments {
                 syn::PathArguments::AngleBracketed(bracketed) => &bracketed.args,
-                _ => panic!("expected brackets"),
+                _ => return Err(Error::new(seg.arguments.span(), "expected angle bracketed arguments")),
             };
+
+            if args.is_empty() {
+                return Err(Error::new(seg.arguments.span(), "expected generic argument for duplicated field"));
+            }
 
             let farg = &args[0];
 
-            match farg {
+            Ok(match farg {
                 syn::GenericArgument::Type(Type::Array(type_array)) => {
                     let elem = &type_array.elem;
                     quote! {
@@ -327,9 +357,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 _ => quote! {
                     #match_arm => { (#name).push(serde::de::MapAccess::next_value::<#farg>(&mut __map)?); }
                 }
-            }
+            })
         }
-    });
+    }).collect::<Result<Vec<_>>>()?;
 
     let field_extract = field_attrs.iter().filter(|x| !x.duplicated).map(|f| {
         let name = &f.ident;
@@ -381,10 +411,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let token_count = field_attrs.iter().filter_map(|x| x.token).count();
     if token_count > 0 && token_count < named_fields.named.len() {
-        panic!(
-            "{} does not have #[jomini(token = x)] defined for all fields",
-            struct_ident
-        )
+        return Err(Error::new(
+            span,
+            format!(
+                "{} does not have #[jomini(token = x)] defined for all fields",
+                struct_ident
+            ),
+        ));
     }
 
     let deser_request = if token_count > 0 {
@@ -507,5 +540,5 @@ pub fn derive(input: TokenStream) -> TokenStream {
             }
         }
     };
-    output.into()
+    Ok(output.into())
 }

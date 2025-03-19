@@ -1,0 +1,7 @@
+error: expected angle bracketed arguments
+ --> tests/compile-fail/duplicated_non_vec.rs:4:10
+  |
+4 | #[derive(JominiDeserialize)]
+  |          ^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the derive macro `JominiDeserialize` (in Nightly builds, run with -Z macro-backtrace for more info)
