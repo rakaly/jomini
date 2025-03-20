@@ -1,0 +1,5 @@
+error: Failed to parse jomini attribute: expected integer literal
+ --> tests/compile-fail/invalid_token_value.rs:7:5
+  |
+7 |     field: String,
+  |     ^^^^^

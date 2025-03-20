@@ -1,7 +1,5 @@
-error: proc-macro derive panicked
- --> tests/compile-fail/tokens.rs:4:10
+error: Model does not have #[jomini(token = x)] defined for all fields
+ --> tests/compile-fail/tokens.rs:5:12
   |
-4 | #[derive(JominiDeserialize)]
-  |          ^^^^^^^^^^^^^^^^^
-  |
-  = help: message: Model does not have #[jomini(token = x)] defined for all fields
+5 | pub struct Model {
+  |            ^^^^^

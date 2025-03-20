@@ -1,0 +1,5 @@
+error: Expected struct
+ --> tests/compile-fail/enum_type.rs:5:10
+  |
+5 | pub enum Model {
+  |          ^^^^^

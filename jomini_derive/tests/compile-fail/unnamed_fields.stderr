@@ -1,0 +1,5 @@
+error: Expected named fields
+ --> tests/compile-fail/unnamed_fields.rs:5:12
+  |
+5 | pub struct Model(u32, String);
+  |            ^^^^^
