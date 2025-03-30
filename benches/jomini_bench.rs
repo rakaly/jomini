@@ -57,7 +57,13 @@ pub fn utf8_benchmark(c: &mut Criterion) {
 
 pub fn to_u64_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("to_u64");
-    for input in [&b"7"[..], &b"1444"[..], &b"20405029"[..]].iter() {
+    for input in [
+        &b"7"[..],
+        &b"30"[..],
+        &b"1444"[..],
+        &b"20405029"[..],
+        &b"20405029553322"[..],
+    ] {
         let data = Scalar::new(input);
         let ins = std::str::from_utf8(input).unwrap();
         group.bench_with_input(BenchmarkId::from_parameter(ins), &data, |b, &data| {
@@ -69,7 +75,12 @@ pub fn to_u64_benchmark(c: &mut Criterion) {
 
 pub fn to_f64_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("to_f64");
-    for input in [&b"10"[..], &b"-1000"[..], &b"20405029.125"[..]].iter() {
+    for input in [
+        &b"10"[..],
+        &b"-1000"[..],
+        &b"0.000"[..],
+        &b"20405029.125"[..],
+    ] {
         let data = Scalar::new(input);
         let ins = std::str::from_utf8(input).unwrap();
         group.bench_with_input(BenchmarkId::from_parameter(ins), &data, |b, &data| {
