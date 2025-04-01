@@ -174,65 +174,92 @@ fn to_bool(d: &[u8]) -> Result<bool, ScalarError> {
     }
 }
 
+const OVERFLOW_CUTOFF: usize = digits_in(u64::MAX);
+const SAFE_INTEGER: u64 = 2u64.pow(53) - 1;
+const SAFE_INTEGER_LEN: usize = digits_in(SAFE_INTEGER);
+
 /// Inspired by https://github.com/lemire/fast_double_parser
 #[inline]
-fn to_f64(d: &[u8]) -> Result<f64, ScalarError> {
-    let (&c, mut data) = d.split_first().ok_or(ScalarError::AllDigits)?;
-    let mut c = c;
+fn to_f64(mut d: &[u8]) -> Result<f64, ScalarError> {
+    let mut acc = 0;
+    let mut integer_part = d;
 
+    let (&c, rest) = d.split_first().ok_or(ScalarError::AllDigits)?;
     let negative = c == b'-';
     if negative {
-        let (&c1, data1) = data.split_first().ok_or(ScalarError::AllDigits)?;
-        c = c1;
-        data = data1;
+        integer_part = rest;
+        d = rest;
+    } else if c.is_ascii_digit() {
+        acc = u64::from(c - b'0');
+        d = rest;
+    } else if c == b'+' {
+        integer_part = rest;
+        d = rest;
+    } else if c != b'.' {
+        return Err(ScalarError::AllDigits);
     }
 
-    let (lead, mut left) = if c.is_ascii_digit() {
-        to_u64_t2(data, u64::from(c - b'0'))
-    } else if c == b'.' {
-        Ok((0, if negative { &d[1..] } else { d }))
-    } else if c == b'+' {
-        to_u64_t2(data, 0)
-    } else {
-        Err(ScalarError::AllDigits)
-    }?;
+    let sign = -((negative as i64 * 2).wrapping_sub(1));
+    while let Some((&c, rest)) = d.split_first() {
+        if c.is_ascii_digit() {
+            acc = acc.wrapping_mul(10);
+            acc = acc.wrapping_add(u64::from(c - b'0'));
+            d = rest;
+        } else if c == b'.' {
+            let fractional_digits = rest.len();
+            let whole_digits = integer_part.len() - fractional_digits - 1;
 
-    if left.is_empty() {
-        if negative {
-            let val = i64::try_from(lead)
-                .map(|x| -x)
-                .map_err(|_| ScalarError::Overflow)?;
-            let result = val as f64;
-            let upper = 9007199254740991i64;
-            if !(-upper..=upper).contains(&val) {
-                Err(ScalarError::PrecisionLoss(result))
-            } else {
-                Ok(result)
+            let mut total = acc;
+            for &x in rest {
+                if !x.is_ascii_digit() {
+                    return Err(ScalarError::AllDigits);
+                }
+
+                total = total.wrapping_mul(10);
+                total = total.wrapping_add(u64::from(x - b'0'));
             }
+
+            if fractional_digits + whole_digits >= OVERFLOW_CUTOFF - 1 {
+                check_overflow_init(rest, acc)?;
+            }
+
+            let pow = POWER_OF_TEN
+                .get(fractional_digits)
+                .ok_or(ScalarError::Overflow)?;
+            let d = (total as f64) / *pow;
+            return Ok((sign as f64) * d);
         } else {
-            let val = lead;
-            let result = val as f64;
-            if val > 9007199254740991 {
-                Err(ScalarError::PrecisionLoss(result))
-            } else {
-                Ok(result)
-            }
-        }
-    } else if left[0] == b'.' {
-        left = &left[1..];
-        let exponent = data.len() - (data.len() - left.len());
-        let (i, left) = to_u64_t(left, lead)?;
-        if !left.is_empty() {
             return Err(ScalarError::AllDigits);
         }
-
-        let pow = POWER_OF_TEN.get(exponent).ok_or(ScalarError::Overflow)?;
-        let d = (i as f64) / *pow;
-        let sign = -((negative as i64 * 2).wrapping_sub(1)) as f64;
-        Ok(sign * d)
-    } else {
-        Err(ScalarError::AllDigits)
     }
+
+    if integer_part.len() < SAFE_INTEGER_LEN {
+        return Ok((sign * (acc as i64)) as f64);
+    }
+
+    check_precision_and_overflow(sign, acc, integer_part)
+}
+
+#[cold]
+fn check_precision_and_overflow(
+    sign: i64,
+    acc: u64,
+    integer_part: &[u8],
+) -> Result<f64, ScalarError> {
+    if integer_part.len() >= OVERFLOW_CUTOFF {
+        check_overflow(integer_part)?;
+    }
+
+    let val = i64::try_from(acc)
+        .map(|x| x * sign)
+        .map_err(|_| ScalarError::Overflow);
+
+    if acc > SAFE_INTEGER {
+        let approx = if sign == 1 { acc as f64 } else { val? as f64 };
+        return Err(ScalarError::PrecisionLoss(approx));
+    }
+
+    Ok(val? as f64)
 }
 
 #[inline]
@@ -261,7 +288,11 @@ pub(crate) fn to_i64_t(d: &[u8]) -> Result<(i64, &[u8]), ScalarError> {
         return Err(ScalarError::AllDigits);
     };
 
-    let (val, rest) = to_u64_t2(data, u64::from(start))?;
+    let (val, rest) = to_u64_partial(data, u64::from(start));
+    if d.len() >= OVERFLOW_CUTOFF - 1 {
+        check_overflow(d)?;
+    }
+
     let val = i64::try_from(val)
         .map(|x| sign * x)
         .map_err(|_| ScalarError::Overflow)?;
@@ -277,59 +308,87 @@ pub(crate) fn to_i64_t(d: &[u8]) -> Result<(i64, &[u8]), ScalarError> {
 #[inline]
 pub(crate) fn to_u64(d: &[u8]) -> Result<u64, ScalarError> {
     let (&c, data) = d.split_first().ok_or(ScalarError::AllDigits)?;
-    let start = if c.is_ascii_digit() {
-        c - b'0'
+    let mut result = if c.is_ascii_digit() {
+        u64::from(c - b'0')
     } else if c == b'+' {
         0
     } else {
         return Err(ScalarError::AllDigits);
     };
 
-    let (result, left) = to_u64_t2(data, u64::from(start))?;
-
-    if left.is_empty() {
-        Ok(result)
-    } else {
-        Err(ScalarError::AllDigits)
-    }
-}
-
-/// Similar to `to_u64` except a plus sign is not allowed
-#[inline]
-pub(crate) fn to_u64_t(d: &[u8], start: u64) -> Result<(u64, &[u8]), ScalarError> {
-    let (result, left) = to_u64_t2(d, start)?;
-
-    // Check to make sure that at least one character was read
-    if left == d {
-        Err(ScalarError::Overflow)
-    } else {
-        Ok((result, left))
-    }
-}
-
-#[inline]
-fn to_u64_t2(d: &[u8], start: u64) -> Result<(u64, &[u8]), ScalarError> {
-    let mut result = start;
-    for (i, &x) in d.iter().enumerate() {
+    for &x in data {
         if !x.is_ascii_digit() {
-            return Ok((result, &d[i..]));
+            return Err(ScalarError::AllDigits);
         }
 
-        result = overflow_mul_add(result, x - b'0')?;
+        result = result.wrapping_mul(10);
+        result = result.wrapping_add(u64::from(x - b'0'));
     }
 
-    Ok((result, &[]))
+    // Check for overflow. We know the overflow possibility exists only when
+    // there are at least 20 digits to match u64::MAX (184467440737095516105)
+    if d.len() >= OVERFLOW_CUTOFF - 1 {
+        check_overflow(d)?;
+    }
+
+    Ok(result)
+}
+
+#[cold]
+fn check_overflow(mut d: &[u8]) -> Result<u64, ScalarError> {
+    if d.is_empty() {
+        return Err(ScalarError::AllDigits);
+    }
+
+    if matches!(d[0], b'+' | b'-') {
+        d = &d[1..];
+    }
+
+    check_overflow_init(d, 0)
+}
+
+#[cold]
+fn check_overflow_init(d: &[u8], start: u64) -> Result<u64, ScalarError> {
+    let mut acc = start;
+    for &x in d {
+        // The input should already be validated by this point, so we just
+        // return the accumulator if we find a non-digit.
+        if !x.is_ascii_digit() {
+            return Ok(acc);
+        }
+
+        acc = acc
+            .checked_mul(10)
+            .and_then(|acc| acc.checked_add(u64::from(x - b'0')))
+            .ok_or(ScalarError::Overflow)?;
+    }
+
+    Ok(acc)
 }
 
 #[inline]
-fn overflow_mul_add(acc: u64, digit: u8) -> Result<u64, ScalarError> {
-    let (new_result1, overflow1) = acc.overflowing_mul(10);
-    let (new_result2, overflow2) = new_result1.overflowing_add(u64::from(digit));
-    if overflow1 | overflow2 {
-        return Err(ScalarError::Overflow);
+fn to_u64_partial(mut d: &[u8], start: u64) -> (u64, &[u8]) {
+    let mut result = start;
+
+    while let Some((c, rest)) = d.split_first() {
+        if !c.is_ascii_digit() {
+            return (result, d);
+        }
+
+        result = result.wrapping_mul(10);
+        result = result.wrapping_add(u64::from(c - b'0'));
+        d = rest;
     }
 
-    Ok(new_result2)
+    (result, &[])
+}
+
+const fn digits_in(n: u64) -> usize {
+    if n == 0 {
+        1
+    } else {
+        n.ilog10() as usize + 1
+    }
 }
 
 const POWER_OF_TEN: [f64; 23] = [
@@ -447,6 +506,18 @@ mod tests {
             (Scalar::new(b"20405029553322").to_u64()),
             Ok(20405029553322)
         );
+        assert_eq!(
+            (Scalar::new(b"+20405029553322").to_u64()),
+            Ok(20405029553322)
+        );
+        assert_eq!(
+            (Scalar::new(b"18446744073709551615").to_u64()),
+            Ok(18446744073709551615)
+        );
+        assert_eq!(
+            (Scalar::new(b"+18446744073709551615").to_u64()),
+            Ok(18446744073709551615)
+        );
     }
 
     #[test]
@@ -455,6 +526,7 @@ mod tests {
             .to_u64()
             .is_err());
         assert!(Scalar::new(b"666666666666666685902").to_u64().is_err());
+        assert!(Scalar::new(b"184467440737095516106").to_u64().is_err());
     }
 
     #[test]
