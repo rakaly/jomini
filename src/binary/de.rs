@@ -13,12 +13,12 @@ use serde::de::{
 use std::{borrow::Cow, io::Read};
 
 /// Serde deserializer over a streaming binary reader
-pub struct BinaryReaderDeserializer<'res, RES, F, R> {
+pub struct BinaryReaderDeserializer<RES, F, R> {
     reader: TokenReader<R>,
-    config: BinaryConfig<'res, RES, F>,
+    config: BinaryConfig<RES, F>,
 }
 
-impl<RES: TokenResolver, E: BinaryFlavor, R: Read> BinaryReaderDeserializer<'_, RES, E, R> {
+impl<RES: TokenResolver, E: BinaryFlavor, R: Read> BinaryReaderDeserializer<RES, E, R> {
     /// Deserialize into provided type
     pub fn deserialize<T>(&mut self) -> Result<T, Error>
     where
@@ -29,7 +29,7 @@ impl<RES: TokenResolver, E: BinaryFlavor, R: Read> BinaryReaderDeserializer<'_, 
 }
 
 impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::Deserializer<'de>
-    for &'_ mut BinaryReaderDeserializer<'res, RES, F, R>
+    for &'_ mut BinaryReaderDeserializer<RES, F, R>
 {
     type Error = Error;
 
@@ -71,19 +71,19 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::Deseriali
     }
 }
 
-struct BinaryReaderMap<'a: 'a, 'res, RES: 'a, F, R> {
-    de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
+struct BinaryReaderMap<'a: 'a, RES: 'a, F, R> {
+    de: *const &'a mut BinaryReaderDeserializer<RES, F, R>,
     root: bool,
 }
 
-impl<'a, 'res, RES: 'a, F, R> BinaryReaderMap<'a, 'res, RES, F, R> {
-    fn new(de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>, root: bool) -> Self {
+impl<'a, RES: 'a, F, R> BinaryReaderMap<'a, RES, F, R> {
+    fn new(de: *const &'a mut BinaryReaderDeserializer<RES, F, R>, root: bool) -> Self {
         BinaryReaderMap { de, root }
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> MapAccess<'de>
-    for BinaryReaderMap<'_, 'res, RES, F, R>
+impl<'de, RES: TokenResolver, F: BinaryFlavor, R: Read> MapAccess<'de>
+    for BinaryReaderMap<'_, RES, F, R>
 {
     type Error = Error;
 
@@ -128,12 +128,12 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> MapAccess<'de
     }
 }
 
-struct BinaryReaderTokenDeserializer<'a, 'res, RES: 'a, F, R> {
-    de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
+struct BinaryReaderTokenDeserializer<'a, RES: 'a, F, R> {
+    de: *const &'a mut BinaryReaderDeserializer<RES, F, R>,
     token: Token<'a>,
 }
 
-impl<'res, RES: TokenResolver, F, R> BinaryReaderTokenDeserializer<'_, 'res, RES, F, R>
+impl<RES: TokenResolver, F, R> BinaryReaderTokenDeserializer<'_, RES, F, R>
 where
     F: BinaryFlavor,
     R: Read,
@@ -142,7 +142,6 @@ where
     fn deser<'de, V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: de::Visitor<'de>,
-        'res: 'de,
     {
         match self.token {
             Token::U32(x) => visitor.visit_u32(x),
@@ -200,8 +199,8 @@ macro_rules! deserialize_scalar {
     };
 }
 
-impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::Deserializer<'de>
-    for BinaryReaderTokenDeserializer<'a, 'res, RES, F, R>
+impl<'a, 'de: 'a, RES: TokenResolver, F: BinaryFlavor, R: Read> de::Deserializer<'de>
+    for BinaryReaderTokenDeserializer<'a, RES, F, R>
 {
     type Error = Error;
 
@@ -472,19 +471,19 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
     }
 }
 
-struct BinaryReaderSeq<'a: 'a, 'res, RES: 'a, F, R> {
-    de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
+struct BinaryReaderSeq<'a: 'a, RES: 'a, F, R> {
+    de: *const &'a mut BinaryReaderDeserializer<RES, F, R>,
     hit_end: bool,
 }
 
-impl<'a, 'res, RES: 'a, F, R> BinaryReaderSeq<'a, 'res, RES, F, R> {
-    fn new(de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>) -> Self {
+impl<'a, RES: 'a, F, R> BinaryReaderSeq<'a, RES, F, R> {
+    fn new(de: *const &'a mut BinaryReaderDeserializer<RES, F, R>) -> Self {
         BinaryReaderSeq { de, hit_end: false }
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> SeqAccess<'de>
-    for BinaryReaderSeq<'_, 'res, RES, F, R>
+impl<'de, RES: TokenResolver, F: BinaryFlavor, R: Read> SeqAccess<'de>
+    for BinaryReaderSeq<'_, RES, F, R>
 {
     type Error = Error;
 
@@ -504,19 +503,19 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> SeqAccess<'de
     }
 }
 
-struct BinaryReaderEnum<'a, 'res, RES: 'a, F, R> {
-    de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
+struct BinaryReaderEnum<'a, RES: 'a, F, R> {
+    de: *const &'a mut BinaryReaderDeserializer<RES, F, R>,
     token: Token<'a>,
 }
 
-impl<'a, 'res, RES: 'a, F, R> BinaryReaderEnum<'a, 'res, RES, F, R> {
-    fn new(de: *const &'a mut BinaryReaderDeserializer<'res, RES, F, R>, token: Token<'a>) -> Self {
+impl<'a, RES: 'a, F, R> BinaryReaderEnum<'a, RES, F, R> {
+    fn new(de: *const &'a mut BinaryReaderDeserializer<RES, F, R>, token: Token<'a>) -> Self {
         BinaryReaderEnum { de, token }
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::EnumAccess<'de>
-    for BinaryReaderEnum<'_, 'res, RES, F, R>
+impl<'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::EnumAccess<'de>
+    for BinaryReaderEnum<'_, RES, F, R>
 {
     type Error = Error;
     type Variant = Self;
@@ -533,8 +532,8 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::EnumAcces
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R> de::VariantAccess<'de>
-    for BinaryReaderEnum<'_, 'res, RES, F, R>
+impl<'de, RES: TokenResolver, F: BinaryFlavor, R> de::VariantAccess<'de>
+    for BinaryReaderEnum<'_, RES, F, R>
 {
     type Error = Error;
 
@@ -581,12 +580,12 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R> de::VariantAccess<'
 }
 
 /// On-demand binary deserializer
-pub struct OndemandBinaryDeserializer<'data, 'res: 'data, RES, F> {
+pub struct OndemandBinaryDeserializer<'data, RES, F> {
     parser: Lexer<'data>,
-    config: BinaryConfig<'res, RES, F>,
+    config: BinaryConfig<RES, F>,
 }
 
-impl<'de, RES: TokenResolver, E: BinaryFlavor> OndemandBinaryDeserializer<'de, '_, RES, E> {
+impl<'de, RES: TokenResolver, E: BinaryFlavor> OndemandBinaryDeserializer<'de, RES, E> {
     /// Deserialize into provided type
     pub fn deserialize<T>(&mut self) -> Result<T, Error>
     where
@@ -597,7 +596,7 @@ impl<'de, RES: TokenResolver, E: BinaryFlavor> OndemandBinaryDeserializer<'de, '
 }
 
 impl<'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
-    for &'_ mut OndemandBinaryDeserializer<'de, '_, RES, F>
+    for &'_ mut OndemandBinaryDeserializer<'de, RES, F>
 {
     type Error = Error;
 
@@ -638,20 +637,18 @@ impl<'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
     }
 }
 
-struct OndemandMap<'a, 'de: 'a, 'res: 'de, RES: 'a, F> {
-    de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>,
+struct OndemandMap<'a, 'de: 'a, RES: 'a, F> {
+    de: &'a mut OndemandBinaryDeserializer<'de, RES, F>,
     root: bool,
 }
 
-impl<'a, 'de: 'a, 'res: 'de, RES: 'a, F> OndemandMap<'a, 'de, 'res, RES, F> {
-    fn new(de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>, root: bool) -> Self {
+impl<'a, 'de: 'a, RES: 'a, F> OndemandMap<'a, 'de, RES, F> {
+    fn new(de: &'a mut OndemandBinaryDeserializer<'de, RES, F>, root: bool) -> Self {
         OndemandMap { de, root }
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
-    for OndemandMap<'_, 'de, 'res, RES, F>
-{
+impl<'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de> for OndemandMap<'_, 'de, RES, F> {
     type Error = Error;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
@@ -698,14 +695,12 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
     }
 }
 
-struct OndemandTokenDeserializer<'a, 'de: 'a, 'res: 'de, RES: 'a, F> {
-    de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>,
+struct OndemandTokenDeserializer<'a, 'de: 'a, RES: 'a, F> {
+    de: &'a mut OndemandBinaryDeserializer<'de, RES, F>,
     token: LexemeId,
 }
 
-impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor>
-    OndemandTokenDeserializer<'a, 'de, 'res, RES, F>
-{
+impl<'a, 'de: 'a, RES: TokenResolver, F: BinaryFlavor> OndemandTokenDeserializer<'a, 'de, RES, F> {
     fn deser<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: de::Visitor<'de>,
@@ -761,8 +756,8 @@ macro_rules! deserialize_scalar {
     };
 }
 
-impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
-    for OndemandTokenDeserializer<'a, 'de, 'res, RES, F>
+impl<'a, 'de: 'a, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
+    for OndemandTokenDeserializer<'a, 'de, RES, F>
 {
     type Error = Error;
 
@@ -1012,20 +1007,18 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializ
     }
 }
 
-struct OndemandSeq<'a, 'de: 'a, 'res: 'de, RES: 'a, F> {
-    de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>,
+struct OndemandSeq<'a, 'de: 'a, RES: 'a, F> {
+    de: &'a mut OndemandBinaryDeserializer<'de, RES, F>,
     hit_end: bool,
 }
 
-impl<'a, 'de: 'a, 'res: 'de, RES: 'a, F> OndemandSeq<'a, 'de, 'res, RES, F> {
-    fn new(de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>) -> Self {
+impl<'a, 'de: 'a, RES: 'a, F> OndemandSeq<'a, 'de, RES, F> {
+    fn new(de: &'a mut OndemandBinaryDeserializer<'de, RES, F>) -> Self {
         OndemandSeq { de, hit_end: false }
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> SeqAccess<'de>
-    for OndemandSeq<'_, 'de, 'res, RES, F>
-{
+impl<'de, RES: TokenResolver, F: BinaryFlavor> SeqAccess<'de> for OndemandSeq<'_, 'de, RES, F> {
     type Error = Error;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
@@ -1046,19 +1039,19 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> SeqAccess<'de>
     }
 }
 
-struct OndemandEnum<'a, 'de: 'a, 'res: 'de, RES: 'a, F> {
-    de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>,
+struct OndemandEnum<'a, 'de: 'a, RES: 'a, F> {
+    de: &'a mut OndemandBinaryDeserializer<'de, RES, F>,
     token: LexemeId,
 }
 
-impl<'a, 'de: 'a, 'res: 'de, RES: 'a, F> OndemandEnum<'a, 'de, 'res, RES, F> {
-    fn new(de: &'a mut OndemandBinaryDeserializer<'de, 'res, RES, F>, token: LexemeId) -> Self {
+impl<'a, 'de: 'a, RES: 'a, F> OndemandEnum<'a, 'de, RES, F> {
+    fn new(de: &'a mut OndemandBinaryDeserializer<'de, RES, F>, token: LexemeId) -> Self {
         OndemandEnum { de, token }
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::EnumAccess<'de>
-    for OndemandEnum<'_, 'de, 'res, RES, F>
+impl<'de, RES: TokenResolver, F: BinaryFlavor> de::EnumAccess<'de>
+    for OndemandEnum<'_, 'de, RES, F>
 {
     type Error = Error;
     type Variant = Self;
@@ -1075,8 +1068,8 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::EnumAccess<'de>
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
-    for OndemandEnum<'_, 'de, 'res, RES, F>
+impl<'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
+    for OndemandEnum<'_, 'de, RES, F>
 {
     type Error = Error;
 
@@ -1186,9 +1179,9 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
 /// info
 ///
 /// [0]: https://serde.rs/attr-flatten.html
-pub struct BinaryDeserializer<'b, 'data: 'b, 'res: 'data, RES, F> {
+pub struct BinaryDeserializer<'b, 'data: 'b, RES, F> {
     tape: BinaryDeserializerKind<'data, 'b>,
-    config: BinaryConfig<'res, RES, F>,
+    config: BinaryConfig<RES, F>,
 }
 
 enum BinaryDeserializerKind<'data, 'b> {
@@ -1232,7 +1225,7 @@ where
     pub fn from_reader<RES, R>(
         self,
         reader: R,
-        resolver: &RES,
+        resolver: RES,
     ) -> BinaryReaderDeserializer<RES, F, R>
     where
         RES: TokenResolver,
@@ -1257,11 +1250,11 @@ where
     }
 
     /// Create a binary deserializer from a slice
-    pub fn from_slice<'a, 'res: 'a, RES>(
+    pub fn from_slice<'a, RES>(
         self,
         data: &'a [u8],
-        resolver: &'res RES,
-    ) -> OndemandBinaryDeserializer<'a, 'res, RES, F>
+        resolver: RES,
+    ) -> OndemandBinaryDeserializer<'a, RES, F>
     where
         RES: TokenResolver,
     {
@@ -1291,11 +1284,11 @@ where
     }
 
     /// Deserialize the given binary tape
-    pub fn from_tape<'data, 'b, 'res: 'data, RES>(
+    pub fn from_tape<'data, 'b, RES>(
         self,
         tape: &'b BinaryTape<'data>,
-        resolver: &'res RES,
-    ) -> BinaryDeserializer<'b, 'data, 'res, RES, F>
+        resolver: RES,
+    ) -> BinaryDeserializer<'b, 'data, RES, F>
     where
         RES: TokenResolver,
     {
@@ -1325,7 +1318,7 @@ where
     }
 }
 
-impl<'de, RES: TokenResolver, E: BinaryFlavor> BinaryDeserializer<'_, 'de, '_, RES, E> {
+impl<'de, RES: TokenResolver, E: BinaryFlavor> BinaryDeserializer<'_, 'de, RES, E> {
     /// Deserialize into provided type
     pub fn deserialize<T>(&self) -> Result<T, Error>
     where
@@ -1335,14 +1328,14 @@ impl<'de, RES: TokenResolver, E: BinaryFlavor> BinaryDeserializer<'_, 'de, '_, R
     }
 }
 
-impl BinaryDeserializer<'_, '_, '_, (), ()> {
+impl BinaryDeserializer<'_, '_, (), ()> {
     /// Constructs a BinaryDeserializerBuilder
     pub fn builder_flavor<F: BinaryFlavor>(flavor: F) -> BinaryDeserializerBuilder<F> {
         BinaryDeserializerBuilder::with_flavor(flavor)
     }
 }
 
-impl<RES, E> BinaryDeserializer<'_, '_, '_, RES, E> {
+impl<RES, E> BinaryDeserializer<'_, '_, RES, E> {
     /// Update how the deserializer handles failed token resolution
     pub fn on_failed_resolve(&mut self, strategy: FailedResolveStrategy) -> &mut Self {
         self.config.failed_resolve_strategy = strategy;
@@ -1350,14 +1343,14 @@ impl<RES, E> BinaryDeserializer<'_, '_, '_, RES, E> {
     }
 }
 
-struct BinaryConfig<'res, RES, F> {
-    resolver: &'res RES,
+struct BinaryConfig<RES, F> {
+    resolver: RES,
     failed_resolve_strategy: FailedResolveStrategy,
     flavor: F,
 }
 
 impl<'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
-    for &'_ BinaryDeserializer<'_, 'de, '_, RES, F>
+    for &'_ BinaryDeserializer<'_, 'de, RES, F>
 {
     type Error = Error;
 
@@ -1405,17 +1398,17 @@ impl<'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
     }
 }
 
-struct BinaryMap<'c, 'a: 'c, 'de: 'a, 'res: 'de, RES: 'a, E> {
-    config: &'a BinaryConfig<'res, RES, E>,
+struct BinaryMap<'c, 'a: 'c, 'de: 'a, RES: 'a, E> {
+    config: &'a BinaryConfig<RES, E>,
     tokens: &'c [BinaryToken<'de>],
     tape_idx: usize,
     end_idx: usize,
     value_ind: usize,
 }
 
-impl<'c, 'a, 'de, 'res: 'de, RES, E> BinaryMap<'c, 'a, 'de, 'res, RES, E> {
+impl<'c, 'a, 'de, RES, E> BinaryMap<'c, 'a, 'de, RES, E> {
     fn new(
-        config: &'a BinaryConfig<'res, RES, E>,
+        config: &'a BinaryConfig<RES, E>,
         tokens: &'c [BinaryToken<'de>],
         tape_idx: usize,
         end_idx: usize,
@@ -1430,9 +1423,7 @@ impl<'c, 'a, 'de, 'res: 'de, RES, E> BinaryMap<'c, 'a, 'de, 'res, RES, E> {
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
-    for BinaryMap<'_, '_, 'de, 'res, RES, F>
-{
+impl<'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de> for BinaryMap<'_, '_, 'de, RES, F> {
     type Error = Error;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
@@ -1476,16 +1467,16 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
     }
 }
 
-struct KeyDeserializer<'b, 'de: 'b, 'res: 'de, RES, F> {
-    config: &'b BinaryConfig<'res, RES, F>,
+struct KeyDeserializer<'b, 'de: 'b, RES, F> {
+    config: &'b BinaryConfig<RES, F>,
     tokens: &'b [BinaryToken<'de>],
     tape_idx: usize,
 }
 
-fn visit_key<'b, 'de: 'b, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, V: Visitor<'de>>(
+fn visit_key<'b, 'de: 'b, RES: TokenResolver, F: BinaryFlavor, V: Visitor<'de>>(
     tape_idx: usize,
     tokens: &'b [BinaryToken<'de>],
-    config: &'b BinaryConfig<'res, RES, F>,
+    config: &'b BinaryConfig<RES, F>,
     visitor: V,
 ) -> Result<V::Value, Error> {
     match tokens[tape_idx] {
@@ -1524,8 +1515,8 @@ fn visit_key<'b, 'de: 'b, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, V: Vis
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
-    for KeyDeserializer<'_, 'de, 'res, RES, E>
+impl<'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
+    for KeyDeserializer<'_, 'de, RES, E>
 {
     type Error = Error;
 
@@ -1554,14 +1545,14 @@ impl<'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
     }
 }
 
-struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES, E> {
-    config: &'b BinaryConfig<'res, RES, E>,
+struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, RES, E> {
+    config: &'b BinaryConfig<RES, E>,
     value_ind: usize,
     tokens: &'c [BinaryToken<'de>],
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
-    for ValueDeserializer<'_, '_, 'de, 'res, RES, E>
+impl<'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
+    for ValueDeserializer<'_, '_, 'de, RES, E>
 {
     type Error = Error;
 
@@ -1704,13 +1695,13 @@ impl<'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
     }
 }
 
-struct EnumAccess<'b, 'de: 'b, 'res: 'de, RES, E> {
-    config: &'b BinaryConfig<'res, RES, E>,
+struct EnumAccess<'b, 'de: 'b, RES, E> {
+    config: &'b BinaryConfig<RES, E>,
     tokens: &'b [BinaryToken<'de>],
     idx: usize,
 }
 
-impl<'de, RES, E> de::EnumAccess<'de> for EnumAccess<'_, 'de, '_, RES, E>
+impl<'de, RES, E> de::EnumAccess<'de> for EnumAccess<'_, 'de, RES, E>
 where
     RES: TokenResolver,
     E: BinaryFlavor,
@@ -1780,16 +1771,14 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer {
     }
 }
 
-struct BinarySequence<'b, 'de: 'b, 'res: 'de, RES, E> {
-    config: &'b BinaryConfig<'res, RES, E>,
+struct BinarySequence<'b, 'de: 'b, RES, E> {
+    config: &'b BinaryConfig<RES, E>,
     tokens: &'b [BinaryToken<'de>],
     idx: usize,
     end_idx: usize,
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> SeqAccess<'de>
-    for BinarySequence<'_, 'de, 'res, RES, E>
-{
+impl<'de, RES: TokenResolver, E: BinaryFlavor> SeqAccess<'de> for BinarySequence<'_, 'de, RES, E> {
     type Error = Error;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
