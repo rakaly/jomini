@@ -196,7 +196,7 @@ impl std::fmt::Display for Stats {
             .enumerate()
             .map(|(i, x)| (i as u64) * *x)
             .sum::<u64>();
-        let median_ind = (count + 1) / 2;
+        let median_ind = count.div_ceil(2);
         let mut counter = 0;
         let mut median = 0;
         for (i, freq) in self.frequencies.iter().enumerate() {
