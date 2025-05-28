@@ -379,6 +379,49 @@ pub fn date_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+pub fn date_comparison_benchmark(c: &mut Criterion) {
+    let date_pairs = [
+        (
+            Date::parse("1444.11.11").unwrap(),
+            Date::parse("1444.3.5").unwrap(),
+        ),
+        (
+            Date::parse("1500.1.1").unwrap(),
+            Date::parse("1500.12.31").unwrap(),
+        ),
+        (
+            Date::parse("1600.6.15").unwrap(),
+            Date::parse("1700.6.15").unwrap(),
+        ),
+        (
+            Date::parse("1400.1.1").unwrap(),
+            Date::parse("1800.12.31").unwrap(),
+        ),
+        (
+            Date::parse("-10.5.5").unwrap(),
+            Date::parse("10.5.5").unwrap(),
+        ),
+        (
+            Date::parse("-100.1.1").unwrap(),
+            Date::parse("-50.12.31").unwrap(),
+        ),
+        (
+            Date::parse("2000.2.28").unwrap(),
+            Date::parse("2000.3.1").unwrap(),
+        ),
+    ];
+
+    c.bench_function("date_comparison", |b| {
+        b.iter(|| {
+            for (date1, date2) in &date_pairs {
+                black_box(date1 < date2);
+                black_box(date1 > date2);
+                black_box(date1 == date2);
+            }
+        });
+    });
+}
+
 criterion_group!(
     benches,
     utf8_benchmark,
@@ -391,6 +434,7 @@ criterion_group!(
     to_f64_benchmark,
     date_benchmark,
     json_benchmark,
+    date_comparison_benchmark,
 );
 criterion_main!(benches);
 

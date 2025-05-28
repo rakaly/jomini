@@ -296,12 +296,14 @@ impl Debug for RawDate {
 }
 
 impl PartialOrd for RawDate {
+    #[inline]
     fn partial_cmp(&self, other: &RawDate) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for RawDate {
+    #[inline]
     fn cmp(&self, other: &RawDate) -> Ordering {
         self.year()
             .cmp(&other.year())
