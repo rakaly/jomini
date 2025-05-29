@@ -2,16 +2,16 @@ use crate::Scalar;
 use std::{io::Read, ops::Range};
 
 #[derive(Debug)]
-pub struct BufferWindow {
-    pub buf: Box<[u8]>,
+pub(crate) struct BufferWindow {
+    pub(crate) buf: Box<[u8]>,
 
     start_buf: *const u8,
 
     // start of window into buffer
-    pub start: *const u8,
+    pub(crate) start: *const u8,
 
     // end of window into buffer
-    pub end: *const u8,
+    pub(crate) end: *const u8,
 
     // number of consumed bytes from prior reads
     pub prior_reads: usize,
@@ -108,6 +108,14 @@ impl BufferWindow {
             }
             Err(e) => Err(BufferError::Io(e)),
         }
+    }
+
+    #[inline]
+    pub fn split(&mut self, amt: usize) -> &[u8] {
+        let amt = amt.min(self.window_len());
+        let window = unsafe { std::slice::from_raw_parts(self.start, amt) };
+        self.start = unsafe { self.start.add(amt) };
+        window
     }
 }
 
