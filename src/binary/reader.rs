@@ -100,9 +100,7 @@ where
             }
         }
 
-        let input = unsafe { std::slice::from_raw_parts(self.buf.start, bytes) };
-        self.buf.advance(bytes);
-        Ok(input)
+        Ok(self.buf.split(bytes))
     }
 
     /// Advance through the containing block until the closing token is consumed
@@ -123,8 +121,7 @@ where
     pub fn skip_container(&mut self) -> Result<(), ReaderError> {
         let mut depth = 1;
         loop {
-            let mut window =
-                unsafe { std::slice::from_raw_parts(self.buf.start, self.buf.window_len()) };
+            let mut window = self.buf.window();
             while let Ok((id, data)) = read_id(window) {
                 match id {
                     LexemeId::CLOSE => {

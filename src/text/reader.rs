@@ -517,9 +517,7 @@ where
             }
         }
 
-        let input = unsafe { std::slice::from_raw_parts(self.buf.start, bytes) };
-        self.buf.advance(bytes);
-        Ok(input)
+        Ok(self.buf.split(bytes))
     }
 
     /// Advance through the containing block until the closing token is consumed
