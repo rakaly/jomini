@@ -29,7 +29,7 @@ fn test_options() {
     let m: Model = serde_json::from_str(data).unwrap();
     let m2: Model2 = serde_json::from_str(data).unwrap();
     assert_eq!(m.checksum, String::from("false"));
-    assert_eq!(m.human, true);
+    assert!(m.human);
     assert_eq!(m.fourth, 4);
     assert_eq!(m.checksum, m2.checksum);
     assert_eq!(m.human, m2.human);

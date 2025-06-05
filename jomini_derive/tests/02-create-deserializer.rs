@@ -24,7 +24,7 @@ fn test_create_deserializer() {
         }"#;
 
     let m: Model = serde_json::from_str(data).unwrap();
-    assert_eq!(m.human, true);
+    assert!(m.human);
     assert_eq!(m.first, 1);
     assert_eq!(m.fourth, 2);
     assert_eq!(m.core, vec!["AAA".to_string(), "BBB".to_string()]);
