@@ -23,7 +23,7 @@ fn test_duplicated_numbers() {
         }"#;
 
     let m: Model = serde_json::from_str(data).unwrap();
-    assert_eq!(m.human, true);
+    assert!(m.human);
     assert_eq!(m.first, 1);
     assert_eq!(m.fourth, 2);
     assert_eq!(m.core, vec![10, 20]);
