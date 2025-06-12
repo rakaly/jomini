@@ -168,7 +168,7 @@ pub(crate) fn read_rgb(data: &[u8]) -> Result<(Rgb, &[u8]), LexError> {
     }
 }
 
-/// Binary token, the raw form of [BinaryToken](crate::binary::BinaryToken)
+/// Binary token containing raw tokens parsed from binary data
 ///
 /// This binary token contains the yielded raw tokens, and won't match open and
 /// close tokens together, nor does it make a determination if open and close

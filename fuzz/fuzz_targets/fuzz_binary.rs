@@ -108,61 +108,10 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    // Fuzz tape parsing
-    let ores = jomini::BinaryTape::from_slice(data);
-
     // Fuzz binary deserializers
     let _: Result<Meta, _> = jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .from_slice(data, &hash)
-        .deserialize();
+        .deserialize_slice(data, &hash);
 
     let _: Result<Meta, _> = jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .from_reader(data, &hash)
-        .deserialize();
-
-    if let Ok(tape) = &ores {
-        let _: Result<Meta, _> = jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-            .from_tape(tape, &hash)
-            .deserialize();
-    }
-
-    // Fuzz structure of binary AST
-    if let Ok(tape) = &ores {
-        let tokens = tape.tokens();
-        for (i, token) in tokens.iter().enumerate() {
-            match token {
-                jomini::BinaryToken::Array(ind)
-                | jomini::BinaryToken::Object(ind)
-                | jomini::BinaryToken::End(ind)
-                    if *ind == 0 =>
-                {
-                    panic!("zero ind encountered");
-                }
-                jomini::BinaryToken::MixedContainer => {}
-                jomini::BinaryToken::Equal => {}
-                jomini::BinaryToken::Array(ind) | jomini::BinaryToken::Object(ind) => {
-                    match tokens[*ind] {
-                        jomini::BinaryToken::End(ind2) => {
-                            assert_eq!(ind2, i)
-                        }
-                        _ => panic!("expected end"),
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    #[cfg(unoptimized_build)]
-    {
-        let mut utape = jomini::BinaryTape::default();
-        let ures =
-            jomini::binary::BinaryTapeParser.parse_slice_into_tape_unoptimized(&data, &mut utape);
-
-        match (ures, ores) {
-            (Ok(_), Ok(t2)) => assert_eq!(utape.tokens(), t2.tokens()),
-            (Err(_), Err(_)) => {}
-            (x, y) => panic!("{:?} {:?}", x, y),
-        }
-    }
+        .deserialize_reader(data, &hash);
 });

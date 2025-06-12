@@ -6,8 +6,6 @@
 //!
 //! If the serde deserialization API is too high level, one can build
 //! abstractions ontop of.
-//!  - [BinaryTape::from_slice]: Realizes a pseudo AST onto a linear tape.
-//!    Cleans up and normalizes data.
 //!  - [TokenReader]: An incremental binary lexer designed for handling large
 //!    saves in a memory efficient manner.
 //!  - [Lexer]: The lowest level, a zero cost binary data scanner over a byte
@@ -70,16 +68,17 @@
 /// binary deserialization
 #[cfg(feature = "derive")]
 pub mod de;
+#[cfg(feature = "derive")]
+pub use self::de::{BinaryDeserializer, BinaryDeserializerBuilder};
+
 mod flavor;
 mod lexer;
 mod reader;
 mod resolver;
 mod rgb;
-mod tape;
 
 pub use self::flavor::BinaryFlavor;
 pub use self::lexer::{LexError, LexemeId, Lexer, LexerError, Token};
 pub use self::reader::{ReaderError, ReaderErrorKind, TokenReader, TokenReaderBuilder};
 pub use self::resolver::{BasicTokenResolver, FailedResolveStrategy, TokenResolver};
 pub use self::rgb::*;
-pub use self::tape::{BinaryTape, BinaryTapeParser, BinaryToken};

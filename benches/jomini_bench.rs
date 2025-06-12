@@ -1,9 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use flate2::read::GzDecoder;
 use jomini::{
-    binary::{BinaryFlavor, BinaryTapeParser, TokenResolver},
+    binary::{BinaryFlavor, TokenResolver},
     common::Date,
-    BinaryTape, Encoding, Scalar, TextTape, Utf8Encoding, Windows1252Encoding,
+    Encoding, Scalar, TextTape, Utf8Encoding, Windows1252Encoding,
 };
 use std::{borrow::Cow, io::Read};
 
@@ -146,15 +146,6 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
                 .unwrap();
         })
     });
-    group.bench_function("tape", |b| {
-        b.iter(|| {
-            let tape = BinaryTape::from_slice(&data[..]).unwrap();
-            let _res: Gamestate = BinaryTestFlavor
-                .deserializer()
-                .deserialize_tape(&tape, &MyBinaryResolver)
-                .unwrap();
-        })
-    });
     group.finish();
 }
 
@@ -186,14 +177,6 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
     for game in &["eu4", "ck3", "v3"] {
         let data = request(format!("jomini/{game}-bin"));
         group.throughput(Throughput::Bytes(data.len() as u64));
-        group.bench_function(BenchmarkId::new("tape", game), |b| {
-            let mut tape = BinaryTape::default();
-            b.iter(|| {
-                BinaryTapeParser
-                    .parse_slice_into_tape(data.as_slice(), &mut tape)
-                    .unwrap();
-            })
-        });
 
         group.bench_function(BenchmarkId::new("lexer", game), |b| {
             b.iter(|| {
