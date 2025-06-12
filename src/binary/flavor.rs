@@ -1,7 +1,7 @@
 #[cfg(feature = "derive")]
 use crate::{
     binary::{de::BinaryDeserializerBuilder, TokenResolver},
-    BinaryDeserializer, Error,
+    Error,
 };
 
 /// Trait customizing decoding values from binary data
@@ -21,7 +21,7 @@ pub trait BinaryFlavor: crate::Encoding {
     where
         Self: Sized,
     {
-        BinaryDeserializer::builder_flavor(self)
+        BinaryDeserializerBuilder::with_flavor(self)
     }
 
     /// Deserialize value from slice of data with this binary flavor
