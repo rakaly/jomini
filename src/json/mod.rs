@@ -325,7 +325,7 @@ pub struct JsonObjectBuilder<'data, 'tokens, E> {
     options: JsonOptions,
 }
 
-impl<'data, 'tokens, E> JsonObjectBuilder<'data, 'tokens, E>
+impl<E> JsonObjectBuilder<'_, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -375,7 +375,7 @@ pub struct JsonArrayBuilder<'data, 'tokens, E> {
     options: JsonOptions,
 }
 
-impl<'data, 'tokens, E> JsonArrayBuilder<'data, 'tokens, E>
+impl<E> JsonArrayBuilder<'_, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -425,7 +425,7 @@ pub struct JsonValueBuilder<'data, 'tokens, E> {
     options: JsonOptions,
 }
 
-impl<'data, 'tokens, E> JsonValueBuilder<'data, 'tokens, E>
+impl<E> JsonValueBuilder<'_, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -509,7 +509,7 @@ where
     s.serialize_str(&result)
 }
 
-impl<'data, 'tokens, E> Serialize for JsonValueBuilder<'data, 'tokens, E>
+impl<E> Serialize for JsonValueBuilder<'_, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -563,7 +563,7 @@ where
     }
 }
 
-impl<'data, 'tokens, E> Serialize for JsonObjectBuilder<'data, 'tokens, E>
+impl<E> Serialize for JsonObjectBuilder<'_, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -660,7 +660,7 @@ pub(crate) struct OperatorValue<'data, 'tokens, E> {
     options: JsonOptions,
 }
 
-impl<'data, 'tokens, E> Serialize for OperatorValue<'data, 'tokens, E>
+impl<E> Serialize for OperatorValue<'_, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -687,7 +687,7 @@ pub(crate) struct InnerSerArray<'data, 'tokens, E> {
     options: JsonOptions,
 }
 
-impl<'data, 'tokens, E> Serialize for InnerSerArray<'data, 'tokens, E>
+impl<E> Serialize for InnerSerArray<'_, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -739,7 +739,7 @@ where
     }
 }
 
-impl<'data, 'tokens, E> Serialize for JsonArrayBuilder<'data, 'tokens, E>
+impl<E> Serialize for JsonArrayBuilder<'_, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -770,7 +770,7 @@ pub(crate) struct SingleObject<'data, 'tokens, E> {
     options: JsonOptions,
 }
 
-impl<'data, 'tokens, E> Serialize for SingleObject<'data, 'tokens, E>
+impl<E> Serialize for SingleObject<'_, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -807,7 +807,7 @@ pub(crate) struct SerTapeTyped<'data, 'tokens, E> {
     options: JsonOptions,
 }
 
-impl<'data, 'tokens, E> Serialize for SerTapeTyped<'data, 'tokens, E>
+impl<E> Serialize for SerTapeTyped<'_, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -844,7 +844,7 @@ pub(crate) struct KeyScalarWrapper<'data, E> {
     reader: ScalarReader<'data, E>,
 }
 
-impl<'data, E> Serialize for KeyScalarWrapper<'data, E>
+impl<E> Serialize for KeyScalarWrapper<'_, E>
 where
     E: Encoding + Clone,
 {
