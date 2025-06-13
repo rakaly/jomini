@@ -854,8 +854,24 @@ where
     {
         let body = self.reader.read_str();
         match self.reader.token() {
-            TextToken::Parameter(_) => serialize_parameter(&body, true, serializer),
-            TextToken::UndefinedParameter(_) => serialize_parameter(&body, false, serializer),
+            TextToken::Parameter(_) => {
+                // Extract parameter name from [[param_name]] format
+                if body.starts_with("[[") && body.ends_with("]]") {
+                    let param_name = &body[2..body.len() - 2];
+                    serialize_parameter(param_name, true, serializer)
+                } else {
+                    serialize_parameter(&body, true, serializer)
+                }
+            }
+            TextToken::UndefinedParameter(_) => {
+                // Extract parameter name from [[!param_name]] format
+                if body.starts_with("[[!") && body.ends_with("]]") {
+                    let param_name = &body[3..body.len() - 2];
+                    serialize_parameter(param_name, false, serializer)
+                } else {
+                    serialize_parameter(&body, false, serializer)
+                }
+            }
             _ => serializer.serialize_str(&body),
         }
     }
