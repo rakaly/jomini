@@ -306,7 +306,7 @@ pub fn json_benchmark(c: &mut Criterion) {
         })
     });
 
-    let data = &CK3_TXT[..];
+    let data = CK3_TXT;
     let tape = TextTape::from_slice(data).unwrap();
     let bytes = tape.windows1252_reader().json().to_string().len();
     group.throughput(Throughput::Bytes(bytes as u64));
