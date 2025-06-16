@@ -290,6 +290,7 @@ pub mod json;
 mod scalar;
 pub mod text;
 pub(crate) mod util;
+mod value;
 
 #[doc(inline)]
 pub use self::binary::{BinaryTape, BinaryToken};
@@ -298,6 +299,9 @@ pub use self::errors::*;
 pub use self::scalar::{Scalar, ScalarError};
 #[doc(inline)]
 pub use self::text::{TextTape, TextToken, TextWriter, TextWriterBuilder};
+pub use self::value::{ContainerValue, ScalarValue, Value};
+#[cfg(feature = "derive")]
+pub use self::value::{OwnedValueDeserializer, ValueDeserializer, ValueDeserializerError};
 
 #[cfg(feature = "derive")]
 #[doc(inline)]
