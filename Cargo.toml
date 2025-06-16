@@ -57,7 +57,3 @@ lto = true
 codegen-units = 1
 debug = true
 
-[lints.rust]
-# suppress unoptimized cfg lint as it's not a "feature", but a mode
-# that's useful to drop into to fuzz against 
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(unoptimized_build)'] }

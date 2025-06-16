@@ -1,90 +1,109 @@
-use jomini::BinaryToken;
+use jomini::binary::{Token, TokenReader};
 use std::error;
 use std::io::{self, Read};
-use std::ops::Range;
 
 #[derive(Debug, Default)]
 struct Stats {
-    array: u32,
-    object: u32,
-    mixed: u32,
+    open: u32,
+    close: u32,
+    equal: u32,
     bool: u32,
     u32: u32,
     i32: u32,
     u64: u32,
+    i64: u32,
     quoted: u32,
     unquoted: u32,
     f32: u32,
     f64: u32,
-    token: u32,
+    id: u32,
     rgb: u32,
-    i64: u32,
     frequencies: Vec<u64>,
 }
 
 impl Stats {
-    fn update(&mut self, token: &BinaryToken) {
+    fn new() -> Self {
+        Self {
+            frequencies: vec![0; 100],
+            ..Default::default()
+        }
+    }
+
+    fn update(&mut self, token: &Token) {
         match token {
-            BinaryToken::Array(_) => self.array += 1,
-            BinaryToken::Object(_) => self.object += 1,
-            BinaryToken::MixedContainer => self.mixed += 1,
-            BinaryToken::Equal => {}
-            BinaryToken::End(_) => {}
-            BinaryToken::Bool(_) => self.bool += 1,
-            BinaryToken::U32(_) => self.u32 += 1,
-            BinaryToken::U64(_) => self.u64 += 1,
-            BinaryToken::I64(_) => self.i64 += 1,
-            BinaryToken::I32(_) => self.i32 += 1,
-            BinaryToken::Quoted(x) => {
-                self.frequencies[x.as_bytes().len()] += 1;
-                self.quoted += 1
+            Token::Open => self.open += 1,
+            Token::Close => self.close += 1,
+            Token::Equal => self.equal += 1,
+            Token::Bool(_) => self.bool += 1,
+            Token::U32(_) => self.u32 += 1,
+            Token::U64(_) => self.u64 += 1,
+            Token::I64(_) => self.i64 += 1,
+            Token::I32(_) => self.i32 += 1,
+            Token::Quoted(x) => {
+                let len = x.as_bytes().len();
+                if len < self.frequencies.len() {
+                    self.frequencies[len] += 1;
+                }
+                self.quoted += 1;
             }
-            BinaryToken::Unquoted(x) => {
-                self.frequencies[x.as_bytes().len()] += 1;
-                self.unquoted += 1
+            Token::Unquoted(x) => {
+                let len = x.as_bytes().len();
+                if len < self.frequencies.len() {
+                    self.frequencies[len] += 1;
+                }
+                self.unquoted += 1;
             }
-            BinaryToken::F32(_) => self.f32 += 1,
-            BinaryToken::F64(_) => self.f64 += 1,
-            BinaryToken::Token(_) => self.token += 1,
-            BinaryToken::Rgb(_) => self.rgb += 1,
+            Token::F32(_) => self.f32 += 1,
+            Token::F64(_) => self.f64 += 1,
+            Token::Id(_) => self.id += 1,
+            Token::Rgb(_) => self.rgb += 1,
         }
     }
 }
 
 impl std::fmt::Display for Stats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let total = self.array
-            + self.object
-            + self.mixed
+        let total = self.open
+            + self.close
+            + self.equal
             + self.bool
             + self.u32
             + self.u64
             + self.i32
+            + self.i64
             + self.quoted
             + self.unquoted
             + self.f32
             + self.f64
-            + self.token
-            + self.rgb
-            + self.i64;
+            + self.id
+            + self.rgb;
 
         let total = total as f64;
 
-        if self.array != 0 {
+        if self.open != 0 {
             writeln!(
                 f,
-                "array:\t\t{:<8}({:.2}%)",
-                self.array,
-                (self.array as f64) / total * 100.0
+                "open:\t\t{:<8}({:.2}%)",
+                self.open,
+                (self.open as f64) / total * 100.0
             )?;
         }
 
-        if self.object != 0 {
+        if self.close != 0 {
             writeln!(
                 f,
-                "object:\t\t{:<8}({:.2}%)",
-                self.object,
-                (self.object as f64) / total * 100.0
+                "close:\t\t{:<8}({:.2}%)",
+                self.close,
+                (self.close as f64) / total * 100.0
+            )?;
+        }
+
+        if self.equal != 0 {
+            writeln!(
+                f,
+                "equal:\t\t{:<8}({:.2}%)",
+                self.equal,
+                (self.equal as f64) / total * 100.0
             )?;
         }
 
@@ -124,6 +143,15 @@ impl std::fmt::Display for Stats {
             )?;
         }
 
+        if self.i64 != 0 {
+            writeln!(
+                f,
+                "i64:\t\t{:<8}({:.2}%)",
+                self.i64,
+                (self.i64 as f64) / total * 100.0
+            )?;
+        }
+
         if self.quoted != 0 {
             writeln!(
                 f,
@@ -160,12 +188,12 @@ impl std::fmt::Display for Stats {
             )?;
         }
 
-        if self.token != 0 {
+        if self.id != 0 {
             writeln!(
                 f,
-                "token:\t\t{:<8}({:.2}%)",
-                self.token,
-                (self.token as f64) / total * 100.0
+                "id:\t\t{:<8}({:.2}%)",
+                self.id,
+                (self.id as f64) / total * 100.0
             )?;
         }
 
@@ -178,100 +206,33 @@ impl std::fmt::Display for Stats {
             )?;
         }
 
-        if self.i64 != 0 {
-            writeln!(
-                f,
-                "i64:\t\t{:<8}({:.2}%)",
-                self.i64,
-                (self.i64 as f64) / total * 100.0
-            )?;
-        }
-
         writeln!(f, "total:\t\t{:<8}", total)?;
 
         let count = self.frequencies.iter().sum::<u64>();
-        let sum = self
-            .frequencies
-            .iter()
-            .enumerate()
-            .map(|(i, x)| (i as u64) * *x)
-            .sum::<u64>();
-        let median_ind = count.div_ceil(2);
-        let mut counter = 0;
-        let mut median = 0;
-        for (i, freq) in self.frequencies.iter().enumerate() {
-            counter += *freq;
-            if counter > median_ind {
-                median = i;
-                break;
+        if count > 0 {
+            let sum = self
+                .frequencies
+                .iter()
+                .enumerate()
+                .map(|(i, x)| (i as u64) * *x)
+                .sum::<u64>();
+            let median_ind = count.div_ceil(2);
+            let mut counter = 0;
+            let mut median = 0;
+            for (i, freq) in self.frequencies.iter().enumerate() {
+                counter += *freq;
+                if counter > median_ind {
+                    median = i;
+                    break;
+                }
             }
-        }
 
-        writeln!(f, "text count: {}", count)?;
-        writeln!(f, "text average length: {:.2}", sum as f64 / count as f64)?;
-        writeln!(f, "text median length: {:.2}", median)?;
+            writeln!(f, "text count: {}", count)?;
+            writeln!(f, "text average length: {:.2}", sum as f64 / count as f64)?;
+            writeln!(f, "text median length: {:.2}", median)?;
+        }
 
         Ok(())
-    }
-}
-
-fn read_array(
-    keys: &mut Stats,
-    values: &mut Stats,
-    array: &mut Stats,
-    tokens: &[BinaryToken],
-    range: Range<usize>,
-) {
-    let mut ind = range.start;
-    while ind < range.end {
-        let token = tokens[ind];
-        array.update(&token);
-        match token {
-            BinaryToken::Array(x) => {
-                read_array(keys, values, array, tokens, ind + 1..x);
-                ind = x + 1;
-            }
-            BinaryToken::Object(x) => {
-                read_object(keys, values, array, tokens, ind + 1..x);
-                ind = x + 1;
-            }
-            BinaryToken::MixedContainer => {
-                break;
-            }
-            _ => ind += 1,
-        }
-    }
-}
-
-fn read_object(
-    keys: &mut Stats,
-    values: &mut Stats,
-    array: &mut Stats,
-    tokens: &[BinaryToken],
-    range: Range<usize>,
-) {
-    let mut ind = range.start;
-    while ind < range.end {
-        let token = tokens[ind];
-        keys.update(&token);
-        if token == BinaryToken::MixedContainer {
-            break;
-        }
-
-        let value = tokens[ind + 1];
-        values.update(&value);
-
-        match value {
-            BinaryToken::Array(x) => {
-                read_array(keys, values, array, tokens, ind + 2..x);
-                ind = x + 1;
-            }
-            BinaryToken::Object(x) => {
-                read_object(keys, values, array, tokens, ind + 2..x);
-                ind = x + 1;
-            }
-            _ => ind += 2,
-        }
     }
 }
 
@@ -279,24 +240,14 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     let mut data = Vec::new();
     io::stdin().read_to_end(&mut data)?;
 
-    let tape = jomini::BinaryTape::from_slice(&data).expect("to parse binary tape");
+    let mut stats = Stats::new();
+    let mut reader = TokenReader::new(&data[..]);
+    while let Ok(Some(token)) = reader.next() {
+        stats.update(&token);
+    }
 
-    let mut keys = Stats::default();
-    let mut values = Stats::default();
-    let mut array = Stats::default();
-    keys.frequencies = vec![0; 100];
-    values.frequencies = vec![0; 100];
-    array.frequencies = vec![0; 100];
-    let tokens = tape.tokens();
-    read_object(&mut keys, &mut values, &mut array, tokens, 0..tokens.len());
-    println!("Object key tokens:");
-    println!("{}", keys);
-
-    println!("Object value tokens:");
-    println!("{}", values);
-
-    println!("Array value tokens:");
-    println!("{}", array);
+    println!("Binary token statistics:");
+    println!("{}", stats);
 
     Ok(())
 }
