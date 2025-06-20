@@ -1,14 +1,17 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use flate2::read::GzDecoder;
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use jomini::{
     binary::{BinaryFlavor, TokenResolver},
     common::Date,
     Encoding, Scalar, TextTape, Utf8Encoding, Windows1252Encoding,
 };
-use std::{borrow::Cow, io::Read};
+use std::{
+    borrow::Cow,
+    hint::black_box,
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 const METADATA_TXT: &[u8] = include_bytes!("../tests/fixtures/meta.txt");
-const CK3_TXT: &[u8] = include_bytes!("../tests/fixtures/ck3-header.txt");
 
 pub fn windows1252_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("windows1252");
@@ -127,10 +130,12 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
         }
     }
 
-    let mut group = c.benchmark_group("binary-deserialize");
-    let data = request("jomini/eu4-bin");
-    group.throughput(Throughput::Bytes(data.len() as u64));
-    group.bench_function("ondemand", |b| {
+    let mut group = c.benchmark_group("binary/deserialize");
+    let data = request("eu4", false);
+    group.throughput(Throughput::Bytes(data.uncompressed_size));
+
+    group.bench_function("lex", |b| {
+        let data = data.load();
         b.iter(|| {
             let _res: Gamestate = BinaryTestFlavor
                 .deserializer()
@@ -138,7 +143,8 @@ pub fn binary_deserialize_benchmark(c: &mut Criterion) {
                 .unwrap();
         })
     });
-    group.bench_function("ondemand-reader", |b| {
+    group.bench_function("reader", |b| {
+        let data = data.load();
         b.iter(|| {
             let _res: Gamestate = BinaryTestFlavor
                 .deserializer()
@@ -167,20 +173,23 @@ pub fn text_deserialize_benchmark(c: &mut Criterion) {
 }
 
 pub fn binary_parse_benchmark(c: &mut Criterion) {
-    // For the binary parse benchmarks we actually benchmark against a real
-    // world corpus of save files. Previously it was only against the binary
-    // metadata section of saves, but found out that improvements in benchmarks
-    // didn't translate to world world change.
+    // For the benchmarks we actually benchmark against a real world corpus of
+    // save files. Previously it was only against the binary metadata section of
+    // saves, but found out that improvements in benchmarks didn't translate to
+    // world world change.
 
-    let mut group = c.benchmark_group("parse");
+    let mut group = c.benchmark_group("binary");
 
-    for game in &["eu4", "ck3", "v3"] {
-        let data = request(format!("jomini/{game}-bin"));
-        group.throughput(Throughput::Bytes(data.len() as u64));
+    for game in &["eu4", "v3", "ck3"] {
+        let data = request(game, false);
+        group.throughput(Throughput::Bytes(data.uncompressed_size));
+        group.sample_size(30);
 
-        group.bench_function(BenchmarkId::new("lexer", game), |b| {
+        group.bench_function(BenchmarkId::new("lex", game), |b| {
+            let data = data.load();
+
             b.iter(|| {
-                let mut lexer = jomini::binary::Lexer::new(data.as_slice());
+                let mut lexer = jomini::binary::Lexer::new(&data[..]);
                 let mut counter = 0;
                 while let Ok(Some(token)) = lexer.next_token() {
                     if matches!(token, jomini::binary::Token::Id(_)) {
@@ -192,8 +201,9 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
         });
 
         group.bench_function(BenchmarkId::new("reader", game), |b| {
+            let data = data.load();
             b.iter(|| {
-                let mut reader = jomini::binary::TokenReader::new(data.as_slice());
+                let mut reader = jomini::binary::TokenReader::new(&data[..]);
                 let mut counter = 0;
                 while let Ok(Some(token)) = reader.next() {
                     if matches!(token, jomini::binary::Token::Id(_)) {
@@ -209,28 +219,43 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
 }
 
 pub fn text_parse_benchmark(c: &mut Criterion) {
-    let data = &METADATA_TXT["EU4txt".len()..];
-    let mut group = c.benchmark_group("parse");
-    group.throughput(Throughput::Bytes(data.len() as u64));
-    group.bench_function(BenchmarkId::new("text", "eu4"), |b| {
-        let mut tape = TextTape::default();
-        b.iter(|| {
-            TextTape::parser()
-                .parse_slice_into_tape(data, &mut tape)
-                .unwrap();
-        })
-    });
+    let mut group = c.benchmark_group("text");
 
-    let data = CK3_TXT;
-    group.throughput(Throughput::Bytes(data.len() as u64));
-    group.bench_function(BenchmarkId::new("text", "ck3"), |b| {
-        let mut tape = TextTape::default();
-        b.iter(|| {
-            TextTape::parser()
-                .parse_slice_into_tape(data, &mut tape)
-                .unwrap();
-        })
-    });
+    for game in &["eu4", "ck3"] {
+        let data = request(game, true);
+        group.throughput(Throughput::Bytes(data.uncompressed_size));
+        group.sample_size(30);
+
+        group.bench_function(BenchmarkId::new("tape", game), |b| {
+            let mut tape = TextTape::default();
+            let data = data.load();
+            b.iter(|| {
+                TextTape::parser()
+                    .parse_slice_into_tape(&data[..], &mut tape)
+                    .unwrap();
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("reader", game), |b| {
+            #[inline(never)]
+            fn eu4_reader_fn(data: &[u8]) -> Result<i32, jomini::Error> {
+                let mut reader = jomini::text::TokenReader::from_slice(data);
+                let mut count = 0i32;
+                while let Some(token) = reader.next()? {
+                    if matches!(
+                        token,
+                        jomini::text::Token::Operator(jomini::text::Operator::Equal)
+                    ) {
+                        count += 1;
+                    }
+                }
+                Ok::<i32, jomini::Error>(count)
+            }
+
+            let data = data.load();
+            b.iter(|| eu4_reader_fn(&data[..]))
+        });
+    }
 
     group.finish();
 }
@@ -240,6 +265,7 @@ pub fn json_benchmark(_c: &mut Criterion) {}
 
 #[cfg(feature = "json")]
 pub fn json_benchmark(c: &mut Criterion) {
+    const CK3_TXT: &[u8] = include_bytes!("../tests/fixtures/ck3-header.txt");
     use jomini::json::{DuplicateKeyMode, JsonOptions};
 
     let data = &METADATA_TXT["EU4txt".len()..];
@@ -421,36 +447,84 @@ criterion_group!(
 );
 criterion_main!(benches);
 
-pub fn request<S: AsRef<str>>(input: S) -> Vec<u8> {
-    use std::fs;
-    use std::path::Path;
+struct RemoteBenchmarkData {
+    uncompressed_size: u64,
+    path: PathBuf,
+    to_skip: usize,
+}
 
-    let reffed = input.as_ref();
-    let cache = Path::new("assets").join("saves").join(reffed);
-    if cache.exists() {
-        println!("cache hit: {}", reffed);
-        fs::read(cache).unwrap()
-    } else {
-        println!("cache miss: {}", reffed);
+fn request(game: &str, is_text: bool) -> RemoteBenchmarkData {
+    let path = format!("jomini/{}.{}", if is_text { "txt" } else { "bin" }, game);
+    let cache = Path::new("assets").join("saves").join(path.as_str());
+
+    if !cache.exists() {
+        println!("cache miss: {}", path);
         let url = format!(
-            "https://eu4saves-test-cases.s3.us-west-002.backblazeb2.com/{}.gz",
-            reffed
+            "https://eu4saves-test-cases.s3.us-west-002.backblazeb2.com/{}",
+            path
         );
-        let resp = attohttpc::get(&url).send().unwrap();
+        let mut resp = attohttpc::get(&url).send().unwrap();
 
         if !resp.is_success() {
-            panic!("expected a 200 code from s3");
+            panic!("expected a 200 code from s3 for {}", path);
         } else {
-            let raw_data = resp.bytes().unwrap();
-
-            let mut data = Vec::new();
-            GzDecoder::new(raw_data.as_slice())
-                .read_to_end(&mut data)
-                .unwrap();
-
             std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
-            std::fs::write(&cache, &data).unwrap();
-            data
+            let mut file = std::fs::File::create(&cache).unwrap();
+            std::io::copy(&mut resp, &mut file).unwrap();
         }
+    } else {
+        println!("cache hit: {}", path);
+    }
+
+    let file = std::fs::File::open(&cache).unwrap();
+    let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
+    let archive = rawzip::ZipArchive::from_file(file, &mut buf).unwrap();
+    let mut entries = archive.entries(&mut buf);
+    let mut max_size = 0;
+    while let Some(entry) = entries.next_entry().unwrap() {
+        max_size = max_size.max(entry.uncompressed_size_hint());
+    }
+
+    assert!(max_size > 1024 * 1024);
+
+    let to_skip = match game {
+        "eu4" => "EU4bin".len(),
+        _ => 0,
+    };
+
+    RemoteBenchmarkData {
+        uncompressed_size: max_size,
+        path: cache,
+        to_skip,
+    }
+}
+
+impl RemoteBenchmarkData {
+    pub fn load(&self) -> Vec<u8> {
+        let file = std::fs::File::open(&self.path).unwrap();
+        let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
+        let archive = rawzip::ZipArchive::from_file(file, &mut buf).unwrap();
+        let mut entries = archive.entries(&mut buf);
+        let mut max_size = 0;
+        let mut max_entry = None;
+        while let Some(entry) = entries.next_entry().unwrap() {
+            if entry.uncompressed_size_hint() > max_size {
+                max_entry = Some((entry.wayfinder(), entry.compression_method()));
+                max_size = entry.uncompressed_size_hint();
+            }
+        }
+
+        let (wayfinder, compression_method) = max_entry.unwrap();
+        assert_eq!(compression_method, rawzip::CompressionMethod::Deflate);
+        let entry = archive.get_entry(wayfinder).unwrap();
+        let reader = flate2::read::DeflateDecoder::new_with_buf(entry.reader(), buf);
+        let mut reader = entry.verifying_reader(reader);
+
+        let mut skip_buf = vec![0u8; self.to_skip];
+        reader.read_exact(&mut skip_buf[..]).unwrap();
+
+        let mut output = Vec::with_capacity(max_size as usize);
+        reader.read_to_end(&mut output).unwrap();
+        output
     }
 }
