@@ -279,7 +279,6 @@ assert_eq!(&out, b"hello=world\nfoo=bar");
 pub mod binary;
 pub(crate) mod buffer;
 pub mod common;
-mod copyless;
 mod data;
 #[cfg(feature = "derive")]
 pub(crate) mod de;
@@ -291,8 +290,6 @@ mod scalar;
 pub mod text;
 pub(crate) mod util;
 
-#[doc(inline)]
-pub use self::binary::{BinaryTape, BinaryToken};
 pub use self::encoding::*;
 pub use self::errors::*;
 pub use self::scalar::{Scalar, ScalarError};

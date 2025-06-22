@@ -29,12 +29,16 @@ use std::{fmt, io::Read};
 /// # Ok::<(), jomini::binary::ReaderError>(())
 /// ```
 ///
-/// Unlike a [BinaryTape](crate::BinaryTape), which will skip ghost objects,
-/// pair open and close tokens together, and recognize if a container is an
-/// object, array, or mixed -- the tokens yielded from a [TokenReader] are not
-/// fully formed. This is a much more raw view of the data that can be used to
-/// construct higher level parsers, melters, and deserializers that operate over
-/// a stream of data.
+/// The tokens yielded from a [TokenReader] are not fully parsed. Some things to
+/// be aware of:
+///
+/// - Ghost objects will not be skipped (eg: `foo={ {} a=b }`).
+/// - [TokenReader] can not inform the caller if the container is an array or
+///   object (or neither).
+///
+///  This is a much more raw view of the data that can be used to construct
+/// higher level parsers, melters, and deserializers that operate over a stream
+/// of data.
 ///
 /// [TokenReader] operates over a fixed size buffer, so using a
 /// [BufRead](std::io::BufRead) affords no benefits. An error will be returned

@@ -5,7 +5,7 @@ use super::{
 use crate::{
     binary::{BinaryFlavor, FailedResolveStrategy, TokenResolver},
     de::ColorSequence,
-    BinaryTape, BinaryToken, DeserializeError, DeserializeErrorKind, Error,
+    DeserializeError, DeserializeErrorKind, Error,
 };
 use serde::de::{
     self, Deserialize, DeserializeOwned, DeserializeSeed, MapAccess, SeqAccess, Visitor,
@@ -1131,7 +1131,7 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
 /// The example below demonstrates how to deserialize data
 ///
 /// ```
-/// use jomini::{BinaryDeserializer, Encoding, JominiDeserialize, Windows1252Encoding};
+/// use jomini::{Encoding, JominiDeserialize, Windows1252Encoding, BinaryDeserializer};
 /// use serde::Deserialize;
 /// use std::{borrow::Cow, collections::HashMap};
 ///
@@ -1180,27 +1180,25 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
-/// It is not recommended to use the [`flatten` serde attribute][0], as then it
-/// would be difficult to reuse the same struct for binary and text
-/// deserialization. See [TextDeserializer](crate::TextDeserializer) for more
-/// info
-///
-/// [0]: https://serde.rs/attr-flatten.html
-pub struct BinaryDeserializer<'b, 'data: 'b, 'res: 'data, RES, F> {
-    tape: BinaryDeserializerKind<'data, 'b>,
-    config: BinaryConfig<'res, RES, F>,
-}
-
-enum BinaryDeserializerKind<'data, 'b> {
-    Borrowed(&'b BinaryTape<'data>),
-}
-
 /// Build a tweaked binary deserializer
 #[derive(Debug)]
 pub struct BinaryDeserializerBuilder<F> {
     failed_resolve_strategy: FailedResolveStrategy,
     flavor: F,
     reader_config: TokenReaderBuilder,
+}
+
+/// Type alias for the binary deserializer builder for backward compatibility
+pub type BinaryDeserializer = BinaryDeserializerBuilder<()>;
+
+impl BinaryDeserializer {
+    /// A convenience method to create a binary deserializer with the given flavor
+    pub fn builder_flavor<F>(flavor: F) -> BinaryDeserializerBuilder<F>
+    where
+        F: BinaryFlavor,
+    {
+        BinaryDeserializerBuilder::with_flavor(flavor)
+    }
 }
 
 impl<F> BinaryDeserializerBuilder<F>
@@ -1289,573 +1287,12 @@ where
     {
         self.from_slice(data, resolver).deserialize()
     }
-
-    /// Deserialize the given binary tape
-    pub fn from_tape<'data, 'b, 'res: 'data, RES>(
-        self,
-        tape: &'b BinaryTape<'data>,
-        resolver: &'res RES,
-    ) -> BinaryDeserializer<'b, 'data, 'res, RES, F>
-    where
-        RES: TokenResolver,
-    {
-        let config = BinaryConfig {
-            resolver,
-            failed_resolve_strategy: self.failed_resolve_strategy,
-            flavor: self.flavor,
-        };
-
-        BinaryDeserializer {
-            tape: BinaryDeserializerKind::Borrowed(tape),
-            config,
-        }
-    }
-
-    /// Deserialize the given binary tape
-    pub fn deserialize_tape<'data, 'b, 'res: 'data, RES, T>(
-        self,
-        tape: &'b BinaryTape<'data>,
-        resolver: &'res RES,
-    ) -> Result<T, Error>
-    where
-        T: Deserialize<'data>,
-        RES: TokenResolver,
-    {
-        self.from_tape(tape, resolver).deserialize()
-    }
-}
-
-impl<'de, RES: TokenResolver, E: BinaryFlavor> BinaryDeserializer<'_, 'de, '_, RES, E> {
-    /// Deserialize into provided type
-    pub fn deserialize<T>(&self) -> Result<T, Error>
-    where
-        T: Deserialize<'de>,
-    {
-        T::deserialize(self)
-    }
-}
-
-impl BinaryDeserializer<'_, '_, '_, (), ()> {
-    /// Constructs a BinaryDeserializerBuilder
-    pub fn builder_flavor<F: BinaryFlavor>(flavor: F) -> BinaryDeserializerBuilder<F> {
-        BinaryDeserializerBuilder::with_flavor(flavor)
-    }
-}
-
-impl<RES, E> BinaryDeserializer<'_, '_, '_, RES, E> {
-    /// Update how the deserializer handles failed token resolution
-    pub fn on_failed_resolve(&mut self, strategy: FailedResolveStrategy) -> &mut Self {
-        self.config.failed_resolve_strategy = strategy;
-        self
-    }
 }
 
 struct BinaryConfig<'res, RES, F> {
     resolver: &'res RES,
     failed_resolve_strategy: FailedResolveStrategy,
     flavor: F,
-}
-
-impl<'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
-    for &'_ BinaryDeserializer<'_, 'de, '_, RES, F>
-{
-    type Error = Error;
-
-    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
-                "root deserializer can only work with key value pairs",
-            )),
-        }))
-    }
-
-    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        match &self.tape {
-            &BinaryDeserializerKind::Borrowed(x) => visitor.visit_map(BinaryMap::new(
-                &self.config,
-                x.tokens(),
-                0,
-                x.tokens().len(),
-            )),
-        }
-    }
-
-    fn deserialize_struct<V>(
-        self,
-        _name: &'static str,
-        _fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_map(visitor)
-    }
-
-    serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct enum ignored_any identifier
-    }
-}
-
-struct BinaryMap<'c, 'a: 'c, 'de: 'a, 'res: 'de, RES: 'a, E> {
-    config: &'a BinaryConfig<'res, RES, E>,
-    tokens: &'c [BinaryToken<'de>],
-    tape_idx: usize,
-    end_idx: usize,
-    value_ind: usize,
-}
-
-impl<'c, 'a, 'de, 'res: 'de, RES, E> BinaryMap<'c, 'a, 'de, 'res, RES, E> {
-    fn new(
-        config: &'a BinaryConfig<'res, RES, E>,
-        tokens: &'c [BinaryToken<'de>],
-        tape_idx: usize,
-        end_idx: usize,
-    ) -> Self {
-        BinaryMap {
-            config,
-            tokens,
-            tape_idx,
-            end_idx,
-            value_ind: 0,
-        }
-    }
-}
-
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
-    for BinaryMap<'_, '_, 'de, 'res, RES, F>
-{
-    type Error = Error;
-
-    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
-    where
-        K: DeserializeSeed<'de>,
-    {
-        if self.tape_idx < self.end_idx {
-            let current_idx = self.tape_idx;
-
-            self.value_ind = self.tape_idx + 1;
-            let next_key = match self.tokens[self.value_ind] {
-                BinaryToken::Array(x) | BinaryToken::Object(x) => x,
-                _ => self.value_ind,
-            };
-
-            self.tape_idx = next_key + 1;
-            seed.deserialize(KeyDeserializer {
-                tape_idx: current_idx,
-                tokens: self.tokens,
-                config: self.config,
-            })
-            .map(Some)
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
-    where
-        V: DeserializeSeed<'de>,
-    {
-        seed.deserialize(ValueDeserializer {
-            value_ind: self.value_ind,
-            tokens: self.tokens,
-            config: self.config,
-        })
-    }
-
-    fn size_hint(&self) -> Option<usize> {
-        Some(object_len(self.tokens, self.tape_idx))
-    }
-}
-
-struct KeyDeserializer<'b, 'de: 'b, 'res: 'de, RES, F> {
-    config: &'b BinaryConfig<'res, RES, F>,
-    tokens: &'b [BinaryToken<'de>],
-    tape_idx: usize,
-}
-
-fn visit_key<'b, 'de: 'b, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, V: Visitor<'de>>(
-    tape_idx: usize,
-    tokens: &'b [BinaryToken<'de>],
-    config: &'b BinaryConfig<'res, RES, F>,
-    visitor: V,
-) -> Result<V::Value, Error> {
-    match tokens[tape_idx] {
-        BinaryToken::Object(_)
-        | BinaryToken::Array(_)
-        | BinaryToken::End(_)
-        | BinaryToken::Rgb(_) => Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from("unable to deserialize key type")),
-        })),
-        BinaryToken::MixedContainer | BinaryToken::Equal => visitor.visit_unit(),
-        BinaryToken::Bool(x) => visitor.visit_bool(x),
-        BinaryToken::U32(x) => visitor.visit_u32(x),
-        BinaryToken::U64(x) => visitor.visit_u64(x),
-        BinaryToken::I64(x) => visitor.visit_i64(x),
-        BinaryToken::I32(x) => visitor.visit_i32(x),
-        BinaryToken::Quoted(x) | BinaryToken::Unquoted(x) => {
-            match config.flavor.decode(x.as_bytes()) {
-                Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
-                Cow::Owned(s) => visitor.visit_string(s),
-            }
-        }
-        BinaryToken::F32(x) => visitor.visit_f32(config.flavor.visit_f32(x)),
-        BinaryToken::F64(x) => visitor.visit_f64(config.flavor.visit_f64(x)),
-        BinaryToken::Token(s) => match config.resolver.resolve(s) {
-            Some(id) => visitor.visit_borrowed_str(id),
-            None => match config.failed_resolve_strategy {
-                FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
-                    kind: DeserializeErrorKind::UnknownToken { token_id: s },
-                })),
-                FailedResolveStrategy::Stringify => visitor.visit_string(format!("0x{:x}", s)),
-                FailedResolveStrategy::Ignore => {
-                    visitor.visit_borrowed_str("__internal_identifier_ignore")
-                }
-            },
-        },
-    }
-}
-
-impl<'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
-    for KeyDeserializer<'_, 'de, 'res, RES, E>
-{
-    type Error = Error;
-
-    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        if let BinaryToken::Token(x) = self.tokens[self.tape_idx] {
-            visitor.visit_u16(x)
-        } else {
-            visit_key(self.tape_idx, self.tokens, self.config, visitor)
-        }
-    }
-
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visit_key(self.tape_idx, self.tokens, self.config, visitor)
-    }
-
-    serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map enum ignored_any identifier struct
-    }
-}
-
-struct ValueDeserializer<'c, 'b: 'c, 'de: 'b, 'res: 'de, RES, E> {
-    config: &'b BinaryConfig<'res, RES, E>,
-    value_ind: usize,
-    tokens: &'c [BinaryToken<'de>],
-}
-
-impl<'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> de::Deserializer<'de>
-    for ValueDeserializer<'_, '_, 'de, 'res, RES, E>
-{
-    type Error = Error;
-
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        let idx = self.value_ind;
-        match &self.tokens[idx] {
-            BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
-                config: self.config,
-                tokens: self.tokens,
-                idx: idx + 1,
-                end_idx: *x,
-            }),
-            BinaryToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
-            BinaryToken::Object(x) => {
-                visitor.visit_map(BinaryMap::new(self.config, self.tokens, idx + 1, *x))
-            }
-            BinaryToken::End(_x) => Err(Error::from(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from(
-                    "encountered end when trying to deserialize",
-                )),
-            })),
-            _ => visit_key(idx, self.tokens, self.config, visitor),
-        }
-    }
-
-    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        let idx = self.value_ind;
-        match &self.tokens[idx] {
-            BinaryToken::Array(x) => visitor.visit_seq(BinarySequence {
-                config: self.config,
-                tokens: self.tokens,
-                idx: idx + 1,
-                end_idx: *x,
-            }),
-            BinaryToken::Rgb(x) => visitor.visit_seq(ColorSequence::new(*x)),
-            _ => visit_key(idx, self.tokens, self.config, visitor),
-        }
-    }
-
-    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_some(self)
-    }
-
-    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_seq(visitor)
-    }
-
-    fn deserialize_tuple_struct<V>(
-        self,
-        _name: &'static str,
-        _len: usize,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_seq(visitor)
-    }
-
-    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_unit()
-    }
-
-    fn deserialize_newtype_struct<V>(
-        self,
-        _name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_newtype_struct(self)
-    }
-
-    fn deserialize_struct<V>(
-        self,
-        _name: &'static str,
-        _fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_map(visitor)
-    }
-
-    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        let idx = self.value_ind;
-        match &self.tokens[idx] {
-            BinaryToken::Object(x) => {
-                visitor.visit_map(BinaryMap::new(self.config, self.tokens, idx + 1, *x))
-            }
-
-            // An array is supported if it is empty
-            BinaryToken::Array(x) => {
-                visitor.visit_map(BinaryMap::new(self.config, self.tokens, idx + 1, *x))
-            }
-            _ => visit_key(idx, self.tokens, self.config, visitor),
-        }
-    }
-
-    fn deserialize_enum<V>(
-        self,
-        _name: &'static str,
-        _variants: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: de::Visitor<'de>,
-    {
-        visitor.visit_enum(EnumAccess {
-            config: self.config,
-            tokens: self.tokens,
-            idx: self.value_ind,
-        })
-    }
-
-    serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf unit unit_struct
-        identifier
-    }
-}
-
-struct EnumAccess<'b, 'de: 'b, 'res: 'de, RES, E> {
-    config: &'b BinaryConfig<'res, RES, E>,
-    tokens: &'b [BinaryToken<'de>],
-    idx: usize,
-}
-
-impl<'de, RES, E> de::EnumAccess<'de> for EnumAccess<'_, 'de, '_, RES, E>
-where
-    RES: TokenResolver,
-    E: BinaryFlavor,
-{
-    type Error = Error;
-    type Variant = VariantDeserializer;
-
-    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
-    where
-        V: de::DeserializeSeed<'de>,
-    {
-        let variant = ValueDeserializer {
-            value_ind: self.idx,
-            tokens: self.tokens,
-            config: self.config,
-        };
-
-        let visitor = VariantDeserializer;
-        seed.deserialize(variant).map(|v| (v, visitor))
-    }
-}
-
-struct VariantDeserializer;
-
-impl<'de> de::VariantAccess<'de> for VariantDeserializer {
-    type Error = Error;
-
-    fn unit_variant(self) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value, Self::Error>
-    where
-        T: DeserializeSeed<'de>,
-    {
-        Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
-                "unsupported enum deserialization. Please file issue",
-            )),
-        }))
-    }
-
-    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
-                "unsupported enum deserialization. Please file issue",
-            )),
-        }))
-    }
-
-    fn struct_variant<V>(
-        self,
-        _fields: &'static [&'static str],
-        _visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
-                "unsupported enum deserialization. Please file issue",
-            )),
-        }))
-    }
-}
-
-struct BinarySequence<'b, 'de: 'b, 'res: 'de, RES, E> {
-    config: &'b BinaryConfig<'res, RES, E>,
-    tokens: &'b [BinaryToken<'de>],
-    idx: usize,
-    end_idx: usize,
-}
-
-impl<'de, 'res: 'de, RES: TokenResolver, E: BinaryFlavor> SeqAccess<'de>
-    for BinarySequence<'_, 'de, 'res, RES, E>
-{
-    type Error = Error;
-
-    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
-    where
-        T: DeserializeSeed<'de>,
-    {
-        if self.idx >= self.end_idx {
-            Ok(None)
-        } else {
-            let next_key = match self.tokens[self.idx] {
-                BinaryToken::Array(x) | BinaryToken::Object(x) => x,
-                _ => self.idx,
-            };
-
-            let value_ind = self.idx;
-            self.idx = next_key + 1;
-            seed.deserialize(ValueDeserializer {
-                config: self.config,
-                tokens: self.tokens,
-                value_ind,
-            })
-            .map(Some)
-        }
-    }
-
-    fn size_hint(&self) -> Option<usize> {
-        Some(array_len(self.tokens, self.idx))
-    }
-}
-
-/// Returns the number of fields left in an object
-fn object_len(tokens: &[BinaryToken], mut key_idx: usize) -> usize {
-    let mut count = 0;
-
-    while let Some(key) = tokens.get(key_idx) {
-        if let BinaryToken::End(_) = key {
-            return count;
-        }
-
-        let val_ind = key_idx + 1;
-        key_idx = match tokens.get(val_ind) {
-            Some(BinaryToken::Array(x)) | Some(BinaryToken::Object(x)) => x + 1,
-            _ => val_ind + 1,
-        };
-
-        count += 1;
-    }
-
-    count
-}
-
-/// Returns the number of values left in an array
-fn array_len(tokens: &[BinaryToken], mut val_ind: usize) -> usize {
-    let mut count = 0;
-
-    while let Some(val) = tokens.get(val_ind) {
-        val_ind = match val {
-            BinaryToken::Array(x) | BinaryToken::Object(x) => x + 1,
-            BinaryToken::End(_) => return count,
-            _ => val_ind + 1,
-        };
-
-        count += 1;
-    }
-
-    count
 }
 
 #[cfg(test)]
@@ -1899,7 +1336,7 @@ mod tests {
     }
 
     fn eu4_builder() -> BinaryDeserializerBuilder<Eu4Flavor> {
-        BinaryDeserializer::builder_flavor(Eu4Flavor::new())
+        BinaryDeserializerBuilder::with_flavor(Eu4Flavor::new())
     }
 
     fn from_slice<'a, 'res: 'a, RES, T>(data: &'a [u8], resolver: &'res RES) -> Result<T, Error>
@@ -1907,11 +1344,7 @@ mod tests {
         T: Deserialize<'a> + PartialEq + std::fmt::Debug,
         RES: TokenResolver,
     {
-        let tape = BinaryTape::from_slice(data).unwrap();
-        let result = eu4_builder().deserialize_tape(&tape, resolver)?;
-        let ondemand = eu4_builder().deserialize_slice(data, resolver)?;
-        assert_eq!(result, ondemand);
-        Ok(result)
+        eu4_builder().deserialize_slice(data, resolver)
     }
 
     fn from_owned<'a, 'res: 'a, RES, T>(data: &'a [u8], resolver: &'res RES) -> Result<T, Error>
@@ -3209,73 +2642,5 @@ mod tests {
         struct MyStruct {
             something: Option<i32>,
         }
-    }
-
-    #[test]
-    fn test_object_len() {
-        let tokens = vec![
-            BinaryToken::Token(0x0000),
-            BinaryToken::Token(0x0001),
-            BinaryToken::Token(0x0002),
-            BinaryToken::Token(0x0003),
-        ];
-
-        assert_eq!(object_len(&tokens, 0), 2);
-        assert_eq!(object_len(&tokens, 2), 1);
-        assert_eq!(object_len(&tokens, 4), 0);
-    }
-
-    #[test]
-    fn test_object_len2() {
-        let tokens = vec![
-            BinaryToken::Token(0x0000),
-            BinaryToken::Object(6),
-            BinaryToken::Token(0x0001),
-            BinaryToken::Token(0x0002),
-            BinaryToken::Token(0x0003),
-            BinaryToken::Token(0x0004),
-            BinaryToken::End(1),
-            BinaryToken::Token(0x0005),
-            BinaryToken::Token(0x0006),
-        ];
-
-        assert_eq!(object_len(&tokens, 0), 2);
-        assert_eq!(object_len(&tokens, 2), 2);
-        assert_eq!(object_len(&tokens, 4), 1);
-        assert_eq!(object_len(&tokens, 6), 0);
-        assert_eq!(object_len(&tokens, 7), 1);
-        assert_eq!(object_len(&tokens, 9), 0);
-    }
-
-    #[test]
-    fn test_array_len() {
-        let tokens = vec![
-            BinaryToken::Token(0x0000),
-            BinaryToken::Array(4),
-            BinaryToken::Token(0x0001),
-            BinaryToken::Token(0x0002),
-            BinaryToken::End(1),
-        ];
-
-        assert_eq!(array_len(&tokens, 2), 2);
-        assert_eq!(array_len(&tokens, 3), 1);
-        assert_eq!(array_len(&tokens, 4), 0);
-    }
-
-    #[test]
-    fn test_array_len2() {
-        let tokens = vec![
-            BinaryToken::Token(0x0000),
-            BinaryToken::Array(8),
-            BinaryToken::Object(7),
-            BinaryToken::Token(0x0001),
-            BinaryToken::Token(0x0002),
-            BinaryToken::Token(0x0003),
-            BinaryToken::Token(0x0004),
-            BinaryToken::End(1),
-            BinaryToken::End(1),
-        ];
-
-        assert_eq!(array_len(&tokens, 2), 1);
     }
 }
