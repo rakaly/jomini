@@ -1,0 +1,5 @@
+error: Cannot have both duplicated and take_last attributes on a field
+ --> tests/compile-fail/borrow_with_duplicated_and_take_last.rs:7:5
+  |
+7 |     field: Vec<Cow<'a, str>>,
+  |     ^^^^^

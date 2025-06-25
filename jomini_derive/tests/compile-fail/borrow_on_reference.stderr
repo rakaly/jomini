@@ -1,0 +1,5 @@
+error: borrow attribute is unnecessary for reference types like &str - they are implicitly borrowed
+ --> tests/compile-fail/borrow_on_reference.rs:6:5
+  |
+6 |     field: &'a str,
+  |     ^^^^^
