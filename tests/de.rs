@@ -447,3 +447,26 @@ fn test_enum_map() {
         ]
     );
 }
+
+#[test]
+fn test_direct_parameter_value_deserialization() {
+    use jomini::Value;
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct TestData {
+        generate_advisor: Value,
+    }
+
+    // Test direct parameter parsing in an object context - the fix is for parameter keys
+    let data = b"generate_advisor = { [[scaled_skill] a=b ] }";
+    let result: TestData = jomini::text::de::from_windows1252_slice(&data[..]).unwrap();
+    let obj = result.generate_advisor.as_object().unwrap();
+    assert_eq!(obj.len(), 1);
+    let (param_key, param_value) = &obj[0];
+    assert_eq!(param_key, "[[scaled_skill]]");
+    let param_obj = param_value.as_object().unwrap();
+    assert_eq!(param_obj.len(), 1);
+    let (param_value_key, param_value_value) = &param_obj[0];
+    assert_eq!(param_value_key, "a");
+    assert_eq!(param_value_value.as_scalar().unwrap().as_bytes(), b"b");
+}
