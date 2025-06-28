@@ -22,6 +22,7 @@ fn ungroup(mut ty: &Type) -> &Type {
 ///
 /// ```rust
 /// use jomini_derive::JominiDeserialize;
+/// use std::borrow::Cow;
 ///
 /// #[derive(JominiDeserialize)]
 /// pub struct Model {
@@ -33,6 +34,15 @@ fn ungroup(mut ty: &Type) -> &Type {
 ///     #[jomini(alias = "core", duplicated)]
 ///     cores: Vec<String>,
 ///     names: Vec<String>,
+/// }
+///
+/// #[derive(JominiDeserialize)]
+/// pub struct BorrowedModel<'a, 'b> {
+///     // &str and &[u8] are implicitly borrowed
+///     name: &'a str,
+///     // Other types need explicit borrow attribute
+///     #[jomini(borrow)]
+///     description: Cow<'b, str>,
 /// }
 ///
 /// fn default_true() -> bool {
@@ -63,6 +73,7 @@ fn ungroup(mut ty: &Type) -> &Type {
 /// - `#[jomini(default)]`
 /// - `#[jomini(default = "...")]`
 /// - `#[jomini(deserialize_with = "...")]`
+/// - `#[jomini(borrow)]`
 ///
 /// Another attribute unique to jomini is `#[jomini(take_last)]` which will take the last occurence
 /// of a field. Helpful when a field is duplicated accidentally.
@@ -135,6 +146,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         default: DefaultFallback,
         deserialize_with: Option<syn::ExprPath>,
         token: Option<u16>,
+        borrow: bool,
     }
 
     let mut field_attrs = Vec::new();
@@ -152,6 +164,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         let mut deserialize_with = None;
         let mut alias = None;
         let mut token = None;
+        let mut borrow = false;
 
         if let Type::Path(x) = ungroup(&f.ty) {
             for segment in x.path.segments.iter() {
@@ -171,6 +184,8 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
                     duplicated = true;
                 } else if meta.path.is_ident("take_last") {
                     take_last = true;
+                } else if meta.path.is_ident("borrow") {
+                    borrow = true;
                 } else if meta.path.is_ident("default") {
                     if meta.input.peek(Token![=]) {
                         let val = meta.value()?;
@@ -212,6 +227,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
             default,
             deserialize_with,
             token,
+            borrow,
         };
 
         if attr.duplicated && attr.take_last {
@@ -221,22 +237,57 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
             ));
         }
 
+        // Validate borrow attribute usage
+        if attr.borrow {
+            // Check if the type is suitable for borrowing
+            match ungroup(&attr.typ) {
+                Type::Reference(_) => {
+                    return Err(Error::new(
+                        field_span,
+                        "borrow attribute is unnecessary for reference types like &str - they are implicitly borrowed",
+                    ));
+                }
+                _ => {
+                    // For non-reference types, check if they support borrowing (this is a runtime check in serde)
+                    // We could add more validation here for known types like Cow, but it's better to let
+                    // the compiler handle this
+                }
+            }
+        }
+
         field_attrs.push(attr);
     }
 
+    // Check if any fields have the borrow attribute or are implicitly borrowed types like &str
+    let has_borrowed_fields = field_attrs
+        .iter()
+        .any(|f| f.borrow || matches!(ungroup(&f.typ), Type::Reference(_)));
+
     let mut generics = dinput.generics;
     let mut base_generics = generics.clone();
-    base_generics.params = std::iter::once(syn::GenericParam::Lifetime(LifetimeParam::new(
-        Lifetime::new("'de", Span::call_site().into()),
-    )))
-    .chain(base_generics.params)
-    .collect();
+
+    // Add 'de lifetime parameter
+    let mut de_lifetime = LifetimeParam::new(Lifetime::new("'de", Span::call_site().into()));
+
+    // If we have borrowed fields, add lifetime bounds
+    if has_borrowed_fields {
+        for param in &generics.params {
+            if let GenericParam::Lifetime(lifetime_param) = param {
+                de_lifetime.bounds.push(lifetime_param.lifetime.clone());
+            }
+        }
+    }
+
+    base_generics.params = std::iter::once(syn::GenericParam::Lifetime(de_lifetime))
+        .chain(base_generics.params)
+        .collect();
     let (base_impl, _, base_where) = base_generics.split_for_impl();
 
     // A poor man approach to know if we need to add the Deserialize<'de> trait
     // bounds to the generic type. Those that are `DeserializedOwned` shouldn't
-    // have the constraint
-    let is_deserialized_owned = !generics.params.is_empty() && base_where.is_none();
+    // have the constraint. However, if we have borrowed fields, we need lifetime bounds.
+    let is_deserialized_owned =
+        !generics.params.is_empty() && base_where.is_none() && !has_borrowed_fields;
     if is_deserialized_owned {
         for param in &mut generics.params {
             if let GenericParam::Type(ref mut type_param) = *param {
@@ -249,6 +300,30 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
 
     let (_, ty_generics, where_clause) = generics.split_for_impl();
 
+    // Create separate generics for the impl with lifetime bounds for borrowed fields
+    let mut impl_generics = generics.clone();
+    if has_borrowed_fields {
+        let lifetime_params: Vec<_> = generics
+            .params
+            .iter()
+            .filter_map(|param| {
+                if let GenericParam::Lifetime(lifetime_param) = param {
+                    Some(lifetime_param.lifetime.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for lifetime in lifetime_params {
+            let bound: syn::WherePredicate = parse_quote!('de: #lifetime);
+            impl_generics.make_where_clause().predicates.push(bound);
+        }
+    }
+
+    let (_, _, impl_where_clause) = impl_generics.split_for_impl();
+
+    // Create impl generics with 'de first, then struct lifetimes
     let mut de_generics = generics.clone();
     de_generics.params = std::iter::once(syn::GenericParam::Lifetime(LifetimeParam::new(
         Lifetime::new("'de", Span::call_site().into()),
@@ -257,17 +332,36 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
     .collect();
     let (de_impl, _, _) = de_generics.split_for_impl();
 
-    let mut visitor_generics = quote! { #ty_generics };
-    if visitor_generics.is_empty() {
-        visitor_generics = quote! { <()> };
-    }
-
-    // The visitor implementation should have a 'de lifetime except if what we
-    // are deserializing is DeserializedOwned.
-    let visitor_impl = if is_deserialized_owned {
-        &de_impl
+    let visitor_generics = if generics.params.is_empty() {
+        quote! { <#struct_ident> }
     } else {
-        &base_impl
+        quote! { <#struct_ident #ty_generics> }
+    };
+
+    // The visitor implementation should have a 'de lifetime
+    let visitor_impl = if has_borrowed_fields {
+        // For borrowed fields, we need both 'de and the struct's lifetimes
+        let mut visitor_params = vec![syn::GenericParam::Lifetime(LifetimeParam::new(
+            Lifetime::new("'de", Span::call_site().into()),
+        ))];
+
+        for param in &generics.params {
+            visitor_params.push(param.clone());
+        }
+
+        let visitor_generics_list = syn::Generics {
+            lt_token: Some(syn::token::Lt::default()),
+            params: visitor_params.into_iter().collect(),
+            gt_token: Some(syn::token::Gt::default()),
+            where_clause: None,
+        };
+
+        let (visitor_impl_generics, _, _) = visitor_generics_list.split_for_impl();
+        quote! { #visitor_impl_generics }
+    } else if is_deserialized_owned {
+        quote! { #de_impl }
+    } else {
+        quote! { #base_impl }
     };
 
     let builder_init = field_attrs.iter().map(|f| {
@@ -435,8 +529,12 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
 
     let field_names: Vec<_> = field_attrs.iter().map(|f| f.display.clone()).collect();
 
+    // The visitor struct needs the same generics as the struct being deserialized
+    let visitor_struct_generics = quote! { #ty_generics };
+    let visitor_struct_where = quote! { #where_clause };
+
     let output = quote! {
-        impl #de_impl ::serde::Deserialize<'de> for #struct_ident #ty_generics #where_clause {
+        impl #de_impl ::serde::Deserialize<'de> for #struct_ident #ty_generics #impl_where_clause {
             fn deserialize<__D>(__deserializer: __D) -> ::std::result::Result<Self, __D::Error>
             where __D: ::serde::Deserializer<'de> {
                 #[allow(non_camel_case_types)]
@@ -492,11 +590,11 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
                     }
                 }
 
-                struct __Visitor #ty_generics #where_clause {
+                struct __Visitor #visitor_struct_generics #visitor_struct_where {
                     marker: ::core::marker::PhantomData #visitor_generics,
                 };
 
-                impl #visitor_impl ::serde::de::Visitor<'de> for __Visitor #ty_generics #where_clause {
+                impl #visitor_impl ::serde::de::Visitor<'de> for __Visitor #visitor_struct_generics #impl_where_clause {
                     type Value = #struct_ident #ty_generics;
 
                     fn expecting(&self, formatter: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
