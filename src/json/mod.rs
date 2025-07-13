@@ -325,6 +325,88 @@ pub struct JsonObjectBuilder<'data, 'tokens, E> {
     options: JsonOptions,
 }
 
+/// Check if values iterator contains only key-operator-value patterns
+fn is_key_value_pattern<E>(reader: &ArrayReader<'_, '_, E>) -> bool
+where
+    E: Encoding + Clone,
+{
+    let mut values = reader.values();
+    let mut has_key_value_pairs = false;
+
+    while let Some(current) = values.next() {
+        // Skip mixed containers - they don't contribute to key-value patterns
+        if current.token() == &TextToken::MixedContainer {
+            continue;
+        }
+
+        if current.read_scalar().is_err() {
+            return false;
+        }
+
+        let Some(next) = values.next() else {
+            return false;
+        };
+
+        if !matches!(next.token(), TextToken::Operator(_)) {
+            return false;
+        }
+
+        has_key_value_pairs = true;
+        values.next(); // Skip the value part
+    }
+
+    has_key_value_pairs
+}
+
+/// Serialize key-value patterns from an ArrayReader as object entries
+fn serialize_key_value_patterns<S, E>(
+    reader: &ArrayReader<'_, '_, E>,
+    map: &mut <S as Serializer>::SerializeMap,
+    options: JsonOptions,
+) -> Result<(), S::Error>
+where
+    S: Serializer,
+    E: Encoding + Clone,
+{
+    let mut values = reader.values();
+
+    while let Some(key_val) = values.next() {
+        // Skip mixed containers
+        if key_val.token() == &TextToken::MixedContainer {
+            continue;
+        }
+
+        let Ok(key_scalar) = key_val.read_scalar() else {
+            break;
+        };
+
+        let Some(op_val) = values.next() else {
+            break;
+        };
+
+        let TextToken::Operator(op) = op_val.token() else {
+            break;
+        };
+
+        let Some(value_val) = values.next() else {
+            break;
+        };
+
+        let v = OperatorValue {
+            operator: if *op == crate::text::Operator::Equal {
+                None
+            } else {
+                Some(*op)
+            },
+            value: value_val,
+            options,
+        };
+        map.serialize_entry(&key_scalar.to_string(), &v)?;
+    }
+
+    Ok(())
+}
+
 impl<E> JsonObjectBuilder<'_, '_, E>
 where
     E: Encoding + Clone,
@@ -616,6 +698,8 @@ where
             DuplicateKeyMode::Preserve => {
                 let mut map = serializer.serialize_map(None)?;
                 let mut fields = self.reader.fields();
+
+                // Process all key-value pairs first
                 for (key, op, val) in fields.by_ref() {
                     let v = OperatorValue {
                         operator: op,
@@ -625,15 +709,23 @@ where
                     map.serialize_entry(&KeyScalarWrapper { reader: key }, &v)?;
                 }
 
+                // Check if remainder contains object-like key-value pairs
                 let remainder = fields.remainder();
                 if !remainder.is_empty() {
-                    map.serialize_entry(
-                        "remainder",
-                        &InnerSerArray {
-                            reader: remainder,
-                            options: self.options,
-                        },
-                    )?;
+                    let is_object_like = is_key_value_pattern(&remainder);
+                    if is_object_like {
+                        // Process remainder as key-operator-value patterns
+                        serialize_key_value_patterns::<S, E>(&remainder, &mut map, self.options)?;
+                    } else {
+                        // Use remainder field for non-object-like content
+                        map.serialize_entry(
+                            "remainder",
+                            &InnerSerArray {
+                                reader: remainder,
+                                options: self.options,
+                            },
+                        )?;
+                    }
                 }
 
                 map.end()
@@ -697,6 +789,14 @@ where
     where
         S: Serializer,
     {
+        // Check if this array contains only key-operator-value patterns
+        if is_key_value_pattern(&self.reader) {
+            // Serialize as object instead of array for consistency
+            let mut map = serializer.serialize_map(None)?;
+            serialize_key_value_patterns::<S, E>(&self.reader, &mut map, self.options)?;
+            return map.end();
+        }
+
         let mut seq = serializer.serialize_seq(None)?;
         let mut iter = self.reader.values();
         let mut window = [iter.next(), iter.next(), iter.next()];
@@ -1251,5 +1351,99 @@ mod tests {
         let json_after = reader_after.json().to_string();
         let expected_after = r#"{"foo":10}"#;
         assert_eq!(&json_after, expected_after);
+    }
+
+    #[test]
+    fn test_mixed_array_remains_array() {
+        // Test case: mixed arrays should remain arrays
+        let json = serialize(b"test={ a=1 standalone b=2 }");
+        assert_eq!(
+            &json,
+            "{\"test\":{\"a\":1,\"remainder\":[\"standalone\",{\"b\":2}]}}"
+        );
+    }
+
+    #[test]
+    fn test_empty_containers() {
+        let json = serialize(b"empty={}");
+        assert_eq!(&json, "{\"empty\":[]}");
+    }
+
+    #[test]
+    fn test_single_key_value_pair() {
+        let json = serialize(b"single={ key=value }");
+        assert_eq!(&json, "{\"single\":{\"key\":\"value\"}}");
+    }
+
+    #[test]
+    fn test_operators_other_than_equal() {
+        // Test various operators
+        let json = serialize(b"test={ a>1 b<2 c>=3 d<=4 e!=5 }");
+        assert_eq!(&json, "{\"test\":{\"a\":{\"GREATER_THAN\":1},\"b\":{\"LESS_THAN\":2},\"c\":{\"GREATER_THAN_EQUAL\":3},\"d\":{\"LESS_THAN_EQUAL\":4},\"e\":{\"NOT_EQUAL\":5}}}");
+    }
+
+    #[test]
+    fn test_complex_nested_structures() {
+        let json =
+            serialize(b"complex={ nested={ a=1 b=2 } standalone={ c=3 } mixed={ d=4 bare e=5 } }");
+        assert_eq!(&json, "{\"complex\":{\"nested\":{\"a\":1,\"b\":2},\"standalone\":{\"c\":3},\"mixed\":{\"d\":4,\"remainder\":[\"bare\",{\"e\":5}]}}}");
+    }
+
+    #[test]
+    fn test_stress_alternating_patterns() {
+        let json = serialize(b"test={ a=1 standalone1 b=2 standalone2 c=3 }");
+        assert_eq!(&json, "{\"test\":{\"a\":1,\"remainder\":[\"standalone1\",{\"b\":2},\"standalone2\",{\"c\":3}]}}");
+    }
+
+    #[test]
+    fn test_preserve_vs_group_mode_consistency() {
+        let data = b"test={ scope:treaty != this scope:county = yes }";
+
+        let preserve_json = serialize_with(data, JsonOptions::new());
+        let group_json = serialize_with(
+            data,
+            JsonOptions::new().with_duplicate_keys(DuplicateKeyMode::Group),
+        );
+        assert_eq!(
+            preserve_json,
+            "{\"test\":{\"scope:treaty\":{\"NOT_EQUAL\":\"this\"},\"scope:county\":true}}"
+        );
+        assert_eq!(
+            group_json,
+            "{\"test\":{\"scope:treaty\":{\"NOT_EQUAL\":\"this\"},\"scope:county\":true}}"
+        );
+    }
+
+    #[test]
+    fn test_field_order_encoding_consistency() {
+        let a_trigger = br#"a_trigger = {
+    OR = {
+        obj_a = {
+                a_bool = no
+        }
+        obj_a.field != this
+    }
+}"#;
+
+        let b_trigger = br#"b_trigger = {
+    OR = {
+        obj_a.field != this
+        obj_a = {
+                a_bool = no
+        }
+    }
+}"#;
+
+        let a_json = serialize(a_trigger);
+        let b_json = serialize(b_trigger);
+
+        assert_eq!(
+            a_json,
+            "{\"a_trigger\":{\"OR\":{\"obj_a\":{\"a_bool\":false},\"obj_a.field\":{\"NOT_EQUAL\":\"this\"}}}}"
+        );
+        assert_eq!(
+            b_json,
+            "{\"b_trigger\":{\"OR\":{\"obj_a.field\":{\"NOT_EQUAL\":\"this\"},\"obj_a\":{\"a_bool\":false}}}}"
+        );
     }
 }
