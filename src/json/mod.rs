@@ -1133,4 +1133,98 @@ mod tests {
         let expected = r#"{"bar":{"num":1},"qux":{"num":2}}"#;
         assert_eq!(&actual, expected);
     }
+
+    #[test]
+    fn test_object_template_basic() {
+        let json = serialize(b"obj={ { a = b }={ 1 2 3 } }");
+        let expected = r#"{"obj":[{"a":"b"},[1,2,3]]}"#;
+        assert_eq!(&json, expected);
+    }
+
+    #[test]
+    fn test_object_template_single_value() {
+        let json = serialize(b"obj={ { foo }={ 1000 } }");
+        let expected = r#"{"obj":[["foo"],[1000]]}"#;
+        assert_eq!(&json, expected);
+    }
+
+    #[test]
+    fn test_object_template_sequential() {
+        let json = serialize(b"obj={ { template1 }={ values1 } { template2 }={ values2 } }");
+        let expected = r#"{"obj":[["template1"],["values1"],["template2"],["values2"]]}"#;
+        assert_eq!(&json, expected);
+    }
+
+    #[test]
+    fn test_object_template_with_preserve_duplicates() {
+        let json = serialize_with(
+            b"obj={ { a = b }={ 1 2 3 } }",
+            JsonOptions {
+                duplicate_keys: DuplicateKeyMode::Preserve,
+                ..JsonOptions::default()
+            },
+        );
+        let expected = r#"{"obj":[{"a":"b"},[1,2,3]]}"#;
+        assert_eq!(&json, expected);
+    }
+
+    #[test]
+    fn test_object_template_with_key_value_pairs() {
+        let json = serialize_with(
+            b"obj={ { a = b }={ 1 2 3 } }",
+            JsonOptions {
+                duplicate_keys: DuplicateKeyMode::KeyValuePairs,
+                ..JsonOptions::default()
+            },
+        );
+        let expected = r#"{"type":"obj","val":[["obj",{"type":"array","val":[{"type":"obj","val":[["a","b"]]},{"type":"array","val":[1,2,3]}]}]]}"#;
+        assert_eq!(&json, expected);
+    }
+
+    #[test]
+    fn test_object_template_complex() {
+        let json = serialize(
+            b"config={ { debug=yes logging=verbose }={ output_file=\"debug.log\" level=trace } }",
+        );
+        let expected = r#"{"config":[{"debug":true,"logging":"verbose"},{"output_file":"debug.log","level":"trace"}]}"#;
+        assert_eq!(&json, expected);
+    }
+
+    #[test]
+    fn test_object_template_nested() {
+        let json = serialize(b"obj={ { outer }={ { inner }={ deep } } }");
+        let expected = r#"{"obj":[["outer"],[["inner"],["deep"]]]}"#;
+        assert_eq!(&json, expected);
+    }
+
+    #[test]
+    fn test_object_template_pretty() {
+        let json = serialize_with(
+            b"obj={ { a = b }={ 1 2 3 } }",
+            JsonOptions {
+                pretty: true,
+                ..JsonOptions::default()
+            },
+        );
+        let expected = r#"{
+  "obj": [
+    {
+      "a": "b"
+    },
+    [
+      1,
+      2,
+      3
+    ]
+  ]
+}"#;
+        assert_eq!(&json, expected);
+    }
+
+    #[test]
+    fn test_object_template_scalar_value() {
+        let json = serialize(b"obj={ { 31=16 }=16 }");
+        let expected = r#"{"obj":[{"31":16},16]}"#;
+        assert_eq!(&json, expected);
+    }
 }

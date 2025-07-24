@@ -1429,6 +1429,202 @@ mod tests {
     }
 
     #[test]
+    fn test_object_template_basic_dom_reader() {
+        let data = br"obj={ { a = b }={ 1 2 3 } }";
+        let tape = TextTape::from_slice(data).unwrap();
+        let reader = tape.windows1252_reader();
+
+        let mut fields = reader.fields();
+        let (key, _op, value) = fields.next().unwrap();
+        assert_eq!(key.read_str(), "obj");
+
+        // Object templates are parsed as arrays with template-value pairs
+        let array = value.read_array().unwrap();
+        assert_eq!(array.len(), 2);
+
+        let mut values = array.values();
+        
+        // First value should be the template object { a = b }
+        let template = values.next().unwrap();
+        let template_obj = template.read_object().unwrap();
+        let mut template_fields = template_obj.fields();
+        let (template_key, _op, template_value) = template_fields.next().unwrap();
+        assert_eq!(template_key.read_str(), "a");
+        assert_eq!(template_value.read_str().unwrap(), "b");
+        assert!(template_fields.next().is_none());
+
+        // Second value should be the values array { 1 2 3 }
+        let values_array = values.next().unwrap();
+        let values_arr = values_array.read_array().unwrap();
+        assert_eq!(values_arr.len(), 3);
+        let mut arr_values = values_arr.values();
+        assert_eq!(arr_values.next().unwrap().read_str().unwrap(), "1");
+        assert_eq!(arr_values.next().unwrap().read_str().unwrap(), "2");
+        assert_eq!(arr_values.next().unwrap().read_str().unwrap(), "3");
+        assert!(arr_values.next().is_none());
+        assert!(values.next().is_none());
+    }
+
+    #[test]
+    fn test_object_template_single_key_dom_reader() {
+        let data = br"obj={ { foo }={ 1000 } }";
+        let tape = TextTape::from_slice(data).unwrap();
+        let reader = tape.windows1252_reader();
+
+        let mut fields = reader.fields();
+        let (key, _op, value) = fields.next().unwrap();
+        assert_eq!(key.read_str(), "obj");
+
+        let array = value.read_array().unwrap();
+        assert_eq!(array.len(), 2);
+
+        let mut values = array.values();
+        
+        // First value should be the template array { foo }
+        let template = values.next().unwrap();
+        let template_arr = template.read_array().unwrap();
+        assert_eq!(template_arr.len(), 1);
+        let mut template_values = template_arr.values();
+        assert_eq!(template_values.next().unwrap().read_str().unwrap(), "foo");
+        assert!(template_values.next().is_none());
+
+        // Second value should be the values array { 1000 }
+        let values_array = values.next().unwrap();
+        let values_arr = values_array.read_array().unwrap();
+        assert_eq!(values_arr.len(), 1);
+        let mut arr_values = values_arr.values();
+        assert_eq!(arr_values.next().unwrap().read_str().unwrap(), "1000");
+        assert!(arr_values.next().is_none());
+        assert!(values.next().is_none());
+    }
+
+    #[test]
+    fn test_object_template_scalar_value_dom_reader() {
+        let data = br"obj={ { a=b }=16 }";
+        let tape = TextTape::from_slice(data).unwrap();
+        let reader = tape.windows1252_reader();
+
+        let mut fields = reader.fields();
+        let (key, _op, value) = fields.next().unwrap();
+        assert_eq!(key.read_str(), "obj");
+
+        let array = value.read_array().unwrap();
+        assert_eq!(array.len(), 2);
+
+        let mut values = array.values();
+        
+        // First value should be the template object { a = b }
+        let template = values.next().unwrap();
+        let template_obj = template.read_object().unwrap();
+        let mut template_fields = template_obj.fields();
+        let (template_key, _op, template_value) = template_fields.next().unwrap();
+        assert_eq!(template_key.read_str(), "a");
+        assert_eq!(template_value.read_str().unwrap(), "b");
+        assert!(template_fields.next().is_none());
+
+        // Second value should be the scalar 16
+        let scalar_value = values.next().unwrap();
+        assert_eq!(scalar_value.read_str().unwrap(), "16");
+        assert!(values.next().is_none());
+    }
+
+    #[test]
+    fn test_object_template_multiple_pairs_dom_reader() {
+        let data = br"obj={ { 31=16 }=16 { 32=17 }=18 }";
+        let tape = TextTape::from_slice(data).unwrap();
+        let reader = tape.windows1252_reader();
+
+        let mut fields = reader.fields();
+        let (key, _op, value) = fields.next().unwrap();
+        assert_eq!(key.read_str(), "obj");
+
+        let array = value.read_array().unwrap();
+        assert_eq!(array.len(), 4); // 2 template-value pairs = 4 elements
+
+        let mut values = array.values();
+        
+        // First template-value pair
+        let template1 = values.next().unwrap();
+        let template1_obj = template1.read_object().unwrap();
+        let mut template1_fields = template1_obj.fields();
+        let (key1, _op, val1) = template1_fields.next().unwrap();
+        assert_eq!(key1.read_str(), "31");
+        assert_eq!(val1.read_str().unwrap(), "16");
+        assert!(template1_fields.next().is_none());
+
+        let value1 = values.next().unwrap();
+        assert_eq!(value1.read_str().unwrap(), "16");
+
+        // Second template-value pair
+        let template2 = values.next().unwrap();
+        let template2_obj = template2.read_object().unwrap();
+        let mut template2_fields = template2_obj.fields();
+        let (key2, _op, val2) = template2_fields.next().unwrap();
+        assert_eq!(key2.read_str(), "32");
+        assert_eq!(val2.read_str().unwrap(), "17");
+        assert!(template2_fields.next().is_none());
+
+        let value2 = values.next().unwrap();
+        assert_eq!(value2.read_str().unwrap(), "18");
+        assert!(values.next().is_none());
+    }
+
+    #[test]
+    fn test_object_template_complex_dom_reader() {
+        let data = br"config={ { debug=yes logging=verbose }={ output_file=debug.log level=trace } }";
+        let tape = TextTape::from_slice(data).unwrap();
+        let reader = tape.windows1252_reader();
+
+        let mut fields = reader.fields();
+        let (key, _op, value) = fields.next().unwrap();
+        assert_eq!(key.read_str(), "config");
+
+        let array = value.read_array().unwrap();
+        assert_eq!(array.len(), 2);
+
+        let mut values = array.values();
+        
+        // First value should be the template object with multiple fields
+        let template = values.next().unwrap();
+        let template_obj = template.read_object().unwrap();
+        assert_eq!(template_obj.fields_len(), 2);
+        
+        let mut template_groups = template_obj.field_groups();
+        let (debug_key, debug_group) = template_groups.next().unwrap();
+        assert_eq!(debug_key.read_str(), "debug");
+        let debug_values: Vec<_> = debug_group.values().collect();
+        assert_eq!(debug_values.len(), 1);
+        assert_eq!(debug_values[0].1.read_str().unwrap(), "yes");
+
+        let (logging_key, logging_group) = template_groups.next().unwrap();
+        assert_eq!(logging_key.read_str(), "logging");
+        let logging_values: Vec<_> = logging_group.values().collect();
+        assert_eq!(logging_values.len(), 1);
+        assert_eq!(logging_values[0].1.read_str().unwrap(), "verbose");
+        assert!(template_groups.next().is_none());
+
+        // Second value should be the values object
+        let values_obj = values.next().unwrap();
+        let values_object = values_obj.read_object().unwrap();
+        assert_eq!(values_object.fields_len(), 2);
+        
+        let mut values_groups = values_object.field_groups();
+        let (output_key, output_group) = values_groups.next().unwrap();
+        assert_eq!(output_key.read_str(), "output_file");
+        let output_values: Vec<_> = output_group.values().collect();
+        assert_eq!(output_values.len(), 1);
+        assert_eq!(output_values[0].1.read_str().unwrap(), "debug.log");
+
+        let (level_key, level_group) = values_groups.next().unwrap();
+        assert_eq!(level_key.read_str(), "level");
+        let level_values: Vec<_> = level_group.values().collect();
+        assert_eq!(level_values.len(), 1);
+        assert_eq!(level_values[0].1.read_str().unwrap(), "trace");
+        assert!(values_groups.next().is_none());
+        assert!(values.next().is_none());
+    }
+
+    #[test]
     fn text_reader_empty_container() {
         let data = b"active_idea_groups={ }";
         let tape = TextTape::from_slice(data).unwrap();
