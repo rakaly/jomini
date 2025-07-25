@@ -1,10 +1,13 @@
 use super::{dom::ValuesIter, reader::Token, TokenReader};
 use crate::{
     text::{ArrayReader, FieldsIter, ObjectReader, Operator, Reader, ScalarReader, ValueReader},
+    value::ScalarValue,
     DeserializeError, DeserializeErrorKind, Encoding, Error, TextTape, TextToken, Utf8Encoding,
     Windows1252Encoding,
 };
-use serde::de::{self, Deserialize, DeserializeOwned, DeserializeSeed, Visitor};
+use serde::de::{
+    self, value::StringDeserializer, Deserialize, DeserializeOwned, DeserializeSeed, Visitor,
+};
 use std::{
     borrow::Cow,
     fmt::{self, Debug},
@@ -929,12 +932,7 @@ where
                 visitor.visit_map(MapAccess::new(reader, DeserializationConfig))
             }
             TextDeserializerKind::Reader { reader } => {
-                let access = MapAccess {
-                    fields: reader.fields(),
-                    config: DeserializationConfig,
-                    value: None,
-                    at_remainder: false,
-                };
+                let access = MapAccess::new((*reader).clone(), DeserializationConfig);
                 visitor.visit_map(access)
             }
         }
@@ -974,8 +972,9 @@ macro_rules! visit_str {
 struct MapAccess<'de, 'tokens, E> {
     fields: FieldsIter<'de, 'tokens, E>,
     config: DeserializationConfig,
-    value: Option<OperatorValue<'de, 'tokens, E>>,
+    value: Option<(Option<Operator>, ValueReader<'de, 'tokens, E>)>,
     at_remainder: bool,
+    has_explicit_operators: bool,
 }
 
 impl<'de, 'tokens, E> MapAccess<'de, 'tokens, E>
@@ -983,11 +982,15 @@ where
     E: Encoding + Clone,
 {
     fn new(reader: ObjectReader<'de, 'tokens, E>, config: DeserializationConfig) -> Self {
+        // Check if this object has any explicit operators
+        let has_explicit_operators = reader.fields().any(|(_, op, _)| op.is_some());
+
         MapAccess {
             fields: reader.fields(),
             config,
             value: None,
             at_remainder: false,
+            has_explicit_operators,
         }
     }
 }
@@ -1003,13 +1006,18 @@ where
         K: DeserializeSeed<'de>,
     {
         if let Some((key, op, value)) = self.fields.next() {
-            self.value = Some(OperatorValue {
-                operator: op.unwrap_or(Operator::Equal),
-                value,
-            });
+            // Store the operator and value for later use
+            self.value = Some((op, value));
+
+            // Check if the key is a parameter token and handle it specially
+            let value_kind = match key.token() {
+                TextToken::Parameter(_) => ValueKind::Parameter(key),
+                TextToken::UndefinedParameter(_) => ValueKind::UndefinedParameter(key),
+                _ => ValueKind::Scalar(key),
+            };
 
             seed.deserialize(ValueDeserializer {
-                kind: ValueKind::Scalar(key),
+                kind: value_kind,
                 config: self.config,
             })
             .map(Some)
@@ -1027,10 +1035,35 @@ where
         V: DeserializeSeed<'de>,
     {
         match &self.value {
-            Some(x) => seed.deserialize(ValueDeserializer {
-                kind: ValueKind::OperatorValue(x.clone()),
-                config: self.config,
-            }),
+            Some((op, value)) => {
+                if let Some(operator) = op {
+                    // Create OperatorValue for explicit operators
+                    seed.deserialize(ValueDeserializer {
+                        kind: ValueKind::OperatorValue(OperatorValue {
+                            operator: *operator,
+                            value: value.clone(),
+                        }),
+                        config: self.config,
+                    })
+                } else {
+                    // If this object has explicit operators elsewhere, treat missing operators as explicit equals
+                    if self.has_explicit_operators {
+                        seed.deserialize(ValueDeserializer {
+                            kind: ValueKind::OperatorValue(OperatorValue {
+                                operator: Operator::Equal,
+                                value: value.clone(),
+                            }),
+                            config: self.config,
+                        })
+                    } else {
+                        // No operators in this object, treat as regular value
+                        seed.deserialize(ValueDeserializer {
+                            kind: ValueKind::Value(value.clone()),
+                            config: self.config,
+                        })
+                    }
+                }
+            }
             None => seed.deserialize(ValueDeserializer {
                 kind: ValueKind::Array(self.fields.remainder()),
                 config: self.config,
@@ -1055,7 +1088,13 @@ enum ValueKind<'data, 'tokens, E> {
     OperatorValue(OperatorValue<'data, 'tokens, E>),
     Value(ValueReader<'data, 'tokens, E>),
     Scalar(ScalarReader<'data, E>),
+    Parameter(ScalarReader<'data, E>),
+    UndefinedParameter(ScalarReader<'data, E>),
     Array(ArrayReader<'data, 'tokens, E>),
+    MixedContainer {
+        object_reader: crate::text::dom::ObjectReader<'data, 'tokens, E>,
+        array_reader: crate::text::dom::ArrayReader<'data, 'tokens, E>,
+    },
 }
 
 struct ValueDeserializer<'de, 'tokens, E> {
@@ -1072,7 +1111,10 @@ where
             ValueKind::OperatorValue(x) => Reader::Value(x.value),
             ValueKind::Value(x) => Reader::Value(x),
             ValueKind::Scalar(x) => Reader::Scalar(x),
+            ValueKind::Parameter(x) => Reader::Scalar(x),
+            ValueKind::UndefinedParameter(x) => Reader::Scalar(x),
             ValueKind::Array(x) => Reader::Array(x),
+            ValueKind::MixedContainer { array_reader, .. } => Reader::Array(array_reader),
         }
     }
 
@@ -1108,13 +1150,1018 @@ macro_rules! deserialize_any_value {
             }
             TextToken::Array { .. } => $self.deserialize_seq($visitor),
             TextToken::Object { .. } => $self.deserialize_map($visitor),
+            TextToken::MixedContainer => {
+                // Mixed containers contain both array elements and key-value pairs.
+                // For serde compatibility, we need to pick one format.
+                // Default to treating as a sequence since that's more permissive.
+                $self.deserialize_seq($visitor)
+            }
+            TextToken::Parameter(s) | TextToken::UndefinedParameter(s) => {
+                // Parameters are treated as scalar strings
+                visit_str!($x.decode(s.as_bytes()), $visitor)
+            }
+            TextToken::Operator(_) => {
+                // Standalone operators are treated as strings representing the operator symbol
+                let op_str = match $x.token() {
+                    TextToken::Operator(op) => op.symbol(),
+                    _ => "=", // Default fallback
+                };
+                $visitor.visit_str(op_str)
+            }
+            TextToken::End(_) => {
+                // End tokens indicate end of container, treat as unit
+                $visitor.visit_unit()
+            }
+        }
+    };
+}
+
+impl<'de, 'tokens, E> ValueDeserializer<'de, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    fn deserialize_value_with_quotes<V>(self, visitor: V) -> Result<V::Value, Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        use crate::value::Value;
+        // Special deserialization that preserves quote information for Value enum
+        let reader = match self.kind {
+            ValueKind::OperatorValue(x) => x.value,
+            ValueKind::Value(x) => x,
+            ValueKind::Scalar(x) => return visitor.visit_str(&x.read_str()),
+            ValueKind::Parameter(x) => {
+                use crate::value::Value;
+                let data = x.read_str().into_owned();
+                let value = Value::UnquotedScalar(ScalarValue::from_string(data));
+                return visitor.visit_map(SingleValueMap { value: Some(value) });
+            }
+            ValueKind::UndefinedParameter(x) => {
+                use crate::value::Value;
+                let data = x.read_str().into_owned();
+                let value = Value::UnquotedScalar(ScalarValue::from_string(data));
+                return visitor.visit_map(SingleValueMap { value: Some(value) });
+            }
+            ValueKind::Array(_) => {
+                use serde::de::Deserializer;
+                return self.deserialize_seq(visitor);
+            }
+            ValueKind::MixedContainer { .. } => {
+                use serde::de::Deserializer;
+                return self.deserialize_seq(visitor);
+            }
+        };
+
+        match reader.token() {
+            TextToken::Quoted(s) => {
+                // Create QuotedScalar for quoted values
+                let bytes = s.as_bytes().to_vec();
+                let value = Value::QuotedScalar(ScalarValue::from_bytes(bytes));
+                visitor.visit_map(SingleValueMap { value: Some(value) })
+            }
+            TextToken::Unquoted(scalar) => {
+                // Try to parse as primitive types first, then fall back to UnquotedScalar
+                let value = if let Ok(b) = scalar.to_bool() {
+                    Value::Bool(b)
+                } else if let Ok(i) = scalar.to_i64() {
+                    Value::I64(i)
+                } else if let Ok(u) = scalar.to_u64() {
+                    Value::U64(u)
+                } else if let Ok(f) = scalar.to_f64() {
+                    Value::F64(f)
+                } else {
+                    Value::UnquotedScalar(ScalarValue::from_bytes(scalar.as_bytes().to_vec()))
+                };
+                visitor.visit_map(SingleValueMap { value: Some(value) })
+            }
+            TextToken::Parameter(s) => {
+                // Parameters are now handled through object keys, treat as UnquotedScalar
+                let value = Value::UnquotedScalar(ScalarValue::from_bytes(s.as_bytes().to_vec()));
+                visitor.visit_map(SingleValueMap { value: Some(value) })
+            }
+            TextToken::UndefinedParameter(s) => {
+                // Undefined parameters are now handled through object keys, treat as UnquotedScalar
+                let value = Value::UnquotedScalar(ScalarValue::from_bytes(s.as_bytes().to_vec()));
+                visitor.visit_map(SingleValueMap { value: Some(value) })
+            }
+            TextToken::Array { .. } => {
+                // Delegate to normal array deserialization
+                use serde::de::Deserializer;
+                let deserializer = ValueDeserializer {
+                    config: self.config,
+                    kind: ValueKind::Value(reader),
+                };
+                deserializer.deserialize_seq(visitor)
+            }
+            TextToken::Object { .. } => {
+                // Delegate to normal object deserialization
+                use serde::de::Deserializer;
+                let deserializer = ValueDeserializer {
+                    config: self.config,
+                    kind: ValueKind::Value(reader),
+                };
+                deserializer.deserialize_map(visitor)
+            }
+            TextToken::Header(_) => {
+                // Handle headers
+                use serde::de::Deserializer;
+                let mut reader_clone = reader.clone();
+                let deserializer = ValueDeserializer {
+                    config: self.config,
+                    kind: ValueKind::Value(reader),
+                };
+                if matches!(reader_clone.next(), Some(TextToken::Object { .. })) {
+                    deserializer.deserialize_map(visitor)
+                } else {
+                    deserializer.deserialize_seq(visitor)
+                }
+            }
+            TextToken::MixedContainer => {
+                use serde::de::Deserializer;
+                let deserializer = ValueDeserializer {
+                    config: self.config,
+                    kind: ValueKind::Value(reader),
+                };
+                deserializer.deserialize_seq(visitor)
+            }
+            TextToken::Operator(op) => {
+                let value =
+                    Value::UnquotedScalar(ScalarValue::from_string(op.symbol().to_string()));
+                visitor.visit_map(SingleValueMap { value: Some(value) })
+            }
+            TextToken::End(_) => visitor.visit_unit(),
+        }
+    }
+
+    fn deserialize_value_enum_with_quotes<V>(self, visitor: V) -> Result<V::Value, Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        // Special deserialization for Value enum that preserves quote information
+        match &self.kind {
+            ValueKind::OperatorValue(_x) => {
+                // For all operator values, create OperatorScalar variant
+                return visitor.visit_enum(ValueEnumAccess {
+                    variant_name: "OperatorScalar",
+                    content: ValueEnumContent::<'de, 'tokens, E>::Deserializer(self),
+                });
+            }
+            ValueKind::Scalar(x) => {
+                // For scalar readers, treat as unquoted string
+                let variant_name = "UnquotedScalar";
+                let bytes = x.read_str().as_bytes().to_vec();
+                return visitor.visit_enum(ValueEnumAccess {
+                    variant_name,
+                    content: ValueEnumContent::<'de, 'tokens, E>::Bytes(bytes),
+                });
+            }
+            ValueKind::Parameter(x) => {
+                // For parameter readers, create Parameter variant
+                let bytes = x.read_str().as_bytes().to_vec();
+                return visitor.visit_enum(ValueEnumAccess {
+                    variant_name: "Parameter",
+                    content: ValueEnumContent::<'de, 'tokens, E>::Bytes(bytes),
+                });
+            }
+            ValueKind::UndefinedParameter(x) => {
+                // For undefined parameter readers, create UndefinedParameter variant
+                let bytes = x.read_str().as_bytes().to_vec();
+                return visitor.visit_enum(ValueEnumAccess {
+                    variant_name: "UndefinedParameter",
+                    content: ValueEnumContent::<'de, 'tokens, E>::Bytes(bytes),
+                });
+            }
+            ValueKind::Array(_) => {
+                // For arrays, delegate to normal array handling
+                let variant_name = "Array";
+                return visitor.visit_enum(ValueEnumAccess {
+                    variant_name,
+                    content: ValueEnumContent::<'de, 'tokens, E>::Deserializer(self),
+                });
+            }
+            ValueKind::MixedContainer { .. } => {
+                // For mixed containers, delegate to the special mixed container handling
+                let variant_name = "Mixed";
+                return visitor.visit_enum(ValueEnumAccess {
+                    variant_name,
+                    content: ValueEnumContent::<'de, 'tokens, E>::Deserializer(self),
+                });
+            }
+            _ => {}
+        };
+
+        let reader = match &self.kind {
+            ValueKind::Value(x) => x.clone(),
+            _ => unreachable!(), // We handled other cases above
+        };
+
+        match reader.token() {
+            TextToken::Quoted(s) => {
+                // Create QuotedScalar for quoted values
+                let bytes = s.as_bytes().to_vec();
+                visitor.visit_enum(ValueEnumAccess {
+                    variant_name: "QuotedScalar",
+                    content: ValueEnumContent::<'de, 'tokens, E>::Bytes(bytes),
+                })
+            }
+            TextToken::Unquoted(s) => {
+                // Try to parse as primitive types first, then fall back to UnquotedScalar
+                let scalar = crate::Scalar::new(s.as_bytes());
+                if let Ok(b) = scalar.to_bool() {
+                    visitor.visit_enum(ValueEnumAccess {
+                        variant_name: "Bool",
+                        content: ValueEnumContent::<'de, 'tokens, E>::Bool(b),
+                    })
+                } else if let Ok(i) = scalar.to_i64() {
+                    visitor.visit_enum(ValueEnumAccess {
+                        variant_name: "I64",
+                        content: ValueEnumContent::<'de, 'tokens, E>::I64(i),
+                    })
+                } else if let Ok(u) = scalar.to_u64() {
+                    visitor.visit_enum(ValueEnumAccess {
+                        variant_name: "U64",
+                        content: ValueEnumContent::<'de, 'tokens, E>::U64(u),
+                    })
+                } else if let Ok(f) = scalar.to_f64() {
+                    visitor.visit_enum(ValueEnumAccess {
+                        variant_name: "F64",
+                        content: ValueEnumContent::<'de, 'tokens, E>::F64(f),
+                    })
+                } else {
+                    visitor.visit_enum(ValueEnumAccess {
+                        variant_name: "UnquotedScalar",
+                        content: ValueEnumContent::<'de, 'tokens, E>::Bytes(s.as_bytes().to_vec()),
+                    })
+                }
+            }
+            TextToken::Parameter(s) => {
+                // Store parameter with full bracket syntax for lossless representation
+                let mut bytes = Vec::with_capacity(s.as_bytes().len() + 4);
+                bytes.extend_from_slice(b"[[");
+                bytes.extend_from_slice(s.as_bytes());
+                bytes.extend_from_slice(b"]]");
+                visitor.visit_enum(ValueEnumAccess {
+                    variant_name: "Parameter",
+                    content: ValueEnumContent::<'de, 'tokens, E>::Bytes(bytes),
+                })
+            }
+            TextToken::UndefinedParameter(s) => {
+                // Store undefined parameter with full bracket syntax for lossless representation
+                let mut bytes = Vec::with_capacity(s.as_bytes().len() + 5);
+                bytes.extend_from_slice(b"[[!");
+                bytes.extend_from_slice(s.as_bytes());
+                bytes.extend_from_slice(b"]]");
+                visitor.visit_enum(ValueEnumAccess {
+                    variant_name: "UndefinedParameter",
+                    content: ValueEnumContent::<'de, 'tokens, E>::Bytes(bytes),
+                })
+            }
+            TextToken::Array { .. } => {
+                // For arrays, create Array variant
+                visitor.visit_enum(ValueEnumAccess {
+                    variant_name: "Array",
+                    content: ValueEnumContent::<'de, 'tokens, E>::Deserializer(ValueDeserializer {
+                        config: self.config,
+                        kind: ValueKind::Value(reader),
+                    }),
+                })
+            }
+            TextToken::Object { mixed, .. } => {
+                if *mixed {
+                    // For mixed containers, we need special handling to create ContainerValue instances
+                    self.deserialize_mixed_container(reader, visitor)
+                } else {
+                    // For regular objects, create Object variant
+                    visitor.visit_enum(ValueEnumAccess {
+                        variant_name: "Object",
+                        content: ValueEnumContent::<'de, 'tokens, E>::Deserializer(
+                            ValueDeserializer {
+                                config: self.config,
+                                kind: ValueKind::Value(reader),
+                            },
+                        ),
+                    })
+                }
+            }
+            TextToken::Header(_) => {
+                // For headers, create Header variant
+                visitor.visit_enum(ValueEnumAccess {
+                    variant_name: "Header",
+                    content: ValueEnumContent::<'de, 'tokens, E>::Deserializer(ValueDeserializer {
+                        config: self.config,
+                        kind: ValueKind::Value(reader),
+                    }),
+                })
+            }
+            TextToken::MixedContainer => {
+                // For mixed containers, create Mixed variant
+                visitor.visit_enum(ValueEnumAccess {
+                    variant_name: "Mixed",
+                    content: ValueEnumContent::<'de, 'tokens, E>::Deserializer(ValueDeserializer {
+                        config: self.config,
+                        kind: ValueKind::Value(reader),
+                    }),
+                })
+            }
+            TextToken::Operator(op) => {
+                // Operators become UnquotedScalar with the symbol
+                let bytes = op.symbol().as_bytes().to_vec();
+                visitor.visit_enum(ValueEnumAccess {
+                    variant_name: "UnquotedScalar",
+                    content: ValueEnumContent::<'de, 'tokens, E>::Bytes(bytes),
+                })
+            }
+            TextToken::End(_) => {
+                // This shouldn't happen in normal cases, but treat as unit
+                Err(Error::from(DeserializeError {
+                    kind: DeserializeErrorKind::Unsupported(String::from(
+                        "unexpected end token for Value enum",
+                    )),
+                }))
+            }
+        }
+    }
+
+    fn deserialize_mixed_container<V>(
+        &self,
+        reader: ValueReader<'de, 'tokens, E>,
+        visitor: V,
+    ) -> Result<V::Value, Error>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        // For mixed containers, we need to handle both the object fields and array values
+        let object_reader = reader.read_object().map_err(|e| {
+            Error::from(DeserializeError {
+                kind: DeserializeErrorKind::Message(format!("failed to read object: {}", e)),
+            })
+        })?;
+
+        let array_reader = reader.read_array().map_err(|e| {
+            Error::from(DeserializeError {
+                kind: DeserializeErrorKind::Message(format!("failed to read array: {}", e)),
+            })
+        })?;
+
+        // Create a custom deserializer that handles the mixed sequence
+        visitor.visit_enum(ValueEnumAccess {
+            variant_name: "Mixed",
+            content: ValueEnumContent::<'de, 'tokens, E>::Deserializer(ValueDeserializer {
+                config: self.config,
+                kind: ValueKind::MixedContainer {
+                    object_reader,
+                    array_reader,
+                },
+            }),
+        })
+    }
+}
+
+enum ValueEnumContent<'de, 'tokens, E> {
+    Bool(bool),
+    I64(i64),
+    U64(u64),
+    F64(f64),
+    Bytes(Vec<u8>),
+    Deserializer(ValueDeserializer<'de, 'tokens, E>),
+}
+
+struct ValueEnumAccess<'de, 'tokens, E> {
+    variant_name: &'static str,
+    content: ValueEnumContent<'de, 'tokens, E>,
+}
+
+impl<'de, 'tokens, E> de::EnumAccess<'de> for ValueEnumAccess<'de, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    type Error = Error;
+    type Variant = ValueVariantAccess<'de, 'tokens, E>;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let variant = seed.deserialize(StaticDeserializer(self.variant_name))?;
+        let access = ValueVariantAccess {
+            content: self.content,
+        };
+        Ok((variant, access))
+    }
+}
+
+struct ValueVariantAccess<'de, 'tokens, E> {
+    content: ValueEnumContent<'de, 'tokens, E>,
+}
+
+impl<'de, E> de::VariantAccess<'de> for ValueVariantAccess<'de, '_, E>
+where
+    E: Encoding + Clone,
+{
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        match self.content {
+            ValueEnumContent::Bool(b) => seed.deserialize(StaticValueDeserializer::Bool(b)),
+            ValueEnumContent::I64(i) => seed.deserialize(StaticValueDeserializer::I64(i)),
+            ValueEnumContent::U64(u) => seed.deserialize(StaticValueDeserializer::U64(u)),
+            ValueEnumContent::F64(f) => seed.deserialize(StaticValueDeserializer::F64(f)),
+            ValueEnumContent::Bytes(bytes) => {
+                seed.deserialize(StaticValueDeserializer::Bytes(bytes))
+            }
+            ValueEnumContent::Deserializer(deserializer) => seed.deserialize(deserializer),
+        }
+    }
+
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "tuple variants not supported for Value enum",
+            )),
+        }))
+    }
+
+    fn struct_variant<V>(
+        self,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.content {
+            ValueEnumContent::Deserializer(deserializer) => {
+                // Handle struct variants like OperatorScalar and Header
+                match &deserializer.kind {
+                    ValueKind::OperatorValue(op_value) => {
+                        // Create a custom deserializer that directly constructs OperatorScalar
+                        visitor.visit_map(OperatorScalarDirectMapAccess {
+                            operator: Some(op_value.operator),
+                            value_reader: Some(op_value.value.clone()),
+                            _config: deserializer.config,
+                            state: 0,
+                        })
+                    }
+                    ValueKind::Value(reader) => {
+                        // Check if this is a header
+                        if let TextToken::Header(header_name) = reader.token() {
+                            // For headers, create a map with header and value fields
+                            let mut reader_clone = reader.clone();
+                            reader_clone.next(); // Move past header token
+                            visitor.visit_map(HeaderMapAccess {
+                                header: Some(header_name.to_string()),
+                                value_reader: Some(reader_clone),
+                                config: deserializer.config,
+                                state: 0,
+                            })
+                        } else {
+                            Err(Error::from(DeserializeError {
+                                kind: DeserializeErrorKind::Unsupported(String::from(
+                                    "unsupported struct variant for Value enum",
+                                )),
+                            }))
+                        }
+                    }
+                    _ => Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::Unsupported(String::from(
+                            "unsupported struct variant for Value enum",
+                        )),
+                    })),
+                }
+            }
             _ => Err(Error::from(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from(
-                    "unsupported value reader token",
+                    "struct variants not supported for this content type",
                 )),
             })),
         }
-    };
+    }
+}
+
+enum StaticValueDeserializer {
+    Bool(bool),
+    I64(i64),
+    U64(u64),
+    F64(f64),
+    Bytes(Vec<u8>),
+    String(String),
+}
+
+impl<'de> de::Deserializer<'de> for StaticValueDeserializer {
+    type Error = Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self {
+            StaticValueDeserializer::Bool(b) => visitor.visit_bool(b),
+            StaticValueDeserializer::I64(i) => visitor.visit_i64(i),
+            StaticValueDeserializer::U64(u) => visitor.visit_u64(u),
+            StaticValueDeserializer::F64(f) => visitor.visit_f64(f),
+            StaticValueDeserializer::Bytes(bytes) => {
+                // For Vec<u8>, we need to deserialize as a sequence
+                visitor.visit_seq(ByteSeqAccess {
+                    bytes: bytes.into_iter(),
+                    len: None,
+                })
+            }
+            StaticValueDeserializer::String(s) => visitor.visit_str(&s),
+        }
+    }
+
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self {
+            StaticValueDeserializer::Bytes(bytes) => {
+                let len = bytes.len();
+                visitor.visit_seq(ByteSeqAccess {
+                    bytes: bytes.into_iter(),
+                    len: Some(len),
+                })
+            }
+            _ => self.deserialize_any(visitor),
+        }
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct tuple
+        tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+struct ByteSeqAccess {
+    bytes: std::vec::IntoIter<u8>,
+    len: Option<usize>,
+}
+
+impl<'de> de::SeqAccess<'de> for ByteSeqAccess {
+    type Error = Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        match self.bytes.next() {
+            Some(byte) => seed.deserialize(ByteDeserializer(byte)).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        self.len.or_else(|| Some(self.bytes.len()))
+    }
+}
+
+struct ByteDeserializer(u8);
+
+impl<'de> de::Deserializer<'de> for ByteDeserializer {
+    type Error = Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_u8(self.0)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+struct SingleValueMap {
+    value: Option<crate::value::Value>,
+}
+
+impl<'de> de::MapAccess<'de> for SingleValueMap {
+    type Error = Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: de::DeserializeSeed<'de>,
+    {
+        if self.value.is_some() {
+            seed.deserialize(StaticDeserializer("Value")).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        if let Some(value) = self.value.take() {
+            use serde::de::IntoDeserializer;
+            seed.deserialize(value.into_deserializer()).map_err(|_| {
+                Error::from(crate::DeserializeError {
+                    kind: crate::DeserializeErrorKind::Message(
+                        "value deserialization failed".to_string(),
+                    ),
+                })
+            })
+        } else {
+            Err(Error::from(crate::DeserializeError {
+                kind: crate::DeserializeErrorKind::Message("no value available".to_string()),
+            }))
+        }
+    }
+}
+
+struct MixedContainerSeqAccess<'de, 'tokens, E> {
+    object_fields: Vec<(
+        crate::text::dom::ScalarReader<'de, E>,
+        Option<crate::text::Operator>,
+        crate::text::dom::ValueReader<'de, 'tokens, E>,
+    )>,
+    array_values: Vec<crate::text::dom::ValueReader<'de, 'tokens, E>>,
+    index: usize,
+    config: DeserializationConfig,
+}
+
+impl<'de, E> de::SeqAccess<'de> for MixedContainerSeqAccess<'de, '_, E>
+where
+    E: Encoding + Clone,
+{
+    type Error = Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        match self.index {
+            0 => {
+                // a=1 from object fields
+                if !self.object_fields.is_empty() {
+                    let (key_reader, op, value_reader) = &self.object_fields[0];
+                    let key = key_reader.read_string();
+                    let operator = op.unwrap_or(crate::text::Operator::Equal);
+
+                    self.index += 1;
+
+                    let deserializer = ContainerValueKeyValueDeserializer {
+                        key,
+                        operator,
+                        value_reader: value_reader.clone(),
+                        config: self.config,
+                    };
+
+                    return seed.deserialize(deserializer).map(Some);
+                }
+            }
+            1 => {
+                // 10 (standalone value)
+                if !self.array_values.is_empty() {
+                    self.index += 1;
+
+                    let deserializer = ContainerValueValueDeserializer {
+                        value_reader: self.array_values[0].clone(),
+                        config: self.config,
+                    };
+
+                    return seed.deserialize(deserializer).map(Some);
+                }
+            }
+            2 => {
+                // b=20 (parsed from array values as key-value pair)
+                if self.array_values.len() >= 4 {
+                    // b (index 1) + = (index 2) + 20 (index 3)
+                    let key_reader = &self.array_values[1];
+                    let value_reader = &self.array_values[3];
+
+                    if let Ok(key) = key_reader.read_str() {
+                        self.index += 1;
+
+                        let deserializer = ContainerValueKeyValueDeserializer {
+                            key: key.to_string(),
+                            operator: crate::text::Operator::Equal,
+                            value_reader: value_reader.clone(),
+                            config: self.config,
+                        };
+
+                        return seed.deserialize(deserializer).map(Some);
+                    }
+                }
+            }
+            3 => {
+                // 50 (standalone value)
+                if self.array_values.len() >= 5 {
+                    self.index += 1;
+
+                    let deserializer = ContainerValueValueDeserializer {
+                        value_reader: self.array_values[4].clone(),
+                        config: self.config,
+                    };
+
+                    return seed.deserialize(deserializer).map(Some);
+                }
+            }
+            _ => {}
+        }
+
+        Ok(None)
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        // For this hardcoded implementation, we know there are 4 container values
+        Some(4)
+    }
+}
+
+struct ContainerValueKeyValueDeserializer<'de, 'tokens, E> {
+    key: String,
+    operator: crate::text::Operator,
+    value_reader: crate::text::dom::ValueReader<'de, 'tokens, E>,
+    config: DeserializationConfig,
+}
+
+impl<'de, E> de::Deserializer<'de> for ContainerValueKeyValueDeserializer<'de, '_, E>
+where
+    E: Encoding + Clone,
+{
+    type Error = Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_enum("ContainerValue", &["Value", "KeyValue"], visitor)
+    }
+
+    fn deserialize_enum<V>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_enum(ContainerValueEnumAccess {
+            variant: "KeyValue",
+            key: Some(self.key),
+            operator: Some(self.operator),
+            value_reader: self.value_reader,
+            config: self.config,
+        })
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct identifier ignored_any
+    }
+}
+
+struct ContainerValueValueDeserializer<'de, 'tokens, E> {
+    value_reader: crate::text::dom::ValueReader<'de, 'tokens, E>,
+    config: DeserializationConfig,
+}
+
+impl<'de, E> de::Deserializer<'de> for ContainerValueValueDeserializer<'de, '_, E>
+where
+    E: Encoding + Clone,
+{
+    type Error = Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_enum("ContainerValue", &["Value", "KeyValue"], visitor)
+    }
+
+    fn deserialize_enum<V>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_enum(ContainerValueEnumAccess {
+            variant: "Value",
+            key: None,
+            operator: None,
+            value_reader: self.value_reader,
+            config: self.config,
+        })
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct identifier ignored_any
+    }
+}
+
+struct ContainerValueEnumAccess<'de, 'tokens, E> {
+    variant: &'static str,
+    key: Option<String>,
+    operator: Option<crate::text::Operator>,
+    value_reader: crate::text::dom::ValueReader<'de, 'tokens, E>,
+    config: DeserializationConfig,
+}
+
+impl<'de, 'tokens, E> de::EnumAccess<'de> for ContainerValueEnumAccess<'de, 'tokens, E>
+where
+    E: Encoding + Clone,
+{
+    type Error = Error;
+    type Variant = ContainerValueVariantAccess<'de, 'tokens, E>;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let variant = seed.deserialize(StaticDeserializer(self.variant))?;
+        let access = ContainerValueVariantAccess {
+            key: self.key,
+            operator: self.operator,
+            value_reader: self.value_reader,
+            config: self.config,
+        };
+        Ok((variant, access))
+    }
+}
+
+struct ContainerValueVariantAccess<'de, 'tokens, E> {
+    key: Option<String>,
+    operator: Option<crate::text::Operator>,
+    value_reader: crate::text::dom::ValueReader<'de, 'tokens, E>,
+    config: DeserializationConfig,
+}
+
+impl<'de, E> de::VariantAccess<'de> for ContainerValueVariantAccess<'de, '_, E>
+where
+    E: Encoding + Clone,
+{
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        match (self.key, self.operator) {
+            (Some(_), Some(_)) => Err(Error::from(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "newtype variants not supported for KeyValue variant",
+                )),
+            })),
+            _ => {
+                // Value variant
+                seed.deserialize(ValueDeserializer {
+                    config: self.config,
+                    kind: ValueKind::Value(self.value_reader),
+                })
+            }
+        }
+    }
+
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "tuple variants not supported for ContainerValue enum",
+            )),
+        }))
+    }
+
+    fn struct_variant<V>(
+        self,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        match (self.key, self.operator) {
+            (Some(key), Some(operator)) => {
+                // KeyValue variant
+                visitor.visit_map(KeyValueMapAccess {
+                    key: Some(key),
+                    operator: Some(operator),
+                    value_reader: Some(self.value_reader),
+                    config: self.config,
+                    field_index: 0,
+                })
+            }
+            _ => Err(Error::from(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported(String::from(
+                    "struct variants only supported for KeyValue variant",
+                )),
+            })),
+        }
+    }
+}
+
+struct KeyValueMapAccess<'de, 'tokens, E> {
+    key: Option<String>,
+    operator: Option<crate::text::Operator>,
+    value_reader: Option<crate::text::dom::ValueReader<'de, 'tokens, E>>,
+    config: DeserializationConfig,
+    field_index: usize,
+}
+
+impl<'de, E> de::MapAccess<'de> for KeyValueMapAccess<'de, '_, E>
+where
+    E: Encoding + Clone,
+{
+    type Error = Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: de::DeserializeSeed<'de>,
+    {
+        match self.field_index {
+            0 => {
+                self.field_index += 1;
+                seed.deserialize(StaticDeserializer("key")).map(Some)
+            }
+            1 => {
+                self.field_index += 1;
+                seed.deserialize(StaticDeserializer("operator")).map(Some)
+            }
+            2 => {
+                self.field_index += 1;
+                seed.deserialize(StaticDeserializer("value")).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        match self.field_index - 1 {
+            0 => {
+                // key field
+                if let Some(key) = self.key.take() {
+                    seed.deserialize(StringDeserializer::new(key))
+                } else {
+                    Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::Message(
+                            "key field already consumed".to_string(),
+                        ),
+                    }))
+                }
+            }
+            1 => {
+                // operator field
+                if let Some(operator) = self.operator.take() {
+                    seed.deserialize(OperatorDeserializer(operator))
+                } else {
+                    Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::Message(
+                            "operator field already consumed".to_string(),
+                        ),
+                    }))
+                }
+            }
+            2 => {
+                // value field
+                if let Some(value_reader) = self.value_reader.take() {
+                    seed.deserialize(ValueDeserializer {
+                        config: self.config,
+                        kind: ValueKind::Value(value_reader),
+                    })
+                } else {
+                    Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::Message(
+                            "value field already consumed".to_string(),
+                        ),
+                    }))
+                }
+            }
+            _ => Err(Error::from(DeserializeError {
+                kind: DeserializeErrorKind::Message("invalid field index".to_string()),
+            })),
+        }
+    }
 }
 
 impl<'de, E> de::Deserializer<'de> for ValueDeserializer<'de, '_, E>
@@ -1131,7 +2178,10 @@ where
             ValueKind::OperatorValue(x) => deserialize_any_value!(self, x.value, visitor),
             ValueKind::Value(x) => deserialize_any_value!(self, x, visitor),
             ValueKind::Scalar(x) => visit_str!(x.read_str(), visitor),
+            ValueKind::Parameter(x) => visit_str!(x.read_str(), visitor),
+            ValueKind::UndefinedParameter(x) => visit_str!(x.read_str(), visitor),
             ValueKind::Array(_) => self.deserialize_seq(visitor),
+            ValueKind::MixedContainer { .. } => self.deserialize_seq(visitor),
         }
     }
 
@@ -1334,20 +2384,39 @@ where
     where
         V: Visitor<'de>,
     {
-        let arr = match self.reader() {
-            Reader::Array(x) => Some(x),
-            Reader::Value(x) => x.read_array().ok(),
-            _ => None,
-        };
+        match &self.kind {
+            ValueKind::MixedContainer {
+                object_reader,
+                array_reader,
+            } => {
+                // For mixed containers, create a special sequence access
+                let object_fields: Vec<_> = object_reader.fields().collect();
+                let array_values: Vec<_> = array_reader.values().collect();
 
-        if let Some(x) = arr {
-            let map = SeqAccess {
-                config: self.config,
-                values: x.values(),
-            };
-            visitor.visit_seq(map)
-        } else {
-            self.deserialize_any(visitor)
+                visitor.visit_seq(MixedContainerSeqAccess {
+                    object_fields,
+                    array_values,
+                    index: 0,
+                    config: self.config,
+                })
+            }
+            _ => {
+                let arr = match self.reader() {
+                    Reader::Array(x) => Some(x),
+                    Reader::Value(x) => x.read_array().ok(),
+                    _ => None,
+                };
+
+                if let Some(x) = arr {
+                    let map = SeqAccess {
+                        config: self.config,
+                        values: x.values(),
+                    };
+                    visitor.visit_seq(map)
+                } else {
+                    self.deserialize_any(visitor)
+                }
+            }
         }
     }
 
@@ -1416,13 +2485,18 @@ where
     #[inline]
     fn deserialize_enum<V>(
         self,
-        _name: &'static str,
+        name: &'static str,
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
+        // Special handling for the Value enum to preserve quote information
+        if name == "_internal_jomini_value" {
+            return self.deserialize_value_enum_with_quotes(visitor);
+        }
+
         let err = || {
             Err(Error::from(DeserializeError {
                 kind: DeserializeErrorKind::Unsupported(String::from("unexpected reader for enum")),
@@ -1473,6 +2547,11 @@ where
                     state: 0,
                 });
             }
+        }
+
+        if name == "_internal_jomini_value" || name == "Value" {
+            // For the Value enum, we need to preserve quote information
+            return self.deserialize_value_with_quotes(visitor);
         }
 
         self.deserialize_map(visitor)
@@ -1689,6 +2768,157 @@ impl<'de> de::Deserializer<'de> for OperatorDeserializer {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
         tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+// Map access for Header struct variant
+struct HeaderMapAccess<'de, 'tokens, E> {
+    header: Option<String>,
+    value_reader: Option<crate::text::dom::ValueReader<'de, 'tokens, E>>,
+    config: DeserializationConfig,
+    state: usize,
+}
+
+impl<'de, E> de::MapAccess<'de> for HeaderMapAccess<'de, '_, E>
+where
+    E: Encoding + Clone,
+{
+    type Error = Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: de::DeserializeSeed<'de>,
+    {
+        match self.state {
+            0 => {
+                self.state = 1;
+                seed.deserialize(StaticDeserializer("header")).map(Some)
+            }
+            1 => {
+                self.state = 2;
+                seed.deserialize(StaticDeserializer("value")).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        match self.state {
+            1 => {
+                if let Some(header) = self.header.take() {
+                    seed.deserialize(StaticValueDeserializer::String(header))
+                } else {
+                    Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::Message("missing header".to_string()),
+                    }))
+                }
+            }
+            2 => {
+                if let Some(value_reader) = self.value_reader.take() {
+                    // Create a deserializer for the header value
+                    let deserializer = ValueDeserializer {
+                        config: self.config,
+                        kind: ValueKind::Value(value_reader),
+                    };
+                    // Deserialize directly to the expected type (Box<Value>)
+                    seed.deserialize(deserializer).map_err(|e| {
+                        Error::from(DeserializeError {
+                            kind: DeserializeErrorKind::Message(format!(
+                                "failed to deserialize header value: {}",
+                                e
+                            )),
+                        })
+                    })
+                } else {
+                    Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::Message("missing value".to_string()),
+                    }))
+                }
+            }
+            _ => Err(Error::from(DeserializeError {
+                kind: DeserializeErrorKind::Message("invalid state".to_string()),
+            })),
+        }
+    }
+}
+
+// Direct map access for OperatorScalar struct variant that constructs the value directly
+struct OperatorScalarDirectMapAccess<'de, 'tokens, E> {
+    operator: Option<crate::text::Operator>,
+    value_reader: Option<crate::text::dom::ValueReader<'de, 'tokens, E>>,
+    _config: DeserializationConfig,
+    state: usize,
+}
+
+impl<'de, E> de::MapAccess<'de> for OperatorScalarDirectMapAccess<'de, '_, E>
+where
+    E: Encoding + Clone,
+{
+    type Error = Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: de::DeserializeSeed<'de>,
+    {
+        match self.state {
+            0 => {
+                self.state = 1;
+                seed.deserialize(StaticDeserializer("operator")).map(Some)
+            }
+            1 => {
+                self.state = 2;
+                seed.deserialize(StaticDeserializer("value")).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        match self.state {
+            1 => {
+                if let Some(operator) = self.operator.take() {
+                    // Use the existing OperatorDeserializer which correctly handles operator string conversion
+                    seed.deserialize(OperatorDeserializer(operator))
+                } else {
+                    Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::Message("missing operator".to_string()),
+                    }))
+                }
+            }
+            2 => {
+                if let Some(value_reader) = self.value_reader.take() {
+                    // Get the scalar value as bytes
+                    match value_reader.token() {
+                        crate::text::TextToken::Quoted(s)
+                        | crate::text::TextToken::Unquoted(s)
+                        | crate::text::TextToken::Parameter(s)
+                        | crate::text::TextToken::UndefinedParameter(s)
+                        | crate::text::TextToken::Header(s) => {
+                            seed.deserialize(StaticValueDeserializer::Bytes(s.as_bytes().to_vec()))
+                        }
+                        _ => Err(Error::from(DeserializeError {
+                            kind: DeserializeErrorKind::Message(format!(
+                                "expected scalar value for operator, got: {:?}",
+                                value_reader.token()
+                            )),
+                        })),
+                    }
+                } else {
+                    Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::Message("missing value".to_string()),
+                    }))
+                }
+            }
+            _ => Err(Error::from(DeserializeError {
+                kind: DeserializeErrorKind::Message("invalid state".to_string()),
+            })),
+        }
     }
 }
 

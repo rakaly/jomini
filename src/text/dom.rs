@@ -631,15 +631,49 @@ where
     E: Encoding,
 {
     /// Decode the data with a given string encoding
+    /// For parameters, this includes the full bracket syntax for lossless representation
     #[inline]
     pub fn read_str(&self) -> Cow<'data, str> {
-        self.encoding.decode(self.scalar.as_bytes())
+        match &self.token {
+            TextToken::Parameter(_) => {
+                let mut result = String::with_capacity(self.scalar.as_bytes().len() + 4);
+                result.push_str("[[");
+                result.push_str(&self.encoding.decode(self.scalar.as_bytes()));
+                result.push_str("]]");
+                Cow::Owned(result)
+            }
+            TextToken::UndefinedParameter(_) => {
+                let mut result = String::with_capacity(self.scalar.as_bytes().len() + 5);
+                result.push_str("[[!");
+                result.push_str(&self.encoding.decode(self.scalar.as_bytes()));
+                result.push_str("]]");
+                Cow::Owned(result)
+            }
+            _ => self.encoding.decode(self.scalar.as_bytes()),
+        }
     }
 
     /// Decode the data with a given string encoding
+    /// For parameters, this includes the full bracket syntax for lossless representation
     #[inline]
     pub fn read_string(&self) -> String {
-        self.encoding.decode(self.scalar.as_bytes()).into_owned()
+        match &self.token {
+            TextToken::Parameter(_) => {
+                let mut result = String::with_capacity(self.scalar.as_bytes().len() + 4);
+                result.push_str("[[");
+                result.push_str(&self.encoding.decode(self.scalar.as_bytes()));
+                result.push_str("]]");
+                result
+            }
+            TextToken::UndefinedParameter(_) => {
+                let mut result = String::with_capacity(self.scalar.as_bytes().len() + 5);
+                result.push_str("[[!");
+                result.push_str(&self.encoding.decode(self.scalar.as_bytes()));
+                result.push_str("]]");
+                result
+            }
+            _ => self.encoding.decode(self.scalar.as_bytes()).into_owned(),
+        }
     }
 
     /// Return the underlying scalar
