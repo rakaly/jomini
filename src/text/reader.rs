@@ -1113,6 +1113,30 @@ mod test {
         Token::Operator(Operator::Equal),
         Token::Unquoted(Scalar::new(b"b")),
     ])]
+    // test_semicolon_as_whitespace
+    #[case(b"foo = 0.3;", &[
+        Token::Unquoted(Scalar::new(b"foo")),
+        Token::Operator(Operator::Equal),
+        Token::Unquoted(Scalar::new(b"0.3")),
+    ])]
+    // test_multiple_semicolons_as_whitespace
+    #[case(b"a = 1; b = 2;; c = 3;", &[
+        Token::Unquoted(Scalar::new(b"a")),
+        Token::Operator(Operator::Equal),
+        Token::Unquoted(Scalar::new(b"1")),
+        Token::Unquoted(Scalar::new(b"b")),
+        Token::Operator(Operator::Equal),
+        Token::Unquoted(Scalar::new(b"2")),
+        Token::Unquoted(Scalar::new(b"c")),
+        Token::Operator(Operator::Equal),
+        Token::Unquoted(Scalar::new(b"3")),
+    ])]
+    // test_consecutive_semicolons
+    #[case(b";;;key = value;;;", &[
+        Token::Unquoted(Scalar::new(b"key")),
+        Token::Operator(Operator::Equal),
+        Token::Unquoted(Scalar::new(b"value")),
+    ])]
     fn test_input(#[case] input: &[u8], #[case] expected: &[Token]) {
         let mut reader = TokenReader::new(input);
         for (i, e) in expected.iter().enumerate() {

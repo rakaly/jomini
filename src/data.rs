@@ -65,6 +65,7 @@ const fn create_character_class_table() -> [u8; 256] {
     table[b' ' as usize] = 1;
     table[b'!' as usize] = 1;
     table[b'#' as usize] = 1;
+    table[b';' as usize] = 1;
     table[b'<' as usize] = 1;
     table[b'=' as usize] = 1;
     table[b'>' as usize] = 1;
