@@ -70,6 +70,8 @@ impl<'a> Scalar<'a> {
 
     /// Try converting the scalar to f64
     ///
+    /// Supports optional 'f' suffix for floating point literals.
+    ///
     /// ```
     /// use jomini::Scalar;
     ///
@@ -78,6 +80,9 @@ impl<'a> Scalar<'a> {
     ///
     /// let v2 = Scalar::new(b"-5.67821");
     /// assert_eq!(v2.to_f64(), Ok(-5.67821));
+    ///
+    /// let v3 = Scalar::new(b"10.0f");
+    /// assert_eq!(v3.to_f64(), Ok(10.0));
     /// ```
     #[inline]
     pub fn to_f64(self) -> Result<f64, ScalarError> {
@@ -200,24 +205,37 @@ fn to_f64(mut d: &[u8]) -> Result<f64, ScalarError> {
     }
 
     let sign = -((negative as i64 * 2).wrapping_sub(1));
-    while let Some((&c, rest)) = d.split_first() {
+    while let Some((&c, mut rest)) = d.split_first() {
         if c.is_ascii_digit() {
             acc = acc.wrapping_mul(10);
             acc = acc.wrapping_add(u64::from(c - b'0'));
             d = rest;
         } else if c == b'.' {
-            let fractional_digits = rest.len();
-            let whole_digits = integer_part.len() - fractional_digits - 1;
-
             let mut total = acc;
-            for &x in rest {
-                if !x.is_ascii_digit() {
+            let mut nondigit = false;
+            if let Some((&last, fractions)) = rest.split_last() {
+                for &x in fractions {
+                    nondigit |= !x.is_ascii_digit();
+                    total = total.wrapping_mul(10);
+                    total = total.wrapping_add(u64::from(x - b'0'));
+                }
+
+                if nondigit {
                     return Err(ScalarError::AllDigits);
                 }
 
-                total = total.wrapping_mul(10);
-                total = total.wrapping_add(u64::from(x - b'0'));
+                if last.is_ascii_digit() {
+                    total = total.wrapping_mul(10);
+                    total = total.wrapping_add(u64::from(last - b'0'));
+                } else if last != b'f' {
+                    return Err(ScalarError::AllDigits);
+                } else {
+                    rest = &rest[..rest.len() - 1];
+                }
             }
+
+            let fractional_digits = rest.len();
+            let whole_digits = integer_part.len() - fractional_digits - 1;
 
             if fractional_digits + whole_digits >= OVERFLOW_CUTOFF - 1 {
                 check_overflow_init(rest, acc)?;
@@ -228,6 +246,9 @@ fn to_f64(mut d: &[u8]) -> Result<f64, ScalarError> {
                 .ok_or(ScalarError::Overflow)?;
             let d = (total as f64) / *pow;
             return Ok((sign as f64) * d);
+        } else if c == b'f' && rest.is_empty() {
+            integer_part = &integer_part[..integer_part.len().saturating_sub(1)];
+            d = rest;
         } else {
             return Err(ScalarError::AllDigits);
         }
@@ -458,6 +479,25 @@ mod tests {
 
         assert!(Scalar::new(b"E").to_f64().is_err());
         assert!(Scalar::new(b"").to_f64().is_err());
+    }
+
+    #[test]
+    fn scalar_to_f64_with_f_suffix() {
+        assert_eq!((Scalar::new(b"0.0f").to_f64()), Ok(0.0));
+        assert_eq!((Scalar::new(b"-5.5f").to_f64()), Ok(-5.5));
+        assert_eq!((Scalar::new(b"10.0f").to_f64()), Ok(10.0));
+        assert_eq!((Scalar::new(b"0.40f").to_f64()), Ok(0.4));
+        assert_eq!((Scalar::new(b"123.456f").to_f64()), Ok(123.456));
+        assert_eq!((Scalar::new(b"-0.001f").to_f64()), Ok(-0.001));
+        assert_eq!((Scalar::new(b"+42.0f").to_f64()), Ok(42.0));
+        assert_eq!((Scalar::new(b".5f").to_f64()), Ok(0.5));
+        assert_eq!((Scalar::new(b"1f").to_f64()), Ok(1.0));
+        assert_eq!((Scalar::new(b"-1f").to_f64()), Ok(-1.0));
+        assert_eq!((Scalar::new(b"10.f").to_f64()), Ok(10.0));
+
+        assert!(Scalar::new(b"f").to_f64().is_err());
+        assert!(Scalar::new(b"invalidf").to_f64().is_err());
+        assert_eq!((Scalar::new(b"0f").to_f64()), Ok(0.0));
     }
 
     #[test]
