@@ -1443,7 +1443,7 @@ mod tests {
         assert_eq!(array.len(), 2);
 
         let mut values = array.values();
-        
+
         // First value should be the template object { a = b }
         let template = values.next().unwrap();
         let template_obj = template.read_object().unwrap();
@@ -1479,7 +1479,7 @@ mod tests {
         assert_eq!(array.len(), 2);
 
         let mut values = array.values();
-        
+
         // First value should be the template array { foo }
         let template = values.next().unwrap();
         let template_arr = template.read_array().unwrap();
@@ -1512,7 +1512,7 @@ mod tests {
         assert_eq!(array.len(), 2);
 
         let mut values = array.values();
-        
+
         // First value should be the template object { a = b }
         let template = values.next().unwrap();
         let template_obj = template.read_object().unwrap();
@@ -1542,7 +1542,7 @@ mod tests {
         assert_eq!(array.len(), 4); // 2 template-value pairs = 4 elements
 
         let mut values = array.values();
-        
+
         // First template-value pair
         let template1 = values.next().unwrap();
         let template1_obj = template1.read_object().unwrap();
@@ -1571,7 +1571,8 @@ mod tests {
 
     #[test]
     fn test_object_template_complex_dom_reader() {
-        let data = br"config={ { debug=yes logging=verbose }={ output_file=debug.log level=trace } }";
+        let data =
+            br"config={ { debug=yes logging=verbose }={ output_file=debug.log level=trace } }";
         let tape = TextTape::from_slice(data).unwrap();
         let reader = tape.windows1252_reader();
 
@@ -1583,12 +1584,12 @@ mod tests {
         assert_eq!(array.len(), 2);
 
         let mut values = array.values();
-        
+
         // First value should be the template object with multiple fields
         let template = values.next().unwrap();
         let template_obj = template.read_object().unwrap();
         assert_eq!(template_obj.fields_len(), 2);
-        
+
         let mut template_groups = template_obj.field_groups();
         let (debug_key, debug_group) = template_groups.next().unwrap();
         assert_eq!(debug_key.read_str(), "debug");
@@ -1607,7 +1608,7 @@ mod tests {
         let values_obj = values.next().unwrap();
         let values_object = values_obj.read_object().unwrap();
         assert_eq!(values_object.fields_len(), 2);
-        
+
         let mut values_groups = values_object.field_groups();
         let (output_key, output_group) = values_groups.next().unwrap();
         assert_eq!(output_key.read_str(), "output_file");

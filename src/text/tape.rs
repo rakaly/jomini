@@ -349,6 +349,7 @@ fn split_at_scalar(d: &[u8]) -> (Scalar, &[u8]) {
         // sp = 0x20
         //  ! = 0x21 *
         //  # = 0x23
+        //  ; = 0x3b
         //  < = 0x3c
         //  = = 0x3d
         //  > = 0x3e
@@ -369,20 +370,22 @@ fn split_at_scalar(d: &[u8]) -> (Scalar, &[u8]) {
             result = _mm_or_si128(result, t3);
             let t4 = _mm_cmpeq_epi8(input, _mm_set1_epi8(35));
             result = _mm_or_si128(result, t4);
-            let t5 = _mm_cmpeq_epi8(input, _mm_set1_epi8(60));
+            let t5 = _mm_cmpeq_epi8(input, _mm_set1_epi8(59));
             result = _mm_or_si128(result, t5);
-            let t6 = _mm_cmpeq_epi8(input, _mm_set1_epi8(61));
+            let t6 = _mm_cmpeq_epi8(input, _mm_set1_epi8(60));
             result = _mm_or_si128(result, t6);
-            let t7 = _mm_cmpeq_epi8(input, _mm_set1_epi8(62));
+            let t7 = _mm_cmpeq_epi8(input, _mm_set1_epi8(61));
             result = _mm_or_si128(result, t7);
-            let t8 = _mm_cmpeq_epi8(input, _mm_set1_epi8(123));
+            let t8 = _mm_cmpeq_epi8(input, _mm_set1_epi8(62));
             result = _mm_or_si128(result, t8);
-            let t9 = _mm_cmpeq_epi8(input, _mm_set1_epi8(125));
+            let t9 = _mm_cmpeq_epi8(input, _mm_set1_epi8(123));
             result = _mm_or_si128(result, t9);
-            let t10 = _mm_cmpeq_epi8(input, _mm_set1_epi8(91));
+            let t10 = _mm_cmpeq_epi8(input, _mm_set1_epi8(125));
             result = _mm_or_si128(result, t10);
-            let t11 = _mm_cmpeq_epi8(input, _mm_set1_epi8(93));
+            let t11 = _mm_cmpeq_epi8(input, _mm_set1_epi8(91));
             result = _mm_or_si128(result, t11);
+            let t12 = _mm_cmpeq_epi8(input, _mm_set1_epi8(93));
+            result = _mm_or_si128(result, t12);
 
             let found_mask = _mm_movemask_epi8(result);
             if found_mask != 0 {
@@ -2897,6 +2900,36 @@ mod tests {
                 TextToken::End(7),
                 TextToken::Unquoted(Scalar::new(b"18")),
                 TextToken::End(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_semicolon_as_whitespace() {
+        let data = b"foo = 0.3;";
+        let tape = TextTape::from_slice(&data[..]).unwrap();
+        assert_eq!(
+            tape.tokens(),
+            vec![
+                TextToken::Unquoted(Scalar::new(b"foo")),
+                TextToken::Unquoted(Scalar::new(b"0.3")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_multiple_semicolons_as_whitespace() {
+        let data = b"a = 1; b = 2;; c = 3;";
+        let tape = TextTape::from_slice(&data[..]).unwrap();
+        assert_eq!(
+            tape.tokens(),
+            vec![
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"1")),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::Unquoted(Scalar::new(b"2")),
+                TextToken::Unquoted(Scalar::new(b"c")),
+                TextToken::Unquoted(Scalar::new(b"3")),
             ]
         );
     }
