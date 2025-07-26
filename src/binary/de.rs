@@ -492,15 +492,17 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> SeqAccess<'de
     where
         T: DeserializeSeed<'de>,
     {
-        match unsafe { self.de.read() }.reader.read()? {
-            Token::Close => {
-                self.hit_end = true;
-                Ok(None)
-            }
-            token => seed
-                .deserialize(BinaryReaderTokenDeserializer { de: self.de, token })
-                .map(Some),
+        let mut token = unsafe { self.de.read() }.reader.read()?;
+        if matches!(token, Token::Close) {
+            self.hit_end = true;
+            return Ok(None);
+        } else if matches!(token, Token::Equal) {
+            // This is a standalone Equal token from object template syntax
+            token = unsafe { self.de.read() }.reader.read()?;
         }
+
+        seed.deserialize(BinaryReaderTokenDeserializer { de: self.de, token })
+            .map(Some)
     }
 }
 
@@ -1032,17 +1034,19 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> SeqAccess<'de>
     where
         T: DeserializeSeed<'de>,
     {
-        let token = self.de.parser.read_id()?;
-        if token == LexemeId::CLOSE {
+        let mut token = self.de.parser.read_id()?;
+        if matches!(token, LexemeId::CLOSE) {
             self.hit_end = true;
-            Ok(None)
-        } else {
-            seed.deserialize(OndemandTokenDeserializer {
-                de: &mut *self.de,
-                token,
-            })
-            .map(Some)
+            return Ok(None);
+        } else if matches!(token, LexemeId::EQUAL) {
+            token = self.de.parser.read_id()?;
         }
+
+        seed.deserialize(OndemandTokenDeserializer {
+            de: &mut *self.de,
+            token,
+        })
+        .map(Some)
     }
 }
 
@@ -2642,5 +2646,165 @@ mod tests {
         struct MyStruct {
             something: Option<i32>,
         }
+    }
+
+    #[test]
+    fn test_object_template_support() {
+        // The pattern `{ key=value }=result` becomes an array: [object, value, object, value, ...]
+        let mut resolver_map = std::collections::HashMap::new();
+        resolver_map.insert(0x2000, "obj".to_string());
+        resolver_map.insert(0x2001, "id".to_string());
+        resolver_map.insert(0x2002, "type".to_string());
+        resolver_map.insert(0x2003, "admin".to_string());
+        resolver_map.insert(0x2004, "diplo".to_string());
+
+        let token_map = resolver_map
+            .iter()
+            .map(|(k, v)| (v.clone(), *k))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let data = text_to_binary(
+            b"obj={ { id=31 type=admin }=16 { id=32 type=diplo }=18 }",
+            &token_map,
+        )
+        .unwrap();
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct TemplateKey {
+            id: i32,
+            #[serde(rename = "type")]
+            key_type: String,
+        }
+
+        #[derive(PartialEq, Debug)]
+        struct ObjectTemplateList(Vec<(TemplateKey, i32)>);
+
+        impl<'de> Deserialize<'de> for ObjectTemplateList {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                use serde::de::{SeqAccess, Visitor};
+
+                struct ObjectTemplateVisitor;
+
+                impl<'de> Visitor<'de> for ObjectTemplateVisitor {
+                    type Value = ObjectTemplateList;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        formatter.write_str("a sequence of alternating objects and values")
+                    }
+
+                    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: SeqAccess<'de>,
+                    {
+                        let mut entries = Vec::new();
+
+                        while let Some(key) = seq.next_element::<TemplateKey>()? {
+                            if let Some(value) = seq.next_element::<i32>()? {
+                                entries.push((key, value));
+                            } else {
+                                return Err(serde::de::Error::custom("Expected value after key"));
+                            }
+                        }
+
+                        Ok(ObjectTemplateList(entries))
+                    }
+                }
+
+                deserializer.deserialize_seq(ObjectTemplateVisitor)
+            }
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            obj: ObjectTemplateList,
+        }
+
+        let actual: MyStruct = from_owned(&data[..], &resolver_map).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                obj: ObjectTemplateList(vec![
+                    (
+                        TemplateKey {
+                            id: 31,
+                            key_type: "admin".to_string()
+                        },
+                        16
+                    ),
+                    (
+                        TemplateKey {
+                            id: 32,
+                            key_type: "diplo".to_string()
+                        },
+                        18
+                    ),
+                ])
+            }
+        );
+    }
+
+    /// Utility function for unit tests: converts text format to binary format
+    fn text_to_binary(
+        text: &[u8],
+        token_map: &std::collections::HashMap<String, u16>,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        use crate::binary::Token as BinaryToken;
+        use crate::text::Token as TextToken;
+        use crate::text::TokenReader as TextTokenReader;
+        use std::convert::TryFrom;
+        use std::io::Write;
+
+        let mut result = Vec::new();
+        let mut reader = TextTokenReader::new(text);
+
+        while let Ok(Some(token)) = reader.next() {
+            match token {
+                TextToken::Open => {
+                    BinaryToken::Open.write(&mut result)?;
+                }
+                TextToken::Close => {
+                    BinaryToken::Close.write(&mut result)?;
+                }
+                TextToken::Operator(_) => {
+                    BinaryToken::Equal.write(&mut result)?;
+                }
+                TextToken::Quoted(scalar) => {
+                    BinaryToken::Quoted(scalar).write(&mut result)?;
+                }
+                TextToken::Unquoted(scalar) => {
+                    // Try to parse as boolean first (using Scalar method)
+                    if let Ok(bool_val) = scalar.to_bool() {
+                        BinaryToken::Bool(bool_val).write(&mut result)?;
+                    }
+                    // Try to parse as signed integer (using Scalar method)
+                    else if let Ok(i64_val) = scalar.to_i64() {
+                        if let Ok(i32_val) = i32::try_from(i64_val) {
+                            BinaryToken::I32(i32_val).write(&mut result)?;
+                        } else {
+                            BinaryToken::I64(i64_val).write(&mut result)?;
+                        }
+                    } else if let Ok(u64_val) = scalar.to_u64() {
+                        if let Ok(u32_val) = u32::try_from(u64_val) {
+                            BinaryToken::U32(u32_val).write(&mut result)?;
+                        } else {
+                            BinaryToken::U64(u64_val).write(&mut result)?;
+                        }
+                    } else {
+                        let text = std::str::from_utf8(scalar.as_bytes())?;
+
+                        if let Some(&token_id) = token_map.get(text) {
+                            result.write_all(&token_id.to_le_bytes())?;
+                        } else {
+                            BinaryToken::Unquoted(scalar).write(&mut result)?;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(result)
     }
 }
