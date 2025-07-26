@@ -923,7 +923,29 @@ impl<'a> ParserState<'a, '_> {
                     }
                     b'<' | b'>' | b'!' | b'=' => {
                         if !mixed_mode {
-                            if self.token_tape.last().and_then(|x| x.as_scalar()).is_some() {
+                            let can_precede_operator = match self.token_tape.last() {
+                                // Regular scalars can precede operators
+                                Some(token) if token.as_scalar().is_some() => true,
+                                // End tokens that close objects or arrays in object template syntax
+                                // For object template syntax, we should just continue parsing without creating operators
+                                Some(TextToken::End(start_idx)) => {
+                                    if matches!(
+                                        self.token_tape.get(*start_idx),
+                                        Some(TextToken::Object { .. })
+                                            | Some(TextToken::Array { .. })
+                                    ) {
+                                        // This is object template syntax, don't treat as operator, continue parsing value
+                                        if data[0] == b'=' {
+                                            data = &data[1..];
+                                            continue;
+                                        }
+                                    }
+                                    false
+                                }
+                                _ => false,
+                            };
+
+                            if can_precede_operator {
                                 self.token_tape
                                     .insert(self.token_tape.len() - 1, TextToken::MixedContainer);
                                 mixed_mode = true;
@@ -2753,5 +2775,129 @@ mod tests {
     fn test_initial_end_does_not_panic() {
         let res = parse(&b"}"[..]);
         assert!(res.is_ok() || res.is_err());
+    }
+
+    #[test]
+    fn test_object_template_syntax() {
+        let data = br"obj={
+            { a = b }={ 1 2 3 }
+    }";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"obj")),
+                TextToken::Array {
+                    end: 11,
+                    mixed: false
+                },
+                TextToken::Object {
+                    end: 5,
+                    mixed: false
+                },
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::End(2),
+                TextToken::Array {
+                    end: 10,
+                    mixed: false
+                },
+                TextToken::Unquoted(Scalar::new(b"1")),
+                TextToken::Unquoted(Scalar::new(b"2")),
+                TextToken::Unquoted(Scalar::new(b"3")),
+                TextToken::End(6),
+                TextToken::End(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_object_template_syntax2() {
+        let data = br"obj={
+            { foo }={ 1000 }
+    }";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"obj")),
+                TextToken::Array {
+                    end: 8,
+                    mixed: false
+                },
+                TextToken::Array {
+                    end: 4,
+                    mixed: false
+                },
+                TextToken::Unquoted(Scalar::new(b"foo")),
+                TextToken::End(2),
+                TextToken::Array {
+                    end: 7,
+                    mixed: false
+                },
+                TextToken::Unquoted(Scalar::new(b"1000")),
+                TextToken::End(5),
+                TextToken::End(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_object_template_syntax_simple_scalar() {
+        let data = br"obj={ { a=b }=16 }";
+        let tape = TextTape::from_slice(data).unwrap();
+        let tokens = &tape.tokens();
+
+        assert_eq!(
+            tokens,
+            &[
+                TextToken::Unquoted(Scalar::new(b"obj")),
+                TextToken::Array {
+                    end: 7,
+                    mixed: false
+                },
+                TextToken::Object {
+                    end: 5,
+                    mixed: false
+                },
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::End(2),
+                TextToken::Unquoted(Scalar::new(b"16")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_object_template_syntax_scalar_value() {
+        let data = br"obj={ { 31=16 }=16 { 32=17 }=18 }";
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"obj")),
+                TextToken::Array {
+                    end: 12,
+                    mixed: false
+                },
+                TextToken::Object {
+                    end: 5,
+                    mixed: false
+                },
+                TextToken::Unquoted(Scalar::new(b"31")),
+                TextToken::Unquoted(Scalar::new(b"16")),
+                TextToken::End(2),
+                TextToken::Unquoted(Scalar::new(b"16")),
+                TextToken::Object {
+                    end: 10,
+                    mixed: false
+                },
+                TextToken::Unquoted(Scalar::new(b"32")),
+                TextToken::Unquoted(Scalar::new(b"17")),
+                TextToken::End(7),
+                TextToken::Unquoted(Scalar::new(b"18")),
+                TextToken::End(1)
+            ]
+        );
     }
 }
