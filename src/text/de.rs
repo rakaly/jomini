@@ -2998,22 +2998,22 @@ mod tests {
                 D: serde::Deserializer<'de>,
             {
                 use serde::de::{SeqAccess, Visitor};
-                
+
                 struct ObjectTemplateVisitor;
-                
+
                 impl<'de> Visitor<'de> for ObjectTemplateVisitor {
                     type Value = ObjectTemplateList;
-                    
+
                     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                         formatter.write_str("a sequence of alternating objects and values")
                     }
-                    
+
                     fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
                     where
                         A: SeqAccess<'de>,
                     {
                         let mut entries = Vec::new();
-                        
+
                         while let Some(key) = seq.next_element::<TemplateKey>()? {
                             if let Some(value) = seq.next_element::<i32>()? {
                                 entries.push((key, value));
@@ -3021,11 +3021,11 @@ mod tests {
                                 return Err(serde::de::Error::custom("Expected value after key"));
                             }
                         }
-                        
+
                         Ok(ObjectTemplateList(entries))
                     }
                 }
-                
+
                 deserializer.deserialize_seq(ObjectTemplateVisitor)
             }
         }
@@ -3040,8 +3040,20 @@ mod tests {
             actual,
             MyStruct {
                 obj: ObjectTemplateList(vec![
-                    (TemplateKey { id: 31, key_type: "admin".to_string() }, 16),
-                    (TemplateKey { id: 32, key_type: "diplo".to_string() }, 18),
+                    (
+                        TemplateKey {
+                            id: 31,
+                            key_type: "admin".to_string()
+                        },
+                        16
+                    ),
+                    (
+                        TemplateKey {
+                            id: 32,
+                            key_type: "diplo".to_string()
+                        },
+                        18
+                    ),
                 ])
             }
         );
