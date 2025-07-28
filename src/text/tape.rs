@@ -875,7 +875,7 @@ impl<'a> ParserState<'a, '_> {
                     mixed_mode = false;
                     data = self.skip_ws_t(data).ok_or_else(Error::eof)?;
                     match data[0] {
-                        b'=' | b'>' | b'<' => {
+                        b'=' | b'>' | b'<' | b'?' | b'!' => {
                             let ind = self.token_tape.len() - 2;
                             self.token_tape[ind] = TextToken::Object {
                                 end: parent_ind,
@@ -2184,6 +2184,50 @@ mod tests {
                 TextToken::Unquoted(Scalar::new(b"c:RUS")),
                 TextToken::Operator(Operator::Exists),
                 TextToken::Unquoted(Scalar::new(b"this")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_exists_operator_in_object_first_pair() {
+        let data = b"obj = { foo ?= 1 }";
+
+        let result = parse(&data[..]).unwrap().token_tape;
+
+        assert_eq!(
+            result,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"obj")),
+                TextToken::Object {
+                    end: 5,
+                    mixed: false
+                },
+                TextToken::Unquoted(Scalar::new(b"foo")),
+                TextToken::Operator(Operator::Exists),
+                TextToken::Unquoted(Scalar::new(b"1")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_not_equal_operator_in_object_first_pair() {
+        let data = b"obj = { foo != 1 }";
+
+        let result = parse(&data[..]).unwrap().token_tape;
+
+        assert_eq!(
+            result,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"obj")),
+                TextToken::Object {
+                    end: 5,
+                    mixed: false
+                },
+                TextToken::Unquoted(Scalar::new(b"foo")),
+                TextToken::Operator(Operator::NotEqual),
+                TextToken::Unquoted(Scalar::new(b"1")),
+                TextToken::End(1),
             ]
         );
     }
