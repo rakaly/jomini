@@ -668,16 +668,18 @@ where
     where
         S: Serializer,
     {
-        if let Some(op) = self.operator {
-            let mut map = serializer.serialize_map(None)?;
-            let reader = &self.value;
-            map.serialize_entry(op.name(), &reader.json().with_options(self.options))?;
-            map.end()
-        } else {
-            self.value
+        match self.operator {
+            Some(Operator::Equal) | None => self
+                .value
                 .json()
                 .with_options(self.options)
-                .serialize(serializer)
+                .serialize(serializer),
+            Some(op) => {
+                let mut map = serializer.serialize_map(None)?;
+                let reader = &self.value;
+                map.serialize_entry(op.name(), &reader.json().with_options(self.options))?;
+                map.end()
+            }
         }
     }
 }
@@ -779,14 +781,8 @@ where
         S: Serializer,
     {
         let mut map = serializer.serialize_map(None)?;
-        let op = if self.op == Operator::Equal {
-            None
-        } else {
-            Some(self.op)
-        };
-
         let value = OperatorValue {
-            operator: op,
+            operator: Some(self.op),
             value: self.value.clone(),
             options: self.options,
         };
@@ -1226,5 +1222,34 @@ mod tests {
         let json = serialize(b"obj={ { 31=16 }=16 }");
         let expected = r#"{"obj":[{"31":16},16]}"#;
         assert_eq!(&json, expected);
+    }
+
+    #[test]
+    fn test_equals_operator_mutation() {
+        use crate::text::{Operator, TextToken};
+
+        // Parse "foo ?= 10" with exists operator
+        let mut tape = TextTape::from_slice(b"foo ?= 10").unwrap();
+
+        // Verify the original JSON output with exists operator
+        let reader_before = tape.windows1252_reader();
+        let json_before = reader_before.json().to_string();
+        let expected_before = r#"{"foo":{"EXISTS":10}}"#;
+        assert_eq!(&json_before, expected_before);
+
+        // Find and replace the exists operator with an equals operator in-place
+        let tokens = tape.tokens_mut();
+        for token in tokens.iter_mut() {
+            if let TextToken::Operator(Operator::Exists) = token {
+                *token = TextToken::Operator(Operator::Equal);
+                break;
+            }
+        }
+
+        // Verify the JSON output after in-place modification
+        let reader_after = tape.windows1252_reader();
+        let json_after = reader_after.json().to_string();
+        let expected_after = r#"{"foo":10}"#;
+        assert_eq!(&json_after, expected_after);
     }
 }

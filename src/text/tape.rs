@@ -427,6 +427,44 @@ impl<'a> TextTape<'a> {
         self.token_tape.as_slice()
     }
 
+    /// Return a mutable reference to the tokens for in-place modification
+    ///
+    /// # Safety and Correctness Caveats
+    ///
+    /// When modifying tokens in-place, the caller is **fully responsible** for ensuring
+    /// that the resulting token stream maintains structural validity. Improper modifications
+    /// can lead to undefined behavior, panics, or incorrect parsing results.
+    ///
+    /// ## Critical Requirements:
+    ///
+    /// - `Object { end: usize }` and `Array { end: usize }` tokens must have valid `end` indices
+    /// - The `end` index must point to the corresponding `End(start)` token
+    /// - `End(start)` tokens must have the correct `start` index pointing back to the opening token
+    /// - Modifying container tokens requires updating **both** the opening and closing indices
+    /// - Object keys must be scalar tokens
+    ///
+    /// ## Safe Modifications
+    /// The following modifications are generally safe:
+    /// - Changing scalar values (`Unquoted` ↔ `Quoted`)
+    /// - Modifying operator types (`Operator::Exists` → `Operator::Equal`)
+    /// - Updating scalar content (with same lifetime constraints)
+    ///
+    /// ## Example: Safe Operator Modification
+    /// ```rust
+    /// # use jomini::{TextTape, text::{TextToken, Operator}};
+    /// let mut tape = TextTape::from_slice(b"foo ?= 10").unwrap();
+    ///
+    /// // Safe: Replace exists operator with equals operator
+    /// for token in tape.tokens_mut() {
+    ///     if let TextToken::Operator(Operator::Exists) = token {
+    ///         *token = TextToken::Operator(Operator::Equal);
+    ///     }
+    /// }
+    /// ```
+    pub fn tokens_mut(&mut self) -> &mut [TextToken<'a>] {
+        self.token_tape.as_mut_slice()
+    }
+
     /// Return if there was a UTF8 BOM in the data
     pub fn utf8_bom(&self) -> bool {
         self.utf8_bom
