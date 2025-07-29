@@ -4,7 +4,7 @@ use std::fmt::Display;
 ///
 /// This enum contains only non-equal operators due to their rarity. Including
 /// an equals operator would increase the size of the token list by up to 50%.
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub enum Operator {
     /// A `<` token
     LessThan,

@@ -550,6 +550,16 @@ where
         }
     }
 
+    /// Create a new object reader directly from a token slice
+    pub fn from_tokens(tokens: &'tokens [TextToken<'data>], encoding: E) -> Self {
+        ObjectReader {
+            tokens,
+            end_ind: tokens.len(),
+            start_ind: 0,
+            encoding,
+        }
+    }
+
     /// Return the number of tokens contained within the object
     ///
     /// ```
