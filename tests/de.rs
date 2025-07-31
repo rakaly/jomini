@@ -5,7 +5,7 @@ use jomini::{
     Windows1252Encoding,
 };
 use serde::{
-    de::{self, Visitor},
+    de::{self},
     Deserialize, Deserializer,
 };
 use std::collections::HashMap;
@@ -37,17 +37,10 @@ impl Encoding for BinaryTestFlavor {
 }
 
 #[test]
-fn same_deserializer_for_header_token() {
+fn unified_rgb_deserializer() {
     #[derive(Deserialize, Debug, PartialEq)]
     struct MyStruct {
-        color: Color,
-    }
-
-    #[derive(Debug, PartialEq)]
-    struct Color {
-        red: u8,
-        blue: u8,
-        green: u8,
+        color: [u8; 3],
     }
 
     let bin_data = [
@@ -58,7 +51,7 @@ fn same_deserializer_for_header_token() {
     let mut map = HashMap::new();
     map.insert(0x053a, "color");
 
-    let txt_data = b"color = rgb { 110 27 27 }";
+    let txt_data = b"color = { 110 27 27 }";
 
     let bin_out: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
         .deserialize_slice(&bin_data[..], &map)
@@ -68,47 +61,9 @@ fn same_deserializer_for_header_token() {
     assert_eq!(
         bin_out,
         MyStruct {
-            color: Color {
-                red: 110,
-                blue: 27,
-                green: 27,
-            }
+            color: [110, 27, 27]
         }
     );
-
-    impl<'de> Deserialize<'de> for Color {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            struct ColorVisitor;
-
-            impl<'de> Visitor<'de> for ColorVisitor {
-                type Value = Color;
-
-                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                    formatter.write_str("a color")
-                }
-
-                fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-                where
-                    A: de::SeqAccess<'de>,
-                {
-                    let ty = seq.next_element::<&str>()?.expect("value type");
-                    match ty {
-                        "rgb" => {
-                            let (red, green, blue) =
-                                seq.next_element::<(u8, u8, u8)>()?.expect("rgb channels");
-                            Ok(Color { red, green, blue })
-                        }
-                        _ => panic!("unexpected color type"),
-                    }
-                }
-            }
-
-            deserializer.deserialize_seq(ColorVisitor)
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
