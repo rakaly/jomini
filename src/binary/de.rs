@@ -2574,32 +2574,8 @@ mod tests {
             where
                 D: Deserializer<'de>,
             {
-                struct ColorVisitor;
-
-                impl<'de> Visitor<'de> for ColorVisitor {
-                    type Value = Color;
-
-                    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                        formatter.write_str("a color")
-                    }
-
-                    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-                    where
-                        A: de::SeqAccess<'de>,
-                    {
-                        let ty = seq.next_element::<&str>()?.expect("value type");
-                        match ty {
-                            "rgb" => {
-                                let (red, green, blue) =
-                                    seq.next_element::<(u8, u8, u8)>()?.expect("rgb channels");
-                                Ok(Color { red, green, blue })
-                            }
-                            _ => panic!("unexpected color type"),
-                        }
-                    }
-                }
-
-                deserializer.deserialize_seq(ColorVisitor)
+                let [red, green, blue]: [u8; 3] = Deserialize::deserialize(deserializer)?;
+                Ok(Color { red, green, blue })
             }
         }
     }
@@ -2619,13 +2595,13 @@ mod tests {
         assert_eq!(
             actual,
             MyStruct {
-                color: (String::from("rgb"), (110, 27, 27, 28))
+                color: (110, 27, 27, 28)
             }
         );
 
         #[derive(Deserialize, Debug, PartialEq)]
         struct MyStruct {
-            color: (String, (u8, u8, u8, u8)),
+            color: (u8, u8, u8, u8),
         }
     }
 
