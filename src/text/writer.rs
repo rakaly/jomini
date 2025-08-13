@@ -872,7 +872,7 @@ impl Deref for ReuseVec<'_> {
 }
 
 #[inline]
-fn escape(data: &[u8], mut buffer: Vec<u8>) -> ReuseVec {
+fn escape(data: &[u8], mut buffer: Vec<u8>) -> ReuseVec<'_> {
     for (i, &x) in data.iter().enumerate() {
         if x == b'\\' || x == b'"' {
             buffer.clear();

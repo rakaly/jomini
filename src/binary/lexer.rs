@@ -89,7 +89,7 @@ pub(crate) fn read_id(data: &[u8]) -> Result<(LexemeId, &[u8]), LexError> {
 }
 
 #[inline]
-pub(crate) fn read_string(data: &[u8]) -> Result<(Scalar, &[u8]), LexError> {
+pub(crate) fn read_string(data: &[u8]) -> Result<(Scalar<'_>, &[u8]), LexError> {
     let (head, rest) = get_split::<2>(data).ok_or(LexError::Eof)?;
     let text_len = usize::from(u16::from_le_bytes(*head));
     if text_len <= rest.len() {
@@ -295,7 +295,7 @@ impl Token<'_> {
 }
 
 #[inline]
-pub(crate) fn read_token(data: &[u8]) -> Result<(Token, &[u8]), LexError> {
+pub(crate) fn read_token(data: &[u8]) -> Result<(Token<'_>, &[u8]), LexError> {
     let (id, data) = read_id(data)?;
     match id {
         LexemeId::OPEN => Ok((Token::Open, data)),

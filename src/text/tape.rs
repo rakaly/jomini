@@ -115,7 +115,7 @@ impl TextTapeParser {
     }
 
     /// Parse the text format and return the data tape
-    pub fn parse_slice(self, data: &[u8]) -> Result<TextTape, Error> {
+    pub fn parse_slice(self, data: &[u8]) -> Result<TextTape<'_>, Error> {
         let mut res = TextTape::default();
         self.parse_slice_into_tape(data, &mut res)?;
         Ok(res)
@@ -158,14 +158,14 @@ pub struct TextTape<'a> {
     utf8_bom: bool,
 }
 
-impl TextTape<'_> {
+impl<'a> TextTape<'a> {
     /// Creates a windows 1252 object reader from the parsed tape
-    pub fn windows1252_reader(&self) -> ObjectReader<Windows1252Encoding> {
+    pub fn windows1252_reader(&self) -> ObjectReader<'a, '_, Windows1252Encoding> {
         ObjectReader::new(self, Windows1252Encoding::new())
     }
 
     /// Creates a utf-8 object reader from the parsed tape
-    pub fn utf8_reader(&self) -> ObjectReader<Utf8Encoding> {
+    pub fn utf8_reader(&self) -> ObjectReader<'a, '_, Utf8Encoding> {
         ObjectReader::new(self, Utf8Encoding::new())
     }
 }
@@ -183,7 +183,7 @@ enum ParseState {
 /// when scanning multi-bytes, so this fallback is for when I was to reset and
 /// process bytewise. It is much slower, but escaped strings should be rare enough
 /// that this shouldn't be an issue
-fn parse_quote_scalar_fallback(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
+fn parse_quote_scalar_fallback(d: &[u8]) -> Result<(Scalar<'_>, &[u8]), Error> {
     let mut pos = 1;
     while pos < d.len() {
         if d[pos] == b'\\' {
@@ -200,7 +200,7 @@ fn parse_quote_scalar_fallback(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
+fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar<'_>, &[u8]), Error> {
     use crate::util::{contains_zero_byte, repeat_byte};
     let sd = &d[1..];
     unsafe {
@@ -230,9 +230,9 @@ fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
+fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar<'_>, &[u8]), Error> {
     #[target_feature(enable = "sse2")]
-    unsafe fn inner(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
+    unsafe fn inner(d: &[u8]) -> Result<(Scalar<'_>, &[u8]), Error> {
         // This is a re-implementation of memchr for a few reasons:
         //   - We maintain zero dependencies
         //   - memchr is optimized for finding a needle in a large haystack so we don't need the
@@ -277,7 +277,7 @@ fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar, &[u8]), Error> {
 }
 
 #[inline]
-fn split_at_scalar_fallback(d: &[u8]) -> (Scalar, &[u8]) {
+fn split_at_scalar_fallback(d: &[u8]) -> (Scalar<'_>, &[u8]) {
     let start_ptr = d.as_ptr();
     let end_ptr = unsafe { start_ptr.add(d.len()) };
 
@@ -292,17 +292,17 @@ fn split_at_scalar_fallback(d: &[u8]) -> (Scalar, &[u8]) {
 
 #[cfg(not(target_arch = "x86_64"))]
 #[inline]
-fn split_at_scalar(d: &[u8]) -> (Scalar, &[u8]) {
+fn split_at_scalar(d: &[u8]) -> (Scalar<'_>, &[u8]) {
     split_at_scalar_fallback(d)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
-fn split_at_scalar(d: &[u8]) -> (Scalar, &[u8]) {
+fn split_at_scalar(d: &[u8]) -> (Scalar<'_>, &[u8]) {
     #[target_feature(enable = "sse2")]
     #[inline]
     #[allow(overflowing_literals)]
-    unsafe fn inner(d: &[u8]) -> (Scalar, &[u8]) {
+    unsafe fn inner(d: &[u8]) -> (Scalar<'_>, &[u8]) {
         use core::arch::x86_64::*;
         let start_ptr = d.as_ptr();
         let loop_size = std::mem::size_of::<__m128i>();

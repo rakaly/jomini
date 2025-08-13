@@ -48,7 +48,7 @@ impl Windows1252Encoding {
     }
 
     /// Static method for decoding windows 1252 data
-    pub fn decode(data: &[u8]) -> Cow<str> {
+    pub fn decode(data: &[u8]) -> Cow<'_, str> {
         decode_windows1252(data)
     }
 }
@@ -93,7 +93,7 @@ impl Utf8Encoding {
     }
 
     /// Static method for decoding utf8 data
-    pub fn decode(data: &[u8]) -> Cow<str> {
+    pub fn decode(data: &[u8]) -> Cow<'_, str> {
         decode_utf8(data)
     }
 }
@@ -121,7 +121,7 @@ const fn trim_ascii_end(data: &[u8]) -> &[u8] {
 }
 
 #[inline]
-pub(crate) fn decode_windows1252(d: &[u8]) -> Cow<str> {
+pub(crate) fn decode_windows1252(d: &[u8]) -> Cow<'_, str> {
     let bytes = trim_ascii_end(d);
     let mut eject = false;
     for x in bytes {
@@ -155,7 +155,7 @@ fn windows_1252_create(d: &[u8], offset: usize) -> String {
 }
 
 #[inline]
-pub(crate) fn decode_utf8(d: &[u8]) -> Cow<str> {
+pub(crate) fn decode_utf8(d: &[u8]) -> Cow<'_, str> {
     // Then we iterate through the data in 8 byte chunks and ensure that each chunk
     // has no escape characters
     let d = trim_ascii_end(d);
