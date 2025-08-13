@@ -68,7 +68,7 @@ impl BufferWindow {
     }
 
     #[inline]
-    pub fn get(&self, range: Range<*const u8>) -> Scalar {
+    pub fn get(&self, range: Range<*const u8>) -> Scalar<'_> {
         debug_assert!(range.start >= self.start_buf);
         debug_assert!(range.end <= self.end);
         let len = unsafe { range.end.offset_from(range.start) as usize };

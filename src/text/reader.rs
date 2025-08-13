@@ -146,7 +146,7 @@ where
         state: ParseState,
         carry_over: usize,
         offset: usize,
-    ) -> (Option<Token>, Option<ReaderError>) {
+    ) -> (Option<Token<'_>>, Option<ReaderError>) {
         self.buf.advance_to(self.buf.end.sub(carry_over));
         match self.buf.fill_buf(&mut self.reader) {
             Ok(0) => match state {
@@ -212,7 +212,7 @@ where
         }
     }
 
-    unsafe fn next_opt_fallback(&mut self) -> (Option<Token>, Option<ReaderError>) {
+    unsafe fn next_opt_fallback(&mut self) -> (Option<Token<'_>>, Option<ReaderError>) {
         let mut ptr = self.buf.start;
         let end = self.buf.end;
 
@@ -413,7 +413,7 @@ where
     }
 
     #[inline]
-    unsafe fn next_opt(&mut self) -> (Option<Token>, Option<ReaderError>) {
+    unsafe fn next_opt(&mut self) -> (Option<Token<'_>>, Option<ReaderError>) {
         let mut ptr = self.buf.start;
         let end = self.buf.end;
 
@@ -744,7 +744,7 @@ where
     /// assert!(matches!(reader.read().unwrap_err().kind(), ReaderErrorKind::Eof));
     /// ```
     #[inline]
-    pub fn read(&mut self) -> Result<Token, ReaderError> {
+    pub fn read(&mut self) -> Result<Token<'_>, ReaderError> {
         let s = std::ptr::addr_of!(self);
         match unsafe { self.next_opt() } {
             (Some(x), _) => Ok(x),
@@ -754,7 +754,7 @@ where
     }
 
     #[inline]
-    pub(crate) fn read_expect_equals(&mut self) -> Result<Token, ReaderError> {
+    pub(crate) fn read_expect_equals(&mut self) -> Result<Token<'_>, ReaderError> {
         match self.buf.window().first() {
             Some(b'=') => {
                 self.buf.advance(1);
@@ -776,7 +776,7 @@ where
     /// ```
     #[inline]
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Result<Option<Token>, ReaderError> {
+    pub fn next(&mut self) -> Result<Option<Token<'_>>, ReaderError> {
         match unsafe { self.next_opt() } {
             (Some(x), _) => Ok(Some(x)),
             (None, None) => Ok(None),

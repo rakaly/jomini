@@ -1235,7 +1235,7 @@ where
         self,
         reader: R,
         resolver: &RES,
-    ) -> BinaryReaderDeserializer<RES, F, R>
+    ) -> BinaryReaderDeserializer<'_, RES, F, R>
     where
         RES: TokenResolver,
     {

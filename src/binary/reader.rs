@@ -203,13 +203,13 @@ where
     /// assert!(matches!(reader.read().unwrap_err().kind(), ReaderErrorKind::Lexer(LexError::Eof)));
     /// ```
     #[inline]
-    pub fn read(&mut self) -> Result<Token, ReaderError> {
+    pub fn read(&mut self) -> Result<Token<'_>, ReaderError> {
         let s = std::ptr::addr_of!(self);
         self.next()?
             .ok_or_else(|| unsafe { s.read().lex_error(LexError::Eof) })
     }
 
-    fn refill_next(&mut self) -> Result<Option<Token>, ReaderError> {
+    fn refill_next(&mut self) -> Result<Option<Token<'_>>, ReaderError> {
         match self.buf.fill_buf(&mut self.reader) {
             Ok(0) if self.buf.window_len() == 0 => Ok(None),
             Ok(0) => Err(self.lex_error(LexError::Eof)),
@@ -233,7 +233,7 @@ where
     /// ```
     #[inline]
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Result<Option<Token>, ReaderError> {
+    pub fn next(&mut self) -> Result<Option<Token<'_>>, ReaderError> {
         let window = unsafe { std::slice::from_raw_parts(self.buf.start, self.buf.window_len()) };
         match read_token(window) {
             Ok((tok, new_data)) => {
