@@ -480,19 +480,26 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        let mut seq = TextReaderSeq::new(self.de);
-        let result = visitor.visit_seq(&mut seq)?;
-        if !seq.hit_end {
-            // For when we are deserializing an array that doesn't read
-            // the closing token
-            if !matches!(unsafe { self.de.read() }.reader.read()?, Token::Close) {
-                return Err(Error::invalid_syntax(
-                    "Expected sequence to be terminated with an end token",
-                    unsafe { self.de.read() }.reader.position(),
-                ));
+        if matches!(self.token, Token::Open) {
+            let mut seq = TextReaderSeq::new(self.de);
+            let result = visitor.visit_seq(&mut seq)?;
+            if !seq.hit_end {
+                // For when we are deserializing an array that doesn't read
+                // the closing token, we close it for them
+                if !matches!(unsafe { self.de.read() }.reader.read()?, Token::Close) {
+                    return Err(Error::invalid_syntax(
+                        "Expected sequence to be terminated with an end token",
+                        unsafe { self.de.read() }.reader.position(),
+                    ));
+                }
             }
+
+            Ok(result)
+        } else {
+            let mut seq = TextReaderInitSeq::new(self.de, self.token);
+            let result = visitor.visit_seq(&mut seq)?;
+            Ok(result)
         }
-        Ok(result)
     }
 
     fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
@@ -603,6 +610,52 @@ where
                 self.hit_end = true;
                 Ok(None)
             }
+            token => seed
+                .deserialize(TextReaderTokenDeserializer::new(self.de, token))
+                .map(Some),
+        }
+    }
+}
+
+/// For deserializing a sequence where there is an initial token that is not
+/// Token::Open. Useful for deserializing header containers:
+/// 
+/// ```plain
+/// color = rgb { 100 10 200 }
+/// ```
+struct TextReaderInitSeq<'a, R, E> {
+    de: *const &'a mut TextReaderDeserializer<R, E>,
+    token: Option<Token<'a>>,
+}
+
+impl<'a, R, E> TextReaderInitSeq<'a, R, E> {
+    fn new(de: *const &'a mut TextReaderDeserializer<R, E>, token: Token<'a>) -> Self {
+        TextReaderInitSeq {
+            de,
+            token: Some(token),
+        }
+    }
+}
+
+impl<'de, R, E> de::SeqAccess<'de> for TextReaderInitSeq<'_, R, E>
+where
+    R: Read,
+    E: Encoding,
+{
+    type Error = Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        if let Some(token) = self.token.take() {
+            return seed
+                .deserialize(TextReaderTokenDeserializer::new(self.de, token))
+                .map(Some);
+        }
+
+        match unsafe { self.de.read() }.reader.read()? {
+            Token::Close => Ok(None),
             token => seed
                 .deserialize(TextReaderTokenDeserializer::new(self.de, token))
                 .map(Some),
@@ -2457,7 +2510,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialize_colors() {
+    fn test_deserialize_color() {
         let data = b"color = rgb { 100 200 150 } color2 = hsv { 0.3 0.2 0.8 }";
 
         #[derive(Debug, PartialEq)]
@@ -2474,7 +2527,15 @@ mod tests {
             },
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        #[derive(Debug, PartialEq, Deserialize)]
+        #[serde(rename_all = "lowercase")]
+        enum ColorHeader {
+            Rgb,
+            Hsv,
+        }
+
+        let actual: MyStruct = from_owned(&data[..]);
+
         assert_eq!(
             actual,
             MyStruct {
@@ -2500,29 +2561,29 @@ mod tests {
         impl<'de> Deserialize<'de> for MyColor {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
-                D: Deserializer<'de>,
+                D: de::Deserializer<'de>,
             {
                 struct ColorVisitor;
 
-                impl<'de> Visitor<'de> for ColorVisitor {
+                impl<'de> de::Visitor<'de> for ColorVisitor {
                     type Value = MyColor;
 
                     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                        formatter.write_str("a color")
+                        formatter.write_str("a color sequence")
                     }
 
                     fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
                     where
                         A: de::SeqAccess<'de>,
                     {
-                        let ty = seq.next_element::<&str>()?.expect("value type");
+                        let ty = seq.next_element::<ColorHeader>()?.expect("color type");
                         match ty {
-                            "rgb" => {
+                            ColorHeader::Rgb => {
                                 let (red, green, blue) =
                                     seq.next_element::<(u8, u8, u8)>()?.unwrap();
                                 Ok(MyColor::Rgb { red, green, blue })
                             }
-                            "hsv" => {
+                            ColorHeader::Hsv => {
                                 let (hue, saturation, value) = seq
                                     .next_element::<(f32, f32, f32)>()?
                                     .expect("hsv channels");
@@ -2532,7 +2593,6 @@ mod tests {
                                     value,
                                 })
                             }
-                            _ => panic!("unexpected color type"),
                         }
                     }
                 }
