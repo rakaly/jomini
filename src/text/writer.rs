@@ -252,6 +252,7 @@ where
     /// ```
     #[inline]
     pub fn write_operator(&mut self, data: Operator) -> Result<(), Error> {
+        self.needs_line_terminator = false;
         if self.mixed_mode == MixedMode::Disabled {
             if data == Operator::Equal {
                 self.writer.write_all(b"=")?;
@@ -1471,6 +1472,33 @@ mod tests {
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
             "data={\n  10 0=1 2=3\n}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_object_literal() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_unquoted(b"data")?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_start()?;
+        writer.write_start()?;
+        writer.write_unquoted(b"hello")?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_unquoted(b"world")?;
+        writer.write_end()?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_start()?;
+        writer.write_unquoted(b"foo")?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_unquoted(b"bar")?;
+        writer.write_end()?;
+        writer.write_end()?;
+
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "data={\n  {\n    hello=world\n  }={\n    foo=bar\n  }\n}"
         );
         Ok(())
     }
