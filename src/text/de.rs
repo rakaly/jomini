@@ -619,7 +619,7 @@ where
 
 /// For deserializing a sequence where there is an initial token that is not
 /// Token::Open. Useful for deserializing header containers:
-/// 
+///
 /// ```plain
 /// color = rgb { 100 10 200 }
 /// ```
