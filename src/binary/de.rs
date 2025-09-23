@@ -211,8 +211,25 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
     deserialize_scalar!(deserialize_u8);
     deserialize_scalar!(deserialize_char);
     deserialize_scalar!(deserialize_identifier);
-    deserialize_scalar!(deserialize_bytes);
-    deserialize_scalar!(deserialize_byte_buf);
+
+    #[inline]
+    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.token {
+            Token::Quoted(x) | Token::Unquoted(x) => visitor.visit_bytes(x.as_bytes()),
+            _ => self.deser(visitor),
+        }
+    }
+
+    #[inline]
+    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_bytes(visitor)
+    }
 
     #[inline]
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -774,8 +791,26 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializ
     deserialize_scalar!(deserialize_u8);
     deserialize_scalar!(deserialize_char);
     deserialize_scalar!(deserialize_identifier);
-    deserialize_scalar!(deserialize_bytes);
-    deserialize_scalar!(deserialize_byte_buf);
+
+    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.token {
+            LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                let data = self.de.parser.read_string()?;
+                visitor.visit_borrowed_bytes(data.as_bytes())
+            }
+            _ => self.deser(visitor),
+        }
+    }
+
+    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_bytes(visitor)
+    }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -1303,7 +1338,7 @@ struct BinaryConfig<'res, RES, F> {
 mod tests {
     use super::*;
     use crate::common::{Date, DateHour};
-    use crate::{Encoding, Windows1252Encoding};
+    use crate::{Encoding, Scalar, Windows1252Encoding};
     use jomini_derive::JominiDeserialize;
     use serde::{de::Deserializer, Deserialize};
     use std::{collections::HashMap, fmt, marker::PhantomData};
@@ -2718,6 +2753,85 @@ mod tests {
                         18
                     ),
                 ])
+            }
+        );
+    }
+
+    #[test]
+    fn test_deserialize_bytes() {
+        #[derive(PartialEq, Debug)]
+        struct ByteField(Vec<u8>);
+
+        impl<'de> Deserialize<'de> for ByteField {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                struct ByteVisitor;
+
+                impl<'de> Visitor<'de> for ByteVisitor {
+                    type Value = ByteField;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                        formatter.write_str("bytes")
+                    }
+
+                    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        Ok(ByteField(v.to_vec()))
+                    }
+
+                    fn visit_borrowed_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        Ok(ByteField(v.to_vec()))
+                    }
+
+                    fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        Ok(ByteField(v))
+                    }
+                }
+
+                deserializer.deserialize_bytes(ByteVisitor)
+            }
+        }
+
+        #[derive(JominiDeserialize, Debug, PartialEq)]
+        struct MyStruct {
+            #[jomini(token = 0x1234)]
+            text_field: ByteField,
+            #[jomini(token = 0x5678)]
+            text_field2: String,
+        }
+
+        let out = Vec::new();
+        let mut writer = std::io::Cursor::new(out);
+        for token in [
+            Token::Id(0x1234),
+            Token::Equal,
+            Token::Quoted(Scalar::new(br#"Joe \"Captain\" Rogers "#)),
+            Token::Id(0x5678),
+            Token::Equal,
+            Token::Quoted(Scalar::new(br#"Joe \"Captain\" Rogers "#)),
+        ] {
+            token.write(&mut writer).unwrap();
+        }
+
+        let binary_data = writer.into_inner();
+        let hash = HashMap::<u16, &str>::new();
+        let actual: MyStruct = from_slice(&binary_data, &hash).unwrap();
+
+        assert_eq!(
+            actual,
+            MyStruct {
+                text_field: ByteField(b"Joe \\\"Captain\\\" Rogers ".to_vec()),
+                text_field2: String::from("Joe \"Captain\" Rogers")
             }
         );
     }

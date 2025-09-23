@@ -3118,4 +3118,56 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn test_deserialize_bytes() {
+        #[derive(PartialEq, Debug)]
+        struct ByteField(Vec<u8>);
+
+        impl<'de> Deserialize<'de> for ByteField {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                struct ByteVisitor;
+
+                impl<'de> Visitor<'de> for ByteVisitor {
+                    type Value = ByteField;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                        formatter.write_str("bytes")
+                    }
+
+                    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        Ok(ByteField(v.to_vec()))
+                    }
+
+                    fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        Ok(ByteField(v))
+                    }
+                }
+
+                deserializer.deserialize_bytes(ByteVisitor)
+            }
+        }
+
+        // Test data with escape sequences that would normally be processed
+        let data = br#"raw_field="Joe \"Captain\" Rogers " string_field="Joe \"Captain\" Rogers ""#;
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            raw_field: ByteField,
+            string_field: String,
+        }
+
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(actual.raw_field.0, b"Joe \\\"Captain\\\" Rogers ");
+        assert_eq!(actual.string_field, "Joe \"Captain\" Rogers");
+    }
 }
