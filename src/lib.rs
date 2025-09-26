@@ -280,7 +280,7 @@ pub mod binary;
 pub(crate) mod buffer;
 pub mod common;
 mod data;
-#[cfg(feature = "derive")]
+#[cfg(feature = "serde")]
 pub(crate) mod de;
 mod encoding;
 mod errors;
@@ -296,7 +296,7 @@ pub use self::scalar::{Scalar, ScalarError};
 #[doc(inline)]
 pub use self::text::{TextTape, TextToken, TextWriter, TextWriterBuilder};
 
-#[cfg(feature = "derive")]
+#[cfg(feature = "serde")]
 #[doc(inline)]
 pub use self::{binary::de::BinaryDeserializer, text::de::TextDeserializer};
 #[cfg(feature = "derive")]

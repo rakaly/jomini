@@ -21,7 +21,7 @@
 //! - [ValuesIter]
 
 /// text deserialization
-#[cfg(feature = "derive")]
+#[cfg(feature = "serde")]
 pub mod de;
 mod dom;
 mod fnv;
@@ -30,7 +30,7 @@ mod reader;
 mod tape;
 mod writer;
 
-#[cfg(feature = "derive")]
+#[cfg(feature = "serde")]
 #[doc(inline)]
 pub use self::de::Property;
 pub use self::dom::{

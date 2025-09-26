@@ -66,9 +66,9 @@
 //! - If the `token` attribute is specified on one field on a struct, it must be specified on all fields of that struct.
 
 /// binary deserialization
-#[cfg(feature = "derive")]
+#[cfg(feature = "serde")]
 pub mod de;
-#[cfg(feature = "derive")]
+#[cfg(feature = "serde")]
 pub use self::de::{BinaryDeserializer, BinaryDeserializerBuilder};
 
 mod flavor;

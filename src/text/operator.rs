@@ -91,7 +91,7 @@ impl Operator {
     }
 }
 
-#[cfg(feature = "derive")]
+#[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Operator {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

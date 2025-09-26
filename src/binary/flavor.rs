@@ -1,4 +1,4 @@
-#[cfg(feature = "derive")]
+#[cfg(feature = "serde")]
 use crate::{
     binary::{de::BinaryDeserializerBuilder, TokenResolver},
     Error,
@@ -16,7 +16,7 @@ pub trait BinaryFlavor: crate::Encoding {
     fn visit_f64(&self, data: [u8; 8]) -> f64;
 
     /// Create binary deserializer from this binary flavor
-    #[cfg(feature = "derive")]
+    #[cfg(feature = "serde")]
     fn deserializer(&self) -> BinaryDeserializerBuilder<&Self>
     where
         Self: Sized,
@@ -25,7 +25,7 @@ pub trait BinaryFlavor: crate::Encoding {
     }
 
     /// Deserialize value from slice of data with this binary flavor
-    #[cfg(feature = "derive")]
+    #[cfg(feature = "serde")]
     fn deserialize_slice<'de, 'res: 'de, T, RES>(
         &self,
         data: &'de [u8],
@@ -40,7 +40,7 @@ pub trait BinaryFlavor: crate::Encoding {
     }
 
     /// Deserialize value from stream of data with this binary flavor
-    #[cfg(feature = "derive")]
+    #[cfg(feature = "serde")]
     fn deserialize_reader<T, RES, R>(&self, reader: R, resolver: &RES) -> Result<T, Error>
     where
         T: serde::de::DeserializeOwned,
