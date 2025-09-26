@@ -598,7 +598,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg(feature = "derive")]
+    #[cfg(feature = "serde")]
     pub fn deserialize<T>(&self) -> Result<T, crate::Error>
     where
         T: serde::Deserialize<'data>,
@@ -681,7 +681,7 @@ impl<'data, E> ValueReader<'data, '_, E> {
         &self.tokens[self.value_ind]
     }
 
-    #[cfg(feature = "derive")]
+    #[cfg(feature = "serde")]
     pub(crate) fn next(&mut self) -> Option<&TextToken<'data>> {
         self.value_ind += 1;
         self.tokens.get(self.value_ind)

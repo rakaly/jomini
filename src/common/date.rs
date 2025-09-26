@@ -1148,7 +1148,7 @@ fn to_binary(year: i16, ordinal_day: i32, hour: u8) -> i32 {
     (year_part + ordinal_day) * 24 + hour
 }
 
-#[cfg(feature = "derive")]
+#[cfg(feature = "serde")]
 mod datederive {
     use super::{Date, DateHour, PdsDate, UniformDate};
     use serde::{de, de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
@@ -1289,7 +1289,7 @@ mod datederive {
     }
 }
 
-#[cfg(not(feature = "derive"))]
+#[cfg(not(feature = "serde"))]
 mod datederive {}
 
 #[cfg(test)]

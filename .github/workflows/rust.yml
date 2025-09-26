@@ -70,6 +70,8 @@ jobs:
       run: ${{ env.CARGO }} test --no-default-features --all --verbose $TARGET
     - name: Run json tests
       run: ${{ env.CARGO }} test --features json --all --verbose $TARGET
+    - name: Run serde-only tests (no derive macros)
+      run: ${{ env.CARGO }} test --no-default-features --features serde --all --verbose $TARGET
 
     - name: Compile benchmarks
       if: matrix.build == 'stable'

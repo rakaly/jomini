@@ -1170,6 +1170,8 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
 /// The example below demonstrates how to deserialize data
 ///
 /// ```
+/// # #[cfg(feature = "derive")] {
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use jomini::{Encoding, JominiDeserialize, Windows1252Encoding, BinaryDeserializer};
 /// use serde::Deserialize;
 /// use std::{borrow::Cow, collections::HashMap};
@@ -1216,7 +1218,9 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
 ///   field2: 89,
 /// });
 ///
-/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// # Ok(())
+/// # }
+/// # }
 /// ```
 ///
 /// Build a tweaked binary deserializer
@@ -1334,7 +1338,7 @@ struct BinaryConfig<'res, RES, F> {
     flavor: F,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "derive"))]
 mod tests {
     use super::*;
     use crate::common::{Date, DateHour};

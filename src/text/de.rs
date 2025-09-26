@@ -17,6 +17,8 @@ use std::{
 /// preserve operators.
 ///
 /// ```
+/// # #[cfg(feature = "derive")] {
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use jomini::{
 ///     text::{Operator, Property},
 ///     JominiDeserialize, TextDeserializer,
@@ -47,7 +49,9 @@ use std::{
 /// struct MyStruct {
 ///     modifier: Modifier,
 /// }
-/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// # Ok(())
+/// # }
+/// # }
 /// ```
 #[derive(serde::Deserialize)]
 #[serde(rename = "_internal_jomini_property")]
@@ -1745,7 +1749,7 @@ impl<'de> de::Deserializer<'de> for OperatorDeserializer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "derive"))]
 mod tests {
     use super::*;
     use crate::common::{Date, DateHour, UniformDate};
