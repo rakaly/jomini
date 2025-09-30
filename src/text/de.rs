@@ -1,8 +1,8 @@
-use super::{dom::ValuesIter, reader::Token, TokenReader};
+use super::{TokenReader, dom::ValuesIter, reader::Token};
 use crate::{
-    text::{ArrayReader, FieldsIter, ObjectReader, Operator, Reader, ScalarReader, ValueReader},
     DeserializeError, DeserializeErrorKind, Encoding, Error, TextTape, TextToken, Utf8Encoding,
     Windows1252Encoding,
+    text::{ArrayReader, FieldsIter, ObjectReader, Operator, Reader, ScalarReader, ValueReader},
 };
 use serde::de::{self, Deserialize, DeserializeOwned, DeserializeSeed, Visitor};
 use std::{
@@ -241,7 +241,7 @@ impl<'de, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'_, R, E> {
                 Ok(Some(token)) => {
                     return seed
                         .deserialize(TextReaderTokenDeserializer::new(self.de, token))
-                        .map(Some)
+                        .map(Some);
                 }
                 Ok(None) if self.root => return Ok(None),
                 Ok(None) => return Err(unsafe { self.de.read() }.reader.eof_error().into()),
@@ -1522,14 +1522,14 @@ where
     where
         V: Visitor<'de>,
     {
-        if name == "_internal_jomini_property" {
-            if let ValueKind::OperatorValue(x) = self.kind {
-                return visitor.visit_map(PropertyMap {
-                    value: x.clone(),
-                    config: self.config,
-                    state: 0,
-                });
-            }
+        if name == "_internal_jomini_property"
+            && let ValueKind::OperatorValue(x) = self.kind
+        {
+            return visitor.visit_map(PropertyMap {
+                value: x.clone(),
+                config: self.config,
+                state: 0,
+            });
         }
 
         self.deserialize_map(visitor)
@@ -1756,8 +1756,8 @@ mod tests {
     use jomini_derive::JominiDeserialize;
     use rstest::rstest;
     use serde::{
-        de::{self, DeserializeOwned, Deserializer},
         Deserialize,
+        de::{self, DeserializeOwned, Deserializer},
     };
     use std::fmt;
     use std::{collections::HashMap, marker::PhantomData};

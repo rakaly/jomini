@@ -1,11 +1,11 @@
 use super::{
-    lexer::{LexemeId, Lexer},
     LexError, Token, TokenReader, TokenReaderBuilder,
+    lexer::{LexemeId, Lexer},
 };
 use crate::{
+    DeserializeError, DeserializeErrorKind, Error,
     binary::{BinaryFlavor, FailedResolveStrategy, TokenResolver},
     de::ColorSequence,
-    DeserializeError, DeserializeErrorKind, Error,
 };
 use serde::de::{
     self, Deserialize, DeserializeOwned, DeserializeSeed, MapAccess, SeqAccess, Visitor,
@@ -101,13 +101,13 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> MapAccess<'de
                 Ok(Some(token)) => {
                     return seed
                         .deserialize(BinaryReaderTokenDeserializer { de: self.de, token })
-                        .map(Some)
+                        .map(Some);
                 }
                 Ok(None) if self.root => return Ok(None),
                 Ok(None) => {
                     return Err(LexError::Eof
                         .at(unsafe { self.de.read() }.reader.position())
-                        .into())
+                        .into());
                 }
                 Err(e) => return Err(e.into()),
             }
@@ -689,13 +689,13 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
                             de: &mut *self.de,
                             token,
                         })
-                        .map(Some)
+                        .map(Some);
                 }
                 Err(e) => {
                     return match e.kind() {
                         LexError::Eof if self.root => Ok(None),
                         _ => Err(e.into()),
-                    }
+                    };
                 }
             }
         }
@@ -1344,7 +1344,7 @@ mod tests {
     use crate::common::{Date, DateHour};
     use crate::{Encoding, Scalar, Windows1252Encoding};
     use jomini_derive::JominiDeserialize;
-    use serde::{de::Deserializer, Deserialize};
+    use serde::{Deserialize, de::Deserializer};
     use std::{collections::HashMap, fmt, marker::PhantomData};
 
     /// The eu4 binary flavor

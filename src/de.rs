@@ -1,4 +1,4 @@
-use crate::{binary::Rgb, Error};
+use crate::{Error, binary::Rgb};
 use de::{DeserializeSeed, SeqAccess, Visitor};
 use serde::de;
 

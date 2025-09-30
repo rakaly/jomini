@@ -1,9 +1,9 @@
+use crate::{Error, ErrorKind, Scalar};
 use crate::{
+    Utf8Encoding, Windows1252Encoding,
     data::is_boundary,
     text::{ObjectReader, Operator},
-    Utf8Encoding, Windows1252Encoding,
 };
-use crate::{Error, ErrorKind, Scalar};
 
 /// Represents a valid text value
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,43 +233,45 @@ fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar<'_>, &[u8]), Error> {
 fn parse_quote_scalar(d: &[u8]) -> Result<(Scalar<'_>, &[u8]), Error> {
     #[target_feature(enable = "sse2")]
     unsafe fn inner(d: &[u8]) -> Result<(Scalar<'_>, &[u8]), Error> {
-        // This is a re-implementation of memchr for a few reasons:
-        //   - We maintain zero dependencies
-        //   - memchr is optimized for finding a needle in a large haystack so we don't need the
-        //   following performance improvements from memchr:
-        //     - avx2 (there's no perf difference between sse2 and avx2 for our input)
-        //     - aligned loads (we use unaligned)
-        //     - loop unrolling
-        use core::arch::x86_64::*;
-        let haystack = &d[1..];
-        let start_ptr = haystack.as_ptr();
-        let mut ptr = start_ptr;
-        let loop_size = std::mem::size_of::<__m128i>();
-        let end_ptr = start_ptr.add(haystack.len() / loop_size * loop_size);
-        let quote = _mm_set1_epi8(b'"' as i8);
-        let slash = _mm_set1_epi8(b'\\' as i8);
+        unsafe {
+            // This is a re-implementation of memchr for a few reasons:
+            //   - We maintain zero dependencies
+            //   - memchr is optimized for finding a needle in a large haystack so we don't need the
+            //   following performance improvements from memchr:
+            //     - avx2 (there's no perf difference between sse2 and avx2 for our input)
+            //     - aligned loads (we use unaligned)
+            //     - loop unrolling
+            use core::arch::x86_64::*;
+            let haystack = &d[1..];
+            let start_ptr = haystack.as_ptr();
+            let mut ptr = start_ptr;
+            let loop_size = std::mem::size_of::<__m128i>();
+            let end_ptr = start_ptr.add(haystack.len() / loop_size * loop_size);
+            let quote = _mm_set1_epi8(b'"' as i8);
+            let slash = _mm_set1_epi8(b'\\' as i8);
 
-        while ptr < end_ptr {
-            let reg = _mm_loadu_si128(ptr as *const __m128i);
-            let slash_found = _mm_cmpeq_epi8(slash, reg);
-            if _mm_movemask_epi8(slash_found) != 0 {
-                break;
+            while ptr < end_ptr {
+                let reg = _mm_loadu_si128(ptr as *const __m128i);
+                let slash_found = _mm_cmpeq_epi8(slash, reg);
+                if _mm_movemask_epi8(slash_found) != 0 {
+                    break;
+                }
+
+                let quote_found = _mm_cmpeq_epi8(quote, reg);
+                let mask = _mm_movemask_epi8(quote_found);
+                if mask != 0 {
+                    let at = sub(ptr, start_ptr);
+                    let end_idx = at + (mask.trailing_zeros() as usize);
+                    let scalar = std::slice::from_raw_parts(start_ptr, end_idx);
+                    let scalar = Scalar::new(scalar);
+                    return Ok((scalar, &haystack[end_idx + 1..]));
+                }
+
+                ptr = ptr.add(loop_size);
             }
 
-            let quote_found = _mm_cmpeq_epi8(quote, reg);
-            let mask = _mm_movemask_epi8(quote_found);
-            if mask != 0 {
-                let at = sub(ptr, start_ptr);
-                let end_idx = at + (mask.trailing_zeros() as usize);
-                let scalar = std::slice::from_raw_parts(start_ptr, end_idx);
-                let scalar = Scalar::new(scalar);
-                return Ok((scalar, &haystack[end_idx + 1..]));
-            }
-
-            ptr = ptr.add(loop_size);
+            parse_quote_scalar_fallback(d)
         }
-
-        parse_quote_scalar_fallback(d)
     }
 
     // from memchr: "SSE2 is avalbale on all x86_64 targets, so no CPU feature detection is necessary"
@@ -303,103 +305,105 @@ fn split_at_scalar(d: &[u8]) -> (Scalar<'_>, &[u8]) {
     #[inline]
     #[allow(overflowing_literals)]
     unsafe fn inner(d: &[u8]) -> (Scalar<'_>, &[u8]) {
-        use core::arch::x86_64::*;
-        let start_ptr = d.as_ptr();
-        let loop_size = std::mem::size_of::<__m128i>();
-        let end_ptr = d.as_ptr_range().end.sub(loop_size.min(d.len()));
-        let mut ptr = start_ptr;
+        unsafe {
+            use core::arch::x86_64::*;
+            let start_ptr = d.as_ptr();
+            let loop_size = std::mem::size_of::<__m128i>();
+            let end_ptr = d.as_ptr_range().end.sub(loop_size.min(d.len()));
+            let mut ptr = start_ptr;
 
-        // Here we use SIMD instructions to detect certain bytes.
-        // The method used is described here:
-        // http://0x80.pl/articles/simd-byte-lookup.html
-        //
-        // Loop partially auto-generated by the author's python code:
-        // https://github.com/WojciechMula/simd-byte-lookup
-        //
-        // Interestingly the naive approach had the best performance.
-        // To save myself some future time, here is the nibble diagram
-        // of the characters that define a boundary character
-        //
-        //    lo / hi nibble
-        //    +----------------- | ---------------
-        //    | 0 1 2 3 4 5 6 7  | 8 9 a b c d e f
-        //  --+----------------- | ---------------
-        //  0 | . . x . . . . .  | . . . . . . . .
-        //  1 | . . x . . . . .  | . . . . . . . .
-        //  2 | . . . . . . . .  | . . . . . . . .
-        //  3 | . . x . . . . .  | . . . . . . . .
-        //  4 | . . . . . . . .  | . . . . . . . .
-        //  5 | . . . . . . . .  | . . . . . . . .
-        //  6 | . . . . . . . .  | . . . . . . . .
-        //  7 | . . . . . . . .  | . . . . . . . .
-        //  8 | . . . . . . . .  | . . . . . . . .
-        //  9 | x . . . . . . .  | . . . . . . . .
-        //  a | x . . . . . . .  | . . . . . . . .
-        //  b | x . . . . x . x  | . . . . . . . .
-        //  c | x . . x . . . .  | . . . . . . . .
-        //  d | x . . x . x . x  | . . . . . . . .
-        //  e | . . . x . . . .  | . . . . . . . .
-        //  f | . . . . . . . .  | . . . . . . . .
-        //
-        // \t = 0x09
-        // \n = 0x0a
-        // \v = 0x0b *
-        // \f = 0x0c *
-        // \r = 0x0d
-        // sp = 0x20
-        //  ! = 0x21 *
-        //  # = 0x23
-        //  ; = 0x3b
-        //  < = 0x3c
-        //  = = 0x3d
-        //  > = 0x3e
-        //  [ = 0x5b
-        //  ] = 0x5d
-        //  { = 0x7b
-        //  } = 0x7d
-        // * = unknown if boundary character. Can be removed for perf
-        while ptr < end_ptr {
-            let input = _mm_loadu_si128(ptr as *const __m128i);
-            let t0 = _mm_cmpeq_epi8(input, _mm_set1_epi8(9));
-            let mut result = t0;
-            let t1 = _mm_cmpeq_epi8(input, _mm_set1_epi8(10));
-            result = _mm_or_si128(result, t1);
-            let t2 = _mm_cmpeq_epi8(input, _mm_set1_epi8(13));
-            result = _mm_or_si128(result, t2);
-            let t3 = _mm_cmpeq_epi8(input, _mm_set1_epi8(32));
-            result = _mm_or_si128(result, t3);
-            let t4 = _mm_cmpeq_epi8(input, _mm_set1_epi8(35));
-            result = _mm_or_si128(result, t4);
-            let t5 = _mm_cmpeq_epi8(input, _mm_set1_epi8(59));
-            result = _mm_or_si128(result, t5);
-            let t6 = _mm_cmpeq_epi8(input, _mm_set1_epi8(60));
-            result = _mm_or_si128(result, t6);
-            let t7 = _mm_cmpeq_epi8(input, _mm_set1_epi8(61));
-            result = _mm_or_si128(result, t7);
-            let t8 = _mm_cmpeq_epi8(input, _mm_set1_epi8(62));
-            result = _mm_or_si128(result, t8);
-            let t9 = _mm_cmpeq_epi8(input, _mm_set1_epi8(123));
-            result = _mm_or_si128(result, t9);
-            let t10 = _mm_cmpeq_epi8(input, _mm_set1_epi8(125));
-            result = _mm_or_si128(result, t10);
-            let t11 = _mm_cmpeq_epi8(input, _mm_set1_epi8(91));
-            result = _mm_or_si128(result, t11);
-            let t12 = _mm_cmpeq_epi8(input, _mm_set1_epi8(93));
-            result = _mm_or_si128(result, t12);
+            // Here we use SIMD instructions to detect certain bytes.
+            // The method used is described here:
+            // http://0x80.pl/articles/simd-byte-lookup.html
+            //
+            // Loop partially auto-generated by the author's python code:
+            // https://github.com/WojciechMula/simd-byte-lookup
+            //
+            // Interestingly the naive approach had the best performance.
+            // To save myself some future time, here is the nibble diagram
+            // of the characters that define a boundary character
+            //
+            //    lo / hi nibble
+            //    +----------------- | ---------------
+            //    | 0 1 2 3 4 5 6 7  | 8 9 a b c d e f
+            //  --+----------------- | ---------------
+            //  0 | . . x . . . . .  | . . . . . . . .
+            //  1 | . . x . . . . .  | . . . . . . . .
+            //  2 | . . . . . . . .  | . . . . . . . .
+            //  3 | . . x . . . . .  | . . . . . . . .
+            //  4 | . . . . . . . .  | . . . . . . . .
+            //  5 | . . . . . . . .  | . . . . . . . .
+            //  6 | . . . . . . . .  | . . . . . . . .
+            //  7 | . . . . . . . .  | . . . . . . . .
+            //  8 | . . . . . . . .  | . . . . . . . .
+            //  9 | x . . . . . . .  | . . . . . . . .
+            //  a | x . . . . . . .  | . . . . . . . .
+            //  b | x . . . . x . x  | . . . . . . . .
+            //  c | x . . x . . . .  | . . . . . . . .
+            //  d | x . . x . x . x  | . . . . . . . .
+            //  e | . . . x . . . .  | . . . . . . . .
+            //  f | . . . . . . . .  | . . . . . . . .
+            //
+            // \t = 0x09
+            // \n = 0x0a
+            // \v = 0x0b *
+            // \f = 0x0c *
+            // \r = 0x0d
+            // sp = 0x20
+            //  ! = 0x21 *
+            //  # = 0x23
+            //  ; = 0x3b
+            //  < = 0x3c
+            //  = = 0x3d
+            //  > = 0x3e
+            //  [ = 0x5b
+            //  ] = 0x5d
+            //  { = 0x7b
+            //  } = 0x7d
+            // * = unknown if boundary character. Can be removed for perf
+            while ptr < end_ptr {
+                let input = _mm_loadu_si128(ptr as *const __m128i);
+                let t0 = _mm_cmpeq_epi8(input, _mm_set1_epi8(9));
+                let mut result = t0;
+                let t1 = _mm_cmpeq_epi8(input, _mm_set1_epi8(10));
+                result = _mm_or_si128(result, t1);
+                let t2 = _mm_cmpeq_epi8(input, _mm_set1_epi8(13));
+                result = _mm_or_si128(result, t2);
+                let t3 = _mm_cmpeq_epi8(input, _mm_set1_epi8(32));
+                result = _mm_or_si128(result, t3);
+                let t4 = _mm_cmpeq_epi8(input, _mm_set1_epi8(35));
+                result = _mm_or_si128(result, t4);
+                let t5 = _mm_cmpeq_epi8(input, _mm_set1_epi8(59));
+                result = _mm_or_si128(result, t5);
+                let t6 = _mm_cmpeq_epi8(input, _mm_set1_epi8(60));
+                result = _mm_or_si128(result, t6);
+                let t7 = _mm_cmpeq_epi8(input, _mm_set1_epi8(61));
+                result = _mm_or_si128(result, t7);
+                let t8 = _mm_cmpeq_epi8(input, _mm_set1_epi8(62));
+                result = _mm_or_si128(result, t8);
+                let t9 = _mm_cmpeq_epi8(input, _mm_set1_epi8(123));
+                result = _mm_or_si128(result, t9);
+                let t10 = _mm_cmpeq_epi8(input, _mm_set1_epi8(125));
+                result = _mm_or_si128(result, t10);
+                let t11 = _mm_cmpeq_epi8(input, _mm_set1_epi8(91));
+                result = _mm_or_si128(result, t11);
+                let t12 = _mm_cmpeq_epi8(input, _mm_set1_epi8(93));
+                result = _mm_or_si128(result, t12);
 
-            let found_mask = _mm_movemask_epi8(result);
-            if found_mask != 0 {
-                let at = sub(ptr, start_ptr);
-                let end_idx = at + (found_mask.trailing_zeros() as usize);
-                let end_idx = std::cmp::max(end_idx, 1);
-                let scalar = std::slice::from_raw_parts(start_ptr, end_idx);
-                let scalar = Scalar::new(scalar);
-                return (scalar, &d[end_idx..]);
+                let found_mask = _mm_movemask_epi8(result);
+                if found_mask != 0 {
+                    let at = sub(ptr, start_ptr);
+                    let end_idx = at + (found_mask.trailing_zeros() as usize);
+                    let end_idx = std::cmp::max(end_idx, 1);
+                    let scalar = std::slice::from_raw_parts(start_ptr, end_idx);
+                    let scalar = Scalar::new(scalar);
+                    return (scalar, &d[end_idx..]);
+                }
+                ptr = ptr.add(loop_size);
             }
-            ptr = ptr.add(loop_size);
-        }
 
-        split_at_scalar_fallback(d)
+            split_at_scalar_fallback(d)
+        }
     }
 
     // from memchr: "SSE2 is avalbale on all x86_64 targets, so no CPU feature detection is necessary"
@@ -642,16 +646,16 @@ impl<'a> ParserState<'a, '_> {
                                 continue;
                             }
 
-                            if let Some(last) = self.token_tape.last_mut() {
-                                if let TextToken::Unquoted(header) = last {
-                                    *last = TextToken::Header(*header);
-                                    self.token_tape.push(TextToken::Array {
-                                        end: 0,
-                                        mixed: false,
-                                    });
-                                    state = ParseState::ParseOpen;
-                                    continue;
-                                }
+                            if let Some(last) = self.token_tape.last_mut()
+                                && let TextToken::Unquoted(header) = last
+                            {
+                                *last = TextToken::Header(*header);
+                                self.token_tape.push(TextToken::Array {
+                                    end: 0,
+                                    mixed: false,
+                                });
+                                state = ParseState::ParseOpen;
+                                continue;
                             }
 
                             return Err(Error::new(ErrorKind::InvalidSyntax {
@@ -863,13 +867,12 @@ impl<'a> ParserState<'a, '_> {
                         }
                     }
 
-                    if mixed_mode {
-                        if let Some(
+                    if mixed_mode
+                        && let Some(
                             TextToken::Array { mixed, .. } | TextToken::Object { mixed, .. },
                         ) = self.token_tape.get_mut(parent_ind)
-                        {
-                            *mixed = mixed_mode;
-                        }
+                    {
+                        *mixed = mixed_mode;
                     }
 
                     mixed_mode = false;
@@ -1136,15 +1139,17 @@ unsafe fn forward_search<F: Fn(u8) -> bool>(
     end_ptr: *const u8,
     confirm: F,
 ) -> Option<usize> {
-    let mut ptr = start_ptr;
-    while ptr < end_ptr {
-        if confirm(*ptr) {
-            return Some(sub(ptr, start_ptr));
+    unsafe {
+        let mut ptr = start_ptr;
+        while ptr < end_ptr {
+            if confirm(*ptr) {
+                return Some(sub(ptr, start_ptr));
+            }
+            ptr = ptr.offset(1);
         }
-        ptr = ptr.offset(1);
-    }
 
-    None
+        None
+    }
 }
 
 #[cfg(test)]

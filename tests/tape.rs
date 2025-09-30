@@ -1,4 +1,4 @@
-use jomini::{text::Operator, Scalar, TextTape, TextToken};
+use jomini::{Scalar, TextTape, TextToken, text::Operator};
 
 #[test]
 fn test_greater_than_operator() {

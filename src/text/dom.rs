@@ -1,10 +1,10 @@
 use super::fnv::FnvBuildHasher;
 use crate::{
-    text::Operator, DeserializeError, DeserializeErrorKind, Encoding, Scalar, TextTape, TextToken,
+    DeserializeError, DeserializeErrorKind, Encoding, Scalar, TextTape, TextToken, text::Operator,
 };
 use std::{
     borrow::Cow,
-    collections::{hash_map::Entry, HashMap},
+    collections::{HashMap, hash_map::Entry},
 };
 
 pub type KeyValue<'data, 'tokens, E> = (

@@ -43,12 +43,12 @@
 //! ```
 
 use crate::{
-    text::{ArrayReader, GroupEntry, ObjectReader, Operator, ScalarReader, ValueReader},
     Encoding, TextToken,
+    text::{ArrayReader, GroupEntry, ObjectReader, Operator, ScalarReader, ValueReader},
 };
 use serde::{
-    ser::{SerializeMap, SerializeSeq},
     Serialize, Serializer,
+    ser::{SerializeMap, SerializeSeq},
 };
 use std::ops::Deref;
 

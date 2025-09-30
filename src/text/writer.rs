@@ -1,8 +1,8 @@
 use crate::{
+    Encoding, Error, ErrorKind, TextTape, TextToken,
     binary::Rgb,
     common::PdsDateFormatter,
     text::{ArrayReader, ObjectReader, Operator, ValueReader},
-    Encoding, Error, ErrorKind, TextTape, TextToken,
 };
 use std::{fmt::Arguments, io::Write, ops::Deref};
 
@@ -886,13 +886,13 @@ fn escape(data: &[u8], mut buffer: Vec<u8>) -> ReuseVec<'_> {
                 buffer.push(x);
             }
 
-            if let Some(&last) = data.last() {
-                if last != b'\n' {
-                    if last == b'\\' || last == b'"' {
-                        buffer.push(b'\\');
-                    }
-                    buffer.push(last);
+            if let Some(&last) = data.last()
+                && last != b'\n'
+            {
+                if last == b'\\' || last == b'"' {
+                    buffer.push(b'\\');
                 }
+                buffer.push(last);
             }
 
             return ReuseVec::Owned(buffer);

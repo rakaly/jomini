@@ -1,5 +1,5 @@
 use super::Rgb;
-use crate::{util::get_split, Scalar};
+use crate::{Scalar, util::get_split};
 use std::fmt;
 
 /// The ID of current Lexeme
