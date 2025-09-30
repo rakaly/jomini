@@ -1,12 +1,12 @@
 #![cfg(feature = "derive")]
 
 use jomini::{
-    binary::BinaryFlavor, common::PdsDate, BinaryDeserializer, Encoding, JominiDeserialize,
-    Windows1252Encoding,
+    BinaryDeserializer, Encoding, JominiDeserialize, Windows1252Encoding, binary::BinaryFlavor,
+    common::PdsDate,
 };
 use serde::{
-    de::{self},
     Deserialize, Deserializer,
+    de::{self},
 };
 use std::collections::HashMap;
 use std::fmt;
@@ -294,45 +294,55 @@ fn test_binary_meta_deserialization_boxed() {
 fn test_binary_slice_index_crash() {
     let data = include_bytes!("./fixtures/meta.bin.crash");
     let hash = create_bin_lookup();
-    assert!(BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .deserialize_slice::<_, Meta>(&data[..], &hash)
-        .is_err());
+    assert!(
+        BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+            .deserialize_slice::<_, Meta>(&data[..], &hash)
+            .is_err()
+    );
 }
 
 #[test]
 fn test_binary_incomplete_array() {
     let data = include_bytes!("./fixtures/meta.bin.crash2");
     let hash = create_bin_lookup();
-    assert!(BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .deserialize_slice::<_, Meta>(&data[..], &hash)
-        .is_err());
+    assert!(
+        BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+            .deserialize_slice::<_, Meta>(&data[..], &hash)
+            .is_err()
+    );
 }
 
 #[test]
 fn test_binary_heterogenous_object_crash() {
     let data = include_bytes!("./fixtures/meta.bin.crash3");
     let hash = create_bin_lookup();
-    assert!(BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .deserialize_slice::<_, Meta>(&data[..], &hash)
-        .is_err());
+    assert!(
+        BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+            .deserialize_slice::<_, Meta>(&data[..], &hash)
+            .is_err()
+    );
 }
 
 #[test]
 fn test_binary_unknown_key_object() {
     let data = include_bytes!("./fixtures/meta.bin.crash4");
     let hash = create_bin_lookup();
-    assert!(BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .deserialize_slice::<_, Meta>(&data[..], &hash)
-        .is_err());
+    assert!(
+        BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+            .deserialize_slice::<_, Meta>(&data[..], &hash)
+            .is_err()
+    );
 }
 
 #[test]
 fn test_binary_timeout() {
     let data = include_bytes!("./fixtures/bin-timeout");
     let hash = create_bin_lookup();
-    assert!(BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .deserialize_slice::<_, Meta>(&data[..], &hash)
-        .is_err());
+    assert!(
+        BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+            .deserialize_slice::<_, Meta>(&data[..], &hash)
+            .is_err()
+    );
 }
 
 #[test]
@@ -373,7 +383,7 @@ fn test_flatten_overflow2() {
 
 #[test]
 fn test_enum_map() {
-    use serde_with::{serde_as, EnumMap};
+    use serde_with::{EnumMap, serde_as};
 
     #[serde_as]
     #[derive(Clone, Debug, Deserialize, PartialEq)]

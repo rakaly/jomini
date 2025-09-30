@@ -405,11 +405,7 @@ fn to_u64_partial(mut d: &[u8], start: u64) -> (u64, &[u8]) {
 }
 
 const fn digits_in(n: u64) -> usize {
-    if n == 0 {
-        1
-    } else {
-        n.ilog10() as usize + 1
-    }
+    if n == 0 { 1 } else { n.ilog10() as usize + 1 }
 }
 
 const POWER_OF_TEN: [f64; 23] = [
@@ -562,21 +558,27 @@ mod tests {
 
     #[test]
     fn scalar_to_u64_overflow() {
-        assert!(Scalar::new(b"888888888888888888888888888888888")
-            .to_u64()
-            .is_err());
+        assert!(
+            Scalar::new(b"888888888888888888888888888888888")
+                .to_u64()
+                .is_err()
+        );
         assert!(Scalar::new(b"666666666666666685902").to_u64().is_err());
         assert!(Scalar::new(b"184467440737095516106").to_u64().is_err());
     }
 
     #[test]
     fn scalar_to_f64_overflow() {
-        assert!(Scalar::new(b"9999999999.99999999999999999")
-            .to_f64()
-            .is_err());
-        assert!(Scalar::new(b"999999999999999999999.999999999")
-            .to_f64()
-            .is_err());
+        assert!(
+            Scalar::new(b"9999999999.99999999999999999")
+                .to_f64()
+                .is_err()
+        );
+        assert!(
+            Scalar::new(b"999999999999999999999.999999999")
+                .to_f64()
+                .is_err()
+        );
         assert!(Scalar::new(b"10.99999990999999999999999").to_f64().is_err());
     }
 

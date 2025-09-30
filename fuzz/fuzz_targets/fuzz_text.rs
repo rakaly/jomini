@@ -109,7 +109,7 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    let _: Result<Meta, _> = jomini::TextTape::from_slice(&data).and_then(|tape| {
+    let _: Result<Meta, _> = jomini::TextTape::from_slice(data).and_then(|tape| {
         let tokens = tape.tokens();
         for (i, token) in tokens.iter().enumerate() {
             match token {

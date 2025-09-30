@@ -1,6 +1,6 @@
 use super::{
-    lexer::{read_id, read_string, read_token},
     LexError, LexemeId, LexerError, Token,
+    lexer::{read_id, read_string, read_token},
 };
 use crate::buffer::{BufferError, BufferWindow, BufferWindowBuilder};
 use std::{fmt, io::Read};
@@ -399,7 +399,7 @@ impl From<BufferError> for ReaderErrorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{binary::Rgb, Scalar};
+    use crate::{Scalar, binary::Rgb};
     use rstest::*;
 
     #[rstest]

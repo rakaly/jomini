@@ -1,7 +1,7 @@
 use crate::{
+    ScalarError,
     binary::{LexError, LexerError, ReaderError as BinReaderError},
     text::ReaderError as TextReaderError,
-    ScalarError,
 };
 use std::fmt;
 
@@ -111,20 +111,26 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self.0 {
             ErrorKind::Eof => write!(f, "unexpected end of file"),
-            ErrorKind::StackEmpty { offset } => write!(f,
-                "stack empty, too many close tokens encountered (offset: {})", offset
+            ErrorKind::StackEmpty { offset } => write!(
+                f,
+                "stack empty, too many close tokens encountered (offset: {})",
+                offset
             ),
-            ErrorKind::InvalidEmptyObject { offset } => write!(f,
-                "expected first token after an empty object started to be a close group (offset: {})", offset
+            ErrorKind::InvalidEmptyObject { offset } => write!(
+                f,
+                "expected first token after an empty object started to be a close group (offset: {})",
+                offset
             ),
-            ErrorKind::InvalidSyntax { ref msg, offset } => write!(f,
-                "invalid syntax encountered: {} (offset: {})", msg, offset
+            ErrorKind::InvalidSyntax { ref msg, offset } => write!(
+                f,
+                "invalid syntax encountered: {} (offset: {})",
+                msg, offset
             ),
             ErrorKind::Deserialize(ref err) => write!(f, "deserialize error: {}", err),
             ErrorKind::Io(ref err) => write!(f, "io error: {}", err),
             ErrorKind::BufferFull => {
                 write!(f, "max buffer size exceeded")
-            },
+            }
         }
     }
 }

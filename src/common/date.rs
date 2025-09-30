@@ -192,7 +192,7 @@ impl ExpandedRawDate {
                     month,
                     day: day1,
                     hour: 0,
-                })
+                });
             }
             Some(b'.') => (day1, offset + 2),
             Some(n) if n.is_ascii_digit() => {
@@ -570,10 +570,8 @@ impl Date {
                     let d = le_u64(s);
                     let one_digit_month = d & 0x00FF_00FF_0000_0000 == 0x002E_002E_0000_0000;
                     let e = (d & 0xFF30_FF30_FFFF_FFFF) | 0x0030_0030_0000_0000;
-                    if one_digit_month {
-                        if let Some(x) = Self::fast_parse_u64(e) {
-                            return x;
-                        }
+                    if one_digit_month && let Some(x) = Self::fast_parse_u64(e) {
+                        return x;
                     }
 
                     Self::fallback(s)
@@ -1151,7 +1149,7 @@ fn to_binary(year: i16, ordinal_day: i32, hour: u8) -> i32 {
 #[cfg(feature = "derive")]
 mod datederive {
     use super::{Date, DateHour, PdsDate, UniformDate};
-    use serde::{de, de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de, de::Visitor};
     use std::fmt;
 
     impl Serialize for Date {

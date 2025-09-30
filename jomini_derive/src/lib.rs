@@ -1,8 +1,8 @@
 use proc_macro::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, parse_quote, spanned::Spanned, DeriveInput, Error, GenericParam, Ident,
-    Lifetime, LifetimeParam, LitInt, LitStr, Result, Token, Type,
+    DeriveInput, Error, GenericParam, Ident, Lifetime, LifetimeParam, LitInt, LitStr, Result,
+    Token, Type, parse_macro_input, parse_quote, spanned::Spanned,
 };
 
 enum DefaultFallback {

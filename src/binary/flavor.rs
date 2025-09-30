@@ -1,7 +1,7 @@
 #[cfg(feature = "derive")]
 use crate::{
-    binary::{de::BinaryDeserializerBuilder, TokenResolver},
     Error,
+    binary::{TokenResolver, de::BinaryDeserializerBuilder},
 };
 
 /// Trait customizing decoding values from binary data

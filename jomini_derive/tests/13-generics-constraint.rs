@@ -1,5 +1,5 @@
 use jomini_derive::JominiDeserialize;
-use serde::{de::DeserializeOwned, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de::DeserializeOwned};
 use std::{fmt, marker::PhantomData};
 
 #[derive(JominiDeserialize)]
