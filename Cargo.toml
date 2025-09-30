@@ -18,7 +18,7 @@ all-features = true
 members = ["jomini_derive"]
 
 [dependencies]
-serde = { version = "1.0.195", optional = true, default-features = false }
+serde = { version = "1.0.195", optional = true }
 serde_json = { version = "1.0.114", optional = true }
 jomini_derive = { path = "jomini_derive", version = "^0.3.0", optional = true }
 itoa = { version = "1.0", optional = true }
@@ -26,7 +26,7 @@ itoa = { version = "1.0", optional = true }
 [features]
 default = ["derive", "faster_writer"]
 serde = ["dep:serde"]
-derive = ["serde", "jomini_derive"]
+derive = ["serde/derive", "jomini_derive"]
 json = ["serde", "serde_json"]
 faster_writer = ["dep:itoa"]
 
