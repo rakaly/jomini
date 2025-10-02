@@ -1,7 +1,33 @@
+## v0.29.0 - 2025-10-01
+
+### Breaking Changes
+
+- Remove `BinaryTape` and `BinaryToken`: These structs have been removed as they became unnecessary after the introduction of incremental parsing via `TokenReader` and `Token` (#182)
+- Omit rgb header when deserializing binary colors: Binary color deserialization now directly emits 3 color elements instead of requiring the "rgb" header, simplifying save file deserialization (#198)
+- Separate serde deserializers from derive macro: The serde deserializer implementations have been separated from the derive macro functionality
+- Update to Rust edition 2024: The project now uses Rust edition 2024
+
+### Updates
+
+- Object template syntax support: Add parsing and JSON support for object template syntax like `obj={ { a = b }={ 1 2 3 } }` (#189, #190, #191, #192)
+- Tape mutation capability: Add initial (experimental) API for mutating the tape (#193)
+- Zero-copy deserialization: Implement `#[jomini(borrow)]` field attribute for zero-copy deserialization using borrowed types like `Cow<str>` (#186)
+- Floating point 'f' suffix: Support optional 'f' suffix for floating point literals (e.g., `WIDTH = 5.0f`) (#193)
+- Raw byte binary deserialization: Add binary deserialization support that bypasses encoding when `deserialize_bytes` is requiested
+- Container header deserialization: Add support for container header deserialization in text reader
+- Object reader creation: Allow creation of object reader from token list and encoding for interpolation support (#196)
+- Descriptive derive macro errors: JominiDeserialize derive macro now shows descriptive errors instead of panicking (#176)
+- SeqAccess::size_hint: Implement `size_hint` for `ColorSequence`
+- Semicolon handling: Treat semicolons as equivalent to whitespace (#190)
+- JSON representation: Collapse equals operator in JSON representation from `{"foo":{"EQUALS":10}}` to `{"foo": 10}` (#193)
+- Key-operator-value JSON serialization: Serialize key-operator-value triplets as objects in JSON
+- Number parsing performance: Consolidate overflow checks at end of f64/u64 parsing for 1.33x-1.67x speedup (#177)
+- Exists and not-equal operators: JSON: Fix recognition of exists and not-equal operators when they appear as the first operator in an object (#194)
+
 ## v0.28.0 - 2025-03-09
 
 - Update to syn2
-- `#[jomini(deserialize_with = "")]` now support const generics 
+- `#[jomini(deserialize_with = "")]` now support const generics
 - Bump minimum dependencies to those released within the last year
 - Bump minimum Rust version to 1.77
 
