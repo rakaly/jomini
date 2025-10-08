@@ -25,6 +25,7 @@
 pub mod de;
 mod dom;
 mod fnv;
+mod logos_lexer;
 mod operator;
 mod reader;
 mod tape;
@@ -36,6 +37,10 @@ pub use self::de::Property;
 pub use self::dom::{
     ArrayReader, FieldGroupsIter, FieldsIter, GroupEntry, GroupEntryIter, ObjectReader, Reader,
     ScalarReader, ValueReader, ValuesIter,
+};
+pub use self::logos_lexer::{
+    ExpressionToken, LosslessLexer, LosslessToken, TokenWithSpan, 
+    collect_tokens_with_spans, reconstruct_input
 };
 pub use self::operator::*;
 pub use self::tape::{TextTape, TextTapeParser, TextToken};
