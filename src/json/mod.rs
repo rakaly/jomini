@@ -809,20 +809,19 @@ where
                 continue;
             }
 
-            if let Some(op_reader) = &window[1] {
-                if let TextToken::Operator(op) = op_reader.token() {
-                    if let Some(value) = &window[2] {
-                        seq.serialize_element(&SingleObject {
-                            key: first_val.clone(),
-                            op: *op,
-                            value: value.clone(),
-                            options: self.options,
-                        })?;
+            if let Some(op_reader) = &window[1]
+                && let TextToken::Operator(op) = op_reader.token()
+                && let Some(value) = &window[2]
+            {
+                seq.serialize_element(&SingleObject {
+                    key: first_val.clone(),
+                    op: *op,
+                    value: value.clone(),
+                    options: self.options,
+                })?;
 
-                        window = [iter.next(), iter.next(), iter.next()];
-                        continue;
-                    }
-                }
+                window = [iter.next(), iter.next(), iter.next()];
+                continue;
             }
 
             let v = OperatorValue {
@@ -1379,20 +1378,29 @@ mod tests {
     fn test_operators_other_than_equal() {
         // Test various operators
         let json = serialize(b"test={ a>1 b<2 c>=3 d<=4 e!=5 }");
-        assert_eq!(&json, "{\"test\":{\"a\":{\"GREATER_THAN\":1},\"b\":{\"LESS_THAN\":2},\"c\":{\"GREATER_THAN_EQUAL\":3},\"d\":{\"LESS_THAN_EQUAL\":4},\"e\":{\"NOT_EQUAL\":5}}}");
+        assert_eq!(
+            &json,
+            "{\"test\":{\"a\":{\"GREATER_THAN\":1},\"b\":{\"LESS_THAN\":2},\"c\":{\"GREATER_THAN_EQUAL\":3},\"d\":{\"LESS_THAN_EQUAL\":4},\"e\":{\"NOT_EQUAL\":5}}}"
+        );
     }
 
     #[test]
     fn test_complex_nested_structures() {
         let json =
             serialize(b"complex={ nested={ a=1 b=2 } standalone={ c=3 } mixed={ d=4 bare e=5 } }");
-        assert_eq!(&json, "{\"complex\":{\"nested\":{\"a\":1,\"b\":2},\"standalone\":{\"c\":3},\"mixed\":{\"d\":4,\"remainder\":[\"bare\",{\"e\":5}]}}}");
+        assert_eq!(
+            &json,
+            "{\"complex\":{\"nested\":{\"a\":1,\"b\":2},\"standalone\":{\"c\":3},\"mixed\":{\"d\":4,\"remainder\":[\"bare\",{\"e\":5}]}}}"
+        );
     }
 
     #[test]
     fn test_stress_alternating_patterns() {
         let json = serialize(b"test={ a=1 standalone1 b=2 standalone2 c=3 }");
-        assert_eq!(&json, "{\"test\":{\"a\":1,\"remainder\":[\"standalone1\",{\"b\":2},\"standalone2\",{\"c\":3}]}}");
+        assert_eq!(
+            &json,
+            "{\"test\":{\"a\":1,\"remainder\":[\"standalone1\",{\"b\":2},\"standalone2\",{\"c\":3}]}}"
+        );
     }
 
     #[test]
