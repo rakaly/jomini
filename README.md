@@ -233,6 +233,49 @@ writer.write_unquoted(b"bar")?;
 assert_eq!(&out, b"hello=world\nfoo=bar");
 ```
 
+## Working with Save Files
+
+Modern Paradox games (EU5, Victoria 3, CK3, Imperator) based on the Jomini _game
+engine_ (an unfortunate naming collision), share a structured container, or
+envelope, for metadata and game state. When the `envelope` feature is enabled,
+it provides a uniform API for working with the envelope, handling both
+compressed (ZIP-based) and uncompressed save files in plaintext and binary.
+
+Notable games **not** using this format include EU4 and HOI4, which use
+different save file structures.
+
+### Basic Usage
+
+The `JominiFile` API is tailored to efficiently and ergonomically work over slices and files:
+
+```rust
+use jomini::envelope::JominiFile;
+use std::io::Read;
+
+// Load a plaintext save file
+let data = include_bytes!("../tests/fixtures/envelopes/text.txt");
+let save = JominiFile::from_slice(data)?;
+
+// Access the header to check format information
+let header = save.header();
+println!("Save format: {:?}", header.kind());
+
+// Extract and read the metadata
+let mut metadata = save.meta()?;
+let mut meta_content = String::new();
+metadata.read_to_string(&mut meta_content)?;
+println!("Metadata: {}", meta_content);
+
+// Extract and read the gamestate
+let mut gamestate = save.gamestate()?;
+let mut game_content = String::new();
+gamestate.read_to_string(&mut game_content)?;
+println!("Gamestate: {}", game_content);
+```
+
+`JominiFile` can be used as a building block for deserialization or melting
+capabilities.
+
 ## Unsupported Syntax
 
 Due to the nature of Clausewitz being closed source, this library can never guarantee compatibility with Clausewitz. There is no specification of what valid input looks like, and we only have examples that have been [collected in the wild](https://pdx.tools/blog/a-tour-of-pds-clausewitz-syntax). From what we do know, Clausewitz is recklessly flexible: allowing each game object to potentially define its own unique syntax.
