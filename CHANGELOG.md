@@ -1,3 +1,7 @@
+## v0.30.1 - 2025-11-16
+
+- Fix envelope underflow on invalid zip  
+
 ## v0.30.0 - 2025-11-16
 
 Add the `envelope` feature which allows parsing the containing format of metadata and game state from modern Paradox games (EU5, CK3, Vic3, and Imperator), so that each game implementation doesn't need to reinvent the parsing logic.
