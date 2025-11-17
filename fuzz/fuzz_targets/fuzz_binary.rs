@@ -1,5 +1,5 @@
 #![no_main]
-use jomini::{binary::BinaryFlavor, Encoding, Windows1252Encoding};
+use jomini::{Encoding, Windows1252Encoding, binary::BinaryFlavor};
 use libfuzzer_sys::fuzz_target;
 use serde::Deserialize;
 use std::{borrow::Cow, collections::HashMap};
@@ -109,8 +109,8 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // Fuzz binary deserializers
-    let _: Result<Meta, _> = jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
-        .deserialize_slice(data, &hash);
+    let _: Result<Meta, _> =
+        jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor).deserialize_slice(data, &hash);
 
     let _: Result<Meta, _> = jomini::BinaryDeserializer::builder_flavor(BinaryTestFlavor)
         .deserialize_reader(data, &hash);
