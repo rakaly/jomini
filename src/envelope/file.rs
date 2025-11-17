@@ -219,7 +219,9 @@ where
         let gamestate = gamestate.ok_or(EnvelopeErrorKind::ZipMissingGamestate)?;
         let metadata = match meta {
             Some(meta) => MetaFormatKind::Zip(meta),
-            None => MetaFormatKind::Inlined(header.header_len()..offset as usize),
+            None => MetaFormatKind::Inlined(
+                header.header_len()..(offset as usize).max(header.header_len()),
+            ),
         };
 
         Ok(JominiZip {

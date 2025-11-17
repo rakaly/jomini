@@ -367,6 +367,28 @@ fn zip_txt() {
     zip_text_assertions(file);
 }
 
+#[test]
+fn malformed_zip_doesnt_panic() {
+    // Regression test for invalid metadata range with malformed ZIP central directory
+    // This file has a ZIP with an invalid central directory offset that would previously
+    // cause an integer underflow panic when accessing metadata
+    let data = std::fs::read("tests/fixtures/envelopes/malformed_zip.bin").unwrap();
+    let file = JominiFile::from_slice(&data).unwrap();
+
+    let header = file.header();
+    assert_eq!(header.kind(), SaveHeaderKind::UnifiedText);
+
+    // Verify we can attempt to access metadata without panicking
+    if let Ok(mut meta) = file.meta() {
+        let _bytes_read = std::io::copy(&mut meta, &mut std::io::sink());
+    }
+
+    // Verify we can attempt to access gamestate without panicking
+    if let Ok(mut gamestate) = file.gamestate() {
+        let _bytes_read = std::io::copy(&mut gamestate, &mut std::io::sink());
+    }
+}
+
 struct TestFlavor;
 
 impl Encoding for TestFlavor {
