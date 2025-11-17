@@ -1,13 +1,5 @@
-use std::io::Write;
-
 use crate::envelope::errors::{EnvelopeError, EnvelopeErrorKind};
-
-/// A simplified and const generic version of arrayref
-#[inline]
-fn take<const N: usize>(data: &[u8]) -> [u8; N] {
-    debug_assert!(data.len() >= N);
-    unsafe { *(data.as_ptr() as *const [u8; N]) }
-}
+use std::io::Write;
 
 /// The kind of save file
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +72,9 @@ impl SaveHeaderKind {
 
 /// The first line of the save file
 ///
-/// <https://github.com/crschnick/pdx_unlimiter/blob/master/pdxu-io/src/main/java/com/crschnick/pdxu/io/savegame/Ck3Header.java#L7>
+/// For a breakdown of the fields, see the PDX Unlimiter source:
+///
+/// <https://github.com/crschnick/pdx_unlimiter/blob/6363689c8a89a73bc5db4cca4eff249261807d38/pdxu-io/src/main/java/com/crschnick/pdxu/io/savegame/ModernHeader.java#L7-L25>
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SaveHeader {
     unknown: [u8; 2],
@@ -95,20 +89,21 @@ impl SaveHeader {
 
     /// Creates a SaveHeader by parsing from a byte slice
     pub fn from_slice(data: &[u8]) -> Result<Self, EnvelopeError> {
-        if data.len() < Self::SIZE {
-            return Err(EnvelopeErrorKind::InvalidHeader.into());
-        }
+        let data: &[u8; Self::SIZE] = data
+            .first_chunk()
+            .ok_or_else(|| EnvelopeError::from(EnvelopeErrorKind::InvalidHeader))?;
 
         if !matches!(&data[..3], [b'S', b'A', b'V']) {
             return Err(EnvelopeErrorKind::InvalidHeader.into());
         }
 
-        let unknown = take::<2>(&data[3..5]);
+        // These try_into calls cannot fail because of the slice length check above
+        let unknown = data[3..5].try_into().unwrap();
         let kind_hex =
             std::str::from_utf8(&data[5..7]).map_err(|_| EnvelopeErrorKind::InvalidHeader)?;
         let kind =
             u16::from_str_radix(kind_hex, 16).map_err(|_| EnvelopeErrorKind::InvalidHeader)?;
-        let random = take::<8>(&data[7..15]);
+        let random = data[7..15].try_into().unwrap();
 
         let meta_hex =
             std::str::from_utf8(&data[15..23]).map_err(|_| EnvelopeErrorKind::InvalidHeader)?;

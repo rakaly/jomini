@@ -22,6 +22,11 @@ impl JominiFile<()> {
     pub fn from_slice(data: &[u8]) -> Result<JominiFile<&'_ [u8]>, EnvelopeError> {
         let header = SaveHeader::from_slice(data)?;
 
+        // Before looking at the kind of header we just parsed, always attempt
+        // to decode the end of the central directory from the end of the input.
+        // This allows us to handle misleading headers that claim to be
+        // uncompressed but are actually Zip saves. The performance cost is
+        // minimal as scanning up to 64KB from the end of the input is cheap.
         let archive = rawzip::ZipArchive::with_max_search_space(64 * 1024)
             .locate_in_slice(data)
             .map_err(|(_, e)| EnvelopeErrorKind::Zip(e));
