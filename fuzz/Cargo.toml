@@ -17,6 +17,7 @@ serde = { version = "1.0", features = ["derive"] }
 
 [dependencies.jomini]
 path = ".."
+features = ["envelope"]
 
 # Prevent this from interfering with workspaces
 [workspace]
@@ -37,5 +38,11 @@ path = "fuzz_targets/fuzz_binary.rs"
 [[bin]]
 name = "fuzz_date"
 path = "fuzz_targets/fuzz_date.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_envelope"
+path = "fuzz_targets/fuzz_envelope.rs"
 test = false
 doc = false

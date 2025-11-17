@@ -92,3 +92,4 @@ jobs:
         cargo fuzz build fuzz_scalar_text
         cargo fuzz build fuzz_text
         cargo fuzz build fuzz_date
+        cargo fuzz build fuzz_envelope
