@@ -190,10 +190,43 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
 
             b.iter(|| {
                 let mut lexer = jomini::binary::Lexer::new(&data[..]);
-                let mut counter = 0;
+                let mut counter: u64 = 0;
                 while let Ok(Some(token)) = lexer.next_token() {
-                    if matches!(token, jomini::binary::Token::Id(_)) {
-                        counter += 1;
+                    if let jomini::binary::Token::Id(x) = token {
+                        counter = counter.wrapping_add(u64::from(x));
+                    }
+                }
+                black_box(counter);
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("lex-token-kind", game), |b| {
+            let data = data.load();
+
+            b.iter(|| {
+                let mut lexer = jomini::binary::Lexer::new(&data[..]);
+                let mut counter: u64 = 0;
+                while let Ok(Some(token)) = lexer.next_id() {
+                    match token.into_kind() {
+                        jomini::binary::TokenKind::Id => {
+                            counter = counter.wrapping_add(u64::from(token.0));
+                        }
+                        jomini::binary::TokenKind::Open => {}
+                        _ => lexer.skip_value(token).unwrap(),
+                    }
+                }
+                black_box(counter);
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("reader-token-kind", game), |b| {
+            let data = data.load();
+            b.iter(|| {
+                let mut reader = jomini::binary::TokenReader::new(&data[..]);
+                let mut counter: u64 = 0;
+                while let Ok(Some(token)) = reader.next_token() {
+                    if matches!(token, jomini::binary::TokenKind::Id) {
+                        counter = counter.wrapping_add(u64::from(reader.token_id()));
                     }
                 }
                 black_box(counter);
@@ -204,10 +237,10 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
             let data = data.load();
             b.iter(|| {
                 let mut reader = jomini::binary::TokenReader::new(&data[..]);
-                let mut counter = 0;
+                let mut counter: u64 = 0;
                 while let Ok(Some(token)) = reader.next() {
-                    if matches!(token, jomini::binary::Token::Id(_)) {
-                        counter += 1;
+                    if let jomini::binary::Token::Id(x) = token {
+                        counter = counter.wrapping_add(u64::from(x));
                     }
                 }
                 black_box(counter);
