@@ -82,7 +82,7 @@ jobs:
       run: |
         rustup toolchain install nightly --component miri
         cargo miri setup
-        cargo miri test
+        MIRIFLAGS="-Zmiri-tree-borrows" cargo miri test
 
     - name: Compile fuzz
       if: matrix.build == 'nightly'

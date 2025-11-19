@@ -1,8 +1,13 @@
 use super::{
     LexError, LexemeId, LexerError, Token,
-    lexer::{read_id, read_string, read_token},
+    lexer::{read_id, read_rgb, read_string},
 };
-use crate::buffer::{BufferError, BufferWindow, BufferWindowBuilder};
+use crate::{
+    Scalar,
+    binary::{Rgb, lexer::TokenKind},
+    buffer::{BufferError, BufferWindow, BufferWindowBuilder},
+    util::get_split,
+};
 use std::{fmt, io::Read};
 
 /// [Lexer](crate::binary::Lexer) that works over a [Read] implementation
@@ -48,6 +53,7 @@ use std::{fmt, io::Read};
 pub struct TokenReader<R> {
     reader: R,
     buf: BufferWindow,
+    data: [u8; 8],
 }
 
 impl TokenReader<()> {
@@ -57,6 +63,7 @@ impl TokenReader<()> {
         TokenReader {
             reader: data,
             buf: BufferWindow::from_slice(data),
+            data: [0; 8],
         }
     }
 }
@@ -209,11 +216,14 @@ where
             .ok_or_else(|| unsafe { s.read().lex_error(LexError::Eof) })
     }
 
-    fn refill_next(&mut self) -> Result<Option<Token<'_>>, ReaderError> {
+    fn refill_with<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<Option<T>, ReaderError>,
+    ) -> Result<Option<T>, ReaderError> {
         match self.buf.fill_buf(&mut self.reader) {
             Ok(0) if self.buf.window_len() == 0 => Ok(None),
             Ok(0) => Err(self.lex_error(LexError::Eof)),
-            Ok(_) => self.next(),
+            Ok(_) => f(self),
             Err(e) => Err(self.buffer_error(e)),
         }
     }
@@ -234,15 +244,292 @@ where
     #[inline]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Token<'_>>, ReaderError> {
-        let window = unsafe { std::slice::from_raw_parts(self.buf.start, self.buf.window_len()) };
-        match read_token(window) {
-            Ok((tok, new_data)) => {
-                self.buf.advance_to(new_data.as_ptr());
-                Ok(Some(tok))
+        match self.next_token()? {
+            Some(kind) => Ok(Some(self.token_from_kind(kind))),
+            None => Ok(None),
+        }
+    }
+
+    /// Construct a [Token] from a [TokenKind] using stored data
+    #[inline]
+    fn token_from_kind(&self, kind: TokenKind) -> Token<'_> {
+        match kind {
+            TokenKind::Open => Token::Open,
+            TokenKind::Close => Token::Close,
+            TokenKind::Equal => Token::Equal,
+            TokenKind::U32 => Token::U32(self.u32_data()),
+            TokenKind::U64 => Token::U64(self.u64_data()),
+            TokenKind::I32 => Token::I32(self.i32_data()),
+            TokenKind::Bool => Token::Bool(self.bool_data()),
+            TokenKind::Quoted => Token::Quoted(unsafe { self.scalar_data() }),
+            TokenKind::Unquoted => Token::Unquoted(unsafe { self.scalar_data() }),
+            TokenKind::F32 => Token::F32(self.f32_data()),
+            TokenKind::F64 => Token::F64(self.f64_data()),
+            TokenKind::Rgb => Token::Rgb(self.rgb_data()),
+            TokenKind::I64 => Token::I64(self.i64_data()),
+            TokenKind::Id => Token::Id(self.token_id()),
+        }
+    }
+
+    /// Return the id associated with the last [`TokenKind::Id`] token.
+    #[inline]
+    pub fn token_id(&self) -> u16 {
+        u16::from_le_bytes([self.data[0], self.data[1]])
+    }
+
+    /// Return the scalar data associated with [`TokenKind::Quoted`] and
+    /// [`TokenKind::Unquoted`].
+    ///
+    /// # Safety
+    ///
+    /// It is undefined behavior if this method is called and the previous
+    /// [`Self::next_token`] or [`Self::read_token`] did not return [`TokenKind::Quoted`] or
+    /// [`TokenKind::Unquoted`].
+    #[inline]
+    pub unsafe fn scalar_data(&self) -> Scalar<'_> {
+        let len = u16::from_le_bytes([self.data[0], self.data[1]]);
+        let data = unsafe {
+            std::slice::from_raw_parts(self.buf.start.byte_sub(len as usize), len as usize)
+        };
+        Scalar::new(data)
+    }
+
+    /// Return the u64 data associated with [`TokenKind::U64`].
+    #[inline]
+    pub fn u64_data(&self) -> u64 {
+        u64::from_le_bytes(self.data)
+    }
+
+    /// Return the i64 data associated with [`TokenKind::I64`].
+    #[inline]
+    pub fn i64_data(&self) -> i64 {
+        i64::from_le_bytes(self.data)
+    }
+
+    /// Return the f64 data associated with [`TokenKind::F64`].
+    #[inline]
+    pub fn f64_data(&self) -> [u8; 8] {
+        self.data
+    }
+
+    /// Return the u32 data associated with [`TokenKind::U32`].
+    #[inline]
+    pub fn u32_data(&self) -> u32 {
+        u32::from_le_bytes([self.data[0], self.data[1], self.data[2], self.data[3]])
+    }
+
+    /// Return the i32 data associated with [`TokenKind::I32`].
+    #[inline]
+    pub fn i32_data(&self) -> i32 {
+        i32::from_le_bytes([self.data[0], self.data[1], self.data[2], self.data[3]])
+    }
+
+    /// Return the f32 data associated with [`TokenKind::F32`].
+    #[inline]
+    pub fn f32_data(&self) -> [u8; 4] {
+        [self.data[0], self.data[1], self.data[2], self.data[3]]
+    }
+
+    /// Return the bool data associated with [`TokenKind::Bool`].
+    #[inline]
+    pub fn bool_data(&self) -> bool {
+        self.data[0] != 0
+    }
+
+    /// Return the RGB data associated with [`TokenKind::Rgb`].
+    ///
+    /// # Safety
+    ///
+    /// It is undefined behavior if this method is called and the previous
+    /// [`Self::next_token`] or [`Self::read_token`] did not return [`TokenKind::Rgb`].
+    #[inline]
+    pub fn rgb_data(&self) -> Rgb {
+        let size = self.data[0] as usize;
+        let data = unsafe { std::slice::from_raw_parts(self.buf.start.byte_sub(size), size) };
+        let (result, _data) = read_rgb(data).expect("valid rgb data");
+        result
+    }
+
+    #[inline]
+    fn next_token_fast(&mut self, window: &[u8]) -> Option<TokenKind> {
+        let (id, rest) = get_split::<2>(window).unwrap();
+        let lexeme = LexemeId::new(u16::from_le_bytes(*id));
+        match lexeme {
+            LexemeId::OPEN => {
+                self.buf.advance_to(rest.as_ptr());
+                Some(TokenKind::Open)
             }
-            Err(LexError::Eof) => self.refill_next(),
+            LexemeId::CLOSE => {
+                self.buf.advance_to(rest.as_ptr());
+                Some(TokenKind::Close)
+            }
+            LexemeId::EQUAL => {
+                self.buf.advance_to(rest.as_ptr());
+                Some(TokenKind::Equal)
+            }
+            LexemeId::U32 | LexemeId::I32 | LexemeId::F32 => {
+                let (data, rest) = rest.split_at(4);
+                self.data[..4].copy_from_slice(data);
+                self.buf.advance_to(rest.as_ptr());
+                if lexeme == LexemeId::F32 {
+                    Some(TokenKind::F32)
+                } else if lexeme == LexemeId::U32 {
+                    Some(TokenKind::U32)
+                } else {
+                    Some(TokenKind::I32)
+                }
+            }
+            LexemeId::U64 | LexemeId::I64 | LexemeId::F64 => {
+                let (data, rest) = rest.split_at(8);
+                self.data[..8].copy_from_slice(data);
+                self.buf.advance_to(rest.as_ptr());
+                if lexeme == LexemeId::F64 {
+                    Some(TokenKind::F64)
+                } else if lexeme == LexemeId::U64 {
+                    Some(TokenKind::U64)
+                } else {
+                    Some(TokenKind::I64)
+                }
+            }
+            LexemeId::BOOL => {
+                let (data, rest) = rest.split_at(1);
+                self.data[0] = data[0];
+                self.buf.advance_to(rest.as_ptr());
+                Some(TokenKind::Bool)
+            }
+            LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                let (len_data, rest) = get_split::<2>(rest).unwrap();
+                let len = u16::from_le_bytes(*len_data) as usize;
+                let (_str_data, rest) = rest.split_at_checked(len)?;
+                self.data[0..2].copy_from_slice(len_data);
+                self.buf.advance_to(rest.as_ptr());
+                if lexeme == LexemeId::UNQUOTED {
+                    Some(TokenKind::Unquoted)
+                } else {
+                    Some(TokenKind::Quoted)
+                }
+            }
+            LexemeId::RGB => None,
+            _ => {
+                self.data[..2].copy_from_slice(id);
+                self.buf.advance_to(rest.as_ptr());
+                Some(TokenKind::Id)
+            }
+        }
+    }
+
+    /// Read the next token in the stream. Will error if not enough data
+    /// remains.
+    ///
+    /// Use one of the `*_data` methods to get the associated data for the
+    /// token.
+    #[inline]
+    pub fn read_token(&mut self) -> Result<TokenKind, ReaderError> {
+        let s = std::ptr::addr_of!(self);
+        self.next_token()?
+            .ok_or_else(|| unsafe { s.read().lex_error(LexError::Eof) })
+    }
+
+    fn next_token_slow(&mut self) -> Result<TokenKind, LexError> {
+        let window = unsafe { std::slice::from_raw_parts(self.buf.start, self.buf.window_len()) };
+        let (id, rest) = get_split::<2>(window).ok_or(LexError::Eof)?;
+        let lexeme = LexemeId::new(u16::from_le_bytes(*id));
+        match lexeme {
+            LexemeId::OPEN => {
+                self.buf.advance_to(rest.as_ptr());
+                Ok(TokenKind::Open)
+            }
+            LexemeId::CLOSE => {
+                self.buf.advance_to(rest.as_ptr());
+                Ok(TokenKind::Close)
+            }
+            LexemeId::EQUAL => {
+                self.buf.advance_to(rest.as_ptr());
+                Ok(TokenKind::Equal)
+            }
+            LexemeId::U32 | LexemeId::I32 | LexemeId::F32 => {
+                let (data, rest) = get_split::<4>(rest).ok_or(LexError::Eof)?;
+                self.data[..4].copy_from_slice(data);
+                self.buf.advance_to(rest.as_ptr());
+                if lexeme == LexemeId::F32 {
+                    Ok(TokenKind::F32)
+                } else if lexeme == LexemeId::U32 {
+                    Ok(TokenKind::U32)
+                } else {
+                    Ok(TokenKind::I32)
+                }
+            }
+            LexemeId::U64 | LexemeId::I64 | LexemeId::F64 => {
+                let (data, rest) = get_split::<8>(rest).ok_or(LexError::Eof)?;
+                self.data[..8].copy_from_slice(data);
+                self.buf.advance_to(rest.as_ptr());
+                if lexeme == LexemeId::F64 {
+                    Ok(TokenKind::F64)
+                } else if lexeme == LexemeId::U64 {
+                    Ok(TokenKind::U64)
+                } else {
+                    Ok(TokenKind::I64)
+                }
+            }
+            LexemeId::BOOL => {
+                let (data, rest) = get_split::<1>(rest).ok_or(LexError::Eof)?;
+                self.data[0] = data[0];
+                self.buf.advance_to(rest.as_ptr());
+                Ok(TokenKind::Bool)
+            }
+            LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                let (len_data, rest) = get_split::<2>(rest).ok_or(LexError::Eof)?;
+                let len = u16::from_le_bytes(*len_data) as usize;
+                let rest = rest.get(len..).ok_or(LexError::Eof)?;
+                self.data[0..2].copy_from_slice(len_data);
+                self.buf.advance_to(rest.as_ptr());
+                if lexeme == LexemeId::UNQUOTED {
+                    Ok(TokenKind::Unquoted)
+                } else {
+                    Ok(TokenKind::Quoted)
+                }
+            }
+            LexemeId::RGB => {
+                let (_, nrest) = read_rgb(rest)?;
+                let size = nrest.as_ptr() as usize - rest.as_ptr() as usize;
+                self.data[0] = size as u8;
+                self.buf.advance_to(nrest.as_ptr());
+                Ok(TokenKind::Rgb)
+            }
+            _ => {
+                self.data[..2].copy_from_slice(id);
+                self.buf.advance_to(rest.as_ptr());
+                Ok(TokenKind::Id)
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn next_token_slow_refill(&mut self) -> Result<Option<TokenKind>, ReaderError> {
+        match self.next_token_slow() {
+            Ok(kind) => Ok(Some(kind)),
+            Err(LexError::Eof) => self.refill_with(|s| s.next_token()),
             Err(e) => Err(self.lex_error(e)),
         }
+    }
+
+    /// Read the next token in the stream. Will return None when all data has
+    /// been consumed.
+    ///
+    /// Use one of the `*_data` methods to get the associated data for the
+    /// token.
+    #[inline]
+    pub fn next_token(&mut self) -> Result<Option<TokenKind>, ReaderError> {
+        let window = unsafe { std::slice::from_raw_parts(self.buf.start, self.buf.window_len()) };
+
+        // If we have enough data we can use the fast path to avoid most bound checks
+        if window.len() >= 16
+            && let Some(kind) = self.next_token_fast(window)
+        {
+            return Ok(Some(kind));
+        }
+
+        self.next_token_slow_refill()
     }
 
     #[cold]
@@ -310,7 +597,11 @@ impl TokenReaderBuilder {
     #[inline]
     pub fn build<R>(self, reader: R) -> TokenReader<R> {
         let buf = self.buffer.build();
-        TokenReader { reader, buf }
+        TokenReader {
+            reader,
+            buf,
+            data: [0; 8],
+        }
     }
 }
 

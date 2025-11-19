@@ -63,22 +63,81 @@ impl LexemeId {
     /// ```
     #[inline]
     pub const fn is_id(&self) -> bool {
-        !matches!(
-            *self,
-            LexemeId::OPEN
-                | LexemeId::CLOSE
-                | LexemeId::EQUAL
-                | LexemeId::U32
-                | LexemeId::U64
-                | LexemeId::I32
-                | LexemeId::BOOL
-                | LexemeId::QUOTED
-                | LexemeId::UNQUOTED
-                | LexemeId::F32
-                | LexemeId::F64
-                | LexemeId::RGB
-                | LexemeId::I64
-        )
+        matches!(self.into_kind(), TokenKind::Id)
+    }
+
+    /// Convert the `LexemeId` into a `TokenKind`
+    #[inline]
+    pub const fn into_kind(self) -> TokenKind {
+        match self {
+            LexemeId::OPEN => TokenKind::Open,
+            LexemeId::CLOSE => TokenKind::Close,
+            LexemeId::EQUAL => TokenKind::Equal,
+            LexemeId::U32 => TokenKind::U32,
+            LexemeId::U64 => TokenKind::U64,
+            LexemeId::I32 => TokenKind::I32,
+            LexemeId::BOOL => TokenKind::Bool,
+            LexemeId::QUOTED => TokenKind::Quoted,
+            LexemeId::UNQUOTED => TokenKind::Unquoted,
+            LexemeId::F32 => TokenKind::F32,
+            LexemeId::F64 => TokenKind::F64,
+            LexemeId::RGB => TokenKind::Rgb,
+            LexemeId::I64 => TokenKind::I64,
+            _ => TokenKind::Id,
+        }
+    }
+}
+
+/// Kind of token represented by a [LexemeId]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TokenKind {
+    /// '{' token
+    Open,
+
+    /// '}' token
+    Close,
+
+    /// '=' token
+    Equal,
+
+    /// 32bit unsigned integer
+    U32,
+
+    /// 64bit unsigned integer
+    U64,
+
+    /// 32bit signed integer
+    I32,
+
+    /// boolean
+    Bool,
+
+    /// quoted string
+    Quoted,
+
+    /// unquoted string
+    Unquoted,
+
+    /// 32bits of floating point data
+    F32,
+
+    /// 64bits of floating point data
+    F64,
+
+    /// RGB value
+    Rgb,
+
+    /// 64bit signed integer
+    I64,
+
+    /// Identifier token
+    Id,
+}
+
+impl From<LexemeId> for TokenKind {
+    #[inline]
+    fn from(id: LexemeId) -> Self {
+        id.into_kind()
     }
 }
 
