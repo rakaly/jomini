@@ -1,4 +1,5 @@
 use jomini::binary::{Token, TokenReader};
+use std::collections::BTreeSet;
 use std::error;
 use std::io::{self, Read};
 
@@ -18,6 +19,7 @@ struct Stats {
     f64: u32,
     id: u32,
     rgb: u32,
+    token_ids: BTreeSet<u16>,
     frequencies: Vec<u64>,
 }
 
@@ -55,9 +57,48 @@ impl Stats {
             }
             Token::F32(_) => self.f32 += 1,
             Token::F64(_) => self.f64 += 1,
-            Token::Id(_) => self.id += 1,
+            Token::Id(id) => {
+                self.id += 1;
+                self.token_ids.insert(*id);
+            }
             Token::Rgb(_) => self.rgb += 1,
         }
+    }
+
+    fn find_large_gaps(&self, threshold: u16) -> Vec<(u16, u16, u32)> {
+        let mut gaps = Vec::new();
+
+        if self.token_ids.is_empty() {
+            return gaps;
+        }
+
+        // Check gap before first token
+        if let Some(&first) = self.token_ids.iter().next() {
+            if first >= threshold {
+                gaps.push((0, first - 1, first as u32));
+            }
+        }
+
+        // Check gaps between consecutive tokens using iterator zip
+        let mut iter1 = self.token_ids.iter().copied();
+        let mut iter2 = self.token_ids.iter().copied().skip(1);
+
+        for (curr_id, next_id) in iter1.by_ref().zip(iter2.by_ref()) {
+            let gap_size = next_id - curr_id - 1;
+            if gap_size >= threshold {
+                gaps.push((curr_id + 1, next_id - 1, gap_size as u32));
+            }
+        }
+
+        // Check gap after last token
+        if let Some(&last) = self.token_ids.iter().next_back() {
+            let gap_to_max = u16::MAX - last;
+            if gap_to_max >= threshold {
+                gaps.push((last + 1, u16::MAX, gap_to_max as u32));
+            }
+        }
+
+        gaps
     }
 }
 
@@ -206,7 +247,27 @@ impl std::fmt::Display for Stats {
             )?;
         }
 
+        if let Some(max_id) = self.token_ids.iter().next_back() {
+            writeln!(f, "max token id:\t0x{:04x}", max_id)?;
+        }
+
         writeln!(f, "total:\t\t{:<8}", total)?;
+
+        // Report large unused token ranges
+        let threshold = 250;
+        let large_gaps = self.find_large_gaps(threshold);
+        if !large_gaps.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "Large unused token ranges ({threshold}+ tokens):")?;
+            for (start, end, size) in large_gaps {
+                writeln!(
+                    f,
+                    "Unused range: 0x{:04x}-0x{:04x} ({} tokens)",
+                    start, end, size
+                )?;
+            }
+            writeln!(f)?;
+        }
 
         let count = self.frequencies.iter().sum::<u64>();
         if count > 0 {
@@ -237,10 +298,52 @@ impl std::fmt::Display for Stats {
 }
 
 fn main() -> Result<(), Box<dyn error::Error>> {
+    let mut stats = Stats::new();
+
+    #[cfg(feature = "envelope")]
+    {
+        use jomini::envelope::{JominiFile, JominiFileKind};
+        use std::fs::File;
+
+        let args: Vec<String> = std::env::args().collect();
+
+        // If envelope feature is enabled and file argument is provided, read from envelope
+        if args.len() >= 2 {
+            let file_path = &args[1];
+            let file = File::open(file_path)?;
+            let jomini_file = JominiFile::from_file(file)?;
+
+            let JominiFileKind::Zip(zip) = jomini_file.kind() else {
+                eprintln!("Error: file is not a envelope");
+                std::process::exit(1);
+            };
+
+            // Process metadata
+            if let Ok(meta) = zip.meta() {
+                let mut reader = TokenReader::new(meta);
+                while let Ok(Some(token)) = reader.next() {
+                    stats.update(&token);
+                }
+            }
+
+            // Process gamestate
+            if let Ok(gamestate) = zip.gamestate() {
+                let mut reader = TokenReader::new(gamestate);
+                while let Ok(Some(token)) = reader.next() {
+                    stats.update(&token);
+                }
+            }
+
+            println!("Binary token statistics:");
+            println!("{}", stats);
+            return Ok(());
+        }
+    }
+
+    // Fall back to stdin reading
     let mut data = Vec::new();
     io::stdin().read_to_end(&mut data)?;
 
-    let mut stats = Stats::new();
     let mut reader = TokenReader::new(&data[..]);
     while let Ok(Some(token)) = reader.next() {
         stats.update(&token);
