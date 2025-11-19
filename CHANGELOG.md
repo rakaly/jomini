@@ -1,3 +1,8 @@
+## v0.31.0 - 2025-11-19
+
+- Improve performance of `binary::TokenReader::next` and `read` by 3x on real saves with fast-path optimizations.
+- Add a new set of lower level APIs that decouple parsing from data extraction. `TokenKind` is a new, dataless enum informing the caller of the type of token. To extract the data related to this `TokenKind`, use one of the `*_data` methods.
+
 ## v0.30.1 - 2025-11-16
 
 - Fix envelope underflow on invalid zip  
