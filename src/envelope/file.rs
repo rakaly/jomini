@@ -9,7 +9,11 @@ use crate::{
 use rawzip::{
     CompressionMethod, FileReader, RangeReader, ReaderAt, ZipArchiveEntryWayfinder, ZipReader,
 };
-use std::{fs::File, io::Read, ops::Range};
+use std::{
+    fs::File,
+    io::{Cursor, Read},
+    ops::Range,
+};
 
 /// Read modern Paradox save files from memory or from the file system
 #[derive(Debug, Clone)]
@@ -19,38 +23,37 @@ pub struct JominiFile<R> {
 
 impl JominiFile<()> {
     /// Creates a Jomini file from a slice of data
-    pub fn from_slice(data: &[u8]) -> Result<JominiFile<&'_ [u8]>, EnvelopeError> {
-        let header = SaveHeader::from_slice(data)?;
+    pub fn from_slice<R>(data: R) -> Result<JominiFile<Cursor<R>>, EnvelopeError>
+    where
+        R: AsRef<[u8]>,
+    {
+        let header = SaveHeader::from_slice(data.as_ref())?;
+        let header_len = header.header_len() as u64;
 
         // Before looking at the kind of header we just parsed, always attempt
         // to decode the end of the central directory from the end of the input.
         // This allows us to handle misleading headers that claim to be
         // uncompressed but are actually Zip saves. The performance cost is
         // minimal as scanning up to 64KB from the end of the input is cheap.
-        let archive = rawzip::ZipArchive::with_max_search_space(64 * 1024)
-            .locate_in_slice(data)
-            .map_err(|(_, e)| EnvelopeErrorKind::Zip(e));
-
-        let header_len = header.header_len() as u64;
-        match archive {
+        match rawzip::ZipArchive::with_max_search_space(64 * 1024).locate_in_slice(data) {
             Ok(archive) => {
-                let archive = archive.into_reader();
+                let archive = archive.into_zip_archive();
                 let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
                 let zip = JominiZip::try_from_archive(archive, &mut buf, header.clone())?;
                 Ok(JominiFile {
                     kind: JominiFileKind::Zip(zip),
                 })
             }
-            _ if header.kind().is_binary() => Ok(JominiFile {
+            Err((data, _)) if header.kind().is_binary() => Ok(JominiFile {
                 kind: JominiFileKind::Uncompressed(SaveDataKind::Binary(SaveData::new(
                     header,
-                    SaveContent::with_offset(data, header_len),
+                    SaveContent::with_offset(Cursor::new(data), header_len),
                 ))),
             }),
-            _ => Ok(JominiFile {
+            Err((data, _)) => Ok(JominiFile {
                 kind: JominiFileKind::Uncompressed(SaveDataKind::Text(SaveData::new(
                     header,
-                    SaveContent::with_offset(data, header_len),
+                    SaveContent::with_offset(Cursor::new(data), header_len),
                 ))),
             }),
         }

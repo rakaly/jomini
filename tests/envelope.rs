@@ -368,6 +368,15 @@ fn zip_txt() {
 }
 
 #[test]
+fn envelope_vec() {
+    // test to ensure that passing in a Vec<u8> still has full functionality
+    let file = std::fs::read("tests/fixtures/envelopes/text.zip").unwrap();
+    let file = JominiFile::from_slice(file).unwrap();
+    assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedText);
+    zip_text_assertions(file);
+}
+
+#[test]
 fn malformed_zip_doesnt_panic() {
     // Regression test for invalid metadata range with malformed ZIP central directory
     // This file has a ZIP with an invalid central directory offset that would previously
