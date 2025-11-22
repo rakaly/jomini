@@ -1,3 +1,7 @@
+## v0.31.1 - 2025-11-22
+
+- Update `JominiFile::from_slice` to accept any argument that has an impl `AsRef<[u8]>` so it can support owning the data too (like passing in a `Vec<u8>`)  
+
 ## v0.31.0 - 2025-11-19
 
 - Improve performance of `binary::TokenReader::next` and `read` by 3x on real saves with fast-path optimizations.
