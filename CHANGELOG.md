@@ -1,3 +1,7 @@
+## v0.31.2 - 2025-11-24
+
+- Add support for parsing EU5 1.0.8 save headers via support for long format save headers
+
 ## v0.31.1 - 2025-11-22
 
 - Update `JominiFile::from_slice` to accept any argument that has an impl `AsRef<[u8]>` so it can support owning the data too (like passing in a `Vec<u8>`)  
