@@ -186,6 +186,8 @@ where
             )),
             TokenKind::Open => visitor.visit_seq(BinaryReaderSeq::new(self.de)),
             TokenKind::Rgb => todo!(),
+            TokenKind::Lookup => todo!(),
+            TokenKind::Lookup2 => todo!(),
         }
     }
 }

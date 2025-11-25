@@ -47,6 +47,10 @@ impl LexemeId {
     /// A binary 64 bit signed integer
     pub const I64: LexemeId = LexemeId::new(0x0317);
 
+    pub const LOOKUP: LexemeId = LexemeId::new(0xd3e);
+    pub const LOOKUP1: LexemeId = LexemeId::new(0xd3f);
+    pub const LOOKUP2: LexemeId = LexemeId::new(0xd40);
+
     /// Construct a new [LexemeId] from a 16bit value
     #[inline]
     pub const fn new(x: u16) -> Self {
@@ -83,6 +87,7 @@ impl LexemeId {
             LexemeId::F64 => TokenKind::F64,
             LexemeId::RGB => TokenKind::Rgb,
             LexemeId::I64 => TokenKind::I64,
+            LexemeId::LOOKUP => TokenKind::Lookup,
             _ => TokenKind::Id,
         }
     }
@@ -132,6 +137,9 @@ pub enum TokenKind {
 
     /// Identifier token
     Id,
+
+    Lookup,
+    Lookup2,
 }
 
 impl From<LexemeId> for TokenKind {
@@ -276,6 +284,9 @@ pub enum Token<'a> {
     /// token id that can be resolved to a string via a
     /// [TokenResolver](crate::binary::TokenResolver)
     Id(u16),
+
+    Lookup(u16),
+    Lookup2(u16),
 }
 
 impl Token<'_> {
@@ -349,6 +360,14 @@ impl Token<'_> {
                 wtr.write_all(&x.to_le_bytes())
             }
             Token::Id(x) => wtr.write_all(&x.to_le_bytes()),
+            Token::Lookup(x) => {
+                wtr.write_all(&LexemeId::LOOKUP.0.to_le_bytes())?;
+                wtr.write_all(&x.to_le_bytes())
+            }
+            Token::Lookup2(x) => {
+                wtr.write_all(&LexemeId::LOOKUP2.0.to_le_bytes())?;
+                wtr.write_all(&x.to_le_bytes())
+            }
         }
     }
 }

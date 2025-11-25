@@ -21,6 +21,8 @@ struct Stats {
     rgb: u32,
     token_ids: BTreeSet<u16>,
     frequencies: Vec<u64>,
+    lookup: u16,
+    lookup2: u16,
 }
 
 impl Stats {
@@ -62,6 +64,17 @@ impl Stats {
                 self.token_ids.insert(*id);
             }
             Token::Rgb(_) => self.rgb += 1,
+
+            Token::Lookup2(id) => {
+                self.lookup2 += 1;
+            }
+            Token::Lookup(id) => {
+                self.lookup += 1;
+            }
+            _ => {
+                // self.id += 1;
+                // self.token_ids.insert(*id);
+            }
         }
     }
 
@@ -244,6 +257,24 @@ impl std::fmt::Display for Stats {
                 "rgb:\t\t{:<8}({:.2}%)",
                 self.rgb,
                 (self.rgb as f64) / total * 100.0
+            )?;
+        }
+
+        if self.lookup != 0 {
+            writeln!(
+                f,
+                "lookup:\t\t{:<8}({:.2}%)",
+                self.lookup,
+                (self.lookup as f64) / total * 100.0
+            )?;
+        }
+
+        if self.lookup2 != 0 {
+            writeln!(
+                f,
+                "lookup2:\t{:<8}({:.2}%)",
+                self.lookup2,
+                (self.lookup2 as f64) / total * 100.0
             )?;
         }
 

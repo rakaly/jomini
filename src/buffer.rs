@@ -127,8 +127,8 @@ pub struct BufferWindowBuilder {
 
 impl Default for BufferWindowBuilder {
     fn default() -> Self {
-        // Default buffer size of 32 KiB, same size that flate2 uses.
-        let buffer_len = 32 * 1024;
+        // Default buffer size of 64 KiB, same size that flate2 uses.
+        let buffer_len = 64 * 1024;
         Self {
             buffer: None,
             buffer_len,
