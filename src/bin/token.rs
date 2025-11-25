@@ -23,6 +23,24 @@ impl PartialEq<binary::Token<'_>> for Needle {
     }
 }
 
+fn string_lookup_parse(mut data: &[u8]) -> Vec<&'_ str> {
+    let mut result = Vec::new();
+    data = &data[5..];
+
+    let mut last = "";
+    while !data.is_empty() {
+        let (len, rest) = data.split_first_chunk::<2>().unwrap();
+        let len = u16::from_le_bytes(*len) as usize;
+        let (chunk, rest) = rest.split_at(len);
+
+        result.push(std::str::from_utf8(chunk).unwrap());
+        data = rest;
+    }
+
+
+    result
+}
+
 fn main() -> Result<(), Box<dyn error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     // let needle = match args.get(1) {
@@ -35,6 +53,9 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     //     },
     //     None => Needle::Token(0),
     // };
+
+    let lookup_data = std::fs::read("./string_lookup").unwrap();
+    let string_lookup = string_lookup_parse(&lookup_data);
 
     let stdin = io::stdin();
     let mut reader = jomini::binary::TokenReader::new(stdin.lock());
@@ -53,7 +74,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
         //     _ => {}
         // }
         // println!("{} {:?}", position, reader.token_data(token) );
-        match reader.token_data(token) {
+        match reader.token_from_kind(token) {
             binary::Token::Open => writer.write_start(),
             binary::Token::Close => writer.write_end(),
             binary::Token::Equal => writer.write_operator(jomini::text::Operator::Equal),
@@ -68,8 +89,8 @@ fn main() -> Result<(), Box<dyn error::Error>> {
             binary::Token::Rgb(rgb) => writer.write_rgb(&rgb),
             binary::Token::I64(x) => writer.write_i64(x),
             binary::Token::Id(x) => writer.write_unquoted(format!("id:0x{:x}", x).as_bytes()),
-            binary::Token::Lookup2(x) => writer.write_unquoted(format!("lookup2:0x{:x}@{}", x, position).as_bytes()),
-            binary::Token::Lookup(x) => writer.write_unquoted(format!("lookup:0x{:x}@{}", x, position).as_bytes()),
+            binary::Token::Lookup2(x) => writer.write_unquoted(format!("lookup2:0x{:x}@{} \'{}\'", x, position, string_lookup[x as usize]).as_bytes()),
+            binary::Token::Lookup(x) => writer.write_unquoted(format!("lookup:0x{:x}@{} \'{}\'", x, position, string_lookup[x as usize]).as_bytes()),
         }?
     }
 

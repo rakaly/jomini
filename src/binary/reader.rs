@@ -252,7 +252,7 @@ where
 
     /// Construct a [Token] from a [TokenKind] using stored data
     #[inline]
-    fn token_from_kind(&self, kind: TokenKind) -> Token<'_> {
+    pub fn token_from_kind(&self, kind: TokenKind) -> Token<'_> {
         match kind {
             TokenKind::Open => Token::Open,
             TokenKind::Close => Token::Close,
@@ -269,7 +269,7 @@ where
             TokenKind::I64 => Token::I64(self.i64_data()),
             TokenKind::Id => Token::Id(self.token_id()),
             TokenKind::Lookup => Token::Lookup(self.token_id()),
-            TokenKind::Lookup2 => Token::Lookup2(self.token_id()),
+            TokenKind::Lookup2 => Token::Lookup2(self.data[0]),
         }
     }
 
@@ -414,7 +414,7 @@ where
                 }
             }
             LexemeId::RGB => None,
-            LexemeId::LOOKUP1 | LexemeId::LOOKUP => {
+            LexemeId::LOOKUP => {
                 let (data, rest) = rest.split_at(2);
                 self.data[..2].copy_from_slice(data);
                 self.buf.advance_to(rest.as_ptr());
@@ -520,18 +520,10 @@ where
                 Ok(TokenKind::Lookup)
             }
             LexemeId::LOOKUP2 => {
-                let fst = rest.get(0).ok_or(LexError::Eof)?;
-                // if *fst < 128 {
-                    let (data, rest) = get_split::<1>(rest).ok_or(LexError::Eof)?;
-                    self.data[..1].copy_from_slice(data);
-                    self.buf.advance_to(rest.as_ptr());
-                    Ok(TokenKind::Lookup2)
-                // } else {
-                //     let (data, rest) = get_split::<3>(rest).ok_or(LexError::Eof)?;
-                //     self.data[..3].copy_from_slice(data);
-                //     self.buf.advance_to(rest.as_ptr());
-                //     Ok(TokenKind::Lookup2)
-                // }
+                let (data, rest) = get_split::<1>(rest).ok_or(LexError::Eof)?;
+                self.data[..1].copy_from_slice(data);
+                self.buf.advance_to(rest.as_ptr());
+                Ok(TokenKind::Lookup2)
             }
             _ => {
                 self.data[..2].copy_from_slice(id);
@@ -547,27 +539,6 @@ where
             Ok(kind) => Ok(Some(kind)),
             Err(LexError::Eof) => self.refill_with(|s| s.next_token()),
             Err(e) => Err(self.lex_error(e)),
-        }
-    }
-
-    pub fn token_data(&self, token: TokenKind) -> Token<'_> {
-        match token {
-            TokenKind::Open => Token::Open,
-            TokenKind::Close => Token::Close,
-            TokenKind::Equal => Token::Equal,
-            TokenKind::U32 => Token::U32(self.u32_data()),
-            TokenKind::U64 => Token::U64(self.u64_data()),
-            TokenKind::I32 => Token::I32(self.i32_data()),
-            TokenKind::Bool => Token::Bool(self.bool_data()),
-            TokenKind::Quoted => Token::Quoted(unsafe { self.scalar_data() }),
-            TokenKind::Unquoted => Token::Unquoted(unsafe { self.scalar_data() }),
-            TokenKind::F32 => Token::F32(self.f32_data()),
-            TokenKind::F64 => Token::F64(self.f64_data()),
-            TokenKind::Rgb => Token::Rgb(self.rgb_data()),
-            TokenKind::I64 => Token::I64(self.i64_data()),
-            TokenKind::Id => Token::Id(self.token_id()),
-            TokenKind::Lookup => Token::Lookup(self.token_id()),
-            TokenKind::Lookup2 => Token::Lookup2(self.token_id()),
         }
     }
 

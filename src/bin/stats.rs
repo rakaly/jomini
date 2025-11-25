@@ -376,7 +376,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     io::stdin().read_to_end(&mut data)?;
 
     let mut reader = TokenReader::new(&data[..]);
-    while let Ok(Some(token)) = reader.next() {
+    while let Some(token) = reader.next()? {
         stats.update(&token);
     }
 
