@@ -77,52 +77,77 @@ impl SaveHeaderKind {
 /// <https://github.com/crschnick/pdx_unlimiter/blob/6363689c8a89a73bc5db4cca4eff249261807d38/pdxu-io/src/main/java/com/crschnick/pdxu/io/savegame/ModernHeader.java#L7-L25>
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SaveHeader {
-    unknown: [u8; 2],
+    version: u16,
     kind: SaveHeaderKind,
     random: [u8; 8],
     meta_len: u64,
+    unknown: [u8; 8],
+    unknown_len: usize,
     header_len: usize,
 }
 
 impl SaveHeader {
-    pub(crate) const SIZE: usize = 24;
+    pub(crate) const SIZE: usize = 33;
 
     /// Creates a SaveHeader by parsing from a byte slice
     pub fn from_slice(data: &[u8]) -> Result<Self, EnvelopeError> {
-        let data: &[u8; Self::SIZE] = data
-            .first_chunk()
-            .ok_or_else(|| EnvelopeError::from(EnvelopeErrorKind::InvalidHeader))?;
+        if data.len() < 24 {
+            return Err(EnvelopeErrorKind::InvalidHeader.into());
+        }
 
         if !matches!(&data[..3], [b'S', b'A', b'V']) {
             return Err(EnvelopeErrorKind::InvalidHeader.into());
         }
 
-        // These try_into calls cannot fail because of the slice length check above
-        let unknown = data[3..5].try_into().unwrap();
+        // Parse version as u16 from hex at [3:5]
+        let version_hex =
+            std::str::from_utf8(&data[3..5]).map_err(|_| EnvelopeErrorKind::InvalidHeader)?;
+        let version =
+            u16::from_str_radix(version_hex, 16).map_err(|_| EnvelopeErrorKind::InvalidHeader)?;
+
+        // Parse kind
         let kind_hex =
             std::str::from_utf8(&data[5..7]).map_err(|_| EnvelopeErrorKind::InvalidHeader)?;
         let kind =
             u16::from_str_radix(kind_hex, 16).map_err(|_| EnvelopeErrorKind::InvalidHeader)?;
+
         let random = data[7..15].try_into().unwrap();
 
+        // Parse metadata length
         let meta_hex =
             std::str::from_utf8(&data[15..23]).map_err(|_| EnvelopeErrorKind::InvalidHeader)?;
         let meta_len =
             u64::from_str_radix(meta_hex, 16).map_err(|_| EnvelopeErrorKind::InvalidHeader)?;
 
-        let header_len = if data[23] == b'\r' && data.get(24) == Some(&b'\n') {
-            25
-        } else if data[23] == b'\n' {
-            24
+        // Find newline position (scan up to SIZE bytes)
+        let search_data = &data[..Self::SIZE.min(data.len())];
+        let newline_pos = search_data
+            .iter()
+            .position(|&b| b == b'\n')
+            .ok_or_else(|| EnvelopeErrorKind::InvalidHeader)?;
+
+        // Check if preceded by '\r' (CRLF)
+        let has_cr = newline_pos > 0 && data[newline_pos - 1] == b'\r';
+        let padding_end = newline_pos - (has_cr as usize);
+
+        let (unknown_len, unknown) = if padding_end == 23 {
+            (0, [0u8; 8])
+        } else if padding_end == 31 {
+            let mut pad = [0u8; 8];
+            pad.copy_from_slice(&data[23..31]);
+            (8, pad)
         } else {
             return Err(EnvelopeErrorKind::InvalidHeader.into());
         };
 
+        let header_len = newline_pos + 1;
         Ok(SaveHeader {
-            unknown,
+            version,
             kind: SaveHeaderKind::new(kind),
             random,
             meta_len,
+            unknown,
+            unknown_len,
             header_len,
         })
     }
@@ -158,11 +183,15 @@ impl SaveHeader {
         W: Write,
     {
         writer.write_all(b"SAV")?;
-        writer.write_all(&self.unknown)?;
+        write!(writer, "{0:02x}", self.version)?;
         write!(writer, "{0:02x}", self.kind.value())?;
         writer.write_all(&self.random)?;
         write!(writer, "{0:08x}", self.meta_len)?;
-        if self.header_len() == 25 {
+        // Write padding bytes if this is an extended format header
+        if self.unknown_len > 0 {
+            writer.write_all(&self.unknown[..self.unknown_len])?;
+        }
+        if self.header_len() == 25 || self.header_len() == 33 {
             writer.write_all(b"\r")?;
         }
         writer.write_all(b"\n")?;
@@ -263,5 +292,15 @@ mod tests {
         assert_eq!(header.kind(), SaveHeaderKind::Binary);
         assert_eq!(header.header_len(), 24);
         assert_eq!(header.metadata_len(), 19497);
+    }
+
+    #[test]
+    fn test_eu5_debug_header_2() {
+        // patch 1.0.8 changed up the header version to use the longer format
+        let data = b"SAV020013f56aaf0004e72300000000\n";
+        let header = SaveHeader::from_slice(&data[..]).unwrap();
+        assert_eq!(header.kind(), SaveHeaderKind::Text);
+        assert_eq!(header.header_len(), 32);
+        assert_eq!(header.metadata_len(), 0x4e723);
     }
 }
