@@ -154,7 +154,7 @@ fn test_comprehensive_attributes() {
     assert_eq!(result.tags, vec![Cow::from("tag1"), Cow::from("tag2")]);
     assert_eq!(result.optional_field, Some(Cow::from("optional_value")));
     assert_eq!(result.count, 42);
-    assert_eq!(result.enabled, true);
+    assert!(result.enabled);
     assert_eq!(result.numbers, vec![1, 2, 3]);
 }
 

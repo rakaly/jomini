@@ -124,7 +124,7 @@ impl SaveHeader {
         let newline_pos = search_data
             .iter()
             .position(|&b| b == b'\n')
-            .ok_or_else(|| EnvelopeErrorKind::InvalidHeader)?;
+            .ok_or(EnvelopeErrorKind::InvalidHeader)?;
 
         // Check if preceded by '\r' (CRLF)
         let has_cr = newline_pos > 0 && data[newline_pos - 1] == b'\r';
