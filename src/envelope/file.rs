@@ -329,9 +329,10 @@ impl<E, R> SaveData<E, R> {
 impl<E, R: ReaderAt> SaveData<E, R> {
     /// Returns a reader for the metadata section
     pub fn meta(&self) -> SaveContent<E, RangeReader<&R>> {
+        let header_len = self.header().header_len() as u64;
         let meta_reader = RangeReader::new(
             self.body.get_ref(),
-            SaveHeader::SIZE as u64..SaveHeader::SIZE as u64 + self.header.metadata_len(),
+            header_len..header_len + self.header().metadata_len(),
         );
 
         SaveContent::new(meta_reader)
