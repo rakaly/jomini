@@ -186,6 +186,10 @@ where
             )),
             TokenKind::Open => visitor.visit_seq(BinaryReaderSeq::new(self.de)),
             TokenKind::Rgb => todo!(),
+            TokenKind::LookupU8 | TokenKind::LookupU16 => Err(Error::invalid_syntax(
+                "lookup index deserialization not yet implemented",
+                self.de.reader.position(),
+            )),
         }
     }
 }

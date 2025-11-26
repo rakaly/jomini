@@ -19,6 +19,8 @@ struct Stats {
     f64: u32,
     id: u32,
     rgb: u32,
+    lookup_u8: u32,
+    lookup_u16: u32,
     token_ids: BTreeSet<u16>,
     frequencies: Vec<u64>,
 }
@@ -62,6 +64,8 @@ impl Stats {
                 self.token_ids.insert(*id);
             }
             Token::Rgb(_) => self.rgb += 1,
+            Token::LookupU8(_) => self.lookup_u8 += 1,
+            Token::LookupU16(_) => self.lookup_u16 += 1,
         }
     }
 
@@ -117,7 +121,9 @@ impl std::fmt::Display for Stats {
             + self.f32
             + self.f64
             + self.id
-            + self.rgb;
+            + self.rgb
+            + self.lookup_u8
+            + self.lookup_u16;
 
         let total = total as f64;
 
@@ -244,6 +250,24 @@ impl std::fmt::Display for Stats {
                 "rgb:\t\t{:<8}({:.2}%)",
                 self.rgb,
                 (self.rgb as f64) / total * 100.0
+            )?;
+        }
+
+        if self.lookup_u8 != 0 {
+            writeln!(
+                f,
+                "lookup_u8:\t{:<8}({:.2}%)",
+                self.lookup_u8,
+                (self.lookup_u8 as f64) / total * 100.0
+            )?;
+        }
+
+        if self.lookup_u16 != 0 {
+            writeln!(
+                f,
+                "lookup_u16:\t{:<8}({:.2}%)",
+                self.lookup_u16,
+                (self.lookup_u16 as f64) / total * 100.0
             )?;
         }
 

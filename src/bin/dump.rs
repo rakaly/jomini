@@ -113,6 +113,14 @@ fn format_value(
             let token = reader.i64_data();
             write!(buf, "i64:{}", token)?;
         }
+        TokenKind::LookupU8 => {
+            let token = reader.lookup_u8_data();
+            write!(buf, "lookup_u8:0x{:02x}", token)?;
+        }
+        TokenKind::LookupU16 => {
+            let token = reader.lookup_u16_data();
+            write!(buf, "lookup_u16:0x{:04x}", token)?;
+        }
         TokenKind::Id => {
             let token = reader.token_id();
             write!(buf, "id:0x{:x}", token)?;
