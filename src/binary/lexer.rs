@@ -48,7 +48,7 @@ impl LexemeId {
     pub const I64: LexemeId = LexemeId::new(0x0317);
 
     pub const LOOKUP: LexemeId = LexemeId::new(0xd3e);
-    pub const LOOKUP2: LexemeId = LexemeId::new(0xd40);
+    pub const LOOKUP1: LexemeId = LexemeId::new(0xd40);
 
     /// Construct a new [LexemeId] from a 16bit value
     #[inline]
@@ -138,7 +138,7 @@ pub enum TokenKind {
     Id,
 
     Lookup,
-    Lookup2,
+    Lookup1,
 }
 
 impl From<LexemeId> for TokenKind {
@@ -285,7 +285,7 @@ pub enum Token<'a> {
     Id(u16),
 
     Lookup(u16),
-    Lookup2(u8),
+    Lookup1(u8),
 }
 
 impl Token<'_> {
@@ -363,8 +363,8 @@ impl Token<'_> {
                 wtr.write_all(&LexemeId::LOOKUP.0.to_le_bytes())?;
                 wtr.write_all(&x.to_le_bytes())
             }
-            Token::Lookup2(x) => {
-                wtr.write_all(&LexemeId::LOOKUP2.0.to_le_bytes())?;
+            Token::Lookup1(x) => {
+                wtr.write_all(&LexemeId::LOOKUP1.0.to_le_bytes())?;
                 wtr.write_all(&x.to_le_bytes())
             }
         }

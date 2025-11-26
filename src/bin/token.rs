@@ -89,7 +89,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
             binary::Token::Rgb(rgb) => writer.write_rgb(&rgb),
             binary::Token::I64(x) => writer.write_i64(x),
             binary::Token::Id(x) => writer.write_unquoted(format!("id:0x{:x}", x).as_bytes()),
-            binary::Token::Lookup2(x) => writer.write_unquoted(format!("lookup2:0x{:x}@{} \'{}\'", x, position, string_lookup[x as usize]).as_bytes()),
+            binary::Token::Lookup1(x) => writer.write_unquoted(format!("lookup2:0x{:x}@{} \'{}\'", x, position, string_lookup[x as usize]).as_bytes()),
             binary::Token::Lookup(x) => writer.write_unquoted(format!("lookup:0x{:x}@{} \'{}\'", x, position, string_lookup[x as usize]).as_bytes()),
         }?
     }

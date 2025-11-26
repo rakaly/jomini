@@ -65,7 +65,7 @@ impl Stats {
             }
             Token::Rgb(_) => self.rgb += 1,
 
-            Token::Lookup2(id) => {
+            Token::Lookup1(id) => {
                 self.lookup2 += 1;
             }
             Token::Lookup(id) => {

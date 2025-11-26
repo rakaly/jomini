@@ -288,6 +288,40 @@ where
             })))
         }
     }
+
+    /// Returns a reader for a file in the ZIP archive by path
+    ///
+    /// If the file is compressed, the reader will return decompressed data.
+    /// Only supports Deflate compression.
+    pub fn get_file(&self, path: &str) -> Result<Box<dyn Read + '_>, EnvelopeError> {
+        let path_bytes = path.as_bytes();
+        let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
+
+        let wayfinder_and_compression = {
+            let mut entries = self.archive.entries(&mut buf);
+            let mut found = None;
+
+            while let Some(entry) = entries.next_entry().map_err(EnvelopeErrorKind::Zip)? {
+                if entry.file_path().as_ref() == path_bytes {
+                    found = Some((entry.compression_method(), entry.wayfinder()));
+                    break;
+                }
+            }
+
+            found
+        };
+
+        let (compression, wayfinder) = wayfinder_and_compression
+            .ok_or_else(|| EnvelopeErrorKind::ZipMissingEntry(path.to_string()))?;
+
+        let zip_entry = self
+            .archive
+            .get_entry(wayfinder)
+            .map_err(EnvelopeErrorKind::Zip)?;
+
+        let reader = CompressedReader::from_zip(compression, zip_entry)?;
+        Ok(Box::new(reader))
+    }
 }
 
 /// Marker type for text-encoded save file content

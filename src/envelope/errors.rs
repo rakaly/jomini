@@ -31,6 +31,8 @@ pub enum EnvelopeErrorKind {
     ZipMissingGamestate,
     /// ZIP entry uses unsupported compression method
     ZipUnsupportedCompression,
+    /// ZIP archive missing a requested entry
+    ZipMissingEntry(String),
 }
 
 impl std::error::Error for EnvelopeError {
@@ -52,6 +54,9 @@ impl std::fmt::Display for EnvelopeError {
             EnvelopeErrorKind::ZipMissingGamestate => write!(f, "Zip missing gamestate entry"),
             EnvelopeErrorKind::ZipUnsupportedCompression => {
                 write!(f, "Zip unsupported compression method")
+            }
+            EnvelopeErrorKind::ZipMissingEntry(path) => {
+                write!(f, "Zip missing entry: {}", path)
             }
         }
     }

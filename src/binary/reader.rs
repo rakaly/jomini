@@ -269,7 +269,7 @@ where
             TokenKind::I64 => Token::I64(self.i64_data()),
             TokenKind::Id => Token::Id(self.token_id()),
             TokenKind::Lookup => Token::Lookup(self.token_id()),
-            TokenKind::Lookup2 => Token::Lookup2(self.data[0]),
+            TokenKind::Lookup1 => Token::Lookup1(self.data[0]),
         }
     }
 
@@ -420,7 +420,7 @@ where
                 self.buf.advance_to(rest.as_ptr());
                 Some(TokenKind::Lookup)
             }
-            LexemeId::LOOKUP2 => {
+            LexemeId::LOOKUP1 => {
                 None
                 // let (data, rest) = rest.split_at(3);
                 // self.data[..3].copy_from_slice(data);
@@ -519,11 +519,11 @@ where
                 self.buf.advance_to(rest.as_ptr());
                 Ok(TokenKind::Lookup)
             }
-            LexemeId::LOOKUP2 => {
+            LexemeId::LOOKUP1 => {
                 let (data, rest) = get_split::<1>(rest).ok_or(LexError::Eof)?;
                 self.data[..1].copy_from_slice(data);
                 self.buf.advance_to(rest.as_ptr());
-                Ok(TokenKind::Lookup2)
+                Ok(TokenKind::Lookup1)
             }
             _ => {
                 self.data[..2].copy_from_slice(id);
