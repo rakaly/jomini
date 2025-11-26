@@ -303,4 +303,14 @@ mod tests {
         assert_eq!(header.header_len(), 32);
         assert_eq!(header.metadata_len(), 0x4e723);
     }
+
+    #[test]
+    fn test_eu5_debug_header_2_bin() {
+        // An eu5 patch 1.0.8 binary long format
+        let data = b"SAV0203fbf95f030006353800000000\n";
+        let header = SaveHeader::from_slice(&data[..]).unwrap();
+        assert_eq!(header.kind(), SaveHeaderKind::UnifiedBinary);
+        assert_eq!(header.header_len(), 32);
+        assert_eq!(header.metadata_len(), 0x63538);
+    }
 }

@@ -4,6 +4,13 @@ pub struct EnvelopeError {
     kind: EnvelopeErrorKind,
 }
 
+impl EnvelopeError {
+    /// Returns true if this error is due to a missing ZIP entry
+    pub fn is_missing_entry(&self) -> bool {
+        matches!(self.kind, EnvelopeErrorKind::ZipMissingEntry(_))
+    }
+}
+
 impl From<EnvelopeErrorKind> for EnvelopeError {
     fn from(kind: EnvelopeErrorKind) -> Self {
         EnvelopeError { kind }
@@ -27,8 +34,8 @@ pub enum EnvelopeErrorKind {
     Zip(rawzip::Error),
     /// Invalid or corrupted save file header
     InvalidHeader,
-    /// ZIP archive missing the required gamestate entry
-    ZipMissingGamestate,
+    /// ZIP archive missing a requested entry
+    ZipMissingEntry(String),
     /// ZIP entry uses unsupported compression method
     ZipUnsupportedCompression,
 }
@@ -49,7 +56,7 @@ impl std::fmt::Display for EnvelopeError {
             EnvelopeErrorKind::Io(err) => write!(f, "IO error: {}", err),
             EnvelopeErrorKind::Zip(err) => write!(f, "Zip error: {}", err),
             EnvelopeErrorKind::InvalidHeader => write!(f, "Invalid header"),
-            EnvelopeErrorKind::ZipMissingGamestate => write!(f, "Zip missing gamestate entry"),
+            EnvelopeErrorKind::ZipMissingEntry(path) => write!(f, "Zip missing entry: {}", path),
             EnvelopeErrorKind::ZipUnsupportedCompression => {
                 write!(f, "Zip unsupported compression method")
             }

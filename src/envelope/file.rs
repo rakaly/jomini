@@ -224,7 +224,9 @@ where
             };
         }
 
-        let gamestate = gamestate.ok_or(EnvelopeErrorKind::ZipMissingGamestate)?;
+        let gamestate =
+            gamestate.ok_or_else(|| EnvelopeErrorKind::ZipMissingEntry("gamestate".to_string()))?;
+
         let metadata = match meta {
             Some(meta) => MetaFormatKind::Zip(meta),
             None => MetaFormatKind::Inlined(
@@ -287,6 +289,32 @@ where
                 reader,
             })))
         }
+    }
+
+    /// Returns a reader for a file in the ZIP archive by path
+    ///
+    /// Useful for retrieving additional files beyond the gamestate and
+    /// metadata.
+    ///
+    /// Will return a `EnvelopeErrorKind::ZipMissingEntry` if the requested path
+    /// is not found.
+    pub fn read_entry(&self, path: &str) -> Result<impl Read + '_, EnvelopeError> {
+        let path_bytes = path.as_bytes();
+        let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
+
+        let mut entries = self.archive.entries(&mut buf);
+        while let Some(entry) = entries.next_entry().map_err(EnvelopeErrorKind::Zip)? {
+            if entry.file_path().as_ref() == path_bytes {
+                let zip_entry = self
+                    .archive
+                    .get_entry(entry.wayfinder())
+                    .map_err(EnvelopeErrorKind::Zip)?;
+
+                return CompressedReader::from_zip(entry.compression_method(), zip_entry);
+            }
+        }
+
+        Err(EnvelopeErrorKind::ZipMissingEntry(path.to_string()).into())
     }
 }
 
