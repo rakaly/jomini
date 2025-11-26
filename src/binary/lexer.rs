@@ -47,6 +47,12 @@ impl LexemeId {
     /// A binary 64 bit signed integer
     pub const I64: LexemeId = LexemeId::new(0x0317);
 
+    /// A binary 8-bit lookup index
+    pub const LOOKUP_U8: LexemeId = LexemeId::new(0x0d40);
+
+    /// A binary 16-bit lookup index
+    pub const LOOKUP_U16: LexemeId = LexemeId::new(0x0d3e);
+
     /// Construct a new [LexemeId] from a 16bit value
     #[inline]
     pub const fn new(x: u16) -> Self {
@@ -83,6 +89,8 @@ impl LexemeId {
             LexemeId::F64 => TokenKind::F64,
             LexemeId::RGB => TokenKind::Rgb,
             LexemeId::I64 => TokenKind::I64,
+            LexemeId::LOOKUP_U8 => TokenKind::LookupU8,
+            LexemeId::LOOKUP_U16 => TokenKind::LookupU16,
             _ => TokenKind::Id,
         }
     }
@@ -129,6 +137,12 @@ pub enum TokenKind {
 
     /// 64bit signed integer
     I64,
+
+    /// 8-bit lookup index
+    LookupU8,
+
+    /// 16-bit lookup index
+    LookupU16,
 
     /// Identifier token
     Id,
@@ -197,6 +211,18 @@ pub(crate) fn read_f32(data: &[u8]) -> Result<(&[u8; 4], &[u8]), LexError> {
 #[inline]
 pub(crate) fn read_f64(data: &[u8]) -> Result<(&[u8; 8], &[u8]), LexError> {
     get_split::<8>(data).ok_or(LexError::Eof)
+}
+
+#[inline]
+pub(crate) fn read_lookup_u8(data: &[u8]) -> Result<(u8, &[u8]), LexError> {
+    let (&first, rest) = data.split_first().ok_or(LexError::Eof)?;
+    Ok((first, rest))
+}
+
+#[inline]
+pub(crate) fn read_lookup_u16(data: &[u8]) -> Result<(u16, &[u8]), LexError> {
+    let (head, rest) = get_split::<2>(data).ok_or(LexError::Eof)?;
+    Ok((u16::from_le_bytes(*head), rest))
 }
 
 #[inline]
@@ -273,6 +299,12 @@ pub enum Token<'a> {
     /// 64bit signed integer
     I64(i64),
 
+    /// 8-bit lookup index
+    LookupU8(u8),
+
+    /// 16-bit lookup index
+    LookupU16(u16),
+
     /// token id that can be resolved to a string via a
     /// [TokenResolver](crate::binary::TokenResolver)
     Id(u16),
@@ -348,6 +380,14 @@ impl Token<'_> {
                 wtr.write_all(&LexemeId::I64.0.to_le_bytes())?;
                 wtr.write_all(&x.to_le_bytes())
             }
+            Token::LookupU8(x) => {
+                wtr.write_all(&LexemeId::LOOKUP_U8.0.to_le_bytes())?;
+                wtr.write_all(&[*x])
+            }
+            Token::LookupU16(x) => {
+                wtr.write_all(&LexemeId::LOOKUP_U16.0.to_le_bytes())?;
+                wtr.write_all(&x.to_le_bytes())
+            }
             Token::Id(x) => wtr.write_all(&x.to_le_bytes()),
         }
     }
@@ -370,6 +410,8 @@ pub(crate) fn read_token(data: &[u8]) -> Result<(Token<'_>, &[u8]), LexError> {
         LexemeId::F64 => read_f64(data).map(|(x, d)| (Token::F64(*x), d)),
         LexemeId::RGB => read_rgb(data).map(|(x, d)| (Token::Rgb(x), d)),
         LexemeId::I64 => read_i64(data).map(|(x, d)| (Token::I64(x), d)),
+        LexemeId::LOOKUP_U8 => read_lookup_u8(data).map(|(x, d)| (Token::LookupU8(x), d)),
+        LexemeId::LOOKUP_U16 => read_lookup_u16(data).map(|(x, d)| (Token::LookupU16(x), d)),
         LexemeId(id) => Ok((Token::Id(id), data)),
     }
 }
@@ -700,6 +742,22 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
+    /// Advance the lexer through an 8-bit lookup index
+    #[inline]
+    pub fn read_lookup_u8(&mut self) -> Result<u8, LexerError> {
+        let (result, rest) = read_lookup_u8(self.data).map_err(|e| self.err_position(e))?;
+        self.data = rest;
+        Ok(result)
+    }
+
+    /// Advance the lexer through a 16-bit lookup index
+    #[inline]
+    pub fn read_lookup_u16(&mut self) -> Result<u16, LexerError> {
+        let (result, rest) = read_lookup_u16(self.data).map_err(|e| self.err_position(e))?;
+        self.data = rest;
+        Ok(result)
+    }
+
     /// Advance the lexer through unsigned little endian 32 bit integer
     ///
     /// ```rust
@@ -869,6 +927,14 @@ impl<'a> Lexer<'a> {
                 self.read_rgb()?;
                 Ok(())
             }
+            LexemeId::LOOKUP_U8 => {
+                self.read_lookup_u8()?;
+                Ok(())
+            }
+            LexemeId::LOOKUP_U16 => {
+                self.read_lookup_u16()?;
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -901,6 +967,12 @@ impl<'a> Lexer<'a> {
                 }
                 LexemeId::F64 => {
                     self.read_f64()?;
+                }
+                LexemeId::LOOKUP_U8 => {
+                    self.read_lookup_u8()?;
+                }
+                LexemeId::LOOKUP_U16 => {
+                    self.read_lookup_u16()?;
                 }
                 LexemeId::CLOSE => {
                     depth -= 1;
