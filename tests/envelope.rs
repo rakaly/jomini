@@ -195,7 +195,7 @@ fn expected_tokens(expected: &[Token], reader: impl std::io::Read) {
     assert_eq!(i, expected.len());
 }
 
-fn zip_binary_assertions(file: JominiFile<impl ReaderAt>) {
+fn zip_binary_assertions(file: &JominiFile<impl ReaderAt>) {
     // We can unwrap the file and work more effectively with the data
     let JominiFileKind::Zip(kind) = file.kind() else {
         panic!("expected zip binary envelope");
@@ -318,12 +318,12 @@ fn zip_bin_compressed_meta() {
     let file = std::fs::File::open("tests/fixtures/envelopes/split.zip").unwrap();
     let file = JominiFile::from_file(file).unwrap();
     assert_eq!(file.header().kind(), SaveHeaderKind::SplitBinary);
-    zip_binary_assertions(file);
+    zip_binary_assertions(&file);
 
     let file = std::fs::read("tests/fixtures/envelopes/split.zip").unwrap();
     let file = JominiFile::from_slice(&file).unwrap();
     assert_eq!(file.header().kind(), SaveHeaderKind::SplitBinary);
-    zip_binary_assertions(file);
+    zip_binary_assertions(&file);
 }
 
 #[test]
@@ -331,12 +331,12 @@ fn zip_bin_uncompressed_meta() {
     let file = std::fs::File::open("tests/fixtures/envelopes/header.zip").unwrap();
     let file = JominiFile::from_file(file).unwrap();
     assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedBinary);
-    zip_binary_assertions(file);
+    zip_binary_assertions(&file);
 
     let file = std::fs::read("tests/fixtures/envelopes/header.zip").unwrap();
     let file = JominiFile::from_slice(&file).unwrap();
     assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedBinary);
-    zip_binary_assertions(file);
+    zip_binary_assertions(&file);
 }
 
 #[test]
@@ -396,6 +396,38 @@ fn malformed_zip_doesnt_panic() {
     if let Ok(mut gamestate) = file.gamestate() {
         let _bytes_read = std::io::copy(&mut gamestate, &mut std::io::sink());
     }
+}
+
+#[test]
+fn txt_eu5_sav02() {
+    let file = std::fs::File::open("tests/fixtures/envelopes/sav02.txt").unwrap();
+    let file = JominiFile::from_file(file).unwrap();
+    assert_eq!(file.header().kind(), SaveHeaderKind::Text);
+    plaintext_uncompressed_assertions(file);
+}
+
+#[test]
+fn zip_eu5_sav02() {
+    // EU5 1.0.8 introduce a new save format with a string lookup file stored separately
+    let file = std::fs::File::open("tests/fixtures/envelopes/lookup.zip").unwrap();
+    let file = JominiFile::from_file(file).unwrap();
+    assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedBinary);
+    zip_binary_assertions(&file);
+
+    let JominiFileKind::Zip(zip) = file.kind() else {
+        panic!("expected zip binary envelope");
+    };
+
+    // Make sure that we can access the lookup file specifically
+    let mut lookup_file = zip.read_entry("string-lookup").unwrap();
+    let mut lookup_data = String::new();
+    lookup_file.read_to_string(&mut lookup_data).unwrap();
+    assert_eq!(lookup_data, "hello-world");
+
+    let Err(err) = zip.read_entry("nonexistent-file") else {
+        panic!("expected missing entry error");
+    };
+    assert!(err.is_missing_entry());
 }
 
 struct TestFlavor;

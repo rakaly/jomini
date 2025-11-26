@@ -1,2 +1,2 @@
 * text=auto
-tests/fixtures/envelopes/text.txt eol=lf
+tests/fixtures/envelopes/*.txt eol=lf
