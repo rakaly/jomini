@@ -73,10 +73,10 @@ impl Stats {
         }
 
         // Check gap before first token
-        if let Some(&first) = self.token_ids.iter().next() {
-            if first >= threshold {
-                gaps.push((0, first - 1, first as u32));
-            }
+        if let Some(&first) = self.token_ids.iter().next()
+            && first >= threshold
+        {
+            gaps.push((0, first - 1, first as u32));
         }
 
         // Check gaps between consecutive tokens using iterator zip
