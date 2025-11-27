@@ -162,6 +162,11 @@ impl SaveHeader {
         self.kind = kind;
     }
 
+    /// Returns the save file format version
+    pub fn version(&self) -> u16 {
+        self.version
+    }
+
     /// Returns the length of the header line in bytes
     pub fn header_len(&self) -> usize {
         self.header_len
@@ -217,6 +222,7 @@ mod tests {
         let data = b"SAV0102a40f789f000067c4\n";
         let header = SaveHeader::from_slice(&data[..]).unwrap();
 
+        assert_eq!(header.version(), 1);
         assert_eq!(header.kind(), SaveHeaderKind::UnifiedText);
         assert_eq!(header.header_len(), 24);
         assert_eq!(header.metadata_len(), 26564);
@@ -232,6 +238,7 @@ mod tests {
         let data = b"SAV0102a40f789f000067c4\r\n";
         let header = SaveHeader::from_slice(&data[..]).unwrap();
 
+        assert_eq!(header.version(), 1);
         assert_eq!(header.kind(), SaveHeaderKind::UnifiedText);
         assert_eq!(header.header_len(), 25);
         assert_eq!(header.metadata_len(), 26564);
@@ -248,6 +255,7 @@ mod tests {
         let data = b"SAV010580b859da00000000\n";
         let header = SaveHeader::from_slice(&data[..]).unwrap();
 
+        assert_eq!(header.version(), 1);
         assert_eq!(header.kind(), SaveHeaderKind::SplitBinary);
         assert_eq!(header.header_len(), 24);
         assert_eq!(header.metadata_len(), 0);
@@ -259,6 +267,7 @@ mod tests {
         let data = b"SAV010078544999000003bc\n";
         let header = SaveHeader::from_slice(&data[..]).unwrap();
 
+        assert_eq!(header.version(), 1);
         assert_eq!(header.kind(), SaveHeaderKind::Text);
         assert_eq!(header.header_len(), 24);
         assert_eq!(header.metadata_len(), 956);
@@ -269,6 +278,7 @@ mod tests {
         // EU5 ironman save where the binary header is precedes the zip
         let data = b"SAV0103daabb23800062a40\n";
         let header = SaveHeader::from_slice(&data[..]).unwrap();
+        assert_eq!(header.version(), 1);
         assert_eq!(header.kind(), SaveHeaderKind::UnifiedBinary);
         assert_eq!(header.header_len(), 24);
         assert_eq!(header.metadata_len(), 404032);
@@ -279,6 +289,7 @@ mod tests {
         // EU5 debug save where everything is plaintext, no zip
         let data = b"SAV0100797de2430004dc53\n";
         let header = SaveHeader::from_slice(&data[..]).unwrap();
+        assert_eq!(header.version(), 1);
         assert_eq!(header.kind(), SaveHeaderKind::Text);
         assert_eq!(header.header_len(), 24);
         assert_eq!(header.metadata_len(), 318547);
@@ -289,6 +300,7 @@ mod tests {
         // CK3 binary autosave
         let data = b"SAV0101ad23696300004c29\n";
         let header = SaveHeader::from_slice(&data[..]).unwrap();
+        assert_eq!(header.version(), 1);
         assert_eq!(header.kind(), SaveHeaderKind::Binary);
         assert_eq!(header.header_len(), 24);
         assert_eq!(header.metadata_len(), 19497);
@@ -299,6 +311,7 @@ mod tests {
         // patch 1.0.8 changed up the header version to use the longer format
         let data = b"SAV020013f56aaf0004e72300000000\n";
         let header = SaveHeader::from_slice(&data[..]).unwrap();
+        assert_eq!(header.version(), 2);
         assert_eq!(header.kind(), SaveHeaderKind::Text);
         assert_eq!(header.header_len(), 32);
         assert_eq!(header.metadata_len(), 0x4e723);
@@ -309,6 +322,7 @@ mod tests {
         // An eu5 patch 1.0.8 binary long format
         let data = b"SAV0203fbf95f030006353800000000\n";
         let header = SaveHeader::from_slice(&data[..]).unwrap();
+        assert_eq!(header.version(), 2);
         assert_eq!(header.kind(), SaveHeaderKind::UnifiedBinary);
         assert_eq!(header.header_len(), 32);
         assert_eq!(header.metadata_len(), 0x63538);
