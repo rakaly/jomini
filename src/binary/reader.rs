@@ -434,6 +434,7 @@ where
             LexemeId::LOOKUP_U8 => {
                 let (data, rest) = rest.split_at(1);
                 self.data[0] = data[0];
+                self.data[1] = 0; // zero out unused byte for u16 lookups
                 self.buf.advance_to(rest.as_ptr());
                 Some(TokenKind::LookupU8)
             }

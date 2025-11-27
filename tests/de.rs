@@ -1,7 +1,8 @@
 #![cfg(feature = "derive")]
 
 use jomini::{
-    BinaryDeserializer, Encoding, JominiDeserialize, Windows1252Encoding, binary::BinaryFlavor,
+    BinaryDeserializer, Encoding, JominiDeserialize, Windows1252Encoding,
+    binary::{BinaryFlavor, TokenResolver},
     common::PdsDate,
 };
 use serde::{
@@ -411,4 +412,192 @@ fn test_enum_map() {
             Condition::Prestige(10)
         ]
     );
+}
+
+struct TestResolver {
+    tokens: HashMap<u16, String>,
+    lookups: HashMap<u16, String>,
+}
+
+impl TokenResolver for TestResolver {
+    fn resolve(&self, token: u16) -> Option<&str> {
+        self.tokens.get(&token).map(|s| s.as_str())
+    }
+
+    fn lookup(&self, index: u16) -> Option<&str> {
+        self.lookups.get(&index).map(|s| s.as_str())
+    }
+}
+
+#[test]
+fn test_lookup_u8_to_string() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Data {
+        culture: String,
+    }
+
+    let mut tokens = HashMap::new();
+    tokens.insert(0x053a, "culture".to_string());
+    let mut lookups = HashMap::new();
+    lookups.insert(42, "french".to_string());
+    let resolver = TestResolver { tokens, lookups };
+
+    let bin_data = [
+        0x3a, 0x05, // Id token for "culture"
+        0x01, 0x00, // EQUAL token
+        0x40, 0x0d, // LOOKUP_U8 token
+        42,   // index
+    ];
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture, "french");
+}
+
+#[test]
+fn test_lookup_u16_to_string() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Data {
+        culture: String,
+    }
+
+    let mut tokens = HashMap::new();
+    tokens.insert(0x053a, "culture".to_string());
+    let mut lookups = HashMap::new();
+    lookups.insert(300, "prussian".to_string());
+    let resolver = TestResolver { tokens, lookups };
+
+    let bin_data = [
+        0x3a, 0x05, // Id token for "culture"
+        0x01, 0x00, // EQUAL token
+        0x3e, 0x0d, // LOOKUP_U16 token
+        0x2c, 0x01, // 300 in little-endian
+    ];
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture, "prussian");
+}
+
+#[test]
+fn test_lookup_u8_raw_index() {
+    #[derive(Debug, PartialEq)]
+    struct InternedSymbol(u16);
+
+    impl<'de> Deserialize<'de> for InternedSymbol {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            struct SymbolVisitor;
+            impl<'de> de::Visitor<'de> for SymbolVisitor {
+                type Value = InternedSymbol;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("a lookup index")
+                }
+
+                fn visit_u16<E>(self, v: u16) -> Result<Self::Value, E> {
+                    Ok(InternedSymbol(v))
+                }
+            }
+
+            deserializer.deserialize_u16(SymbolVisitor)
+        }
+    }
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Data {
+        culture: InternedSymbol,
+    }
+
+    // Custom resolver with token resolution but no lookups (we're getting raw indices)
+    struct TestResolver {
+        tokens: HashMap<u16, String>,
+    }
+
+    impl TokenResolver for TestResolver {
+        fn resolve(&self, token: u16) -> Option<&str> {
+            self.tokens.get(&token).map(|s| s.as_str())
+        }
+    }
+
+    let mut tokens = HashMap::new();
+    tokens.insert(0x053a, "culture".to_string());
+    let resolver = TestResolver { tokens };
+
+    // Binary data: field token 0x053a for "culture", EQUAL, followed by LOOKUP_U8(42)
+    let bin_data = [
+        0x3a, 0x05, // Id token for "culture"
+        0x01, 0x00, // EQUAL token
+        0x40, 0x0d, // LOOKUP_U8 token
+        42,   // index
+    ];
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture.0, 42);
+}
+
+#[test]
+fn test_lookup_u16_raw_index() {
+    #[derive(Debug, PartialEq)]
+    struct InternedSymbol(u16);
+
+    impl<'de> Deserialize<'de> for InternedSymbol {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            struct SymbolVisitor;
+            impl<'de> de::Visitor<'de> for SymbolVisitor {
+                type Value = InternedSymbol;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("a lookup index")
+                }
+
+                fn visit_u16<E>(self, v: u16) -> Result<Self::Value, E> {
+                    Ok(InternedSymbol(v))
+                }
+            }
+
+            deserializer.deserialize_u16(SymbolVisitor)
+        }
+    }
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Data {
+        culture: InternedSymbol,
+    }
+
+    struct TestResolver {
+        tokens: HashMap<u16, String>,
+    }
+
+    impl TokenResolver for TestResolver {
+        fn resolve(&self, token: u16) -> Option<&str> {
+            self.tokens.get(&token).map(|s| s.as_str())
+        }
+    }
+
+    let mut tokens = HashMap::new();
+    tokens.insert(0x053a, "culture".to_string());
+    let resolver = TestResolver { tokens };
+
+    // Binary data: field token 0x053a for "culture", EQUAL, followed by LOOKUP_U16(300)
+    let bin_data = [
+        0x3a, 0x05, // Id token for "culture"
+        0x01, 0x00, // EQUAL token
+        0x3e, 0x0d, // LOOKUP_U16 token
+        0x2c, 0x01, // 300 in little-endian
+    ];
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture.0, 300);
 }
