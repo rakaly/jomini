@@ -1,3 +1,11 @@
+## v0.32.0 - 2025-11-28
+
+- **Breaking Change**: New binary token kinds: `LookupU8` and `LookupU16` for 8 bit and 16 bit lookup values introduced in EU5 1.0.8. There are no reported collisions within other games: EU4, CK3, Imperator, Vic3, and HOI4.
+- Add `TokenResolver::lookup` to resolve these new lookup values to strings during deserialization. By default, the method will return `None`.
+- Add `JominiZip::read_entry` to retrieve files other other than those related to gamestate.
+- Update `SaveHeader::version` to be exposed so one can detect a `SAV02` save vs a `SAV01` save.
+- Fix incorrect extraction of `SAV01` metadata (introduced with `SAV02` support)
+
 ## v0.31.2 - 2025-11-24
 
 - Add support for parsing EU5 1.0.8 save headers via support for long format save headers
