@@ -186,10 +186,23 @@ where
             )),
             TokenKind::Open => visitor.visit_seq(BinaryReaderSeq::new(self.de)),
             TokenKind::Rgb => todo!(),
-            TokenKind::LookupU8 | TokenKind::LookupU16 => Err(Error::invalid_syntax(
-                "lookup index deserialization not yet implemented",
-                self.de.reader.position(),
-            )),
+            TokenKind::LookupU8 | TokenKind::LookupU16 => {
+                let index = self.de.reader.lookup_u16_data();
+                match self.de.config.resolver.lookup(index) {
+                    Some(value) => visitor.visit_borrowed_str(value),
+                    None => match self.de.config.failed_resolve_strategy {
+                        FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
+                            kind: DeserializeErrorKind::UnknownToken { token_id: index },
+                        })),
+                        FailedResolveStrategy::Stringify => {
+                            visitor.visit_string(format!("{}", index))
+                        }
+                        FailedResolveStrategy::Ignore => {
+                            visitor.visit_borrowed_str("__internal_identifier_ignore")
+                        }
+                    },
+                }
+            }
         }
     }
 }
@@ -256,10 +269,11 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
     where
         V: Visitor<'de>,
     {
-        if matches!(self.token, TokenKind::Id) {
-            visitor.visit_u16(self.de.reader.token_id())
-        } else {
-            self.deser(visitor)
+        match self.token {
+            TokenKind::Id => visitor.visit_u16(self.de.reader.token_id()),
+            TokenKind::LookupU8 => visitor.visit_u16(self.de.reader.lookup_u8_data() as u16),
+            TokenKind::LookupU16 => visitor.visit_u16(self.de.reader.lookup_u16_data()),
+            _ => self.deser(visitor),
         }
     }
 
@@ -766,6 +780,27 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor>
                 "unexpected token encountered",
                 self.de.parser.position(),
             )),
+            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U16 => {
+                let index = if self.token == LexemeId::LOOKUP_U8 {
+                    self.de.parser.read_lookup_u8()? as u16
+                } else {
+                    self.de.parser.read_lookup_u16()?
+                };
+                match self.de.config.resolver.lookup(index) {
+                    Some(value) => visitor.visit_borrowed_str(value),
+                    None => match self.de.config.failed_resolve_strategy {
+                        FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
+                            kind: DeserializeErrorKind::UnknownToken { token_id: index },
+                        })),
+                        FailedResolveStrategy::Stringify => {
+                            visitor.visit_string(format!("{}", index))
+                        }
+                        FailedResolveStrategy::Ignore => {
+                            visitor.visit_borrowed_str("__internal_identifier_ignore")
+                        }
+                    },
+                }
+            }
             LexemeId(s) => match self.de.config.resolver.resolve(s) {
                 Some(id) => visitor.visit_borrowed_str(id),
                 None => match self.de.config.failed_resolve_strategy {
@@ -843,6 +878,10 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializ
         if self.token.is_id() {
             let LexemeId(x) = self.token;
             visitor.visit_u16(x)
+        } else if self.token == LexemeId::LOOKUP_U8 {
+            visitor.visit_u16(self.de.parser.read_lookup_u8()? as u16)
+        } else if self.token == LexemeId::LOOKUP_U16 {
+            visitor.visit_u16(self.de.parser.read_lookup_u16()?)
         } else {
             self.deser(visitor)
         }

@@ -20,7 +20,9 @@ struct Stats {
     id: u32,
     rgb: u32,
     lookup_u8: u32,
+    lookup_u8_max: u8,
     lookup_u16: u32,
+    lookup_u16_min: u16,
     token_ids: BTreeSet<u16>,
     frequencies: Vec<u64>,
 }
@@ -29,6 +31,7 @@ impl Stats {
     fn new() -> Self {
         Self {
             frequencies: vec![0; 100],
+            lookup_u16_min: u16::MAX,
             ..Default::default()
         }
     }
@@ -64,8 +67,14 @@ impl Stats {
                 self.token_ids.insert(*id);
             }
             Token::Rgb(_) => self.rgb += 1,
-            Token::LookupU8(_) => self.lookup_u8 += 1,
-            Token::LookupU16(_) => self.lookup_u16 += 1,
+            Token::LookupU8(x) => {
+                self.lookup_u8 += 1;
+                self.lookup_u8_max = self.lookup_u8_max.max(*x);
+            }
+            Token::LookupU16(x) => {
+                self.lookup_u16 += 1;
+                self.lookup_u16_min = self.lookup_u16_min.min(*x);
+            }
         }
     }
 
@@ -256,18 +265,20 @@ impl std::fmt::Display for Stats {
         if self.lookup_u8 != 0 {
             writeln!(
                 f,
-                "lookup_u8:\t{:<8}({:.2}%)",
+                "lookup_u8:\t{:<8}({:.2}%) (max: {})",
                 self.lookup_u8,
-                (self.lookup_u8 as f64) / total * 100.0
+                (self.lookup_u8 as f64) / total * 100.0,
+                self.lookup_u8_max
             )?;
         }
 
         if self.lookup_u16 != 0 {
             writeln!(
                 f,
-                "lookup_u16:\t{:<8}({:.2}%)",
+                "lookup_u16:\t{:<8}({:.2}%) (min: {})",
                 self.lookup_u16,
-                (self.lookup_u16 as f64) / total * 100.0
+                (self.lookup_u16 as f64) / total * 100.0,
+                self.lookup_u16_min
             )?;
         }
 

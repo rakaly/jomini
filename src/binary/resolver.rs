@@ -31,6 +31,17 @@ pub trait TokenResolver {
     /// Return the string field name of the 16bit token if found
     fn resolve(&self, token: u16) -> Option<&str>;
 
+    /// Return the string value for the lookup index if found.
+    ///
+    /// Both `LookupU8` and `LookupU16` binary tokens are resolved through this method.
+    /// `LookupU8` indices (0-254) are upcasted to u16 before calling this method.
+    /// Since `LookupU16` indices are always >=255 in practice, there is no namespace collision.
+    ///
+    /// By default this returns `None`.
+    fn lookup(&self, _index: u16) -> Option<&str> {
+        None
+    }
+
     /// Return whether [`TokenResolver::resolve`] will always return `None`.
     ///
     /// By default this returns `false`
@@ -74,6 +85,10 @@ impl<T: TokenResolver> TokenResolver for &'_ T {
         (**self).resolve(token)
     }
 
+    fn lookup(&self, index: u16) -> Option<&str> {
+        (**self).lookup(index)
+    }
+
     fn is_empty(&self) -> bool {
         (**self).is_empty()
     }
@@ -82,6 +97,10 @@ impl<T: TokenResolver> TokenResolver for &'_ T {
 impl<T: TokenResolver + ?Sized> TokenResolver for Box<T> {
     fn resolve(&self, token: u16) -> Option<&str> {
         (**self).resolve(token)
+    }
+
+    fn lookup(&self, index: u16) -> Option<&str> {
+        (**self).lookup(index)
     }
 
     fn is_empty(&self) -> bool {
