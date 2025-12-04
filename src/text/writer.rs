@@ -8,7 +8,7 @@ use std::{fmt::Arguments, io::Write, ops::Deref};
 
 /// Write data in PDS format.
 ///
-/// Instantiated via `TextWriterBuilder`
+/// Instantiated via [`TextWriterBuilder`]
 #[derive(Debug)]
 pub struct TextWriter<W> {
     writer: W,
@@ -21,9 +21,25 @@ pub struct TextWriter<W> {
     indent_factor: u8,
     needs_line_terminator: bool,
     mixed_mode: MixedMode,
+    verbatim: bool,
 }
 
 /// Construct a customized text writer
+///
+/// ```
+/// use jomini::{TextWriterBuilder, text::Operator};
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let mut out: Vec<u8> = Vec::new();
+/// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+/// writer.write_unquoted(b"hello")?;
+/// writer.write_operator(Operator::Equal)?;
+/// writer.write_unquoted(b"world")?;
+/// assert_eq!(std::str::from_utf8(&out).unwrap(), "hello=world");
+/// # Ok(())
+/// # }
+/// ```
+///
+/// By default the equal operator is automatically injected between keys and values and can be omitted:
 ///
 /// ```
 /// use jomini::TextWriterBuilder;
@@ -36,10 +52,13 @@ pub struct TextWriter<W> {
 /// # Ok(())
 /// # }
 /// ```
+///
+/// If this is undesirable, use `.verbatim(true)` to disable the behavior.
 #[derive(Debug)]
 pub struct TextWriterBuilder {
     indent_char: u8,
     indent_factor: u8,
+    verbatim: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -601,7 +620,10 @@ where
                 self.write_indent()?;
             }
             WriteState::KeyValueSeparator => {
-                self.writer.write_all(b"=")?;
+                // Only inject equals in non-verbatim mode
+                if !self.verbatim {
+                    self.writer.write_all(b"=")?;
+                }
             }
             x if x.no_data_encountered_yet() => {
                 self.write_indent()?;
@@ -817,6 +839,17 @@ impl TextWriterBuilder {
         self
     }
 
+    /// Enable verbatim mode - disables automatic equals sign injection
+    ///
+    /// When verbatim mode is enabled, the writer will not automatically
+    /// insert `=` between keys and values.
+    ///
+    /// The default is false.
+    pub fn verbatim(&mut self, verbatim: bool) -> &mut TextWriterBuilder {
+        self.verbatim = verbatim;
+        self
+    }
+
     /// Construct a text writer from a builder and a writer.
     pub fn from_writer<R>(&self, writer: R) -> TextWriter<R>
     where
@@ -833,6 +866,7 @@ impl TextWriterBuilder {
             indent_factor: self.indent_factor,
             needs_line_terminator: false,
             mixed_mode: MixedMode::Disabled,
+            verbatim: self.verbatim,
         }
     }
 }
@@ -842,6 +876,7 @@ impl Default for TextWriterBuilder {
         TextWriterBuilder {
             indent_char: b' ',
             indent_factor: 2,
+            verbatim: false,
         }
     }
 }
@@ -1500,6 +1535,49 @@ mod tests {
             std::str::from_utf8(&out).unwrap(),
             "data={\n  {\n    hello=world\n  }={\n    foo=bar\n  }\n}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn write_verbatim_mode() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new()
+            .verbatim(true)
+            .from_writer(&mut out);
+        writer.write_unquoted(b"hello")?;
+        writer.write_unquoted(b"world")?;
+        writer.write_unquoted(b"foo")?;
+        writer.write_unquoted(b"bar")?;
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "helloworld\nfoobar");
+        Ok(())
+    }
+
+    #[test]
+    fn write_verbatim_with_explicit_equal() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new()
+            .verbatim(true)
+            .from_writer(&mut out);
+        writer.write_unquoted(b"hello")?;
+        writer.write_operator(Operator::Equal)?;
+        writer.write_unquoted(b"world")?;
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "hello=world");
+        Ok(())
+    }
+
+    #[test]
+    fn write_verbatim_preserves_indentation() -> Result<(), Box<dyn Error>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new()
+            .verbatim(true)
+            .from_writer(&mut out);
+        writer.write_unquoted(b"data")?;
+        writer.write_object_start()?;
+        writer.write_unquoted(b"key")?;
+        writer.write_unquoted(b"value")?;
+        writer.write_end()?;
+        // Indentation preserved even in verbatim mode
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "data{\n  keyvalue\n}");
         Ok(())
     }
 }
