@@ -4,7 +4,7 @@
 //! (EU5, Vic3, CK3, Imperator), first extract the gamestate (or meta) by
 //! running the `envelope` command.
 //!
-//! Here is some sample output:
+//! ## Sample Output
 //!
 //! ```text
 //!          0: id:0x284d=i32:59611248
@@ -29,7 +29,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let stdout = io::stdout();
     let mut position_writer = PositionWriter::new(stdout.lock());
-    let mut writer = jomini::TextWriterBuilder::new().from_writer(&mut position_writer);
+    let mut writer = jomini::TextWriterBuilder::new()
+        .verbatim(true)
+        .from_writer(&mut position_writer);
 
     let mut buf = Vec::new();
     let mut next_position = 0;
