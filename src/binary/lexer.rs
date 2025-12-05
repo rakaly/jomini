@@ -53,6 +53,74 @@ impl LexemeId {
     /// A binary 16-bit lookup index
     pub const LOOKUP_U16: LexemeId = LexemeId::new(0x0d3e);
 
+    /// Compact 8-bit lookup index (alternative to LOOKUP_U8) (EU5 1.0.10+)
+    /// Stores a u8 lookup table index in compact form
+    pub const LOOKUP_U8_ALT: LexemeId = LexemeId::new(0x0d43);
+
+    /// Compact 16-bit lookup index (alternative to LOOKUP_U16) (EU5 1.0.10+)
+    /// Stores a u16 lookup table index in compact form
+    pub const LOOKUP_U16_ALT: LexemeId = LexemeId::new(0x0d44);
+
+    /// Fixed-point zero constant - 0 bytes of data (EU5 1.0.10+)
+    /// Space efficient encoding of the value 0.0
+    pub const FIXED5_ZERO: LexemeId = LexemeId::new(0x0d47);
+
+    /// Fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: 0.0 to 2.55 | Formula: raw / 100,000
+    pub const FIXED5_U8: LexemeId = LexemeId::new(0x0d48);
+
+    /// Fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: 0.0 to 655.35 | Formula: raw / 100,000
+    pub const FIXED5_U16: LexemeId = LexemeId::new(0x0d49);
+
+    /// Fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: 0.0 to 167,772.15 | Formula: raw / 100,000
+    pub const FIXED5_U24: LexemeId = LexemeId::new(0x0d4a);
+
+    /// Fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: 0.0 to 42,949.67295 | Formula: raw / 100,000
+    pub const FIXED5_U32: LexemeId = LexemeId::new(0x0d4b);
+
+    /// Fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: 0.0 to 10,995,116.27775 | Formula: raw / 100,000
+    pub const FIXED5_U40: LexemeId = LexemeId::new(0x0d4c);
+
+    /// Fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: 0.0 to 281,474,976,710.65535 | Formula: raw / 100,000
+    pub const FIXED5_U48: LexemeId = LexemeId::new(0x0d4d);
+
+    /// Fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: 0.0 to 72,057,594,037,927.935 | Formula: raw / 100,000
+    pub const FIXED5_U56: LexemeId = LexemeId::new(0x0d4e);
+
+    /// Negative fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: -2.55 to 0.0 | Formula: -(raw / 100,000)
+    pub const FIXED5_I8: LexemeId = LexemeId::new(0x0d4f);
+
+    /// Negative fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: -655.35 to 0.0 | Formula: -(raw / 100,000)
+    pub const FIXED5_I16: LexemeId = LexemeId::new(0x0d50);
+
+    /// Negative fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: -167,772.15 to 0.0 | Formula: -(raw / 100,000)
+    pub const FIXED5_I24: LexemeId = LexemeId::new(0x0d51);
+
+    /// Negative fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: -42,949.67295 to 0.0 | Formula: -(raw / 100,000)
+    pub const FIXED5_I32: LexemeId = LexemeId::new(0x0d52);
+
+    /// Negative fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: -281,474,976,710.65535 to 0.0 | Formula: -(raw / 100,000)
+    pub const FIXED5_I40: LexemeId = LexemeId::new(0x0d53);
+
+    /// Negative fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: -281,474,976,710.65535 to 0.0 | Formula: -(raw / 100,000)
+    pub const FIXED5_I48: LexemeId = LexemeId::new(0x0d54);
+
+    /// Negative fixed-point decimal with 5 decimal places (EU5 1.0.10+)
+    /// Value range: -72,057,594,037,927.935 to 0.0 | Formula: -(raw / 100,000)
+    pub const FIXED5_I56: LexemeId = LexemeId::new(0x0d55);
+
     /// Construct a new [LexemeId] from a 16bit value
     #[inline]
     pub const fn new(x: u16) -> Self {
@@ -89,8 +157,24 @@ impl LexemeId {
             LexemeId::F64 => TokenKind::F64,
             LexemeId::RGB => TokenKind::Rgb,
             LexemeId::I64 => TokenKind::I64,
-            LexemeId::LOOKUP_U8 => TokenKind::LookupU8,
-            LexemeId::LOOKUP_U16 => TokenKind::LookupU16,
+            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => TokenKind::LookupU8,
+            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => TokenKind::LookupU16,
+            // Fixed5 lexemes are converted to F64 tokens
+            LexemeId::FIXED5_ZERO
+            | LexemeId::FIXED5_U8
+            | LexemeId::FIXED5_U16
+            | LexemeId::FIXED5_U24
+            | LexemeId::FIXED5_U32
+            | LexemeId::FIXED5_U40
+            | LexemeId::FIXED5_U48
+            | LexemeId::FIXED5_U56
+            | LexemeId::FIXED5_I8
+            | LexemeId::FIXED5_I16
+            | LexemeId::FIXED5_I24
+            | LexemeId::FIXED5_I32
+            | LexemeId::FIXED5_I40
+            | LexemeId::FIXED5_I48
+            | LexemeId::FIXED5_I56 => TokenKind::F64,
             _ => TokenKind::Id,
         }
     }
@@ -223,6 +307,24 @@ pub(crate) fn read_lookup_u8(data: &[u8]) -> Result<(u8, &[u8]), LexError> {
 pub(crate) fn read_lookup_u16(data: &[u8]) -> Result<(u16, &[u8]), LexError> {
     let (head, rest) = get_split::<2>(data).ok_or(LexError::Eof)?;
     Ok((u16::from_le_bytes(*head), rest))
+}
+
+#[inline]
+pub(crate) fn read_compact_f64(
+    lexeme: LexemeId,
+    data: &[u8],
+) -> Result<([u8; 8], &[u8]), LexError> {
+    let offset = lexeme.0 - LexemeId::FIXED5_ZERO.0;
+    let is_negative = offset > 7;
+    let byte_count = offset - (is_negative as u16 * 7);
+    let (data, rest) = data
+        .split_at_checked(byte_count as usize)
+        .ok_or(LexError::Eof)?;
+    let mut buf = [0u8; 8];
+    buf[..byte_count as usize].copy_from_slice(data);
+    let sign = if is_negative { -1.0 } else { 1.0 };
+    let f64_bytes = (u64::from_le_bytes(buf) as f64 * sign).to_le_bytes();
+    Ok((f64_bytes, rest))
 }
 
 #[inline]
@@ -410,8 +512,15 @@ pub(crate) fn read_token(data: &[u8]) -> Result<(Token<'_>, &[u8]), LexError> {
         LexemeId::F64 => read_f64(data).map(|(x, d)| (Token::F64(*x), d)),
         LexemeId::RGB => read_rgb(data).map(|(x, d)| (Token::Rgb(x), d)),
         LexemeId::I64 => read_i64(data).map(|(x, d)| (Token::I64(x), d)),
-        LexemeId::LOOKUP_U8 => read_lookup_u8(data).map(|(x, d)| (Token::LookupU8(x), d)),
-        LexemeId::LOOKUP_U16 => read_lookup_u16(data).map(|(x, d)| (Token::LookupU16(x), d)),
+        LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
+            read_lookup_u8(data).map(|(x, d)| (Token::LookupU8(x), d))
+        }
+        LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
+            read_lookup_u16(data).map(|(x, d)| (Token::LookupU16(x), d))
+        }
+        lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
+            read_compact_f64(lexeme, data).map(|(x, d)| (Token::F64(x), d))
+        }
         LexemeId(id) => Ok((Token::Id(id), data)),
     }
 }
@@ -886,6 +995,14 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    #[inline]
+    pub(crate) fn read_compact_f64(&mut self, lexeme: LexemeId) -> Result<[u8; 8], LexerError> {
+        let (result, rest) =
+            read_compact_f64(lexeme, self.data).map_err(|e| self.err_position(e))?;
+        self.data = rest;
+        Ok(result)
+    }
+
     /// Skip the value denoted by the [LexemeId]. Will skip entire containers.
     #[inline]
     pub fn skip_value(&mut self, id: LexemeId) -> Result<(), LexerError> {
@@ -927,12 +1044,16 @@ impl<'a> Lexer<'a> {
                 self.read_rgb()?;
                 Ok(())
             }
-            LexemeId::LOOKUP_U8 => {
+            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
                 self.read_lookup_u8()?;
                 Ok(())
             }
-            LexemeId::LOOKUP_U16 => {
+            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
                 self.read_lookup_u16()?;
+                Ok(())
+            }
+            lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
+                self.read_compact_f64(lexeme)?;
                 Ok(())
             }
             _ => Ok(()),
@@ -968,10 +1089,10 @@ impl<'a> Lexer<'a> {
                 LexemeId::F64 => {
                     self.read_f64()?;
                 }
-                LexemeId::LOOKUP_U8 => {
+                LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
                     self.read_lookup_u8()?;
                 }
-                LexemeId::LOOKUP_U16 => {
+                LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
                     self.read_lookup_u16()?;
                 }
                 LexemeId::CLOSE => {
@@ -979,6 +1100,9 @@ impl<'a> Lexer<'a> {
                     if depth == 0 {
                         return Ok(());
                     }
+                }
+                lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
+                    self.read_compact_f64(lexeme)?;
                 }
                 LexemeId::OPEN => depth += 1,
                 _ => {}

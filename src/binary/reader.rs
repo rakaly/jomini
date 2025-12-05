@@ -171,6 +171,43 @@ where
                         Some(d) => window = d,
                         None => break,
                     },
+                    LexemeId::LOOKUP_U8_ALT => match data.get(1..) {
+                        Some(d) => window = d,
+                        None => break,
+                    },
+                    LexemeId::LOOKUP_U16_ALT => match data.get(2..) {
+                        Some(d) => window = d,
+                        None => break,
+                    },
+                    LexemeId::FIXED5_ZERO => window = data,
+                    LexemeId::FIXED5_U8 | LexemeId::FIXED5_I8 => match data.get(1..) {
+                        Some(d) => window = d,
+                        None => break,
+                    },
+                    LexemeId::FIXED5_U16 | LexemeId::FIXED5_I16 => match data.get(2..) {
+                        Some(d) => window = d,
+                        None => break,
+                    },
+                    LexemeId::FIXED5_U24 | LexemeId::FIXED5_I24 => match data.get(3..) {
+                        Some(d) => window = d,
+                        None => break,
+                    },
+                    LexemeId::FIXED5_U32 | LexemeId::FIXED5_I32 => match data.get(4..) {
+                        Some(d) => window = d,
+                        None => break,
+                    },
+                    LexemeId::FIXED5_U40 | LexemeId::FIXED5_I40 => match data.get(5..) {
+                        Some(d) => window = d,
+                        None => break,
+                    },
+                    LexemeId::FIXED5_U48 | LexemeId::FIXED5_I48 => match data.get(6..) {
+                        Some(d) => window = d,
+                        None => break,
+                    },
+                    LexemeId::FIXED5_U56 | LexemeId::FIXED5_I56 => match data.get(7..) {
+                        Some(d) => window = d,
+                        None => break,
+                    },
                     _ => window = data,
                 }
             }
@@ -431,20 +468,33 @@ where
                     Some(TokenKind::Quoted)
                 }
             }
-            LexemeId::LOOKUP_U8 => {
+            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
                 let (data, rest) = rest.split_at(1);
                 self.data[0] = data[0];
                 self.data[1] = 0; // zero out unused byte for u16 lookups
                 self.buf.advance_to(rest.as_ptr());
                 Some(TokenKind::LookupU8)
             }
-            LexemeId::LOOKUP_U16 => {
+            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
                 let (data, rest) = get_split::<2>(rest).unwrap();
                 self.data[0..2].copy_from_slice(data);
                 self.buf.advance_to(rest.as_ptr());
                 Some(TokenKind::LookupU16)
             }
             LexemeId::RGB => None,
+            lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
+                let offset = lexeme.0 - LexemeId::FIXED5_ZERO.0;
+                let is_negative = offset > 7;
+                let byte_count = offset - (is_negative as u16 * 7);
+                let (data, rest) = rest.split_at(byte_count as usize);
+                // Use a temporary zero-initialized array to avoid leftover bytes from previous tokens
+                let mut buf = [0u8; 8];
+                buf[..byte_count as usize].copy_from_slice(data);
+                self.buf.advance_to(rest.as_ptr());
+                let sign = if is_negative { -1.0 } else { 1.0 };
+                self.data = (u64::from_le_bytes(buf) as f64 * sign).to_le_bytes();
+                Some(TokenKind::F64)
+            }
             _ => {
                 self.data[..2].copy_from_slice(id);
                 self.buf.advance_to(rest.as_ptr());
@@ -524,13 +574,13 @@ where
                     Ok(TokenKind::Quoted)
                 }
             }
-            LexemeId::LOOKUP_U8 => {
+            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
                 let (data, rest) = get_split::<1>(rest).ok_or(LexError::Eof)?;
                 self.data[0] = data[0];
                 self.buf.advance_to(rest.as_ptr());
                 Ok(TokenKind::LookupU8)
             }
-            LexemeId::LOOKUP_U16 => {
+            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
                 let (data, rest) = get_split::<2>(rest).ok_or(LexError::Eof)?;
                 self.data[0..2].copy_from_slice(data);
                 self.buf.advance_to(rest.as_ptr());
@@ -542,6 +592,20 @@ where
                 self.data[0] = size as u8;
                 self.buf.advance_to(nrest.as_ptr());
                 Ok(TokenKind::Rgb)
+            }
+            lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
+                let offset = lexeme.0 - LexemeId::FIXED5_ZERO.0;
+                let is_negative = offset > 7;
+                let byte_count = offset - (is_negative as u16 * 7);
+                let (data, rest) = rest
+                    .split_at_checked(byte_count as usize)
+                    .ok_or(LexError::Eof)?;
+                let mut buf = [0u8; 8];
+                buf[..byte_count as usize].copy_from_slice(data);
+                self.buf.advance_to(rest.as_ptr());
+                let sign = if is_negative { -1.0 } else { 1.0 };
+                self.data = (u64::from_le_bytes(buf) as f64 * sign).to_le_bytes();
+                Ok(TokenKind::F64)
             }
             _ => {
                 self.data[..2].copy_from_slice(id);
