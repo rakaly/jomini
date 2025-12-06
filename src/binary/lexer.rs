@@ -322,9 +322,9 @@ pub(crate) fn read_compact_f64(
         .ok_or(LexError::Eof)?;
     let mut buf = [0u8; 8];
     buf[..byte_count as usize].copy_from_slice(data);
-    let sign = if is_negative { -1.0 } else { 1.0 };
-    let f64_bytes = (u64::from_le_bytes(buf) as f64 * sign).to_le_bytes();
-    Ok((f64_bytes, rest))
+    let sign = 1i64 - (is_negative as i64) * 2;
+    let i64_bytes = (u64::from_le_bytes(buf) as i64 * sign).to_le_bytes();
+    Ok((i64_bytes, rest))
 }
 
 #[inline]
