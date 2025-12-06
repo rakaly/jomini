@@ -491,8 +491,8 @@ where
                 let mut buf = [0u8; 8];
                 buf[..byte_count as usize].copy_from_slice(data);
                 self.buf.advance_to(rest.as_ptr());
-                let sign = if is_negative { -1.0 } else { 1.0 };
-                self.data = (u64::from_le_bytes(buf) as f64 * sign).to_le_bytes();
+                let sign = 1i64 - (is_negative as i64) * 2;
+                self.data = (u64::from_le_bytes(buf) as i64 * sign).to_le_bytes();
                 Some(TokenKind::F64)
             }
             _ => {
@@ -603,8 +603,8 @@ where
                 let mut buf = [0u8; 8];
                 buf[..byte_count as usize].copy_from_slice(data);
                 self.buf.advance_to(rest.as_ptr());
-                let sign = if is_negative { -1.0 } else { 1.0 };
-                self.data = (u64::from_le_bytes(buf) as f64 * sign).to_le_bytes();
+                let sign = 1i64 - (is_negative as i64) * 2;
+                self.data = (u64::from_le_bytes(buf) as i64 * sign).to_le_bytes();
                 Ok(TokenKind::F64)
             }
             _ => {
