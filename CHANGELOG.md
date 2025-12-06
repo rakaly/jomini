@@ -1,3 +1,12 @@
+## v0.33.0 - 2025-12-05
+
+EU5 1.0.10 introduced several new binary lexemes:
+
+- 15 for a more compact f64 representation. Instead of always using 8 bytes for f64 data, there are now representations for 0 and 1-7 bytes of data for unsigned and signed representations
+- 2 that are altneratives to the 8 and 16 bit string index lookups.
+
+Since there are no new semantics associated with change, `binary::Token` remains unchanged. 
+
 ## v0.32.0 - 2025-11-28
 
 - **Breaking Change**: New binary token kinds: `LookupU8` and `LookupU16` for 8 bit and 16 bit lookup values introduced in EU5 1.0.8. There are no reported collisions within other games: EU4, CK3, Imperator, Vic3, and HOI4.
