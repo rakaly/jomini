@@ -1,3 +1,7 @@
+## v0.33.1 - 2025-12-06
+
+Fix compact binary fixed point storage to better match the full-width version
+
 ## v0.33.0 - 2025-12-05
 
 EU5 1.0.10 introduced several new binary lexemes:
