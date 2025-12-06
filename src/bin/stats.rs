@@ -261,7 +261,6 @@ impl std::fmt::Display for Stats {
                 (self.rgb as f64) / total * 100.0
             )?;
         }
-
         if self.lookup_u8 != 0 {
             writeln!(
                 f,

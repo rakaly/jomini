@@ -775,6 +775,13 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor>
             LexemeId::F64 => {
                 visitor.visit_f64(self.de.config.flavor.visit_f64(self.de.parser.read_f64()?))
             }
+            lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => visitor
+                .visit_f64(
+                    self.de
+                        .config
+                        .flavor
+                        .visit_f64(self.de.parser.read_compact_f64(lexeme)?),
+                ),
             LexemeId::OPEN => visitor.visit_seq(OndemandSeq::new(self.de)),
             LexemeId::CLOSE | LexemeId::EQUAL => Err(Error::invalid_syntax(
                 "unexpected token encountered",
@@ -1429,6 +1436,40 @@ mod tests {
             let val = i64::from_le_bytes(data) as f64 / 32768.0;
             (val * 10_0000.0).round() / 10_0000.0
         }
+    }
+
+    #[derive(Debug, Default)]
+    pub struct Eu5Flavor(Windows1252Encoding);
+
+    impl Encoding for Eu5Flavor {
+        fn decode<'a>(&self, data: &'a [u8]) -> std::borrow::Cow<'a, str> {
+            self.0.decode(data)
+        }
+    }
+
+    impl BinaryFlavor for Eu5Flavor {
+        fn visit_f32(&self, data: [u8; 4]) -> f32 {
+            f32::from_le_bytes(data)
+        }
+
+        fn visit_f64(&self, data: [u8; 8]) -> f64 {
+            f64::from_le_bytes(data) / 100_000.0
+        }
+    }
+
+    fn eu5_builder() -> BinaryDeserializerBuilder<Eu5Flavor> {
+        BinaryDeserializerBuilder::with_flavor(Eu5Flavor::default())
+    }
+
+    fn eu5_owned<RES, T>(data: &[u8], resolver: &RES) -> Result<T, Error>
+    where
+        T: DeserializeOwned + PartialEq + std::fmt::Debug,
+        RES: TokenResolver,
+    {
+        let res = eu5_builder().deserialize_slice(data, resolver)?;
+        let res2 = eu5_builder().deserialize_reader(data, resolver)?;
+        assert_eq!(res, res2);
+        Ok(res)
     }
 
     fn eu4_builder() -> BinaryDeserializerBuilder<Eu4Flavor> {
@@ -2891,6 +2932,211 @@ mod tests {
                 text_field2: String::from("Joe \"Captain\" Rogers")
             }
         );
+    }
+
+    #[test]
+    fn test_fixed5_u8_deserialization() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            field1: f64,
+        }
+
+        // Binary format: field_id(0x2d82) + EQUAL(0x0001) + FIXED5_U8(0x0d48) + data(0x05)
+        let data = [
+            0x82, 0x2d, // field token ID (0x2d82)
+            0x01, 0x00, // EQUAL lexeme (0x0001)
+            0x48, 0x0d, // FIXED5_U8 lexeme (0x0d48)
+            0x05, // raw value: 5
+        ];
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, String::from("field1"));
+
+        let actual: MyStruct = eu5_owned(&data, &map).unwrap();
+        assert_eq!(actual.field1, 0.00005); // 5 / 100,000 = 0.00005
+    }
+
+    #[test]
+    fn test_fixed5_u16_deserialization() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            field1: f64,
+        }
+
+        // Binary format: field_id + EQUAL + FIXED5_U16(0x0d49) + data(0x04a0 = 1184)
+        let data = [
+            0x82, 0x2d, // field token ID
+            0x01, 0x00, // EQUAL
+            0x49, 0x0d, // FIXED5_U16 lexeme (0x0d49)
+            0xa0, 0x04, // raw value: 1184 (little-endian)
+        ];
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, String::from("field1"));
+
+        let actual: MyStruct = eu5_owned(&data, &map).unwrap();
+        assert_eq!(actual.field1, 0.01184); // 1184 / 100,000 = 0.01184
+    }
+
+    #[test]
+    fn test_fixed5_u24_deserialization() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            field1: f64,
+            field2: f64,
+        }
+
+        // Binary format with two Fixed5_U24 values
+        let data = [
+            0x82, 0x2d, // field1 token ID
+            0x01, 0x00, // EQUAL
+            0x4a, 0x0d, // FIXED5_U24 lexeme (0x0d4a)
+            0xbf, 0xd2, 0x14, // raw: 1364671 (little-endian)
+            0x83, 0x2d, // field2 token ID
+            0x01, 0x00, // EQUAL
+            0x4a, 0x0d, // FIXED5_U24 lexeme (0x0d4a)
+            0xa0, 0x25, 0x26, // raw: 2500000 (little-endian)
+        ];
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, String::from("field1"));
+        map.insert(0x2d83, String::from("field2"));
+
+        let actual: MyStruct = eu5_owned(&data, &map).unwrap();
+        assert_eq!(actual.field1, 13.64671); // 1364671 / 100,000
+        assert_eq!(actual.field2, 25.0); // 2500000 / 100,000
+    }
+
+    #[test]
+    fn test_fixed5_u32_deserialization() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            field1: f64,
+        }
+
+        // Binary format: FIXED5_U32(0x0d4b) + data(0x00052d00 = 339200)
+        let data = [
+            0x82, 0x2d, // field token ID
+            0x01, 0x00, // EQUAL
+            0x4b, 0x0d, // FIXED5_U32 lexeme (0x0d4b)
+            0x00, 0x2d, 0x05, 0x00, // raw: 339200 (little-endian)
+        ];
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, String::from("field1"));
+
+        let actual: MyStruct = eu5_owned(&data, &map).unwrap();
+        assert_eq!(actual.field1, 3.392); // 339200 / 100,000 = 3.392
+    }
+
+    #[test]
+    fn test_fixed5_u40_deserialization() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            field1: f64,
+        }
+
+        // Binary format: FIXED5_U40(0x0d4c) + data(0x01101a1fd4 = 4565114836)
+        let data = [
+            0x82, 0x2d, // field token ID
+            0x01, 0x00, // EQUAL
+            0x4c, 0x0d, // FIXED5_U40 lexeme (0x0d4c)
+            0xd4, 0x1f, 0x1a, 0x10, 0x01, // raw: 4565114836 (little-endian)
+        ];
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, String::from("field1"));
+
+        let actual: MyStruct = eu5_owned(&data, &map).unwrap();
+        assert_eq!(actual.field1, 45651.14836); // 4565114836 / 100,000
+    }
+
+    #[test]
+    fn test_fixed5_i8_deserialization() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            field1: f64,
+        }
+
+        // Binary format: FIXED5_I8(0x0d4f) + data(0x7d = 125)
+        let data = [
+            0x82, 0x2d, // field token ID
+            0x01, 0x00, // EQUAL
+            0x4f, 0x0d, // FIXED5_I8 lexeme (0x0d4f)
+            0x7d, // raw: 125 (will be negated)
+        ];
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, String::from("field1"));
+
+        let actual: MyStruct = eu5_owned(&data, &map).unwrap();
+        assert_eq!(actual.field1, -0.00125); // -(125 / 100,000) = -0.00125
+    }
+
+    #[test]
+    fn test_fixed5_i16_deserialization() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            field1: f64,
+        }
+
+        // Binary format: FIXED5_I16(0x0d50) + data(0x02ee = 750)
+        let data = [
+            0x82, 0x2d, // field token ID
+            0x01, 0x00, // EQUAL
+            0x50, 0x0d, // FIXED5_I16 lexeme (0x0d50)
+            0xee, 0x02, // raw: 750 (little-endian, will be negated)
+        ];
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, String::from("field1"));
+
+        let actual: MyStruct = eu5_owned(&data, &map).unwrap();
+        assert_eq!(actual.field1, -0.0075); // -(750 / 100,000) = -0.0075
+    }
+
+    #[test]
+    fn test_fixed5_i24_deserialization() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            field1: f64,
+        }
+
+        // Binary format: FIXED5_I24(0x0d51) + data(0x4c4b40 = 5000000)
+        let data = [
+            0x82, 0x2d, // field token ID
+            0x01, 0x00, // EQUAL
+            0x51, 0x0d, // FIXED5_I24 lexeme (0x0d51)
+            0x40, 0x4b, 0x4c, // raw: 5000000 (little-endian, will be negated)
+        ];
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, String::from("field1"));
+
+        let actual: MyStruct = eu5_owned(&data, &map).unwrap();
+        assert_eq!(actual.field1, -50.0); // -(5000000 / 100,000) = -50.0
+    }
+
+    #[test]
+    fn test_fixed5_i32_deserialization() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            field1: f64,
+        }
+
+        // Binary format: FIXED5_I32(0x0d52) + data(0x05f45a60 = 99900000)
+        let data = [
+            0x82, 0x2d, // field token ID
+            0x01, 0x00, // EQUAL
+            0x52, 0x0d, // FIXED5_I32 lexeme (0x0d52)
+            0x60, 0x5a, 0xf4, 0x05, // raw: 99900000 (little-endian, will be negated)
+        ];
+
+        let mut map = HashMap::new();
+        map.insert(0x2d82, String::from("field1"));
+
+        let actual: MyStruct = eu5_owned(&data, &map).unwrap();
+        assert_eq!(actual.field1, -999.0); // -(99900000 / 100,000) = -999.0
     }
 
     /// Utility function for unit tests: converts text format to binary format
