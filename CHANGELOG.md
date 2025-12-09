@@ -1,3 +1,9 @@
+## v0.34.0 - 2025-12-09
+
+Lookup index tokens introduced in EU5 1.0.8 can exceed 16 bits, as a save that used a 24 bit index was discovered. To accomodate larger than 16 bit lookups, `TokenResolver::lookup` needs to be updated to accept `u32` instead of `u16`.
+
+With variable sized lookups (much like varible size f64 introduced in EU5 1.0.10), the lookup tokens have been consolidated to a single token type: `Token::Lookup` instead of having different types depending on the length of the field.
+
 ## v0.33.1 - 2025-12-06
 
 Fix compact binary fixed point storage to better match the full-width version
