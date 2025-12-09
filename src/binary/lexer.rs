@@ -50,6 +50,9 @@ impl LexemeId {
     /// A binary 8-bit lookup index
     pub const LOOKUP_U8: LexemeId = LexemeId::new(0x0d40);
 
+    /// A binary 24-bit lookup index
+    pub const LOOKUP_U24: LexemeId = LexemeId::new(0x0d41);
+
     /// A binary 16-bit lookup index
     pub const LOOKUP_U16: LexemeId = LexemeId::new(0x0d3e);
 
@@ -157,8 +160,11 @@ impl LexemeId {
             LexemeId::F64 => TokenKind::F64,
             LexemeId::RGB => TokenKind::Rgb,
             LexemeId::I64 => TokenKind::I64,
-            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => TokenKind::LookupU8,
-            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => TokenKind::LookupU16,
+            LexemeId::LOOKUP_U8
+            | LexemeId::LOOKUP_U8_ALT
+            | LexemeId::LOOKUP_U16
+            | LexemeId::LOOKUP_U16_ALT
+            | LexemeId::LOOKUP_U24 => TokenKind::Lookup,
             // Fixed5 lexemes are converted to F64 tokens
             LexemeId::FIXED5_ZERO
             | LexemeId::FIXED5_U8
@@ -222,11 +228,8 @@ pub enum TokenKind {
     /// 64bit signed integer
     I64,
 
-    /// 8-bit lookup index
-    LookupU8,
-
-    /// 16-bit lookup index
-    LookupU16,
+    /// lookup index
+    Lookup,
 
     /// Identifier token
     Id,
@@ -307,6 +310,12 @@ pub(crate) fn read_lookup_u8(data: &[u8]) -> Result<(u8, &[u8]), LexError> {
 pub(crate) fn read_lookup_u16(data: &[u8]) -> Result<(u16, &[u8]), LexError> {
     let (head, rest) = get_split::<2>(data).ok_or(LexError::Eof)?;
     Ok((u16::from_le_bytes(*head), rest))
+}
+
+#[inline]
+pub(crate) fn read_lookup_u24(data: &[u8]) -> Result<(u32, &[u8]), LexError> {
+    let (head, rest) = get_split::<3>(data).ok_or(LexError::Eof)?;
+    Ok((u32::from_le_bytes([head[0], head[1], head[2], 0]), rest))
 }
 
 #[inline]
@@ -401,11 +410,8 @@ pub enum Token<'a> {
     /// 64bit signed integer
     I64(i64),
 
-    /// 8-bit lookup index
-    LookupU8(u8),
-
-    /// 16-bit lookup index
-    LookupU16(u16),
+    /// lookup index
+    Lookup(u32),
 
     /// token id that can be resolved to a string via a
     /// [TokenResolver](crate::binary::TokenResolver)
@@ -482,13 +488,9 @@ impl Token<'_> {
                 wtr.write_all(&LexemeId::I64.0.to_le_bytes())?;
                 wtr.write_all(&x.to_le_bytes())
             }
-            Token::LookupU8(x) => {
-                wtr.write_all(&LexemeId::LOOKUP_U8.0.to_le_bytes())?;
-                wtr.write_all(&[*x])
-            }
-            Token::LookupU16(x) => {
-                wtr.write_all(&LexemeId::LOOKUP_U16.0.to_le_bytes())?;
-                wtr.write_all(&x.to_le_bytes())
+            Token::Lookup(x) => {
+                wtr.write_all(&LexemeId::LOOKUP_U24.0.to_le_bytes())?;
+                wtr.write_all(&x.to_le_bytes()[..3])
             }
             Token::Id(x) => wtr.write_all(&x.to_le_bytes()),
         }
@@ -513,11 +515,12 @@ pub(crate) fn read_token(data: &[u8]) -> Result<(Token<'_>, &[u8]), LexError> {
         LexemeId::RGB => read_rgb(data).map(|(x, d)| (Token::Rgb(x), d)),
         LexemeId::I64 => read_i64(data).map(|(x, d)| (Token::I64(x), d)),
         LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
-            read_lookup_u8(data).map(|(x, d)| (Token::LookupU8(x), d))
+            read_lookup_u8(data).map(|(x, d)| (Token::Lookup(x as u32), d))
         }
         LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
-            read_lookup_u16(data).map(|(x, d)| (Token::LookupU16(x), d))
+            read_lookup_u16(data).map(|(x, d)| (Token::Lookup(x as u32), d))
         }
+        LexemeId::LOOKUP_U24 => read_lookup_u24(data).map(|(x, d)| (Token::Lookup(x), d)),
         lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
             read_compact_f64(lexeme, data).map(|(x, d)| (Token::F64(x), d))
         }
@@ -867,6 +870,14 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
+    /// Advance the lexer through a 24-bit lookup index
+    #[inline]
+    pub fn read_lookup_u24(&mut self) -> Result<u32, LexerError> {
+        let (result, rest) = read_lookup_u24(self.data).map_err(|e| self.err_position(e))?;
+        self.data = rest;
+        Ok(result)
+    }
+
     /// Advance the lexer through unsigned little endian 32 bit integer
     ///
     /// ```rust
@@ -1052,6 +1063,10 @@ impl<'a> Lexer<'a> {
                 self.read_lookup_u16()?;
                 Ok(())
             }
+            LexemeId::LOOKUP_U24 => {
+                self.read_lookup_u24()?;
+                Ok(())
+            }
             lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
                 self.read_compact_f64(lexeme)?;
                 Ok(())
@@ -1094,6 +1109,9 @@ impl<'a> Lexer<'a> {
                 }
                 LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
                     self.read_lookup_u16()?;
+                }
+                LexemeId::LOOKUP_U24 => {
+                    self.read_lookup_u24()?;
                 }
                 LexemeId::CLOSE => {
                     depth -= 1;

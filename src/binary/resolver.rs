@@ -38,7 +38,7 @@ pub trait TokenResolver {
     /// Since `LookupU16` indices are always >=255 in practice, there is no namespace collision.
     ///
     /// By default this returns `None`.
-    fn lookup(&self, _index: u16) -> Option<&str> {
+    fn lookup(&self, _index: u32) -> Option<&str> {
         None
     }
 
@@ -85,7 +85,7 @@ impl<T: TokenResolver> TokenResolver for &'_ T {
         (**self).resolve(token)
     }
 
-    fn lookup(&self, index: u16) -> Option<&str> {
+    fn lookup(&self, index: u32) -> Option<&str> {
         (**self).lookup(index)
     }
 
@@ -99,7 +99,7 @@ impl<T: TokenResolver + ?Sized> TokenResolver for Box<T> {
         (**self).resolve(token)
     }
 
-    fn lookup(&self, index: u16) -> Option<&str> {
+    fn lookup(&self, index: u32) -> Option<&str> {
         (**self).lookup(index)
     }
 
