@@ -204,8 +204,8 @@ pub enum DeserializeErrorKind {
 
     /// An unknown binary token was encountered
     UnknownToken {
-        /// The unknown 16bit token
-        token_id: u16,
+        /// The unknown 32bit token
+        token_id: u32,
     },
 }
 

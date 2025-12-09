@@ -179,6 +179,10 @@ where
                         Some(d) => window = d,
                         None => break,
                     },
+                    LexemeId::LOOKUP_U24 => match data.get(3..) {
+                        Some(d) => window = d,
+                        None => break,
+                    },
                     LexemeId::FIXED5_ZERO => window = data,
                     LexemeId::FIXED5_U8 | LexemeId::FIXED5_I8 => match data.get(1..) {
                         Some(d) => window = d,
@@ -312,8 +316,7 @@ where
             TokenKind::F64 => Token::F64(self.f64_data()),
             TokenKind::Rgb => Token::Rgb(self.rgb_data()),
             TokenKind::I64 => Token::I64(self.i64_data()),
-            TokenKind::LookupU8 => Token::LookupU8(self.lookup_u8_data()),
-            TokenKind::LookupU16 => Token::LookupU16(self.lookup_u16_data()),
+            TokenKind::Lookup => Token::Lookup(self.lookup_data()),
             TokenKind::Id => Token::Id(self.token_id()),
         }
     }
@@ -383,16 +386,10 @@ where
         self.data[0] != 0
     }
 
-    /// Return the u8 data associated with [`TokenKind::LookupU8`].
+    /// Return the 32-bit data associated with [`TokenKind::Lookup`].
     #[inline]
-    pub fn lookup_u8_data(&self) -> u8 {
-        self.data[0]
-    }
-
-    /// Return the u16 data associated with [`TokenKind::LookupU16`].
-    #[inline]
-    pub fn lookup_u16_data(&self) -> u16 {
-        u16::from_le_bytes([self.data[0], self.data[1]])
+    pub fn lookup_data(&self) -> u32 {
+        u32::from_le_bytes([self.data[0], self.data[1], self.data[2], 0])
     }
 
     /// Return the RGB data associated with [`TokenKind::Rgb`].
@@ -470,16 +467,27 @@ where
             }
             LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
                 let (data, rest) = rest.split_at(1);
-                self.data[0] = data[0];
-                self.data[1] = 0; // zero out unused byte for u16 lookups
+                let mut tmp = [0u8; 8];
+                tmp[0] = data[0];
+                self.data = tmp;
                 self.buf.advance_to(rest.as_ptr());
-                Some(TokenKind::LookupU8)
+                Some(TokenKind::Lookup)
             }
             LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
                 let (data, rest) = get_split::<2>(rest).unwrap();
-                self.data[0..2].copy_from_slice(data);
+                let mut tmp = [0u8; 8];
+                tmp[0..2].copy_from_slice(data);
+                self.data = tmp;
                 self.buf.advance_to(rest.as_ptr());
-                Some(TokenKind::LookupU16)
+                Some(TokenKind::Lookup)
+            }
+            LexemeId::LOOKUP_U24 => {
+                let (data, rest) = get_split::<3>(rest).unwrap();
+                let mut tmp = [0u8; 8];
+                tmp[0..3].copy_from_slice(data);
+                self.data = tmp;
+                self.buf.advance_to(rest.as_ptr());
+                Some(TokenKind::Lookup)
             }
             LexemeId::RGB => None,
             lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
@@ -576,15 +584,27 @@ where
             }
             LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
                 let (data, rest) = get_split::<1>(rest).ok_or(LexError::Eof)?;
-                self.data[0] = data[0];
+                let mut tmp = [0u8; 8];
+                tmp[0] = data[0];
+                self.data = tmp;
                 self.buf.advance_to(rest.as_ptr());
-                Ok(TokenKind::LookupU8)
+                Ok(TokenKind::Lookup)
             }
             LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
                 let (data, rest) = get_split::<2>(rest).ok_or(LexError::Eof)?;
-                self.data[0..2].copy_from_slice(data);
+                let mut tmp = [0u8; 8];
+                tmp[0..2].copy_from_slice(data);
+                self.data = tmp;
                 self.buf.advance_to(rest.as_ptr());
-                Ok(TokenKind::LookupU16)
+                Ok(TokenKind::Lookup)
+            }
+            LexemeId::LOOKUP_U24 => {
+                let (data, rest) = get_split::<3>(rest).ok_or(LexError::Eof)?;
+                let mut tmp = [0u8; 8];
+                tmp[0..3].copy_from_slice(data);
+                self.data = tmp;
+                self.buf.advance_to(rest.as_ptr());
+                Ok(TokenKind::Lookup)
             }
             LexemeId::RGB => {
                 let (_, nrest) = read_rgb(rest)?;
@@ -865,16 +885,16 @@ mod tests {
     #[case(&[
         Token::Id(0x2d82),
         Token::Equal,
-        Token::LookupU8(0),
+        Token::Lookup(0),
         Token::Id(0x2d82),
         Token::Equal,
-        Token::LookupU8(255),
+        Token::Lookup(255),
         Token::Id(0x2d82),
         Token::Equal,
-        Token::LookupU16(0),
+        Token::Lookup(0),
         Token::Id(0x2d82),
         Token::Equal,
-        Token::LookupU16(65535),
+        Token::Lookup(65535),
     ])]
     fn test_roundtrip(#[case] input: &[Token]) {
         let data = Vec::new();
