@@ -1,7 +1,7 @@
 //! Utility to format jomini text files from stdin to stdout.
 //!
-//! Useful when compare a game generated debug file and a melted file and
-//! identify differences.
+//! Useful to compare a game generated debug file and a melted file and identify
+//! differences.
 
 use std::{
     error,
