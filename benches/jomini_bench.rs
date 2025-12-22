@@ -492,10 +492,7 @@ fn request(game: &str, is_text: bool) -> RemoteBenchmarkData {
 
     if !cache.exists() {
         println!("cache miss: {}", path);
-        let url = format!(
-            "https://eu4saves-test-cases.s3.us-west-002.backblazeb2.com/{}",
-            path
-        );
+        let url = format!("https://cdn-dev.pdx.tools/{}", path);
         let mut resp = attohttpc::get(&url).send().unwrap();
 
         if !resp.is_success() {
