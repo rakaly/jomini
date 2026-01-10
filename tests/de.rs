@@ -1,9 +1,10 @@
 #![cfg(feature = "derive")]
 
 use jomini::{
-    BinaryDeserializer, Encoding, JominiDeserialize, Windows1252Encoding,
+    BinaryDeserializer, Encoding, JominiDeserialize, TextDeserializer, Windows1252Encoding,
     binary::{BinaryFlavor, TokenResolver},
     common::PdsDate,
+    text::TokenReader,
 };
 use serde::{
     Deserialize, Deserializer,
@@ -37,6 +38,39 @@ impl Encoding for BinaryTestFlavor {
     }
 }
 
+#[derive(JominiDeserialize, Debug, PartialEq)]
+struct CollectData {
+    known_field: u32,
+    #[jomini(collect)]
+    other: HashMap<String, u32>,
+}
+
+#[derive(JominiDeserialize, Debug, PartialEq)]
+struct CollectCharData {
+    known_field: u32,
+    #[jomini(collect)]
+    other: Vec<(char, u32)>,
+}
+
+#[derive(JominiDeserialize, Debug, PartialEq)]
+struct CollectFilteredData {
+    known_field: u32,
+    #[jomini(collect, deserialize_with = "deserialize_filtered_pair")]
+    other: Vec<(String, u32)>,
+}
+
+fn deserialize_filtered_pair<'de, D>(deserializer: D) -> Result<Option<(String, u32)>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let (key, value): (String, u32) = Deserialize::deserialize(deserializer)?;
+    if key.starts_with('a') {
+        Ok(Some((key, value)))
+    } else {
+        Ok(None)
+    }
+}
+
 #[test]
 fn unified_rgb_deserializer() {
     #[derive(Deserialize, Debug, PartialEq)]
@@ -65,6 +99,42 @@ fn unified_rgb_deserializer() {
             color: [110, 27, 27]
         }
     );
+}
+
+#[test]
+fn test_collect_text_tape() {
+    let data = b"known_field=10 a=20 b=30";
+    let actual: CollectData = jomini::text::de::from_windows1252_slice(data).unwrap();
+    assert_eq!(actual.known_field, 10);
+    assert_eq!(actual.other.get("a").copied(), Some(20));
+    assert_eq!(actual.other.get("b").copied(), Some(30));
+}
+
+#[test]
+fn test_collect_text_streaming() {
+    let data = b"known_field=10 a=20 b=30";
+    let mut deserializer =
+        TextDeserializer::from_windows1252_reader(TokenReader::new(&data[..]));
+    let actual: CollectData = deserializer.deserialize().unwrap();
+    assert_eq!(actual.known_field, 10);
+    assert_eq!(actual.other.get("a").copied(), Some(20));
+    assert_eq!(actual.other.get("b").copied(), Some(30));
+}
+
+#[test]
+fn test_collect_text_filtering() {
+    let data = b"known_field=10 a=20 b=30 something_else=40";
+    let actual: CollectFilteredData = jomini::text::de::from_windows1252_slice(data).unwrap();
+    assert_eq!(actual.known_field, 10);
+    assert_eq!(actual.other, vec![("a".to_string(), 20)]);
+}
+
+#[test]
+fn test_collect_text_non_string_key() {
+    let data = b"known_field=10 a=20 b=30";
+    let actual: CollectCharData = jomini::text::de::from_windows1252_slice(data).unwrap();
+    assert_eq!(actual.known_field, 10);
+    assert_eq!(actual.other, vec![('a', 20), ('b', 30)]);
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -427,6 +497,40 @@ impl TokenResolver for TestResolver {
     fn lookup(&self, index: u32) -> Option<&str> {
         self.lookups.get(&index).map(|s| s.as_str())
     }
+}
+
+#[test]
+fn test_collect_binary() {
+    let mut tokens = HashMap::new();
+    tokens.insert(0x053a, "known_field".to_string());
+    tokens.insert(0x053b, "a".to_string());
+    tokens.insert(0x053c, "b".to_string());
+    let resolver = TestResolver {
+        tokens,
+        lookups: HashMap::new(),
+    };
+
+    let bin_data = [
+        0x3a, 0x05, // Id token for "known_field"
+        0x01, 0x00, // EQUAL token
+        0x14, 0x00, // U32 token
+        0x0a, 0x00, 0x00, 0x00, // 10
+        0x3b, 0x05, // Id token for "a"
+        0x01, 0x00, // EQUAL token
+        0x14, 0x00, // U32 token
+        0x14, 0x00, 0x00, 0x00, // 20
+        0x3c, 0x05, // Id token for "b"
+        0x01, 0x00, // EQUAL token
+        0x14, 0x00, // U32 token
+        0x1e, 0x00, 0x00, 0x00, // 30
+    ];
+
+    let actual: CollectData = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(actual.known_field, 10);
+    assert_eq!(actual.other.get("a").copied(), Some(20));
+    assert_eq!(actual.other.get("b").copied(), Some(30));
 }
 
 #[test]

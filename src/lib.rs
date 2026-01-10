@@ -325,6 +325,8 @@ capabilities.
 #![warn(missing_docs)]
 pub mod binary;
 pub(crate) mod buffer;
+#[cfg(feature = "serde")]
+pub mod collect;
 pub mod common;
 mod data;
 #[cfg(feature = "serde")]
@@ -346,6 +348,9 @@ pub use self::text::{TextTape, TextToken, TextWriter, TextWriterBuilder};
 #[cfg(feature = "serde")]
 #[doc(inline)]
 pub use self::{binary::de::BinaryDeserializer, text::de::TextDeserializer};
+#[cfg(feature = "serde")]
+#[doc(inline)]
+pub use self::collect::Collect;
 #[cfg(feature = "derive")]
 pub use jomini_derive::*;
 

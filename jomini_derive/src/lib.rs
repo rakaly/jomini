@@ -143,6 +143,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         alias: Option<String>,
         duplicated: bool,
         take_last: bool,
+        collect: bool,
         default: DefaultFallback,
         deserialize_with: Option<syn::ExprPath>,
         token: Option<u16>,
@@ -160,6 +161,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
 
         let mut duplicated = false;
         let mut take_last = false;
+        let mut collect = false;
         let mut default = DefaultFallback::No;
         let mut deserialize_with = None;
         let mut alias = None;
@@ -184,6 +186,8 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
                     duplicated = true;
                 } else if meta.path.is_ident("take_last") {
                     take_last = true;
+                } else if meta.path.is_ident("collect") {
+                    collect = true;
                 } else if meta.path.is_ident("borrow") {
                     borrow = true;
                 } else if meta.path.is_ident("default") {
@@ -224,6 +228,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
             alias,
             duplicated,
             take_last,
+            collect,
             default,
             deserialize_with,
             token,
@@ -234,6 +239,30 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
             return Err(Error::new(
                 field_span,
                 "Cannot have both duplicated and take_last attributes on a field",
+            ));
+        }
+        if attr.collect && attr.duplicated {
+            return Err(Error::new(
+                field_span,
+                "Cannot have both collect and duplicated attributes on a field",
+            ));
+        }
+        if attr.collect && attr.take_last {
+            return Err(Error::new(
+                field_span,
+                "Cannot have both collect and take_last attributes on a field",
+            ));
+        }
+        if attr.collect && attr.alias.is_some() {
+            return Err(Error::new(
+                field_span,
+                "Cannot have both collect and alias attributes on a field",
+            ));
+        }
+        if attr.collect && attr.token.is_some() {
+            return Err(Error::new(
+                field_span,
+                "Cannot have both collect and token attributes on a field",
             ));
         }
 
@@ -367,15 +396,18 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
     let builder_init = field_attrs.iter().map(|f| {
         let name = &f.ident;
         let x = &f.typ;
-        if !f.duplicated {
+        if f.collect || f.duplicated {
+            match &f.default {
+                DefaultFallback::Path(lit) => quote! { let mut #name : #x = (#lit)() },
+                _ => quote! { let mut #name : #x = Default::default() },
+            }
+        } else {
             let field_name_opt = format_ident!("{}_opt", name);
             quote! { let mut #field_name_opt : ::std::option::Option<#x> = None }
-        } else {
-            quote! { let mut #name : #x = Default::default() }
         }
     });
 
-    let builder_fields = field_attrs.iter().map(|f| {
+    let builder_fields = field_attrs.iter().filter(|f| !f.collect).map(|f| {
         let name = &f.ident;
         let x = &f.typ;
         let name_str = &f.display;
@@ -455,7 +487,10 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         }
     }).collect::<Result<Vec<_>>>()?;
 
-    let field_extract = field_attrs.iter().filter(|x| !x.duplicated).map(|f| {
+    let field_extract = field_attrs
+        .iter()
+        .filter(|x| !x.duplicated && !x.collect)
+        .map(|f| {
         let name = &f.ident;
         let field_name_opt = format_ident!("{}_opt", name);
         let name_str = &f.display;
@@ -479,21 +514,33 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         quote! { #name }
     });
 
-    let field_enums = named_fields.named.iter().map(|f| {
-        let name = &f.ident;
-        quote! { #name }
-    });
+    let non_collect_fields: Vec<_> = field_attrs.iter().filter(|f| !f.collect).collect();
+    let collect_field = field_attrs.iter().find(|f| f.collect);
 
-    let field_enum_match = field_attrs.iter().map(|f| {
-        let name = &f.ident;
-        let match_arm = f.alias.clone().unwrap_or_else(|| f.display.clone());
-        let field_ident = quote! { __Field::#name };
-        quote! {
-            #match_arm => Ok(#field_ident)
-        }
-    });
+    let mut field_enums: Vec<_> = non_collect_fields
+        .iter()
+        .map(|f| {
+            let name = &f.ident;
+            quote! { #name }
+        })
+        .collect();
+    if collect_field.is_some() {
+        field_enums.push(quote! { __collect(::std::string::String) });
+    }
 
-    let field_enum_token_match = field_attrs.iter().filter_map(|f| {
+    let field_enum_match: Vec<_> = non_collect_fields
+        .iter()
+        .map(|f| {
+            let name = &f.ident;
+            let match_arm = f.alias.clone().unwrap_or_else(|| f.display.clone());
+            let field_ident = quote! { __Field::#name };
+            quote! {
+                #match_arm => Ok(#field_ident)
+            }
+        })
+        .collect();
+
+    let field_enum_token_match = non_collect_fields.iter().filter_map(|f| {
         f.token.map(|token| {
             let name = &f.ident;
             let field_ident = quote! { __Field::#name };
@@ -503,12 +550,21 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         })
     });
 
-    let token_count = field_attrs.iter().filter_map(|x| x.token).count();
-    if token_count > 0 && token_count < named_fields.named.len() {
+    let token_count = non_collect_fields.iter().filter_map(|x| x.token).count();
+    if token_count > 0 && token_count < non_collect_fields.len() {
         return Err(Error::new(
             span,
             format!(
                 "{} does not have #[jomini(token = x)] defined for all fields",
+                struct_ident
+            ),
+        ));
+    }
+    if token_count > 0 && collect_count > 0 {
+        return Err(Error::new(
+            span,
+            format!(
+                "{} cannot combine #[jomini(collect)] with #[jomini(token = x)]",
                 struct_ident
             ),
         ));
@@ -527,7 +583,190 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
     let expecting = format!("struct {}", struct_ident);
     let struct_ident_str = struct_ident.to_string();
 
-    let field_names: Vec<_> = field_attrs.iter().map(|f| f.display.clone()).collect();
+    let field_names: Vec<_> = non_collect_fields
+        .iter()
+        .map(|f| f.display.clone())
+        .collect();
+
+    let unknown_str = if collect_field.is_some() {
+        quote! { Ok(__Field::__collect(__value.to_string())) }
+    } else {
+        quote! { Ok(__Field::__ignore) }
+    };
+    let unknown_string = if collect_field.is_some() {
+        quote! { Ok(__Field::__collect(__value)) }
+    } else {
+        quote! { Ok(__Field::__ignore) }
+    };
+
+    let collect_helpers = if let Some(f) = collect_field {
+        let collect_ty = &f.typ;
+        let collect_value = if let Some(ident) = f.deserialize_with.as_ref() {
+            quote! { ::std::convert::Into::into(#ident(__pair)?) }
+        } else {
+            quote! { ::std::option::Option::Some(::serde::Deserialize::deserialize(__pair)?) }
+        };
+        quote! {
+            struct __CollectPairDeserializer<__D> {
+                key: ::std::string::String,
+                value: __D,
+            }
+
+            struct __CollectSeqAccess<__D> {
+                key: ::std::option::Option<::std::string::String>,
+                value: ::std::option::Option<__D>,
+            }
+
+            impl<'de, __D> ::serde::de::SeqAccess<'de> for __CollectSeqAccess<__D>
+            where
+                __D: ::serde::de::Deserializer<'de>,
+            {
+                type Error = __D::Error;
+
+                fn next_element_seed<T>(
+                    &mut self,
+                    seed: T,
+                ) -> ::std::result::Result<::std::option::Option<T::Value>, Self::Error>
+                where
+                    T: ::serde::de::DeserializeSeed<'de>,
+                {
+                    if let Some(key) = self.key.take() {
+                        let __deserializer =
+                            ::serde::de::value::StringDeserializer::<Self::Error>::new(key);
+                        return seed.deserialize(__deserializer).map(Some);
+                    }
+
+                    if let Some(value) = self.value.take() {
+                        return seed.deserialize(value).map(Some);
+                    }
+
+                    Ok(None)
+                }
+            }
+
+            impl<'de, __D> ::serde::de::Deserializer<'de> for __CollectPairDeserializer<__D>
+            where
+                __D: ::serde::de::Deserializer<'de>,
+            {
+                type Error = __D::Error;
+
+                fn deserialize_any<V>(
+                    self,
+                    visitor: V,
+                ) -> ::std::result::Result<V::Value, Self::Error>
+                where
+                    V: ::serde::de::Visitor<'de>,
+                {
+                    visitor.visit_seq(__CollectSeqAccess {
+                        key: Some(self.key),
+                        value: Some(self.value),
+                    })
+                }
+
+                fn deserialize_seq<V>(
+                    self,
+                    visitor: V,
+                ) -> ::std::result::Result<V::Value, Self::Error>
+                where
+                    V: ::serde::de::Visitor<'de>,
+                {
+                    self.deserialize_any(visitor)
+                }
+
+                fn deserialize_tuple<V>(
+                    self,
+                    _len: usize,
+                    visitor: V,
+                ) -> ::std::result::Result<V::Value, Self::Error>
+                where
+                    V: ::serde::de::Visitor<'de>,
+                {
+                    self.deserialize_any(visitor)
+                }
+
+                fn deserialize_tuple_struct<V>(
+                    self,
+                    _name: &'static str,
+                    _len: usize,
+                    visitor: V,
+                ) -> ::std::result::Result<V::Value, Self::Error>
+                where
+                    V: ::serde::de::Visitor<'de>,
+                {
+                    self.deserialize_any(visitor)
+                }
+
+                fn deserialize_newtype_struct<V>(
+                    self,
+                    _name: &'static str,
+                    visitor: V,
+                ) -> ::std::result::Result<V::Value, Self::Error>
+                where
+                    V: ::serde::de::Visitor<'de>,
+                {
+                    visitor.visit_newtype_struct(self)
+                }
+
+                ::serde::forward_to_deserialize_any! {
+                    bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+                    bytes byte_buf option unit unit_struct map struct enum identifier ignored_any
+                }
+            }
+
+            struct __CollectSeed<'a> {
+                key: ::std::string::String,
+                target: &'a mut #collect_ty,
+            }
+
+            impl<'de, 'a> ::serde::de::DeserializeSeed<'de> for __CollectSeed<'a> {
+                type Value = ();
+
+                fn deserialize<__D>(
+                    self,
+                    __deserializer: __D,
+                ) -> ::std::result::Result<Self::Value, __D::Error>
+                where
+                    __D: ::serde::Deserializer<'de>,
+                {
+                    let __pair = __CollectPairDeserializer {
+                        key: self.key,
+                        value: __deserializer,
+                    };
+                    let __value: ::std::option::Option<
+                        <#collect_ty as ::jomini::Collect>::Item,
+                    > = #collect_value;
+                    if let Some(__value) = __value {
+                        ::jomini::Collect::collect(self.target, __value);
+                    }
+                    Ok(())
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let collect_match = if let Some(f) = collect_field {
+        let name = &f.ident;
+        Some(quote! {
+            __Field::__collect(__key) => {
+                ::serde::de::MapAccess::next_value_seed(
+                    &mut __map,
+                    __CollectSeed {
+                        key: __key,
+                        target: &mut #name,
+                    },
+                )?;
+            }
+        })
+    } else {
+        None
+    };
+
+    let mut visitor_match_arms = builder_fields.clone();
+    if let Some(collect_match) = collect_match {
+        visitor_match_arms.push(collect_match);
+    }
 
     // The visitor struct needs the same generics as the struct being deserialized
     let visitor_struct_generics = quote! { #ty_generics };
@@ -539,7 +778,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
             where __D: ::serde::Deserializer<'de> {
                 #[allow(non_camel_case_types)]
                 enum __Field {
-                    #(#field_enums),* ,
+                    #(#field_enums,)*
                     __ignore,
                 };
 
@@ -560,8 +799,29 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
                         __E: ::serde::de::Error,
                     {
                         match __value {
-                            #(#field_enum_match),* ,
-                            _ => Ok(__Field::__ignore),
+                            #(#field_enum_match,)*
+                            _ => #unknown_str,
+                        }
+                    }
+                    fn visit_borrowed_str<__E>(
+                        self,
+                        __value: &'de str,
+                    ) -> ::std::result::Result<Self::Value, __E>
+                    where
+                        __E: ::serde::de::Error,
+                    {
+                        self.visit_str(__value)
+                    }
+                    fn visit_string<__E>(
+                        self,
+                        __value: ::std::string::String,
+                    ) -> ::std::result::Result<Self::Value, __E>
+                    where
+                        __E: ::serde::de::Error,
+                    {
+                        match __value.as_str() {
+                            #(#field_enum_match,)*
+                            _ => #unknown_string,
                         }
                     }
                     fn visit_u16<__E>(
@@ -590,6 +850,8 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
                     }
                 }
 
+                #collect_helpers
+
                 struct __Visitor #visitor_struct_generics #visitor_struct_where {
                     marker: ::core::marker::PhantomData #visitor_generics,
                 };
@@ -613,7 +875,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
 
                         while let Some(__key) = ::serde::de::MapAccess::next_key::<__Field>(&mut __map)? {
                             match __key {
-                                #(#builder_fields),* ,
+                                #(#visitor_match_arms,)*
                                 _ => { ::serde::de::MapAccess::next_value::<::serde::de::IgnoredAny>(&mut __map)?; }
                             }
                         }
