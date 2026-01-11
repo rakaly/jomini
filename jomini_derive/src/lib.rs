@@ -560,7 +560,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
             ),
         ));
     }
-    if token_count > 0 && collect_count > 0 {
+    if token_count > 0 {
         return Err(Error::new(
             span,
             format!(
