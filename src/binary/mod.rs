@@ -76,6 +76,7 @@ mod lexer;
 mod reader;
 mod resolver;
 mod rgb;
+mod ng;
 
 pub use self::flavor::BinaryFlavor;
 pub use self::lexer::{LexError, LexemeId, Lexer, LexerError, Token, TokenKind};
