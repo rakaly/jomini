@@ -44,9 +44,22 @@ impl ParserBuf {
     }
 
     #[inline]
+    fn peek_bytes<const N: usize>(&self) -> Option<&'_ [u8; N]> {
+        let result = unsafe { self.buf.get_unchecked(self.range()) }.first_chunk::<N>()?;
+        Some(result)
+    }
+
+    #[inline]
     fn read_bytes<const N: usize>(&mut self) -> Option<&'_ [u8; N]> {
         let result = unsafe { self.buf.get_unchecked(self.range()) }.first_chunk::<N>()?;
         self.end += N as u16;
+        Some(result)
+    }
+
+    #[inline]
+    fn read_slice(&mut self, len: u16) -> Option<&'_ [u8]> {
+        let result = unsafe { self.buf.get_unchecked(self.range()) }.get(..len as usize)?;
+        self.end += len;
         Some(result)
     }
 }
@@ -76,15 +89,15 @@ impl<'a> DerefMut for MutableBuffer<'a> {
     }
 }
 
-struct ParserState<'a> {
-    buf: &'a mut ParserBuf,
+pub struct ParserState {
+    buf: ParserBuf,
     storage: [u8; 8],
-    storage_request: Option<u16>,
+    // storage_request: u16,
 }
 
-impl<'a> ParserState<'a> {
+impl ParserState {
     #[inline]
-    fn read_bytes<const N: usize>(&'a mut self) -> Option<&'a [u8; N]> {
+    fn read_bytes<const N: usize>(&mut self) -> Option<&[u8; N]> {
         self.buf.read_bytes::<N>()
     }
 
@@ -93,10 +106,10 @@ impl<'a> ParserState<'a> {
         self.storage[..N].copy_from_slice(&data);
     }
 
-    #[inline]
-    fn buffer(&mut self, len: u16) {
-        self.storage_request = Some(len);
-    }
+    // #[inline]
+    // fn buffer(&mut self, len: u16) {
+    //     self.storage_request = len;
+    // }
 }
 
 enum TokenSignal {
@@ -112,13 +125,9 @@ enum SkipKind {
 
 struct Error;
 
-trait BinaryFormat {
-    fn visit<'a>(
-        &mut self,
-        reader: &'a mut ParserState<'a>,
-        id: LexemeId,
-    ) -> Result<TokenSignal, Error>;
-    fn skip<'a>(&mut self, reader: &'a mut ParserState<'a>, id: LexemeId) -> Option<SkipKind> {
+pub trait BinaryFormat {
+    fn visit(&mut self, reader: &mut ParserState, id: LexemeId) -> Result<TokenSignal, Error>;
+    fn skip(&mut self, reader: &mut ParserState, id: LexemeId) -> Option<SkipKind> {
         match self.visit(reader, id) {
             Ok(TokenSignal::Kind(TokenKind::Open)) => Some(SkipKind::Open),
             Ok(TokenSignal::Kind(TokenKind::Close)) => Some(SkipKind::Close),
@@ -139,26 +148,74 @@ trait BinaryFormat {
 struct Eu4Format;
 
 impl BinaryFormat for Eu4Format {
-    fn visit<'a>(&mut self, reader: &'a mut ParserState<'a>, id: LexemeId) -> Result<TokenSignal, Error> {
+    fn visit(&mut self, reader: &mut ParserState, id: LexemeId) -> Result<TokenSignal, Error> {
         match id {
-            LexemeId::F32 => {
-                let Some(data) = reader.read_bytes::<4>() else {
+            LexemeId::OPEN => Ok(TokenSignal::Kind(TokenKind::Open)),
+            LexemeId::CLOSE => Ok(TokenSignal::Kind(TokenKind::Close)),
+            LexemeId::EQUAL => Ok(TokenSignal::Kind(TokenKind::Equal)),
+            LexemeId::U32 | LexemeId::I32 => {
+                let Some(data) = reader.read_bytes::<4>().copied() else {
                     return Ok(TokenSignal::Eof);
                 };
 
-                let result = eu4_specific_f32_decoding(data).to_le_bytes();
-                reader.store(result);
+                reader.store(data);
+                if id == LexemeId::I32 {
+                    Ok(TokenSignal::Kind(TokenKind::I32))
+                } else {
+                    Ok(TokenSignal::Kind(TokenKind::U32))
+                }
+            }
+            LexemeId::U64 | LexemeId::I64 => {
+                let Some(data) = reader.read_bytes::<8>().copied() else {
+                    return Ok(TokenSignal::Eof);
+                };
+
+                reader.store(data);
+                if id == LexemeId::I64 {
+                    Ok(TokenSignal::Kind(TokenKind::I64))
+                } else {
+                    Ok(TokenSignal::Kind(TokenKind::U64))
+                }
+            }
+            LexemeId::F32 => {
+                let Some(data) = reader.read_bytes::<4>().copied() else {
+                    return Ok(TokenSignal::Eof);
+                };
+
+                let result = eu4_specific_f32_decoding(&data).to_bits();
+                reader.store(result.to_le_bytes());
                 Ok(TokenSignal::Kind(TokenKind::F32))
             }
-            // LexemeId::QUOTED => {
-            //     let Some(len) = reader.read_bytes::<2>().copied().map(u16::from_le_bytes) else {
-            //         return Ok(TokenSignal::Eof);
-            //     };
+            LexemeId::F64 => {
+                let Some(data) = reader.read_bytes::<8>().copied() else {
+                    return Ok(TokenSignal::Eof);
+                };
 
-            //     reader.store(len.to_le_bytes());
-            //     reader.buffer(len);
-            //     Ok(TokenSignal::Kind(TokenKind::Quoted))
-            // }
+                let result = eu4_specific_f64_decoding(&data).to_bits();
+                reader.store(result.to_le_bytes());
+                Ok(TokenSignal::Kind(TokenKind::F64))
+            }
+            LexemeId::BOOL => {
+                let Some(data) = reader.read_bytes::<1>().copied() else {
+                    return Ok(TokenSignal::Eof);
+                };
+
+                reader.store(data);
+                Ok(TokenSignal::Kind(TokenKind::Bool))
+            }
+            LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                let Some(len) = reader.read_bytes::<2>().copied().map(u16::from_le_bytes) else {
+                    return Ok(TokenSignal::Eof);
+                };
+
+                reader.store(len.to_le_bytes());
+                // reader.buffer(len);
+                if id == LexemeId::QUOTED {
+                    Ok(TokenSignal::Kind(TokenKind::Quoted))
+                } else {
+                    Ok(TokenSignal::Kind(TokenKind::Unquoted))
+                }
+            }
             id => {
                 // Signal to call resolve_id
                 Ok(TokenSignal::Kind(TokenKind::Id))
@@ -176,6 +233,10 @@ fn eu4_specific_f32_decoding(data: &[u8; 4]) -> f32 {
     f32::from_le_bytes(*data)
 }
 
+fn eu4_specific_f64_decoding(data: &[u8; 8]) -> f64 {
+    f64::from_le_bytes(*data)
+}
+
 fn eu4_specific_token_resolution(token: u16) -> Option<&'static str> {
     match token {
         0x1234 => Some("example_token"),
@@ -186,8 +247,7 @@ fn eu4_specific_token_resolution(token: u16) -> Option<&'static str> {
 pub struct TokenReader<R, F> {
     reader: R,
     format: F,
-    buf: ParserBuf,
-    data: [u8; 8],
+    state: ParserState,
 }
 
 impl<R, F> TokenReader<R, F>
@@ -195,8 +255,9 @@ where
     R: std::io::Read,
     F: BinaryFormat,
 {
+    #[cold]
     fn fill(&mut self) -> Result<usize, Error> {
-        let mut spare = self.buf.spare_capacity_mut();
+        let mut spare = self.state.buf.spare_capacity_mut();
         let amt = self.reader.read(&mut spare).unwrap();
         unsafe {
             spare.set_len(amt as u16);
@@ -205,11 +266,11 @@ where
     }
 
     pub fn buffered_data(&self) -> &[u8] {
-        self.buf.as_slice()
+        self.state.buf.as_slice()
     }
 
     pub fn into_remainder(self) -> (R, ParserBuf) {
-        (self.reader, self.buf)
+        (self.reader, self.state.buf)
     }
 
     #[cold]
@@ -219,14 +280,27 @@ where
             return Ok(None);
         }
 
-        todo!()
-        // self.next_kind()
-    }
-
-    pub fn next_kind(&mut self) -> Result<Option<TokenKind>, Error> {
-        let Some(id) = self
+        let id = self
+            .state
             .buf
             .read_bytes::<2>()
+            .copied()
+            .map(u16::from_le_bytes)
+            .map(LexemeId)
+            .ok_or_else(|| todo!())?;
+
+        match self.format.visit(&mut self.state, id)? {
+            TokenSignal::Kind(kind) => Ok(Some(kind)),
+            TokenSignal::Eof => todo!(),
+        }
+    }
+
+    #[inline]
+    pub fn next_kind(&mut self) -> Result<Option<TokenKind>, Error> {
+        let Some(id) = self
+            .state
+            .buf
+            .peek_bytes::<2>()
             .copied()
             .map(u16::from_le_bytes)
             .map(LexemeId)
@@ -234,8 +308,90 @@ where
             return self.next_kind_refill();
         };
 
-        // match self.format.visit()
+        self.state.buf.end += 2;
+        match self.format.visit(&mut self.state, id)? {
+            TokenSignal::Kind(kind) => Ok(Some(kind)),
+            TokenSignal::Eof => self.next_kind_refill(),
+        }
+    }
 
-        todo!()
+    /// Return the u64 data associated with [`TokenKind::U64`].
+    #[inline]
+    pub fn u64_data(&self) -> u64 {
+        u64::from_le_bytes(self.state.storage)
+    }
+
+    /// Return the i64 data associated with [`TokenKind::I64`].
+    #[inline]
+    pub fn i64_data(&self) -> i64 {
+        i64::from_le_bytes(self.state.storage)
+    }
+
+    /// Return the f64 data associated with [`TokenKind::F64`].
+    #[inline]
+    pub fn f64_data(&self) -> f64 {
+        f64::from_bits(self.u64_data())
+    }
+
+    /// Return the u32 data associated with [`TokenKind::U32`].
+    #[inline]
+    pub fn u32_data(&self) -> u32 {
+        u32::from_le_bytes([
+            self.state.storage[0],
+            self.state.storage[1],
+            self.state.storage[2],
+            self.state.storage[3],
+        ])
+    }
+
+    /// Return the i32 data associated with [`TokenKind::I32`].
+    #[inline]
+    pub fn i32_data(&self) -> i32 {
+        i32::from_le_bytes([
+            self.state.storage[0],
+            self.state.storage[1],
+            self.state.storage[2],
+            self.state.storage[3],
+        ])
+    }
+
+    /// Return the f32 data associated with [`TokenKind::F32`].
+    #[inline]
+    pub fn f32_data(&self) -> f32 {
+        f32::from_bits(self.u32_data())
+    }
+
+    /// Return the bool data associated with [`TokenKind::Bool`].
+    #[inline]
+    pub fn bool_data(&self) -> bool {
+        self.state.storage[0] != 0
+    }
+
+    /// Return the 32-bit data associated with [`TokenKind::Lookup`].
+    #[inline]
+    pub fn lookup_data(&self) -> u32 {
+        u32::from_le_bytes([
+            self.state.storage[0],
+            self.state.storage[1],
+            self.state.storage[2],
+            0,
+        ])
+    }
+
+    #[inline]
+    pub fn read_buffer(&mut self) -> Result<&[u8], Error> {
+        let len = u16::from_le_bytes([self.state.storage[0], self.state.storage[1]]);
+
+        match self.state.buf.read_slice(len) {
+            Some(data) => return Ok(data),
+            None => {
+                let mut spare = self.state.buf.spare_capacity_mut();
+                let amt = self.reader.read(&mut spare).unwrap();
+                unsafe {
+                    spare.set_len(amt as u16);
+                }
+                self.state.buf.read_slice(len).ok_or_else(|| todo!())
+            }
+        }
     }
 }
