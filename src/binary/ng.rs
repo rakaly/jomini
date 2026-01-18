@@ -8,11 +8,11 @@ use std::{
 
 use serde::{
     Deserialize,
-    de::{self, DeserializeOwned, DeserializeSeed, MapAccess, Visitor},
+    de::{self, DeserializeOwned, DeserializeSeed, MapAccess, SeqAccess, Visitor},
 };
 
 use crate::{
-    DeserializeError, DeserializeErrorKind, Error, Windows1252Encoding,
+    DeserializeError, DeserializeErrorKind, Encoding, Error,
     binary::{FailedResolveStrategy, LexError, LexemeId, TokenKind},
 };
 
@@ -33,7 +33,7 @@ impl ParserBuf {
     }
 
     #[inline]
-    pub fn spare_capacity_mut(&mut self) -> MutableBuffer<'_> {
+    fn spare_capacity_mut(&mut self) -> MutableBuffer<'_> {
         let carry_over = self.end - self.start;
         if carry_over == 0 {
             self.start = 0;
@@ -125,7 +125,7 @@ impl ParserState {
 
 pub enum TokenSignal {
     Kind(TokenKind),
-    Eof,
+    MoreData,
 }
 
 pub enum SkipKind {
@@ -134,52 +134,42 @@ pub enum SkipKind {
     Other,
 }
 
-pub trait BinaryFormat<'str> {
+pub trait BinaryFormat {
     fn visit(&mut self, reader: &mut ParserState, id: LexemeId) -> Result<TokenSignal, Error>;
     fn skip(&mut self, reader: &mut ParserState, id: LexemeId) -> Option<SkipKind> {
         match self.visit(reader, id) {
             Ok(TokenSignal::Kind(TokenKind::Open)) => Some(SkipKind::Open),
             Ok(TokenSignal::Kind(TokenKind::Close)) => Some(SkipKind::Close),
             Ok(TokenSignal::Kind(_)) => Some(SkipKind::Other),
-            Ok(TokenSignal::Eof) | Err(_) => None,
+            Ok(TokenSignal::MoreData) | Err(_) => None,
         }
     }
-
-    fn resolve_field(&self, token: FieldId) -> Option<&'str str> {
-        None
-    }
-
-    fn resolve_lookup(&self, index: LookupIndex) -> Option<&'str str> {
-        None
-    }
-
-    fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str>;
 }
 
-impl<'str, F: BinaryFormat<'str>> BinaryFormat<'str> for &'_ mut F {
+impl<'str, F: BinaryFormat> BinaryFormat for &'_ mut F {
     fn visit(&mut self, reader: &mut ParserState, id: LexemeId) -> Result<TokenSignal, Error> {
         (**self).visit(reader, id)
-    }
-
-    fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
-        (**self).decode(data)
     }
 
     fn skip(&mut self, reader: &mut ParserState, id: LexemeId) -> Option<SkipKind> {
         (**self).skip(reader, id)
     }
+}
 
-    fn resolve_field(&self, token: FieldId) -> Option<&'str str> {
-        (**self).resolve_field(token)
+pub trait TokenResolver2<'str> {
+    fn resolve_field(&self, _token: FieldId) -> Option<&'str str> {
+        None
     }
 
-    fn resolve_lookup(&self, index: LookupIndex) -> Option<&'str str> {
-        (**self).resolve_lookup(index)
+    fn resolve_lookup(&self, _index: LookupIndex) -> Option<&'str str> {
+        None
     }
 }
 
+pub trait BinaryFlavor2<'str>: BinaryFormat + TokenResolver2<'str> + Encoding {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct FieldId(u16);
+pub struct FieldId(u16);
 
 impl FieldId {
     pub const fn new(index: u16) -> Self {
@@ -192,7 +182,7 @@ impl FieldId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct LookupIndex(u32);
+pub struct LookupIndex(u32);
 
 impl LookupIndex {
     pub const fn new(index: u32) -> Self {
@@ -206,7 +196,7 @@ impl LookupIndex {
 
 struct Eu4Format;
 
-impl BinaryFormat<'static> for Eu4Format {
+impl BinaryFormat for Eu4Format {
     fn visit(&mut self, reader: &mut ParserState, id: LexemeId) -> Result<TokenSignal, Error> {
         match id {
             LexemeId::OPEN => Ok(TokenSignal::Kind(TokenKind::Open)),
@@ -214,7 +204,7 @@ impl BinaryFormat<'static> for Eu4Format {
             LexemeId::EQUAL => Ok(TokenSignal::Kind(TokenKind::Equal)),
             LexemeId::U32 | LexemeId::I32 => {
                 let Some(data) = reader.read_bytes::<4>().copied() else {
-                    return Ok(TokenSignal::Eof);
+                    return Ok(TokenSignal::MoreData);
                 };
 
                 reader.store(data);
@@ -226,7 +216,7 @@ impl BinaryFormat<'static> for Eu4Format {
             }
             LexemeId::U64 | LexemeId::I64 => {
                 let Some(data) = reader.read_bytes::<8>().copied() else {
-                    return Ok(TokenSignal::Eof);
+                    return Ok(TokenSignal::MoreData);
                 };
 
                 reader.store(data);
@@ -238,7 +228,7 @@ impl BinaryFormat<'static> for Eu4Format {
             }
             LexemeId::F32 => {
                 let Some(data) = reader.read_bytes::<4>().copied() else {
-                    return Ok(TokenSignal::Eof);
+                    return Ok(TokenSignal::MoreData);
                 };
 
                 let result = eu4_specific_f32_decoding(&data).to_bits();
@@ -247,7 +237,7 @@ impl BinaryFormat<'static> for Eu4Format {
             }
             LexemeId::F64 => {
                 let Some(data) = reader.read_bytes::<8>().copied() else {
-                    return Ok(TokenSignal::Eof);
+                    return Ok(TokenSignal::MoreData);
                 };
 
                 let result = eu4_specific_f64_decoding(&data).to_bits();
@@ -256,7 +246,7 @@ impl BinaryFormat<'static> for Eu4Format {
             }
             LexemeId::BOOL => {
                 let Some(data) = reader.read_bytes::<1>().copied() else {
-                    return Ok(TokenSignal::Eof);
+                    return Ok(TokenSignal::MoreData);
                 };
 
                 reader.store(data);
@@ -264,11 +254,10 @@ impl BinaryFormat<'static> for Eu4Format {
             }
             LexemeId::QUOTED | LexemeId::UNQUOTED => {
                 let Some(len) = reader.read_bytes::<2>().copied().map(u16::from_le_bytes) else {
-                    return Ok(TokenSignal::Eof);
+                    return Ok(TokenSignal::MoreData);
                 };
 
                 reader.store(len.to_le_bytes());
-                // reader.buffer(len);
                 if id == LexemeId::QUOTED {
                     Ok(TokenSignal::Kind(TokenKind::Quoted))
                 } else {
@@ -276,20 +265,10 @@ impl BinaryFormat<'static> for Eu4Format {
                 }
             }
             id => {
-                // Signal to call resolve_id
                 reader.store(id.0.to_le_bytes());
                 Ok(TokenSignal::Kind(TokenKind::Id))
             }
         }
-    }
-
-    // Replace TokenResolver
-    fn resolve_field(&self, field: FieldId) -> Option<&'static str> {
-        eu4_specific_token_resolution(field.value())
-    }
-
-    fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
-        Windows1252Encoding::decode(data)
     }
 }
 
@@ -340,10 +319,10 @@ where
     }
 
     #[cold]
-    fn next_kind_refill<F>(&mut self, mut format: F) -> Result<Option<TokenKind>, Error>
-    where
-        for<'a> F: BinaryFormat<'a>,
-    {
+    fn next_kind_refill(
+        &mut self,
+        mut format: impl BinaryFormat,
+    ) -> Result<Option<TokenKind>, Error> {
         let amt = self.fill()?;
         if amt == 0 {
             return Ok(None);
@@ -360,15 +339,12 @@ where
 
         match format.visit(&mut self.state, id)? {
             TokenSignal::Kind(kind) => Ok(Some(kind)),
-            TokenSignal::Eof => todo!(),
+            TokenSignal::MoreData => todo!(),
         }
     }
 
     #[inline]
-    pub fn next_kind<F>(&mut self, mut format: F) -> Result<Option<TokenKind>, Error>
-    where
-        for<'a> F: BinaryFormat<'a>,
-    {
+    pub fn next_kind(&mut self, mut format: impl BinaryFormat) -> Result<Option<TokenKind>, Error> {
         let Some(id) = self
             .state
             .buf
@@ -383,15 +359,12 @@ where
         self.state.buf.end += 2;
         match format.visit(&mut self.state, id)? {
             TokenSignal::Kind(kind) => Ok(Some(kind)),
-            TokenSignal::Eof => self.next_kind_refill(format),
+            TokenSignal::MoreData => self.next_kind_refill(format),
         }
     }
 
     #[inline]
-    pub fn read_kind<F>(&mut self, format: F) -> Result<TokenKind, Error>
-    where
-        for<'a> F: BinaryFormat<'a>,
-    {
+    pub fn read_kind(&mut self, format: impl BinaryFormat) -> Result<TokenKind, Error> {
         match self.next_kind(format)? {
             Some(kind) => Ok(kind),
             None => Err(LexError::Eof.at(self.position()).into()),
@@ -500,16 +473,20 @@ where
     }
 }
 
+struct BinaryConfig {
+    failed_resolve_strategy: FailedResolveStrategy,
+}
+
 pub struct BinaryReaderDeserializer<R, F> {
     reader: TokenReader<R>,
     format: F,
-    // config: BinaryConfig<'res, RES, F>,
+    config: BinaryConfig,
 }
 
-impl<R, F> BinaryReaderDeserializer<R, F>
+impl<'a, R, F> BinaryReaderDeserializer<R, F>
 where
     R: Read,
-    for<'a> F: BinaryFormat<'a>,
+    F: BinaryFlavor2<'a>,
 {
     /// Deserialize into provided type
     pub fn deserialize<T>(&mut self) -> Result<T, Error>
@@ -520,32 +497,46 @@ where
     }
 }
 
-fn deserialize<T>(reader: TokenReader<impl Read>, format: impl for<'a> BinaryFormat<'a>) -> Result<T, Error>
+fn deserialize<T>(
+    reader: TokenReader<impl Read>,
+    format: impl for<'a> BinaryFlavor2<'a>,
+) -> Result<T, Error>
 where
     T: DeserializeOwned,
 {
-    let mut reader = BinaryReaderDeserializer { reader, format };
+    let mut reader = BinaryReaderDeserializer {
+        reader,
+        format,
+        config: BinaryConfig {
+            failed_resolve_strategy: FailedResolveStrategy::Error,
+        },
+    };
     let value: T = serde::de::Deserialize::deserialize(&mut reader).unwrap();
 
     Ok(value)
 }
 
-// fn deserialize2<'a, T, F, A>(reader: TokenReader<impl Read>, format: F) -> Result<T, Error>
-// where
-//     T: Deserialize<'a>,
-//     A: AsRef<str> + 'a,
-//     F: BinaryFormat<'a, Id<'a> = A> + 'a,
-// {
-//     let mut reader = BinaryReaderDeserializer { reader, format };
-
-//     let value: T = serde::de::Deserialize::deserialize(&mut reader).unwrap();
-
-//     Ok(value)
-// }
-
-impl<'de, F, R> de::Deserializer<'de> for &'_ mut BinaryReaderDeserializer<R, F>
+fn deserialize2<'a, T, F>(reader: TokenReader<impl Read>, format: F) -> Result<T, Error>
 where
-    F: BinaryFormat<'de>,
+    T: Deserialize<'a>,
+    F: BinaryFlavor2<'a>,
+{
+    let mut reader = BinaryReaderDeserializer {
+        reader,
+        format,
+        config: BinaryConfig {
+            failed_resolve_strategy: FailedResolveStrategy::Error,
+        },
+    };
+
+    let value: T = serde::de::Deserialize::deserialize(&mut reader).unwrap();
+
+    Ok(value)
+}
+
+impl<'de, 'a: 'de, F, R> de::Deserializer<'de> for &'_ mut BinaryReaderDeserializer<R, F>
+where
+    F: BinaryFlavor2<'a>,
     R: Read,
 {
     type Error = Error;
@@ -599,10 +590,10 @@ impl<'a, R, F> BinaryReaderMap<'a, false, R, F> {
     }
 }
 
-impl<'de, const ROOT: bool, R, F> MapAccess<'de> for BinaryReaderMap<'_, ROOT, R, F>
+impl<'de, 'a: 'de, const ROOT: bool, R, F> MapAccess<'de> for BinaryReaderMap<'_, ROOT, R, F>
 where
     R: Read,
-    F: BinaryFormat<'de>,
+    F: BinaryFlavor2<'a>,
 {
     type Error = Error;
 
@@ -615,14 +606,17 @@ where
             match self.de.reader.next_kind(&mut self.de.format) {
                 Ok(Some(TokenKind::Close)) => return Ok(None),
                 Ok(Some(TokenKind::Open)) => {
-                    // let _ = self.de.reader.read_token();
-                    todo!()
+                    if matches!(
+                        self.de.reader.read_kind(&mut self.de.format)?,
+                        TokenKind::Quoted | TokenKind::Unquoted | TokenKind::Rgb,
+                    ) {
+                        self.de.reader.read_buffer()?;
+                    }
                 }
-                Ok(Some(token)) => {
-                    todo!()
-                    // return seed
-                    //     .deserialize(BinaryReaderTokenDeserializer { de: self.de, token })
-                    //     .map(Some);
+                Ok(Some(kind)) => {
+                    return seed
+                        .deserialize(BinaryReaderTokenDeserializer { de: self.de, kind })
+                        .map(Some);
                 }
                 Ok(None) if ROOT => return Ok(None),
                 Ok(None) => {
@@ -657,10 +651,10 @@ where
     R: Read,
 {
     #[inline]
-    fn deser<'de, V>(self, visitor: V) -> Result<V::Value, Error>
+    fn deser<'de, 'a: 'de, V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: de::Visitor<'de>,
-        F: BinaryFormat<'de>,
+        F: BinaryFlavor2<'a>,
     {
         match self.kind {
             TokenKind::U32 => visitor.visit_u32(self.de.reader.u32_data()),
@@ -677,21 +671,20 @@ where
                 }
             }
             TokenKind::Id => match self.de.format.resolve_field(self.de.reader.field_id()) {
-                Some(id) => visitor.visit_borrowed_str(id.as_ref()),
-                None => todo!(),
-                // None => match self.de.config.failed_resolve_strategy {
-                //     FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
-                //         kind: DeserializeErrorKind::UnknownToken {
-                //             token_id: self.de.reader.token_id() as u32,
-                //         },
-                //     })),
-                //     FailedResolveStrategy::Stringify => {
-                //         visitor.visit_string(format!("0x{:x}", self.de.reader.token_id()))
-                //     }
-                //     FailedResolveStrategy::Ignore => {
-                //         visitor.visit_borrowed_str("__internal_identifier_ignore")
-                //     }
-                // },
+                Some(id) => visitor.visit_borrowed_str(id),
+                None => match self.de.config.failed_resolve_strategy {
+                    FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::UnknownToken {
+                            token_id: self.de.reader.field_id().value() as u32,
+                        },
+                    })),
+                    FailedResolveStrategy::Stringify => {
+                        visitor.visit_string(format!("0x{:x}", self.de.reader.field_id().value()))
+                    }
+                    FailedResolveStrategy::Ignore => {
+                        visitor.visit_borrowed_str("__internal_identifier_ignore")
+                    }
+                },
             },
             TokenKind::Close => Err(Error::invalid_syntax(
                 "did not expect end",
@@ -706,18 +699,19 @@ where
             TokenKind::Rgb => todo!(),
             TokenKind::Lookup => match self.de.format.resolve_lookup(self.de.reader.lookup_id()) {
                 Some(value) => visitor.visit_borrowed_str(value.as_ref()),
-                None => todo!(),
-                // None => match self.de.config.failed_resolve_strategy {
-                //     FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
-                //         kind: DeserializeErrorKind::UnknownToken { token_id: index },
-                //     })),
-                //     FailedResolveStrategy::Stringify => {
-                //         visitor.visit_string(format!("{}", index))
-                //     }
-                //     FailedResolveStrategy::Ignore => {
-                //         visitor.visit_borrowed_str("__internal_identifier_ignore")
-                //     }
-                // },
+                None => match self.de.config.failed_resolve_strategy {
+                    FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::UnknownToken {
+                            token_id: self.de.reader.lookup_id().value(),
+                        },
+                    })),
+                    FailedResolveStrategy::Stringify => {
+                        visitor.visit_string(format!("{}", self.de.reader.lookup_id().value()))
+                    }
+                    FailedResolveStrategy::Ignore => {
+                        visitor.visit_borrowed_str("__internal_identifier_ignore")
+                    }
+                },
             },
         }
     }
@@ -735,10 +729,9 @@ macro_rules! deserialize_scalar {
     };
 }
 
-impl<'de, R, F> de::Deserializer<'de> for BinaryReaderTokenDeserializer<'_, R, F>
+impl<'de, 'a: 'de, R: Read, F> de::Deserializer<'de> for BinaryReaderTokenDeserializer<'_, R, F>
 where
-    F: BinaryFormat<'de>,
-    R: Read,
+    F: BinaryFlavor2<'a>,
 {
     type Error = Error;
 
@@ -1013,8 +1006,7 @@ where
     where
         V: Visitor<'de>,
     {
-        todo!()
-        // visitor.visit_enum(BinaryReaderEnum::new(self.de, self.token))
+        visitor.visit_enum(BinaryReaderEnum::new(self.de, self.kind))
     }
 
     #[inline]
@@ -1027,112 +1019,115 @@ where
     }
 }
 
-// struct BinaryReaderSeq<'a: 'a, 'res, RES: 'a, F, R> {
-//     de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
-//     hit_end: bool,
-// }
+struct BinaryReaderSeq<'a, R, F> {
+    de: &'a mut BinaryReaderDeserializer<R, F>,
+    hit_end: bool,
+}
 
-// impl<'a, 'res, RES: 'a, F, R> BinaryReaderSeq<'a, 'res, RES, F, R> {
-//     fn new(de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>) -> Self {
-//         BinaryReaderSeq { de, hit_end: false }
-//     }
-// }
+impl<'a, R, F> BinaryReaderSeq<'a, R, F> {
+    fn new(de: &'a mut BinaryReaderDeserializer<R, F>) -> Self {
+        BinaryReaderSeq { de, hit_end: false }
+    }
+}
 
-// impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> SeqAccess<'de>
-//     for BinaryReaderSeq<'_, 'res, RES, F, R>
-// {
-//     type Error = Error;
+impl<'de, 'a: 'de, R: Read, F> SeqAccess<'de> for BinaryReaderSeq<'_, R, F>
+where
+    F: BinaryFlavor2<'a>,
+{
+    type Error = Error;
 
-//     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
-//     where
-//         T: DeserializeSeed<'de>,
-//     {
-//         let mut token = self.de.reader.read_token()?;
-//         if matches!(token, TokenKind::Close) {
-//             self.hit_end = true;
-//             return Ok(None);
-//         } else if matches!(token, TokenKind::Equal) {
-//             // This is a standalone Equal token from object template syntax
-//             token = self.de.reader.read_token()?;
-//         }
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        let mut kind = self.de.reader.read_kind(&mut self.de.format)?;
+        if matches!(kind, TokenKind::Close) {
+            self.hit_end = true;
+            return Ok(None);
+        } else if matches!(kind, TokenKind::Equal) {
+            // This is a standalone Equal token from object template syntax
+            kind = self.de.reader.read_kind(&mut self.de.format)?;
+        }
 
-//         seed.deserialize(BinaryReaderTokenDeserializer { de: self.de, token })
-//             .map(Some)
-//     }
-// }
+        seed.deserialize(BinaryReaderTokenDeserializer { de: self.de, kind })
+            .map(Some)
+    }
+}
 
-// struct BinaryReaderEnum<'a, 'res, RES: 'a, F, R> {
-//     de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
-//     token: TokenKind,
-// }
+struct BinaryReaderEnum<'a, R, F> {
+    de: &'a mut BinaryReaderDeserializer<R, F>,
+    kind: TokenKind,
+}
 
-// impl<'a, 'res, RES: 'a, F, R> BinaryReaderEnum<'a, 'res, RES, F, R> {
-//     fn new(de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>, token: TokenKind) -> Self {
-//         BinaryReaderEnum { de, token }
-//     }
-// }
+impl<'a, F, R> BinaryReaderEnum<'a, R, F> {
+    fn new(de: &'a mut BinaryReaderDeserializer<R, F>, kind: TokenKind) -> Self {
+        BinaryReaderEnum { de, kind }
+    }
+}
 
-// impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::EnumAccess<'de>
-//     for BinaryReaderEnum<'_, 'res, RES, F, R>
-// {
-//     type Error = Error;
-//     type Variant = Self;
+impl<'de, 'a: 'de, R: Read, F> de::EnumAccess<'de> for BinaryReaderEnum<'_, R, F>
+where
+    F: BinaryFlavor2<'a>,
+{
+    type Error = Error;
+    type Variant = Self;
 
-//     fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self), Self::Error>
-//     where
-//         V: de::DeserializeSeed<'de>,
-//     {
-//         let variant = seed.deserialize(BinaryReaderTokenDeserializer {
-//             de: self.de,
-//             token: self.token,
-//         })?;
-//         Ok((variant, self))
-//     }
-// }
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self), Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let variant = seed.deserialize(BinaryReaderTokenDeserializer {
+            de: self.de,
+            kind: self.kind,
+        })?;
+        Ok((variant, self))
+    }
+}
 
-// impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R> de::VariantAccess<'de>
-//     for BinaryReaderEnum<'_, 'res, RES, F, R>
-// {
-//     type Error = Error;
+impl<'de, 'a: 'de, R: Read, F> de::VariantAccess<'de> for BinaryReaderEnum<'_, R, F>
+where
+    F: BinaryFlavor2<'a>,
+{
+    type Error = Error;
 
-//     fn unit_variant(self) -> Result<(), Self::Error> {
-//         Ok(())
-//     }
+    fn unit_variant(self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 
-//     fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value, Self::Error>
-//     where
-//         T: DeserializeSeed<'de>,
-//     {
-//         Err(Error::from(DeserializeError {
-//             kind: DeserializeErrorKind::Unsupported(String::from(
-//                 "unsupported enum deserialization. Please file issue",
-//             )),
-//         }))
-//     }
+    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unsupported enum deserialization. Please file issue",
+            )),
+        }))
+    }
 
-//     fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
-//     where
-//         V: Visitor<'de>,
-//     {
-//         Err(Error::from(DeserializeError {
-//             kind: DeserializeErrorKind::Unsupported(String::from(
-//                 "unsupported enum deserialization. Please file issue",
-//             )),
-//         }))
-//     }
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unsupported enum deserialization. Please file issue",
+            )),
+        }))
+    }
 
-//     fn struct_variant<V>(
-//         self,
-//         _fields: &'static [&'static str],
-//         _visitor: V,
-//     ) -> Result<V::Value, Self::Error>
-//     where
-//         V: Visitor<'de>,
-//     {
-//         Err(Error::from(DeserializeError {
-//             kind: DeserializeErrorKind::Unsupported(String::from(
-//                 "unsupported enum deserialization. Please file issue",
-//             )),
-//         }))
-//     }
-// }
+    fn struct_variant<V>(
+        self,
+        _fields: &'static [&'static str],
+        _visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(Error::from(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported(String::from(
+                "unsupported enum deserialization. Please file issue",
+            )),
+        }))
+    }
+}
