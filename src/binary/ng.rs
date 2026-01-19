@@ -18,64 +18,85 @@ use crate::{
 
 pub struct ParserBuf {
     buf: Box<[u8]>,
-    start: u16,
-    end: u16,
+    start: *const u8,
+    len: usize,
     total_read: usize,
 }
 
 impl ParserBuf {
+    pub fn from_slice(data: &[u8]) -> Self {
+        Self {
+            buf: Box::new([]),
+            start: data.as_ptr(),
+            len: data.len(),
+            total_read: 0,
+        }
+    }
+
+    pub fn new(size: usize) -> Self {
+        let buf = vec![0u8; size].into_boxed_slice();
+        let start = buf.as_ptr();
+        Self {
+            buf,
+            start,
+            len: 0,
+            total_read: 0,
+        }
+    }
+
     #[inline]
     pub fn as_slice(&self) -> &[u8] {
-        unsafe {
-            self.buf
-                .get_unchecked(self.start as usize..self.end as usize)
-        }
+        unsafe { std::slice::from_raw_parts(self.start, self.len) }
     }
 
     #[inline]
-    fn spare_capacity_mut(&mut self) -> MutableBuffer<'_> {
-        let carry_over = self.end - self.start;
-        if carry_over == 0 {
-            self.start = 0;
-            self.end = 0;
-            return MutableBuffer {
-                buf: self,
-                carry_over: 0,
-            };
-        }
-
-        self.buf
-            .copy_within(self.start as usize..self.end as usize, 0);
-        self.start = 0;
-        self.end = carry_over;
-        MutableBuffer {
-            buf: self,
-            carry_over,
-        }
+    pub fn len(&self) -> usize {
+        self.len
     }
 
-    fn range(&self) -> std::ops::Range<usize> {
-        self.start as usize..self.end as usize
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    #[inline]
+    fn fill(&mut self, mut reader: impl Read) -> Result<usize, std::io::Error> {
+        let dst = if self.buf.is_empty() || self.len == 0 {
+            &mut self.buf
+        } else {
+            unsafe {
+                self.start.copy_to(self.buf.as_mut_ptr(), self.len);
+            }
+            self.start = self.buf.as_ptr();
+            unsafe { self.buf.get_unchecked_mut(self.len..) }
+        };
+
+        let amt = reader.read(dst)?;
+        self.len += amt;
+        Ok(amt)
     }
 
     #[inline]
     fn peek_bytes<const N: usize>(&self) -> Option<&'_ [u8; N]> {
-        let result = unsafe { self.buf.get_unchecked(self.range()) }.first_chunk::<N>()?;
-        Some(result)
+        self.as_slice().first_chunk::<N>()
     }
 
     #[inline]
     fn read_bytes<const N: usize>(&mut self) -> Option<&'_ [u8; N]> {
-        let result = unsafe { self.buf.get_unchecked(self.range()) }.first_chunk::<N>()?;
-        self.start += N as u16;
+        let result =
+            unsafe { std::slice::from_raw_parts(self.start, self.len) }.first_chunk::<N>()?;
+        self.start = unsafe { self.start.add(N as usize) };
+        self.len -= N;
         self.total_read += N;
         Some(result)
     }
 
     #[inline]
     fn read_slice(&mut self, len: u16) -> Option<&'_ [u8]> {
-        let result = unsafe { self.buf.get_unchecked(self.range()) }.get(..len as usize)?;
-        self.start += len;
+        let result =
+            unsafe { std::slice::from_raw_parts(self.start, self.len) }.get(..len as usize)?;
+        self.start = unsafe { self.start.add(len as usize) };
+        self.len -= len as usize;
         self.total_read += len as usize;
         Some(result)
     }
@@ -88,7 +109,7 @@ struct MutableBuffer<'a> {
 
 impl<'a> MutableBuffer<'a> {
     pub unsafe fn set_len(&mut self, amt: u16) {
-        self.buf.end += amt;
+        self.buf.len += amt as usize;
     }
 }
 
@@ -113,13 +134,40 @@ pub struct ParserState {
 
 impl ParserState {
     #[inline]
-    fn read_bytes<const N: usize>(&mut self) -> Option<&[u8; N]> {
+    pub fn read_bytes<const N: usize>(&mut self) -> Option<&[u8; N]> {
         self.buf.read_bytes::<N>()
     }
 
     #[inline]
-    fn store<const N: usize>(&mut self, data: [u8; N]) {
+    pub fn read_slice(&mut self, len: u16) -> Option<&[u8]> {
+        self.buf.read_slice(len)
+    }
+
+    #[inline]
+    pub fn store<const N: usize>(&mut self, data: [u8; N]) {
         self.storage[..N].copy_from_slice(&data);
+    }
+
+    #[inline]
+    pub fn peek_bytes<const N: usize>(&self) -> Option<&[u8; N]> {
+        self.buf.peek_bytes::<N>()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    #[inline]
+    pub unsafe fn consume(&mut self, amt: usize) {
+        self.buf.start = unsafe { self.buf.start.add(amt) };
+        self.buf.len -= amt;
+        self.buf.total_read += amt;
     }
 }
 
@@ -172,10 +220,12 @@ pub trait BinaryFlavor2<'str>: BinaryFormat + TokenResolver2<'str> + Encoding {}
 pub struct FieldId(u16);
 
 impl FieldId {
+    #[inline]
     pub const fn new(index: u16) -> Self {
         FieldId(index)
     }
 
+    #[inline]
     pub const fn value(self) -> u16 {
         self.0
     }
@@ -253,10 +303,17 @@ impl BinaryFormat for Eu4Format {
                 Ok(TokenSignal::Kind(TokenKind::Bool))
             }
             LexemeId::QUOTED | LexemeId::UNQUOTED => {
-                let Some(len) = reader.read_bytes::<2>().copied().map(u16::from_le_bytes) else {
+                let Some(len) = reader.peek_bytes::<2>().copied().map(u16::from_le_bytes) else {
                     return Ok(TokenSignal::MoreData);
                 };
 
+                if reader.len() < (len as usize) + 2 {
+                    return Ok(TokenSignal::MoreData);
+                }
+
+                unsafe {
+                    reader.consume((len + 2) as usize);
+                }
                 reader.store(len.to_le_bytes());
                 if id == LexemeId::QUOTED {
                     Ok(TokenSignal::Kind(TokenKind::Quoted))
@@ -292,6 +349,18 @@ pub struct TokenReader<R> {
     state: ParserState,
 }
 
+impl TokenReader<()> {
+    pub fn from_slice(data: &[u8]) -> TokenReader<&[u8]> {
+        TokenReader {
+            reader: data,
+            state: ParserState {
+                buf: ParserBuf::from_slice(data),
+                storage: [0u8; 8],
+            },
+        }
+    }
+}
+
 impl<R> TokenReader<R>
 where
     R: std::io::Read,
@@ -310,11 +379,7 @@ where
 
     #[cold]
     fn fill(&mut self) -> Result<usize, Error> {
-        let mut spare = self.state.buf.spare_capacity_mut();
-        let amt = self.reader.read(&mut spare).unwrap();
-        unsafe {
-            spare.set_len(amt as u16);
-        }
+        let amt = self.state.buf.fill(&mut self.reader)?;
         Ok(amt)
     }
 
@@ -335,11 +400,11 @@ where
             .copied()
             .map(u16::from_le_bytes)
             .map(LexemeId)
-            .expect("todo");
+            .ok_or_else(Error::eof)?;
 
         match format.visit(&mut self.state, id)? {
             TokenSignal::Kind(kind) => Ok(Some(kind)),
-            TokenSignal::MoreData => todo!(),
+            TokenSignal::MoreData => Err(Error::eof()),
         }
     }
 
@@ -356,7 +421,7 @@ where
             return self.next_kind_refill(format);
         };
 
-        self.state.buf.end += 2;
+        unsafe { self.state.consume(2) };
         match format.visit(&mut self.state, id)? {
             TokenSignal::Kind(kind) => Ok(Some(kind)),
             TokenSignal::MoreData => self.next_kind_refill(format),
@@ -378,26 +443,33 @@ where
                 // skip_container
                 todo!()
             }
-            TokenKind::Quoted | TokenKind::Unquoted | TokenKind::Rgb => {
-                let _ = self.read_buffer()?;
-                Ok(())
-            }
+            // TokenKind::Quoted | TokenKind::Unquoted | TokenKind::Rgb => {
+            //     let _ = self.read_buffer()?;
+            //     Ok(())
+            // }
             _ => Ok(()),
         }
     }
 
     #[inline]
-    pub fn read_buffer(&mut self) -> Result<&[u8], Error> {
+    pub unsafe fn read_buffer(&mut self) -> &[u8] {
         let len = u16::from_le_bytes([self.state.storage[0], self.state.storage[1]]);
+        let data = unsafe {
+            std::slice::from_raw_parts(self.state.buf.start.byte_sub(len as usize), len as usize)
+        };
 
-        // Check if we have enough data without borrowing
-        let available = self.state.buf.end - self.state.buf.start;
-        if available >= len {
-            return Ok(unsafe { self.state.buf.read_slice(len).unwrap_unchecked() });
-        }
+        data
 
-        self.fill()?;
-        self.state.buf.read_slice(len).ok_or_else(|| todo!())
+        // let len = u16::from_le_bytes([self.state.storage[0], self.state.storage[1]]);
+
+        // // Check if we have enough data without borrowing
+        // let available = self.state.buf.len;
+        // if available >= (len as usize) {
+        //     return Ok(unsafe { self.state.buf.read_slice(len).unwrap_unchecked() });
+        // }
+
+        // self.fill()?;
+        // self.state.buf.read_slice(len).ok_or_else(Error::eof)
     }
 
     /// Return the u64 data associated with [`TokenKind::U64`].
@@ -606,12 +678,7 @@ where
             match self.de.reader.next_kind(&mut self.de.format) {
                 Ok(Some(TokenKind::Close)) => return Ok(None),
                 Ok(Some(TokenKind::Open)) => {
-                    if matches!(
-                        self.de.reader.read_kind(&mut self.de.format)?,
-                        TokenKind::Quoted | TokenKind::Unquoted | TokenKind::Rgb,
-                    ) {
-                        self.de.reader.read_buffer()?;
-                    }
+                    let _ = self.de.reader.read_kind(&mut self.de.format)?;
                 }
                 Ok(Some(kind)) => {
                     return seed
@@ -665,7 +732,11 @@ where
             TokenKind::F32 => visitor.visit_f32(self.de.reader.f32_data()),
             TokenKind::F64 => visitor.visit_f64(self.de.reader.f64_data()),
             TokenKind::Quoted | TokenKind::Unquoted => {
-                match self.de.format.decode(self.de.reader.read_buffer()?) {
+                match self
+                    .de
+                    .format
+                    .decode(unsafe { self.de.reader.read_buffer() })
+                {
                     Cow::Borrowed(x) => visitor.visit_str(x),
                     Cow::Owned(x) => visitor.visit_string(x),
                 }
@@ -694,8 +765,7 @@ where
                 "did not expect equal",
                 self.de.reader.position(),
             )),
-            // TokenKind::Open => visitor.visit_seq(BinaryReaderSeq::new(self.de)),
-            TokenKind::Open => todo!(),
+            TokenKind::Open => visitor.visit_seq(BinaryReaderSeq::new(self.de)),
             TokenKind::Rgb => todo!(),
             TokenKind::Lookup => match self.de.format.resolve_lookup(self.de.reader.lookup_id()) {
                 Some(value) => visitor.visit_borrowed_str(value.as_ref()),
@@ -749,7 +819,7 @@ where
     {
         match self.kind {
             TokenKind::Quoted | TokenKind::Unquoted => {
-                visitor.visit_bytes(self.de.reader.read_buffer()?)
+                visitor.visit_bytes(unsafe { self.de.reader.read_buffer() })
             }
             _ => self.deser(visitor),
         }
@@ -873,7 +943,11 @@ where
     {
         match self.kind {
             TokenKind::Quoted | TokenKind::Unquoted => {
-                match self.de.format.decode(self.de.reader.read_buffer()?) {
+                match self
+                    .de
+                    .format
+                    .decode(unsafe { self.de.reader.read_buffer() })
+                {
                     Cow::Borrowed(x) => visitor.visit_str(x),
                     Cow::Owned(x) => visitor.visit_string(x),
                 }
@@ -928,22 +1002,24 @@ where
         V: Visitor<'de>,
     {
         match self.kind {
-            TokenKind::Open => todo!(),
-            // TokenKind::Open => {
-            //     let mut seq = BinaryReaderSeq::new(self.de);
-            //     let result = visitor.visit_seq(&mut seq)?;
-            //     if !seq.hit_end {
-            //         // For when we are deserializing an array that doesn't read
-            //         // the closing token
-            //         if !matches!(self.de.reader.read_token()?, TokenKind::Close) {
-            //             return Err(Error::invalid_syntax(
-            //                 "Expected sequence to be terminated with an end token",
-            //                 self.de.reader.position(),
-            //             ));
-            //         }
-            //     }
-            //     Ok(result)
-            // }
+            TokenKind::Open => {
+                let mut seq = BinaryReaderSeq::new(self.de);
+                let result = visitor.visit_seq(&mut seq)?;
+                if !seq.hit_end {
+                    // For when we are deserializing an array that doesn't read
+                    // the closing token
+                    if !matches!(
+                        self.de.reader.read_kind(&mut self.de.format)?,
+                        TokenKind::Close
+                    ) {
+                        return Err(Error::invalid_syntax(
+                            "Expected sequence to be terminated with an end token",
+                            self.de.reader.position(),
+                        ));
+                    }
+                }
+                Ok(result)
+            }
             // TokenKind::Rgb => visitor.visit_seq(ColorSequence::new(self.de.reader.rgb_data())),
             TokenKind::Rgb => todo!(),
             _ => self.deser(visitor),
@@ -1129,5 +1205,145 @@ where
                 "unsupported enum deserialization. Please file issue",
             )),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parser_buf_from_slice() {
+        let data = [1u8, 2, 3, 4, 5];
+        let buf = ParserBuf::from_slice(&data);
+
+        assert_eq!(buf.as_slice(), &[1, 2, 3, 4, 5]);
+        assert_eq!(buf.len, 5);
+        assert_eq!(buf.total_read, 0);
+    }
+
+    #[test]
+    fn test_parser_buf_new() {
+        let buf = ParserBuf::new(128);
+
+        assert_eq!(buf.as_slice(), &[]);
+        assert_eq!(buf.len, 0);
+        assert_eq!(buf.total_read, 0);
+        assert_eq!(buf.buf.len(), 128);
+    }
+
+    #[test]
+    fn test_peek_bytes() {
+        let data = [1u8, 2, 3, 4, 5];
+        let buf = ParserBuf::from_slice(&data);
+
+        let peeked = buf.peek_bytes::<2>();
+        assert_eq!(peeked, Some(&[1u8, 2]));
+
+        // Peek should not consume
+        assert_eq!(buf.len, 5);
+        assert_eq!(buf.total_read, 0);
+    }
+
+    #[test]
+    fn test_peek_bytes_insufficient_data() {
+        let data = [1u8, 2, 3];
+        let buf = ParserBuf::from_slice(&data);
+
+        let peeked = buf.peek_bytes::<5>();
+        assert_eq!(peeked, None);
+    }
+
+    #[test]
+    fn test_read_bytes() {
+        let data = [1u8, 2, 3, 4, 5];
+        let mut buf = ParserBuf::from_slice(&data);
+
+        let read = buf.read_bytes::<2>();
+        assert_eq!(read, Some(&[1u8, 2]));
+        assert_eq!(buf.len, 3);
+        assert_eq!(buf.total_read, 2);
+
+        let read = buf.read_bytes::<2>();
+        assert_eq!(read, Some(&[3u8, 4]));
+        assert_eq!(buf.len, 1);
+        assert_eq!(buf.total_read, 4);
+    }
+
+    #[test]
+    fn test_read_bytes_insufficient_data() {
+        let data = [1u8, 2, 3];
+        let mut buf = ParserBuf::from_slice(&data);
+
+        let read = buf.read_bytes::<5>();
+        assert_eq!(read, None);
+
+        // Should not have consumed any data
+        assert_eq!(buf.len, 3);
+        assert_eq!(buf.total_read, 0);
+    }
+
+    #[test]
+    fn test_read_slice() {
+        let data = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut buf = ParserBuf::from_slice(&data);
+
+        let slice = buf.read_slice(3);
+        assert_eq!(slice, Some(&[1u8, 2, 3][..]));
+        assert_eq!(buf.len, 5);
+        assert_eq!(buf.total_read, 3);
+
+        let slice = buf.read_slice(2);
+        assert_eq!(slice, Some(&[4u8, 5][..]));
+        assert_eq!(buf.len, 3);
+        assert_eq!(buf.total_read, 5);
+    }
+
+    #[test]
+    fn test_read_slice_insufficient_data() {
+        let data = [1u8, 2, 3];
+        let mut buf = ParserBuf::from_slice(&data);
+
+        let slice = buf.read_slice(5);
+        assert_eq!(slice, None);
+
+        // Should not have consumed any data
+        assert_eq!(buf.len, 3);
+        assert_eq!(buf.total_read, 0);
+    }
+
+    #[test]
+    fn test_read_slice_exact() {
+        let data = [1u8, 2, 3];
+        let mut buf = ParserBuf::from_slice(&data);
+
+        let slice = buf.read_slice(3);
+        assert_eq!(slice, Some(&[1u8, 2, 3][..]));
+        assert_eq!(buf.len, 0);
+        assert_eq!(buf.total_read, 3);
+    }
+
+    #[test]
+    fn test_multiple_operations() {
+        let data = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut buf = ParserBuf::from_slice(&data);
+
+        // Peek doesn't consume
+        let peeked = buf.peek_bytes::<2>();
+        assert_eq!(peeked, Some(&[1u8, 2]));
+        assert_eq!(buf.total_read, 0);
+
+        // Read consumes
+        let read = buf.read_bytes::<2>();
+        assert_eq!(read, Some(&[1u8, 2]));
+        assert_eq!(buf.total_read, 2);
+
+        // Read slice
+        let slice = buf.read_slice(3);
+        assert_eq!(slice, Some(&[3u8, 4, 5][..]));
+        assert_eq!(buf.total_read, 5);
+
+        // Remaining bytes
+        assert_eq!(buf.as_slice(), &[6, 7, 8]);
     }
 }

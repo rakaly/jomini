@@ -73,7 +73,7 @@ pub use self::de::{BinaryDeserializer, BinaryDeserializerBuilder};
 
 mod flavor;
 mod lexer;
-mod ng;
+pub mod ng;
 mod reader;
 mod resolver;
 mod rgb;
