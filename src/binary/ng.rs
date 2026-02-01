@@ -2,7 +2,8 @@
 
 use crate::{
     DeserializeError, DeserializeErrorKind, Encoding, Error,
-    binary::{FailedResolveStrategy, LexError, LexemeId, TokenKind},
+    binary::{FailedResolveStrategy, LexError, LexemeId, Rgb, TokenKind, lexer::read_rgb},
+    de::ColorSequence,
 };
 use serde::{
     Deserialize,
@@ -219,9 +220,9 @@ impl LookupIndex {
     }
 }
 
-struct Eu4Format;
+struct StandardFormat;
 
-impl BinaryFormat for Eu4Format {
+impl BinaryFormat for StandardFormat {
     fn visit(&mut self, reader: &mut ParserState, id: LexemeId) -> Result<TokenSignal, Error> {
         match id {
             LexemeId::OPEN => Ok(TokenSignal::Kind(TokenKind::Open)),
@@ -256,7 +257,7 @@ impl BinaryFormat for Eu4Format {
                     return Ok(TokenSignal::MoreData);
                 };
 
-                let result = eu4_specific_f32_decoding(&data).to_bits();
+                let result = f32::from_le_bytes(data).to_bits();
                 reader.store(result.to_le_bytes());
                 Ok(TokenSignal::Kind(TokenKind::F32))
             }
@@ -265,7 +266,7 @@ impl BinaryFormat for Eu4Format {
                     return Ok(TokenSignal::MoreData);
                 };
 
-                let result = eu4_specific_f64_decoding(&data).to_bits();
+                let result = f64::from_le_bytes(data).to_bits();
                 reader.store(result.to_le_bytes());
                 Ok(TokenSignal::Kind(TokenKind::F64))
             }
@@ -296,26 +297,93 @@ impl BinaryFormat for Eu4Format {
                     Ok(TokenSignal::Kind(TokenKind::Unquoted))
                 }
             }
+            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
+                let Some(data) = reader.read_bytes::<1>().copied() else {
+                    return Ok(TokenSignal::MoreData);
+                };
+                let mut tmp = [0u8; 8];
+                tmp[0] = data[0];
+                reader.store(tmp);
+                Ok(TokenSignal::Kind(TokenKind::Lookup))
+            }
+            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
+                let Some(data) = reader.read_bytes::<2>().copied() else {
+                    return Ok(TokenSignal::MoreData);
+                };
+                let mut tmp = [0u8; 8];
+                tmp[0..2].copy_from_slice(&data);
+                reader.store(tmp);
+                Ok(TokenSignal::Kind(TokenKind::Lookup))
+            }
+            LexemeId::LOOKUP_U24 => {
+                let Some(data) = reader.read_bytes::<3>().copied() else {
+                    return Ok(TokenSignal::MoreData);
+                };
+                let mut tmp = [0u8; 8];
+                tmp[0..3].copy_from_slice(&data);
+                reader.store(tmp);
+                Ok(TokenSignal::Kind(TokenKind::Lookup))
+            }
+            LexemeId::RGB => {
+                // RGB has complex nested structure: { OPEN U32 U32 U32 [U32] CLOSE }
+                // We need to parse it to calculate total size for later rgb_data() reconstruction
+
+                // Peek ahead to ensure we have enough data
+                // Minimum RGB: 2 (OPEN) + 2 (U32) + 4 + 2 (U32) + 4 + 2 (U32) + 4 + 2 (CLOSE) = 22 bytes
+                // Maximum RGB: 22 + 2 (U32) + 4 = 28 bytes
+
+                if reader.len() < 28 {
+                    // Need to try to parse what we have
+                    match read_rgb(reader.buf.as_slice()) {
+                        Ok((_, rest)) => {
+                            let consumed = reader.buf.as_slice().len() - rest.len();
+                            unsafe {
+                                reader.consume(consumed);
+                            }
+                            reader.store([consumed as u8, 0, 0, 0, 0, 0, 0, 0]);
+                            Ok(TokenSignal::Kind(TokenKind::Rgb))
+                        }
+                        Err(_) => Ok(TokenSignal::MoreData),
+                    }
+                } else {
+                    // Fast path: we have enough data
+                    let (_, rest) = read_rgb(reader.buf.as_slice())
+                        .map_err(|e| Error::from(e.at(reader.buf.total_read)))?;
+                    let consumed = reader.buf.as_slice().len() - rest.len();
+                    unsafe {
+                        reader.consume(consumed);
+                    }
+                    reader.store([consumed as u8, 0, 0, 0, 0, 0, 0, 0]);
+                    Ok(TokenSignal::Kind(TokenKind::Rgb))
+                }
+            }
+            id if id >= LexemeId::FIXED5_ZERO && id <= LexemeId::FIXED5_I56 => {
+                let offset = id.0 - LexemeId::FIXED5_ZERO.0;
+                let is_negative = offset > 7;
+                let byte_count = offset - (is_negative as u16 * 7);
+
+                if byte_count == 0 {
+                    // FIXED5_ZERO: no data to read
+                    reader.store([0u8; 8]);
+                    return Ok(TokenSignal::Kind(TokenKind::F64));
+                }
+
+                let Some(data) = reader.read_slice(byte_count) else {
+                    return Ok(TokenSignal::MoreData);
+                };
+
+                let mut buf = [0u8; 8];
+                buf[..byte_count as usize].copy_from_slice(data);
+                let sign = 1i64 - (is_negative as i64) * 2;
+                let i64_bytes = (u64::from_le_bytes(buf) as i64 * sign).to_le_bytes();
+                reader.store(i64_bytes);
+                Ok(TokenSignal::Kind(TokenKind::F64))
+            }
             id => {
                 reader.store(id.0.to_le_bytes());
                 Ok(TokenSignal::Kind(TokenKind::Id))
             }
         }
-    }
-}
-
-fn eu4_specific_f32_decoding(data: &[u8; 4]) -> f32 {
-    f32::from_le_bytes(*data)
-}
-
-fn eu4_specific_f64_decoding(data: &[u8; 8]) -> f64 {
-    f64::from_le_bytes(*data)
-}
-
-fn eu4_specific_token_resolution(token: u16) -> Option<&'static str> {
-    match token {
-        0x1234 => Some("example_token"),
-        _ => None,
     }
 }
 
@@ -532,6 +600,15 @@ where
             self.state.storage[0],
             self.state.storage[1],
         ]))
+    }
+
+    /// Return the RGB data associated with [`TokenKind::Rgb`].
+    #[inline]
+    pub fn rgb_data(&self) -> Rgb {
+        let size = self.state.storage[0] as usize;
+        let data = unsafe { std::slice::from_raw_parts(self.state.buf.start.byte_sub(size), size) };
+        let (result, _) = read_rgb(data).expect("valid rgb data");
+        result
     }
 }
 
@@ -756,7 +833,7 @@ where
                 self.de.reader.position(),
             )),
             TokenKind::Open => visitor.visit_seq(BinaryReaderSeq::new(self.de)),
-            TokenKind::Rgb => todo!(),
+            TokenKind::Rgb => visitor.visit_seq(ColorSequence::new(self.de.reader.rgb_data())),
             TokenKind::Lookup => match self.de.format.resolve_lookup(self.de.reader.lookup_id()) {
                 Some(value) => visitor.visit_borrowed_str(value.as_ref()),
                 None => match self.de.config.failed_resolve_strategy {
@@ -1010,8 +1087,7 @@ where
                 }
                 Ok(result)
             }
-            // TokenKind::Rgb => visitor.visit_seq(ColorSequence::new(self.de.reader.rgb_data())),
-            TokenKind::Rgb => todo!(),
+            TokenKind::Rgb => visitor.visit_seq(ColorSequence::new(self.de.reader.rgb_data())),
             _ => self.deser(visitor),
         }
     }
@@ -1216,7 +1292,7 @@ mod tests {
     fn test_parser_buf_new() {
         let buf = ParserBuf::new(128);
 
-        assert_eq!(buf.as_slice(), &[]);
+        assert_eq!(buf.as_slice(), &[] as &[u8]);
         assert_eq!(buf.len, 0);
         assert_eq!(buf.total_read, 0);
         assert_eq!(buf.buf.len(), 128);
@@ -1335,5 +1411,91 @@ mod tests {
 
         // Remaining bytes
         assert_eq!(buf.as_slice(), &[6, 7, 8]);
+    }
+
+    #[test]
+    fn test_standard_format_lookup() {
+        // Test LOOKUP_U8, LOOKUP_U16, LOOKUP_U24 variants
+        let data = vec![
+            0x40, 0x0d, // LOOKUP_U8
+            0xFF, // value 255
+            0x3e, 0x0d, // LOOKUP_U16
+            0xFF, 0xFF, // value 65535
+            0x41, 0x0d, // LOOKUP_U24
+            0xFF, 0xFF, 0xFF, // value 16777215
+        ];
+
+        let mut reader = TokenReader::from_slice(&data);
+        let mut format = StandardFormat;
+
+        // LOOKUP_U8
+        assert_eq!(
+            reader.next_kind(&mut format).unwrap(),
+            Some(TokenKind::Lookup)
+        );
+        assert_eq!(reader.lookup_id().value(), 255);
+
+        // LOOKUP_U16
+        assert_eq!(
+            reader.next_kind(&mut format).unwrap(),
+            Some(TokenKind::Lookup)
+        );
+        assert_eq!(reader.lookup_id().value(), 65535);
+
+        // LOOKUP_U24
+        assert_eq!(
+            reader.next_kind(&mut format).unwrap(),
+            Some(TokenKind::Lookup)
+        );
+        assert_eq!(reader.lookup_id().value(), 16777215);
+    }
+
+    #[test]
+    fn test_standard_format_fixed5() {
+        // Test FIXED5_ZERO
+        let data = vec![0x47, 0x0d]; // FIXED5_ZERO
+        let mut reader = TokenReader::from_slice(&data);
+        let mut format = StandardFormat;
+        assert_eq!(reader.next_kind(&mut format).unwrap(), Some(TokenKind::F64));
+        assert_eq!(reader.i64_data(), 0);
+
+        // Test FIXED5_U8 (e.g., raw value 123 = 0.00123)
+        let data = vec![0x48, 0x0d, 0x7B]; // FIXED5_U8, value 123
+        let mut reader = TokenReader::from_slice(&data);
+        let mut format = StandardFormat;
+        assert_eq!(reader.next_kind(&mut format).unwrap(), Some(TokenKind::F64));
+        assert_eq!(reader.i64_data(), 123);
+
+        // Test FIXED5_I8 (negative, e.g., raw value 123 = -0.00123)
+        let data = vec![0x4f, 0x0d, 0x7B]; // FIXED5_I8, value -123
+        let mut reader = TokenReader::from_slice(&data);
+        let mut format = StandardFormat;
+        assert_eq!(reader.next_kind(&mut format).unwrap(), Some(TokenKind::F64));
+        assert_eq!(reader.i64_data(), -123);
+    }
+
+    #[test]
+    fn test_standard_format_rgb() {
+        // RGB without alpha: { OPEN U32 r U32 g U32 b CLOSE }
+        let data = vec![
+            0x43, 0x02, // RGB lexeme (0x0243)
+            0x03, 0x00, // OPEN (0x0003)
+            0x14, 0x00, // U32 (0x0014)
+            0x6E, 0x00, 0x00, 0x00, // r = 110
+            0x14, 0x00, // U32 (0x0014)
+            0x1C, 0x00, 0x00, 0x00, // g = 28
+            0x14, 0x00, // U32 (0x0014)
+            0x1B, 0x00, 0x00, 0x00, // b = 27
+            0x04, 0x00, // CLOSE (0x0004)
+        ];
+
+        let mut reader = TokenReader::from_slice(&data);
+        let mut format = StandardFormat;
+        assert_eq!(reader.next_kind(&mut format).unwrap(), Some(TokenKind::Rgb));
+        let rgb = reader.rgb_data();
+        assert_eq!(rgb.r, 110);
+        assert_eq!(rgb.g, 28);
+        assert_eq!(rgb.b, 27);
+        assert_eq!(rgb.a, None);
     }
 }
