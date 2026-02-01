@@ -85,7 +85,7 @@ impl ParserBuf {
     fn read_bytes<const N: usize>(&mut self) -> Option<&'_ [u8; N]> {
         let result =
             unsafe { std::slice::from_raw_parts(self.start, self.len) }.first_chunk::<N>()?;
-        self.start = unsafe { self.start.add(N as usize) };
+        self.start = unsafe { self.start.add(N) };
         self.len -= N;
         self.total_read += N;
         Some(result)
@@ -163,6 +163,12 @@ impl ParserState {
         self.buf.is_empty()
     }
 
+    /// Advances the buffer by `amt` bytes.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `amt` does not exceed the current buffer length,
+    /// otherwise this will result in undefined behavior by reading beyond the buffer bounds.
     #[inline]
     pub unsafe fn consume(&mut self, amt: usize) {
         self.buf.start = unsafe { self.buf.start.add(amt) };
@@ -194,7 +200,7 @@ pub trait BinaryFormat {
     }
 }
 
-impl<'str, F: BinaryFormat> BinaryFormat for &'_ mut F {
+impl<F: BinaryFormat> BinaryFormat for &'_ mut F {
     fn visit(&mut self, reader: &mut ParserState, id: LexemeId) -> Result<TokenSignal, Error> {
         (**self).visit(reader, id)
     }
@@ -451,14 +457,18 @@ where
         }
     }
 
+    /// Reads the buffered string data.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the length stored in the first two bytes of `state.storage`
+    /// is valid and that the buffer pointer has been advanced past this data.
     #[inline]
     pub unsafe fn read_buffer(&mut self) -> &[u8] {
         let len = u16::from_le_bytes([self.state.storage[0], self.state.storage[1]]);
-        let data = unsafe {
+        unsafe {
             std::slice::from_raw_parts(self.state.buf.start.byte_sub(len as usize), len as usize)
-        };
-
-        data
+        }
 
         // let len = u16::from_le_bytes([self.state.storage[0], self.state.storage[1]]);
 
@@ -689,7 +699,7 @@ where
                 Ok(None) => {
                     return Err(LexError::Eof.at(self.de.reader.position()).into());
                 }
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(e),
             }
         }
     }
