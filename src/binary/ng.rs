@@ -449,10 +449,6 @@ where
                 // skip_container
                 todo!()
             }
-            // TokenKind::Quoted | TokenKind::Unquoted | TokenKind::Rgb => {
-            //     let _ = self.read_buffer()?;
-            //     Ok(())
-            // }
             _ => Ok(()),
         }
     }
