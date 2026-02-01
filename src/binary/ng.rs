@@ -1,20 +1,14 @@
 #![allow(dead_code)]
 
-use std::{
-    borrow::Cow,
-    io::Read,
-    ops::{Deref, DerefMut},
-};
-
-use serde::{
-    Deserialize,
-    de::{self, DeserializeOwned, DeserializeSeed, MapAccess, SeqAccess, Visitor},
-};
-
 use crate::{
     DeserializeError, DeserializeErrorKind, Encoding, Error,
     binary::{FailedResolveStrategy, LexError, LexemeId, TokenKind},
 };
+use serde::{
+    Deserialize,
+    de::{self, DeserializeOwned, DeserializeSeed, MapAccess, SeqAccess, Visitor},
+};
+use std::{borrow::Cow, io::Read};
 
 pub struct ParserBuf {
     buf: Box<[u8]>,
@@ -99,31 +93,6 @@ impl ParserBuf {
         self.len -= len as usize;
         self.total_read += len as usize;
         Some(result)
-    }
-}
-
-struct MutableBuffer<'a> {
-    buf: &'a mut ParserBuf,
-    carry_over: u16,
-}
-
-impl<'a> MutableBuffer<'a> {
-    pub unsafe fn set_len(&mut self, amt: u16) {
-        self.buf.len += amt as usize;
-    }
-}
-
-impl<'a> Deref for MutableBuffer<'a> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { self.buf.buf.get_unchecked(self.carry_over as usize..) }
-    }
-}
-
-impl<'a> DerefMut for MutableBuffer<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { self.buf.buf.get_unchecked_mut(self.carry_over as usize..) }
     }
 }
 
@@ -443,11 +412,26 @@ where
     }
 
     #[inline]
-    pub fn skip_kind(&mut self, kind: TokenKind) -> Result<(), Error> {
+    pub fn skip_kind(
+        &mut self,
+        kind: TokenKind,
+        mut format: impl BinaryFormat,
+    ) -> Result<(), Error> {
         match kind {
             TokenKind::Open => {
-                // skip_container
-                todo!()
+                let mut depth = 1;
+                loop {
+                    match self.read_kind(&mut format)? {
+                        TokenKind::Open => depth += 1,
+                        TokenKind::Close => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Ok(());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
             _ => Ok(()),
         }
@@ -1096,7 +1080,7 @@ where
     where
         V: Visitor<'de>,
     {
-        self.de.reader.skip_kind(self.kind)?;
+        self.de.reader.skip_kind(self.kind, &mut self.de.format)?;
         visitor.visit_unit()
     }
 }
