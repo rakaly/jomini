@@ -1277,6 +1277,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        ErrorKind, Scalar,
+        binary::{Rgb, Token},
+    };
+    use rstest::*;
 
     #[test]
     fn test_parser_buf_from_slice() {
@@ -1497,5 +1502,313 @@ mod tests {
         assert_eq!(rgb.g, 28);
         assert_eq!(rgb.b, 27);
         assert_eq!(rgb.a, None);
+    }
+
+    // --- Roundtrip Tests ---
+
+    #[rstest]
+    #[case(&[
+        Token::Id(0x2838),
+        Token::Equal,
+        Token::Open,
+        Token::Id(0x2863),
+        Token::Equal,
+        Token::Unquoted(Scalar::new(b"western")),
+        Token::Quoted(Scalar::new(b"1446.5.31")),
+        Token::Equal,
+        Token::Id(0x2838),
+        Token::Close,
+    ])]
+    #[case(&[
+        Token::Id(0x2ec9),
+        Token::Equal,
+        Token::Open,
+        Token::Id(0x28e2),
+        Token::Equal,
+        Token::I32(1),
+        Token::Id(0x28e3),
+        Token::Equal,
+        Token::I32(11),
+        Token::Id(0x2ec7),
+        Token::Equal,
+        Token::I32(4),
+        Token::Id(0x2ec8),
+        Token::Equal,
+        Token::I32(0),
+        Token::Close,
+    ])]
+    #[case(&[
+        Token::Id(0x053a),
+        Token::Equal,
+        Token::Rgb(Rgb {
+            r: 110,
+            g: 28,
+            b: 27,
+            a: None
+        })
+    ])]
+    #[case(&[
+        Token::Id(0x053a),
+        Token::Equal,
+        Token::Rgb(Rgb {
+            r: 110,
+            g: 28,
+            b: 27,
+            a: Some(128),
+        })
+    ])]
+    #[case(&[
+        Token::Id(0x326b), Token::Equal, Token::U64(128),
+        Token::Id(0x326b), Token::Equal, Token::I64(-1),
+        Token::Id(0x2d82), Token::Equal, Token::F64([0xc7, 0xe4, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        Token::Id(0x2d82), Token::Equal, Token::F32([0x8f, 0xc2, 0x75, 0x3e]),
+        Token::Id(0x2d82), Token::Equal, Token::U32(89)
+    ])]
+    #[case(&[
+        Token::Id(0x2d82),
+        Token::Equal,
+        Token::Lookup(0),
+        Token::Id(0x2d82),
+        Token::Equal,
+        Token::Lookup(255),
+        Token::Id(0x2d82),
+        Token::Equal,
+        Token::Lookup(0),
+        Token::Id(0x2d82),
+        Token::Equal,
+        Token::Lookup(65535),
+    ])]
+    fn test_roundtrip(#[case] input: &[Token]) {
+        let data = Vec::new();
+        let mut writer = std::io::Cursor::new(data);
+        for tok in input {
+            tok.write(&mut writer).unwrap();
+        }
+
+        let data = writer.into_inner();
+
+        // Read back using new API
+        let mut reader = TokenReader::from_slice(data.as_slice());
+        let mut format = StandardFormat;
+
+        for (i, expected) in input.iter().enumerate() {
+            let kind = reader.read_kind(&mut format).unwrap();
+
+            match (expected, kind) {
+                (Token::Open, TokenKind::Open) => {}
+                (Token::Close, TokenKind::Close) => {}
+                (Token::Equal, TokenKind::Equal) => {}
+                (Token::U32(val), TokenKind::U32) => {
+                    assert_eq!(*val, reader.u32_data(), "U32 mismatch at token {}", i);
+                }
+                (Token::U64(val), TokenKind::U64) => {
+                    assert_eq!(*val, reader.u64_data(), "U64 mismatch at token {}", i);
+                }
+                (Token::I32(val), TokenKind::I32) => {
+                    assert_eq!(*val, reader.i32_data(), "I32 mismatch at token {}", i);
+                }
+                (Token::I64(val), TokenKind::I64) => {
+                    assert_eq!(*val, reader.i64_data(), "I64 mismatch at token {}", i);
+                }
+                (Token::F32(bytes), TokenKind::F32) => {
+                    let expected_f32 = f32::from_le_bytes(*bytes);
+                    assert_eq!(
+                        expected_f32,
+                        reader.f32_data(),
+                        "F32 mismatch at token {}",
+                        i
+                    );
+                }
+                (Token::F64(bytes), TokenKind::F64) => {
+                    let expected_f64 = f64::from_le_bytes(*bytes);
+                    assert_eq!(
+                        expected_f64,
+                        reader.f64_data(),
+                        "F64 mismatch at token {}",
+                        i
+                    );
+                }
+                (Token::Bool(val), TokenKind::Bool) => {
+                    assert_eq!(*val, reader.bool_data(), "Bool mismatch at token {}", i);
+                }
+                (Token::Quoted(val), TokenKind::Quoted) => {
+                    let read = unsafe { reader.read_buffer() };
+                    assert_eq!(val.as_bytes(), read, "Quoted mismatch at token {}", i);
+                }
+                (Token::Unquoted(val), TokenKind::Unquoted) => {
+                    let read = unsafe { reader.read_buffer() };
+                    assert_eq!(val.as_bytes(), read, "Unquoted mismatch at token {}", i);
+                }
+                (Token::Rgb(rgb), TokenKind::Rgb) => {
+                    let read_rgb = reader.rgb_data();
+                    assert_eq!(rgb.r, read_rgb.r, "RGB.r mismatch at token {}", i);
+                    assert_eq!(rgb.g, read_rgb.g, "RGB.g mismatch at token {}", i);
+                    assert_eq!(rgb.b, read_rgb.b, "RGB.b mismatch at token {}", i);
+                    assert_eq!(rgb.a, read_rgb.a, "RGB.a mismatch at token {}", i);
+                }
+                (Token::Lookup(val), TokenKind::Lookup) => {
+                    assert_eq!(
+                        *val,
+                        reader.lookup_id().value(),
+                        "Lookup mismatch at token {}",
+                        i
+                    );
+                }
+                (Token::Id(val), TokenKind::Id) => {
+                    assert_eq!(
+                        *val,
+                        reader.field_id().value(),
+                        "Id mismatch at token {}",
+                        i
+                    );
+                }
+                (expected, kind) => {
+                    panic!(
+                        "Token mismatch at index {}: expected {:?}, got {:?}",
+                        i, expected, kind
+                    );
+                }
+            }
+        }
+
+        // Verify we've consumed all data
+        assert_eq!(reader.position(), data.len());
+
+        // Attempting to read more should error
+        let result = reader.next_kind(&mut format);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn test_not_enough_data() {
+        let mut reader = TokenReader::from_slice(&[0x43]);
+        let mut format = StandardFormat;
+        let result = reader.read_kind(&mut format);
+        assert!(matches!(result.unwrap_err().kind(), ErrorKind::Eof));
+    }
+
+    #[test]
+    fn test_bool_values() {
+        // Test both true and false
+        let data = Vec::new();
+        let mut writer = std::io::Cursor::new(data);
+        Token::Bool(true).write(&mut writer).unwrap();
+        Token::Bool(false).write(&mut writer).unwrap();
+        let data = writer.into_inner();
+
+        let mut reader = TokenReader::from_slice(&data);
+        let mut format = StandardFormat;
+
+        assert_eq!(reader.read_kind(&mut format).unwrap(), TokenKind::Bool);
+        assert_eq!(reader.bool_data(), true);
+
+        assert_eq!(reader.read_kind(&mut format).unwrap(), TokenKind::Bool);
+        assert_eq!(reader.bool_data(), false);
+    }
+
+    #[test]
+    fn test_position_tracking() {
+        let data = Vec::new();
+        let mut writer = std::io::Cursor::new(data);
+        Token::Id(0x1234).write(&mut writer).unwrap();
+        Token::Equal.write(&mut writer).unwrap();
+        Token::U32(42).write(&mut writer).unwrap();
+        let data = writer.into_inner();
+
+        let mut reader = TokenReader::from_slice(&data);
+        let mut format = StandardFormat;
+
+        assert_eq!(reader.position(), 0);
+
+        reader.read_kind(&mut format).unwrap(); // Id
+        assert_eq!(reader.position(), 2); // 2 bytes for Id
+
+        reader.read_kind(&mut format).unwrap(); // Equal
+        assert_eq!(reader.position(), 4); // +2 bytes for Equal
+
+        reader.read_kind(&mut format).unwrap(); // U32
+        assert_eq!(reader.position(), 10); // +2 for lexeme + 4 for u32 = 6 more
+    }
+
+    #[test]
+    fn test_buffer_boundaries() {
+        // Test very small string (1 byte)
+        let data = Vec::new();
+        let mut writer = std::io::Cursor::new(data);
+        Token::Quoted(Scalar::new(b"x")).write(&mut writer).unwrap();
+        let data = writer.into_inner();
+
+        let mut reader = TokenReader::from_slice(&data);
+        let mut format = StandardFormat;
+
+        assert_eq!(reader.read_kind(&mut format).unwrap(), TokenKind::Quoted);
+        let read = unsafe { reader.read_buffer() };
+        assert_eq!(read, b"x");
+
+        // Test larger string
+        let data = Vec::new();
+        let mut writer = std::io::Cursor::new(data);
+        let long_string = "a".repeat(255);
+        Token::Unquoted(Scalar::new(long_string.as_bytes()))
+            .write(&mut writer)
+            .unwrap();
+        let data = writer.into_inner();
+
+        let mut reader = TokenReader::from_slice(&data);
+        let mut format = StandardFormat;
+
+        assert_eq!(reader.read_kind(&mut format).unwrap(), TokenKind::Unquoted);
+        let read = unsafe { reader.read_buffer() };
+        assert_eq!(read, long_string.as_bytes());
+    }
+
+    #[test]
+    fn test_rgb_deserialization_integration() {
+        // Test RGB without alpha
+        let data = Vec::new();
+        let mut writer = std::io::Cursor::new(data);
+        Token::Rgb(Rgb {
+            r: 110,
+            g: 28,
+            b: 27,
+            a: None,
+        })
+        .write(&mut writer)
+        .unwrap();
+        let data = writer.into_inner();
+
+        let mut reader = TokenReader::from_slice(&data);
+        let mut format = StandardFormat;
+
+        assert_eq!(reader.read_kind(&mut format).unwrap(), TokenKind::Rgb);
+        let rgb = reader.rgb_data();
+        assert_eq!(rgb.r, 110);
+        assert_eq!(rgb.g, 28);
+        assert_eq!(rgb.b, 27);
+        assert_eq!(rgb.a, None);
+
+        // Test RGB with alpha
+        let data = Vec::new();
+        let mut writer = std::io::Cursor::new(data);
+        Token::Rgb(Rgb {
+            r: 110,
+            g: 28,
+            b: 27,
+            a: Some(128),
+        })
+        .write(&mut writer)
+        .unwrap();
+        let data = writer.into_inner();
+
+        let mut reader = TokenReader::from_slice(&data);
+        let mut format = StandardFormat;
+
+        assert_eq!(reader.read_kind(&mut format).unwrap(), TokenKind::Rgb);
+        let rgb = reader.rgb_data();
+        assert_eq!(rgb.r, 110);
+        assert_eq!(rgb.g, 28);
+        assert_eq!(rgb.b, 27);
+        assert_eq!(rgb.a, Some(128));
     }
 }
