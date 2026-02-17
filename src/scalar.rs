@@ -212,16 +212,14 @@ fn to_f64(mut d: &[u8]) -> Result<f64, ScalarError> {
             d = rest;
         } else if c == b'.' {
             let mut total = acc;
-            let mut nondigit = false;
             if let Some((&last, fractions)) = rest.split_last() {
                 for &x in fractions {
-                    nondigit |= !x.is_ascii_digit();
+                    if !x.is_ascii_digit() {
+                        return Err(ScalarError::AllDigits);
+                    }
+
                     total = total.wrapping_mul(10);
                     total = total.wrapping_add(u64::from(x - b'0'));
-                }
-
-                if nondigit {
-                    return Err(ScalarError::AllDigits);
                 }
 
                 if last.is_ascii_digit() {
@@ -475,6 +473,7 @@ mod tests {
 
         assert!(Scalar::new(b"E").to_f64().is_err());
         assert!(Scalar::new(b"").to_f64().is_err());
+        assert!(Scalar::new(b"1.8.3").to_f64().is_err());
     }
 
     #[test]
