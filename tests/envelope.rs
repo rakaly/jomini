@@ -484,3 +484,60 @@ impl<R: Read> DeserializeBinary for SaveMetadata<BinaryEncoding, R> {
         BinaryDeserializerBuilder::with_flavor(TestFlavor).from_reader(self, resolver)
     }
 }
+
+#[test]
+fn body_consistency_between_file_and_slice() {
+    test_body_consistency("tests/fixtures/envelopes/text.txt");
+    test_body_consistency("tests/fixtures/envelopes/autosave.bin");
+    test_body_consistency("tests/fixtures/envelopes/sav02.txt");
+}
+
+fn test_body_consistency(file_path: &str) {
+    let data = std::fs::read(file_path).unwrap();
+    let file_from_slice = JominiFile::from_slice(&data).unwrap();
+    let file_from_file = JominiFile::from_file(std::fs::File::open(file_path).unwrap()).unwrap();
+
+    let mut buf_from_slice = Vec::new();
+    match file_from_slice.kind() {
+        JominiFileKind::Uncompressed(SaveDataKind::Text(data)) => {
+            data.body()
+                .cursor()
+                .read_to_end(&mut buf_from_slice)
+                .unwrap();
+        }
+        JominiFileKind::Uncompressed(SaveDataKind::Binary(data)) => {
+            data.body()
+                .cursor()
+                .read_to_end(&mut buf_from_slice)
+                .unwrap();
+        }
+        JominiFileKind::Zip(_) => panic!("expected uncompressed data from slice"),
+    };
+
+    let mut buf_from_file = Vec::new();
+    match file_from_file.kind() {
+        JominiFileKind::Uncompressed(SaveDataKind::Text(data)) => {
+            data.body()
+                .cursor()
+                .read_to_end(&mut buf_from_file)
+                .unwrap();
+        }
+        JominiFileKind::Uncompressed(SaveDataKind::Binary(data)) => {
+            data.body()
+                .cursor()
+                .read_to_end(&mut buf_from_file)
+                .unwrap();
+        }
+        JominiFileKind::Zip(_) => panic!("expected uncompressed data from file"),
+    };
+
+    assert_eq!(
+        buf_from_slice, buf_from_file,
+        "Body content should match between from_slice and from_file"
+    );
+
+    assert!(
+        !buf_from_slice.starts_with(b"SAV"),
+        "Body should not include header"
+    );
+}

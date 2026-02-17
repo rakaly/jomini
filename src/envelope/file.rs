@@ -44,18 +44,26 @@ impl JominiFile<()> {
                     kind: JominiFileKind::Zip(zip),
                 })
             }
-            Err((data, _)) if header.kind().is_binary() => Ok(JominiFile {
-                kind: JominiFileKind::Uncompressed(SaveDataKind::Binary(SaveData::new(
-                    header,
-                    SaveContent::with_offset(Cursor::new(data), header_len),
-                ))),
-            }),
-            Err((data, _)) => Ok(JominiFile {
-                kind: JominiFileKind::Uncompressed(SaveDataKind::Text(SaveData::new(
-                    header,
-                    SaveContent::with_offset(Cursor::new(data), header_len),
-                ))),
-            }),
+            Err((data, _)) if header.kind().is_binary() => {
+                let mut cursor = Cursor::new(data);
+                cursor.set_position(header_len);
+                Ok(JominiFile {
+                    kind: JominiFileKind::Uncompressed(SaveDataKind::Binary(SaveData::new(
+                        header,
+                        SaveContent::with_offset(cursor, header_len),
+                    ))),
+                })
+            }
+            Err((data, _)) => {
+                let mut cursor = Cursor::new(data);
+                cursor.set_position(header_len);
+                Ok(JominiFile {
+                    kind: JominiFileKind::Uncompressed(SaveDataKind::Text(SaveData::new(
+                        header,
+                        SaveContent::with_offset(cursor, header_len),
+                    ))),
+                })
+            }
         }
     }
 
