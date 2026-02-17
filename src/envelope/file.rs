@@ -565,7 +565,29 @@ impl<R> SaveContent<(), R> {
 }
 
 impl<R, E> SaveContent<E, R> {
-    /// Returns a reference to the inner reader
+    /// Returns a reference to the underlying reader.
+    ///
+    /// This does not apply [`SaveContent::content_offset`]. For content created
+    /// with [`JominiFile::from_slice`], this returns the full original slice,
+    /// including header bytes.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use jomini::envelope::{JominiFile, JominiFileKind, SaveDataKind};
+    ///
+    /// let data = std::fs::read("tests/fixtures/envelopes/text.txt").unwrap();
+    /// let file = JominiFile::from_slice(&data).unwrap();
+    /// let JominiFileKind::Uncompressed(SaveDataKind::Text(save_data)) = file.kind() else {
+    ///     panic!("expected text uncompressed");
+    /// };
+    ///
+    /// let body = save_data.body();
+    /// let source = body.get_ref().get_ref().as_slice();
+    /// let body_slice = &source[body.content_offset() as usize..];
+    ///
+    /// assert!(!body_slice.starts_with(b"SAV"));
+    /// ```
     pub fn get_ref(&self) -> &R {
         &self.reader
     }
