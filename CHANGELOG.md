@@ -1,3 +1,8 @@
+## v0.34.1 - 2025-02-17
+
+- Fix: panic on parsing text version triplets as f64
+- Fix: remove header from envelope body when parsed from a slice
+
 ## v0.34.0 - 2025-12-09
 
 Lookup index tokens introduced in EU5 1.0.8 can exceed 16 bits, as a save that used a 24 bit index was discovered. To accomodate larger than 16 bit lookups, `TokenResolver::lookup` needs to be updated to accept `u32` instead of `u16`.
