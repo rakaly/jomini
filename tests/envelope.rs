@@ -541,3 +541,28 @@ fn test_body_consistency(file_path: &str) {
         "Body should not include header"
     );
 }
+
+#[test]
+fn body_slice_via_offset_excludes_header() {
+    // Test that one can access the body slice using `JominiFile::from_slice`
+    let data = std::fs::read("tests/fixtures/envelopes/text.txt").unwrap();
+    let file = JominiFile::from_slice(&data).unwrap();
+
+    let JominiFileKind::Uncompressed(SaveDataKind::Text(save_data)) = file.kind() else {
+        panic!("expected text uncompressed");
+    };
+
+    let body = save_data.body();
+    let source = body.get_ref().get_ref().as_slice();
+    let body_slice = &source[body.content_offset() as usize..];
+
+    let mut body_from_cursor = Vec::new();
+    body.cursor().read_to_end(&mut body_from_cursor).unwrap();
+
+    assert_eq!(body_slice, body_from_cursor.as_slice());
+    assert!(
+        !body_slice.starts_with(b"SAV"),
+        "Body slice should not include header, but got: {:?}",
+        std::str::from_utf8(&body_slice[..3.min(body_slice.len())])
+    );
+}
