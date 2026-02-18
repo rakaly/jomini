@@ -190,46 +190,46 @@ impl LexemeId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TokenKind {
     /// '{' token
-    Open,
+    Open = 3,
 
     /// '}' token
-    Close,
+    Close = 4,
 
     /// '=' token
-    Equal,
+    Equal = 1,
 
     /// 32bit unsigned integer
-    U32,
+    U32 = 5,
 
     /// 64bit unsigned integer
-    U64,
+    U64 = 7,
 
     /// 32bit signed integer
-    I32,
+    I32 = 6,
 
     /// boolean
-    Bool,
+    Bool = 2,
 
     /// quoted string
-    Quoted,
+    Quoted = 9,
 
     /// unquoted string
-    Unquoted,
+    Unquoted = 10,
 
     /// 32bits of floating point data
-    F32,
+    F32 = 11,
 
     /// 64bits of floating point data
-    F64,
+    F64 = 12,
 
     /// RGB value
-    Rgb,
+    Rgb = 13,
 
     /// 64bit signed integer
-    I64,
+    I64 = 8,
 
     /// lookup index
-    Lookup,
+    Lookup = 14,
 
     /// Identifier token
     Id,

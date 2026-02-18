@@ -322,7 +322,6 @@ println!("Gamestate: {}", game_content);
 capabilities.
 
 */
-#![warn(missing_docs)]
 pub mod binary;
 pub(crate) mod buffer;
 pub mod common;
