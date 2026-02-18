@@ -1688,6 +1688,23 @@ mod tests {
         assert!(matches!(result.unwrap_err().kind(), ErrorKind::Eof));
     }
 
+    /// Tests that a truncated payload (lexeme ID present but insufficient bytes for the value)
+    #[rstest]
+    #[case(&[0x14, 0x00, 0x01, 0x02, 0x03])] // U32 lexeme (0x0014) needs 4 bytes, only 3 provided
+    #[case(&[0x9c, 0x02, 0x01, 0x02, 0x03, 0x04])] // U64 lexeme (0x029c) needs 8 bytes, only 4 provided
+    #[case(&[0x0e, 0x00])] // Bool lexeme (0x000e) needs 1 byte, none provided
+    #[case(&[0x0f, 0x00, 0x05, 0x00, 0x61, 0x62])] // Quoted lexeme (0x000f) with length prefix 5 but only 2 bytes of payload
+    #[case(&[0x0f, 0x00, 0x05, 0x00, 0x61, 0x62])]
+    fn test_truncated_payload(#[case] data: &[u8]) {
+        let mut reader = TokenReader::from_slice(data);
+        let mut format = StandardFormat;
+        let result = reader.read_kind(&mut format);
+        assert!(
+            matches!(result.unwrap_err().kind(), ErrorKind::Eof),
+            "expected Eof error for truncated payload"
+        );
+    }
+
     #[test]
     fn test_bool_values() {
         // Test both true and false
