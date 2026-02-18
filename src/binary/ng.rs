@@ -1718,10 +1718,10 @@ mod tests {
         let mut format = StandardFormat;
 
         assert_eq!(reader.read_kind(&mut format).unwrap(), TokenKind::Bool);
-        assert_eq!(reader.bool_data(), true);
+        assert!(reader.bool_data());
 
         assert_eq!(reader.read_kind(&mut format).unwrap(), TokenKind::Bool);
-        assert_eq!(reader.bool_data(), false);
+        assert!(!reader.bool_data());
     }
 
     #[test]

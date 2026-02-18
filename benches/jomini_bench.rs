@@ -332,11 +332,8 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
                 let mut reader = jomini::binary::ng::TokenReader::from_slice(&data[..]);
                 let mut counter: u64 = 0;
                 while let Ok(Some(token)) = reader.next_kind(&mut format) {
-                    match token {
-                        jomini::binary::TokenKind::Id => {
-                            counter = counter.wrapping_add(u64::from(reader.field_id().value()));
-                        }
-                        _ => {}
+                    if token == jomini::binary::TokenKind::Id {
+                        counter = counter.wrapping_add(u64::from(reader.field_id().value()));
                     }
                 }
                 black_box(counter);
