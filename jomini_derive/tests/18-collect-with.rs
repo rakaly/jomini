@@ -1,6 +1,5 @@
 use jomini_derive::JominiDeserialize;
-use serde::{Deserializer, de};
-use std::fmt;
+use serde::{de};
 
 #[derive(JominiDeserialize)]
 pub struct Model {
@@ -26,30 +25,6 @@ fn add_country_node<'de, A: de::MapAccess<'de>>(
     Ok(())
 }
 
-fn deserialize_token_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct TokenBoolVisitor;
-
-    impl de::Visitor<'_> for TokenBoolVisitor {
-        type Value = bool;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a string containing json data")
-        }
-
-        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(v == "yes")
-        }
-    }
-
-    deserializer.deserialize_any(TokenBoolVisitor)
-}
-
 #[test]
 fn test_deserialize_with() {
     let data = r#"
@@ -71,6 +46,16 @@ fn test_deserialize_with() {
     assert_eq!(m.names, vec!["CCC".to_string(), "DDD".to_string()]);
     assert_eq!(
         m.countries,
+        vec![("TAG".to_string(), 10), ("MEE".to_string(), 5)]
+    );
+
+    let m2: Model = serde_json::from_reader(data.as_bytes()).unwrap();
+    assert_eq!(m2.first, 1);
+    assert_eq!(m2.fourth, 2);
+    assert_eq!(m2.core, vec![10, 20]);
+    assert_eq!(m2.names, vec!["CCC".to_string(), "DDD".to_string()]);
+    assert_eq!(
+        m2.countries,
         vec![("TAG".to_string(), 10), ("MEE".to_string(), 5)]
     );
 }

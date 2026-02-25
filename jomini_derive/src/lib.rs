@@ -94,7 +94,8 @@ fn ungroup(mut ty: &Type) -> &Type {
 ///
 /// - `#[jomini(token=value)]`
 ///
-/// I don't know what this does. It needs documentation.
+/// Annoytating all fields with this enables the binary deserializer to map `u16` tokens directly to
+/// struct fields, bypassing intermediate string lookups and comparisons.
 ///
 /// - `#[jomini(collect_with="path")]`
 ///
@@ -509,11 +510,17 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         let collector = f.collect_with.as_ref().unwrap();
         let name = &f.ident;
         quote! {
-            __Field::__unknown_str(s) => { #collector(&mut #name, s, &mut __map)?; },
+            __Field::__unknown_str(s) => { #collector(&mut #name, s.as_ref(), &mut __map)?; },
             _ => { ::serde::de::MapAccess::next_value::<::serde::de::IgnoredAny>(&mut __map)?; }
         }
     } else {
         quote! { _ => { ::serde::de::MapAccess::next_value::<::serde::de::IgnoredAny>(&mut __map)?; } }
+    };
+
+    let unknown_owned_str = if unknown_field.is_some() {
+        quote! { Ok(__Field::__unknown_str(::std::borrow::Cow::Owned(__value.into()))) }
+    } else {
+        quote! { Ok(__Field::__ignore) }
     };
 
     let field_extract = field_attrs.iter().filter(|x| !x.duplicated && x.collect_with.is_none()).map(|f| {
@@ -552,8 +559,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         quote! {
             #match_arm => Ok(#field_ident)
         }
-    });
-    let field_enum_match2 = field_enum_match.clone();
+    }).collect::<Vec<_>>();
 
     let field_enum_token_match = field_attrs.iter().filter_map(|f| {
         f.token.map(|token| {
@@ -602,7 +608,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
                 #[allow(non_camel_case_types)]
                 enum __Field<'de> {
                     #(#field_enums),* ,
-                    __unknown_str(&'de str),
+                    __unknown_str(::std::borrow::Cow<'de, str>),
                     __ignore,
                 };
 
@@ -624,7 +630,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
                     {
                         match __value {
                             #(#field_enum_match),* ,
-                            _ => Ok(__Field::__ignore),
+                            _ => #unknown_owned_str,
                         }
                     }
                     fn visit_borrowed_str<__E>(
@@ -635,8 +641,8 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
                         __E: ::serde::de::Error,
                     {
                         match __value {
-                            #(#field_enum_match2),* ,
-                            _ => Ok(__Field::__unknown_str(__value)),
+                            #(#field_enum_match),* ,
+                            _ => Ok(__Field::__unknown_str(__value.into())),
                         }
                     }
                     fn visit_u16<__E>(
