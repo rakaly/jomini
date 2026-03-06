@@ -328,6 +328,15 @@ pub trait BinaryFormat {
         self.deserialize_value_any(reader, visitor, config)
     }
 
+    fn deserialize_identifier<'de, V: PdxVisitor<'de>>(
+        &mut self,
+        reader: &mut ParserState,
+        visitor: V,
+        config: &BinaryConfig,
+    ) -> Result<ParseResult<V::Value, V>, Error> {
+        self.deserialize_any(reader, visitor, config)
+    }
+
     fn deserialize_any<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
@@ -376,6 +385,7 @@ impl<F: BinaryFormat> BinaryFormat for &'_ mut F {
     forward_deserialize!(deserialize_f64);
     forward_deserialize!(deserialize_bool);
     forward_deserialize!(deserialize_str);
+    forward_deserialize!(deserialize_identifier);
     forward_deserialize!(deserialize_any);
     forward_deserialize!(deserialize_value_any);
 }
@@ -638,7 +648,9 @@ impl BinaryFormat for StandardFormat {
         if id != LexemeId::I64 {
             return self.deserialize_value_any(reader, visitor, config);
         }
-        let result = i64::from_le_bytes([data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9]]);
+        let result = i64::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
+        ]);
         unsafe { reader.consume(10) };
         Ok(ParseResult::Value(visitor.visit_i64(result)?))
     }
@@ -657,7 +669,9 @@ impl BinaryFormat for StandardFormat {
         if id != LexemeId::U64 {
             return self.deserialize_value_any(reader, visitor, config);
         }
-        let result = u64::from_le_bytes([data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9]]);
+        let result = u64::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
+        ]);
         unsafe { reader.consume(10) };
         Ok(ParseResult::Value(visitor.visit_u64(result)?))
     }
@@ -695,7 +709,9 @@ impl BinaryFormat for StandardFormat {
         if id != LexemeId::F64 {
             return self.deserialize_value_any(reader, visitor, config);
         }
-        let result = f64::from_le_bytes([data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9]]);
+        let result = f64::from_le_bytes([
+            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
+        ]);
         unsafe { reader.consume(10) };
         Ok(ParseResult::Value(visitor.visit_f64(result)?))
     }
@@ -744,6 +760,31 @@ impl BinaryFormat for StandardFormat {
         }
     }
 
+    #[inline]
+    fn deserialize_identifier<'de, V: PdxVisitor<'de>>(
+        &mut self,
+        reader: &mut ParserState,
+        visitor: V,
+        config: &BinaryConfig,
+    ) -> Result<ParseResult<V::Value, V>, Error> {
+        let Some(id_bytes) = reader.peek_bytes::<2>() else {
+            return self.deserialize_any(reader, visitor, config);
+        };
+        let id = LexemeId::new(u16::from_le_bytes([id_bytes[0], id_bytes[1]]));
+
+        // TODO: use token resolver instead of this check.
+        if id.is_id() {
+            unsafe { reader.consume(2) };
+            return Ok(ParseResult::Value(visitor.visit_u32(id.0 as u32)?));
+        }
+
+        if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
+            return self.deserialize_str(reader, visitor, config);
+        }
+
+        self.deserialize_any(reader, visitor, config)
+    }
+
     fn deserialize_value_any<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
@@ -768,27 +809,39 @@ fn standard_deserialize_value_any<'de, V: PdxVisitor<'de>>(
         LexemeId::OPEN => Ok(ParseResult::Open(visitor)),
         LexemeId::I32 => {
             let data = reader.read_bytes::<4>().copied().ok_or_else(Error::eof)?;
-            Ok(ParseResult::Value(visitor.visit_i32(i32::from_le_bytes(data))?))
+            Ok(ParseResult::Value(
+                visitor.visit_i32(i32::from_le_bytes(data))?,
+            ))
         }
         LexemeId::U32 => {
             let data = reader.read_bytes::<4>().copied().ok_or_else(Error::eof)?;
-            Ok(ParseResult::Value(visitor.visit_u32(u32::from_le_bytes(data))?))
+            Ok(ParseResult::Value(
+                visitor.visit_u32(u32::from_le_bytes(data))?,
+            ))
         }
         LexemeId::I64 => {
             let data = reader.read_bytes::<8>().copied().ok_or_else(Error::eof)?;
-            Ok(ParseResult::Value(visitor.visit_i64(i64::from_le_bytes(data))?))
+            Ok(ParseResult::Value(
+                visitor.visit_i64(i64::from_le_bytes(data))?,
+            ))
         }
         LexemeId::U64 => {
             let data = reader.read_bytes::<8>().copied().ok_or_else(Error::eof)?;
-            Ok(ParseResult::Value(visitor.visit_u64(u64::from_le_bytes(data))?))
+            Ok(ParseResult::Value(
+                visitor.visit_u64(u64::from_le_bytes(data))?,
+            ))
         }
         LexemeId::F32 => {
             let data = reader.read_bytes::<4>().copied().ok_or_else(Error::eof)?;
-            Ok(ParseResult::Value(visitor.visit_f32(f32::from_le_bytes(data))?))
+            Ok(ParseResult::Value(
+                visitor.visit_f32(f32::from_le_bytes(data))?,
+            ))
         }
         LexemeId::F64 => {
             let data = reader.read_bytes::<8>().copied().ok_or_else(Error::eof)?;
-            Ok(ParseResult::Value(visitor.visit_f64(f64::from_le_bytes(data))?))
+            Ok(ParseResult::Value(
+                visitor.visit_f64(f64::from_le_bytes(data))?,
+            ))
         }
         LexemeId::BOOL => {
             let data = reader.read_bytes::<1>().copied().ok_or_else(Error::eof)?;
@@ -811,8 +864,8 @@ fn standard_deserialize_value_any<'de, V: PdxVisitor<'de>>(
         }
         LexemeId::RGB => {
             let slice = reader.buf.as_slice();
-            let (rgb, rest) = read_rgb(slice)
-                .map_err(|e| Error::from(e.at(reader.buf.total_read)))?;
+            let (rgb, rest) =
+                read_rgb(slice).map_err(|e| Error::from(e.at(reader.buf.total_read)))?;
             let consumed = slice.len() - rest.len();
             unsafe { reader.consume(consumed) };
             Ok(ParseResult::Value(visitor.visit_rgb(rgb)?))
@@ -823,7 +876,9 @@ fn standard_deserialize_value_any<'de, V: PdxVisitor<'de>>(
         }
         LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
             let data = reader.read_bytes::<2>().copied().ok_or_else(Error::eof)?;
-            Ok(ParseResult::Value(visitor.visit_u32(u16::from_le_bytes(data) as u32)?))
+            Ok(ParseResult::Value(
+                visitor.visit_u32(u16::from_le_bytes(data) as u32)?,
+            ))
         }
         LexemeId::LOOKUP_U24 => {
             let data = reader.read_bytes::<3>().copied().ok_or_else(Error::eof)?;
@@ -846,10 +901,18 @@ fn standard_deserialize_value_any<'de, V: PdxVisitor<'de>>(
             let sign = 1i64 - (is_negative as i64) * 2;
             let i64_val = u64::from_le_bytes(buf) as i64 * sign;
             // Store as raw i64 bytes and report as f64 (matches old behavior)
-            Ok(ParseResult::Value(visitor.visit_f64(f64::from_bits(u64::from_le_bytes(i64_val.to_le_bytes())))?))
+            Ok(ParseResult::Value(visitor.visit_f64(f64::from_bits(
+                u64::from_le_bytes(i64_val.to_le_bytes()),
+            ))?))
         }
-        LexemeId::CLOSE => Err(Error::invalid_syntax("did not expect end", reader.buf.total_read)),
-        LexemeId::EQUAL => Err(Error::invalid_syntax("did not expect equal", reader.buf.total_read)),
+        LexemeId::CLOSE => Err(Error::invalid_syntax(
+            "did not expect end",
+            reader.buf.total_read,
+        )),
+        LexemeId::EQUAL => Err(Error::invalid_syntax(
+            "did not expect equal",
+            reader.buf.total_read,
+        )),
         id => {
             // Field ID
             Ok(ParseResult::Value(visitor.visit_u32(id.0 as u32)?))
@@ -954,7 +1017,9 @@ where
     #[inline]
     pub fn peek_lexeme_id(&mut self) -> Result<Option<LexemeId>, Error> {
         if let Some(bytes) = self.state.buf.peek_bytes::<2>() {
-            Ok(Some(LexemeId::new(u16::from_le_bytes([bytes[0], bytes[1]]))))
+            Ok(Some(LexemeId::new(u16::from_le_bytes([
+                bytes[0], bytes[1],
+            ]))))
         } else {
             self.peek_lexeme_id_refill()
         }
@@ -967,7 +1032,9 @@ where
             return Ok(None);
         }
         match self.state.buf.peek_bytes::<2>() {
-            Some(bytes) => Ok(Some(LexemeId::new(u16::from_le_bytes([bytes[0], bytes[1]])))),
+            Some(bytes) => Ok(Some(LexemeId::new(u16::from_le_bytes([
+                bytes[0], bytes[1],
+            ])))),
             None => Err(Error::eof()),
         }
     }
@@ -1333,10 +1400,7 @@ where
                 let mut seq = BinaryReaderSeq::new(de);
                 let result = visitor.visit_seq(&mut seq)?;
                 if !seq.hit_end {
-                    if !matches!(
-                        de.reader.read_kind(&mut de.format)?,
-                        TokenKind::Close
-                    ) {
+                    if !matches!(de.reader.read_kind(&mut de.format)?, TokenKind::Close) {
                         return Err(Error::invalid_syntax(
                             "Expected sequence to be terminated with an end token",
                             de.reader.position(),
@@ -1356,12 +1420,11 @@ macro_rules! deserialize_speculative {
         where
             V: Visitor<'de>,
         {
-            let config = &self.de.config as *const BinaryConfig;
-            let result = self.de.format.$method(
-                &mut self.de.reader.state,
-                PdxSerdeVisitor(visitor),
-                unsafe { &*config },
-            );
+            let result = {
+                let de = &mut *self.de;
+                de.format
+                    .$method(&mut de.reader.state, PdxSerdeVisitor(visitor), &de.config)
+            };
             Self::handle_parse_result(self.de, result)
         }
     };
@@ -1378,12 +1441,11 @@ where
     where
         V: Visitor<'de>,
     {
-        let config = &self.de.config as *const BinaryConfig;
-        let result = self.de.format.deserialize_any(
-            &mut self.de.reader.state,
-            PdxSerdeVisitor(visitor),
-            unsafe { &*config },
-        );
+        let result = {
+            let de = &mut *self.de;
+            de.format
+                .deserialize_any(&mut de.reader.state, PdxSerdeVisitor(visitor), &de.config)
+        };
         Self::handle_parse_result(self.de, result)
     }
 
@@ -1440,7 +1502,15 @@ where
     where
         V: Visitor<'de>,
     {
-        self.deserialize_any(visitor)
+        let result = {
+            let de = &mut *self.de;
+            de.format.deserialize_identifier(
+                &mut de.reader.state,
+                PdxSerdeVisitor(visitor),
+                &de.config,
+            )
+        };
+        Self::handle_parse_result(self.de, result)
     }
 
     #[inline]
@@ -1464,12 +1534,11 @@ where
     where
         V: Visitor<'de>,
     {
-        let config = &self.de.config as *const BinaryConfig;
-        let result = self.de.format.deserialize_str(
-            &mut self.de.reader.state,
-            PdxSerdeVisitor(visitor),
-            unsafe { &*config },
-        );
+        let result = {
+            let de = &mut *self.de;
+            de.format
+                .deserialize_str(&mut de.reader.state, PdxSerdeVisitor(visitor), &de.config)
+        };
         Self::handle_parse_result(self.de, result)
     }
 
@@ -1526,12 +1595,11 @@ where
     where
         V: Visitor<'de>,
     {
-        let config = &self.de.config as *const BinaryConfig;
-        let result = self.de.format.deserialize_any(
-            &mut self.de.reader.state,
-            PdxSerdeVisitor(visitor),
-            unsafe { &*config },
-        );
+        let result = {
+            let de = &mut *self.de;
+            de.format
+                .deserialize_any(&mut de.reader.state, PdxSerdeVisitor(visitor), &de.config)
+        };
         Self::handle_parse_result(self.de, result)
     }
 
@@ -1561,17 +1629,16 @@ where
     where
         V: Visitor<'de>,
     {
-        let config = &self.de.config as *const BinaryConfig;
-        let result = self.de.format.deserialize_any(
-            &mut self.de.reader.state,
-            PdxSerdeVisitor(visitor),
-            unsafe { &*config },
-        );
+        let result = {
+            let de = &mut *self.de;
+            de.format
+                .deserialize_any(&mut de.reader.state, PdxSerdeVisitor(visitor), &de.config)
+        };
         match result? {
             ParseResult::Value(v) => Ok(v),
-            ParseResult::Open(pdx) => {
-                pdx.into_inner().visit_map(BinaryReaderMap::new::<false>(self.de))
-            }
+            ParseResult::Open(pdx) => pdx
+                .into_inner()
+                .visit_map(BinaryReaderMap::new::<false>(self.de)),
         }
     }
 
@@ -1698,7 +1765,11 @@ where
             TokenKind::F32 => visitor.visit_f32(self.de.reader.f32_data()),
             TokenKind::F64 => visitor.visit_f64(self.de.reader.f64_data()),
             TokenKind::Quoted | TokenKind::Unquoted => {
-                match self.de.format.decode(unsafe { self.de.reader.read_buffer() }) {
+                match self
+                    .de
+                    .format
+                    .decode(unsafe { self.de.reader.read_buffer() })
+                {
                     Cow::Borrowed(x) => visitor.visit_str(x),
                     Cow::Owned(x) => visitor.visit_string(x),
                 }
@@ -1721,24 +1792,22 @@ where
             },
             TokenKind::Open => visitor.visit_seq(BinaryReaderSeq::new(self.de)),
             TokenKind::Rgb => visitor.visit_seq(ColorSequence::new(self.de.reader.rgb_data())),
-            TokenKind::Lookup => {
-                match self.de.format.resolve_lookup(self.de.reader.lookup_id()) {
-                    Some(value) => visitor.visit_borrowed_str(value.as_ref()),
-                    None => match self.de.config.failed_resolve_strategy {
-                        FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
-                            kind: DeserializeErrorKind::UnknownToken {
-                                token_id: self.de.reader.lookup_id().value(),
-                            },
-                        })),
-                        FailedResolveStrategy::Stringify => {
-                            visitor.visit_string(format!("{}", self.de.reader.lookup_id().value()))
-                        }
-                        FailedResolveStrategy::Ignore => {
-                            visitor.visit_borrowed_str("__internal_identifier_ignore")
-                        }
-                    },
-                }
-            }
+            TokenKind::Lookup => match self.de.format.resolve_lookup(self.de.reader.lookup_id()) {
+                Some(value) => visitor.visit_borrowed_str(value.as_ref()),
+                None => match self.de.config.failed_resolve_strategy {
+                    FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
+                        kind: DeserializeErrorKind::UnknownToken {
+                            token_id: self.de.reader.lookup_id().value(),
+                        },
+                    })),
+                    FailedResolveStrategy::Stringify => {
+                        visitor.visit_string(format!("{}", self.de.reader.lookup_id().value()))
+                    }
+                    FailedResolveStrategy::Ignore => {
+                        visitor.visit_borrowed_str("__internal_identifier_ignore")
+                    }
+                },
+            },
             TokenKind::Close => Err(Error::invalid_syntax(
                 "did not expect end",
                 self.de.reader.position(),
