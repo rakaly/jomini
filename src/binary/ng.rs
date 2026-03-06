@@ -262,7 +262,7 @@ pub trait BinaryFormat {
         visitor: V,
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
-        self.deserialize_value_any(reader, visitor, config)
+        self.deserialize_any(reader, visitor, config)
     }
 
     fn deserialize_u32<'de, V: PdxVisitor<'de>>(
@@ -271,7 +271,7 @@ pub trait BinaryFormat {
         visitor: V,
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
-        self.deserialize_value_any(reader, visitor, config)
+        self.deserialize_any(reader, visitor, config)
     }
 
     fn deserialize_i64<'de, V: PdxVisitor<'de>>(
@@ -280,7 +280,7 @@ pub trait BinaryFormat {
         visitor: V,
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
-        self.deserialize_value_any(reader, visitor, config)
+        self.deserialize_any(reader, visitor, config)
     }
 
     fn deserialize_u64<'de, V: PdxVisitor<'de>>(
@@ -289,7 +289,7 @@ pub trait BinaryFormat {
         visitor: V,
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
-        self.deserialize_value_any(reader, visitor, config)
+        self.deserialize_any(reader, visitor, config)
     }
 
     fn deserialize_f32<'de, V: PdxVisitor<'de>>(
@@ -298,7 +298,7 @@ pub trait BinaryFormat {
         visitor: V,
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
-        self.deserialize_value_any(reader, visitor, config)
+        self.deserialize_any(reader, visitor, config)
     }
 
     fn deserialize_f64<'de, V: PdxVisitor<'de>>(
@@ -307,7 +307,7 @@ pub trait BinaryFormat {
         visitor: V,
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
-        self.deserialize_value_any(reader, visitor, config)
+        self.deserialize_any(reader, visitor, config)
     }
 
     fn deserialize_bool<'de, V: PdxVisitor<'de>>(
@@ -316,7 +316,7 @@ pub trait BinaryFormat {
         visitor: V,
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
-        self.deserialize_value_any(reader, visitor, config)
+        self.deserialize_any(reader, visitor, config)
     }
 
     fn deserialize_str<'de, V: PdxVisitor<'de>>(
@@ -325,7 +325,7 @@ pub trait BinaryFormat {
         visitor: V,
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
-        self.deserialize_value_any(reader, visitor, config)
+        self.deserialize_any(reader, visitor, config)
     }
 
     fn deserialize_identifier<'de, V: PdxVisitor<'de>>(
@@ -338,15 +338,6 @@ pub trait BinaryFormat {
     }
 
     fn deserialize_any<'de, V: PdxVisitor<'de>>(
-        &mut self,
-        reader: &mut ParserState,
-        visitor: V,
-        config: &BinaryConfig,
-    ) -> Result<ParseResult<V::Value, V>, Error> {
-        self.deserialize_value_any(reader, visitor, config)
-    }
-
-    fn deserialize_value_any<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
@@ -387,7 +378,6 @@ impl<F: BinaryFormat> BinaryFormat for &'_ mut F {
     forward_deserialize!(deserialize_str);
     forward_deserialize!(deserialize_identifier);
     forward_deserialize!(deserialize_any);
-    forward_deserialize!(deserialize_value_any);
 }
 
 pub trait TokenResolver2<'str> {
@@ -604,11 +594,11 @@ impl BinaryFormat for StandardFormat {
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
         let Some(data) = reader.peek_bytes::<6>() else {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         };
         let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
         if id != LexemeId::I32 {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         }
         let result = i32::from_le_bytes([data[2], data[3], data[4], data[5]]);
         unsafe { reader.consume(6) };
@@ -623,11 +613,11 @@ impl BinaryFormat for StandardFormat {
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
         let Some(data) = reader.peek_bytes::<6>() else {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         };
         let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
         if id != LexemeId::U32 {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         }
         let result = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
         unsafe { reader.consume(6) };
@@ -642,11 +632,11 @@ impl BinaryFormat for StandardFormat {
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
         let Some(data) = reader.peek_bytes::<10>() else {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         };
         let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
         if id != LexemeId::I64 {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         }
         let result = i64::from_le_bytes([
             data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
@@ -663,11 +653,11 @@ impl BinaryFormat for StandardFormat {
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
         let Some(data) = reader.peek_bytes::<10>() else {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         };
         let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
         if id != LexemeId::U64 {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         }
         let result = u64::from_le_bytes([
             data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
@@ -684,11 +674,11 @@ impl BinaryFormat for StandardFormat {
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
         let Some(data) = reader.peek_bytes::<6>() else {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         };
         let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
         if id != LexemeId::F32 {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         }
         let result = f32::from_le_bytes([data[2], data[3], data[4], data[5]]);
         unsafe { reader.consume(6) };
@@ -703,11 +693,11 @@ impl BinaryFormat for StandardFormat {
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
         let Some(data) = reader.peek_bytes::<10>() else {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         };
         let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
         if id != LexemeId::F64 {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         }
         let result = f64::from_le_bytes([
             data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
@@ -724,11 +714,11 @@ impl BinaryFormat for StandardFormat {
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
         let Some(data) = reader.peek_bytes::<3>() else {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         };
         let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
         if id != LexemeId::BOOL {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         }
         let result = data[2] != 0;
         unsafe { reader.consume(3) };
@@ -743,20 +733,20 @@ impl BinaryFormat for StandardFormat {
         config: &BinaryConfig,
     ) -> Result<ParseResult<V::Value, V>, Error> {
         let Some(header) = reader.peek_bytes::<4>() else {
-            return self.deserialize_value_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, config);
         };
         let id = LexemeId::new(u16::from_le_bytes([header[0], header[1]]));
         match id {
             LexemeId::QUOTED | LexemeId::UNQUOTED => {
                 let len = u16::from_le_bytes([header[2], header[3]]);
                 if reader.len() < 4 + len as usize {
-                    return self.deserialize_value_any(reader, visitor, config);
+                    return self.deserialize_any(reader, visitor, config);
                 }
                 unsafe { reader.consume(4) };
                 let data = reader.read_slice(len).ok_or_else(Error::eof)?;
                 Ok(ParseResult::Value(visitor.visit_bytes(data)?))
             }
-            _ => self.deserialize_value_any(reader, visitor, config),
+            _ => self.deserialize_any(reader, visitor, config),
         }
     }
 
@@ -785,7 +775,7 @@ impl BinaryFormat for StandardFormat {
         self.deserialize_any(reader, visitor, config)
     }
 
-    fn deserialize_value_any<'de, V: PdxVisitor<'de>>(
+    fn deserialize_any<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
@@ -795,11 +785,11 @@ impl BinaryFormat for StandardFormat {
             return Err(Error::eof());
         };
         let id = LexemeId::new(u16::from_le_bytes(id_bytes));
-        standard_deserialize_value_any(reader, id, visitor, config)
+        standard_deserialize_any(reader, id, visitor, config)
     }
 }
 
-fn standard_deserialize_value_any<'de, V: PdxVisitor<'de>>(
+fn standard_deserialize_any<'de, V: PdxVisitor<'de>>(
     reader: &mut ParserState,
     id: LexemeId,
     visitor: V,
