@@ -16,12 +16,12 @@ impl Error {
 
     #[inline(never)]
     #[cold]
-    pub(crate) fn eof() -> Error {
+    pub fn eof() -> Error {
         Self::new(ErrorKind::Eof)
     }
 
     #[cold]
-    pub(crate) fn invalid_syntax<T>(msg: T, position: usize) -> Error
+    pub fn invalid_syntax<T>(msg: T, position: usize) -> Error
     where
         T: Into<String>,
     {

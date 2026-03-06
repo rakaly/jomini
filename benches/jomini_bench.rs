@@ -1,7 +1,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use jomini::{
     Encoding, Scalar, TextTape, Utf8Encoding, Windows1252Encoding,
-    binary::{BinaryFlavor, LexemeId, TokenKind, TokenResolver},
+    binary::{BinaryFlavor, LexemeId, TokenResolver},
     common::Date,
 };
 use std::{
@@ -234,95 +234,167 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
         });
 
         group.bench_function(BenchmarkId::new("reader-ng", game), |b| {
-            struct MyFormat;
+            #[derive(Clone, Copy)]
+            enum BenchToken {
+                Open,
+                Close,
+                Equal,
+                Id(jomini::binary::ng::FieldId),
+                Value,
+            }
 
-            impl jomini::binary::ng::BinaryFormat for MyFormat {
-                fn visit(
-                    &mut self,
-                    reader: &mut jomini::binary::ng::ParserState,
-                    id: jomini::binary::LexemeId,
-                ) -> Result<jomini::binary::ng::TokenSignal, jomini::Error> {
-                    match id {
-                        LexemeId::OPEN => {
-                            Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::Open))
-                        }
-                        LexemeId::CLOSE => {
-                            Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::Close))
-                        }
-                        LexemeId::EQUAL => {
-                            Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::Equal))
-                        }
-                        LexemeId::U32 | LexemeId::I32 => {
-                            let Some(data) = reader.read_bytes::<4>().copied() else {
-                                return Ok(jomini::binary::ng::TokenSignal::MoreData);
-                            };
-
-                            reader.store(data);
-                            if id == LexemeId::I32 {
-                                Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::I32))
-                            } else {
-                                Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::U32))
-                            }
-                        }
-                        LexemeId::U64 | LexemeId::I64 => {
-                            let Some(data) = reader.read_bytes::<8>().copied() else {
-                                return Ok(jomini::binary::ng::TokenSignal::MoreData);
-                            };
-
-                            reader.store(data);
-                            if id == LexemeId::I64 {
-                                Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::I64))
-                            } else {
-                                Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::U64))
-                            }
-                        }
-                        LexemeId::F32 => {
-                            let Some(data) = reader.read_bytes::<4>().copied() else {
-                                return Ok(jomini::binary::ng::TokenSignal::MoreData);
-                            };
-
-                            reader.store(data);
-                            Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::F32))
-                        }
-                        LexemeId::F64 => {
-                            let Some(data) = reader.read_bytes::<8>().copied() else {
-                                return Ok(jomini::binary::ng::TokenSignal::MoreData);
-                            };
-
-                            reader.store(data);
-                            Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::F64))
-                        }
-                        LexemeId::BOOL => {
-                            let Some(data) = reader.read_bytes::<1>().copied() else {
-                                return Ok(jomini::binary::ng::TokenSignal::MoreData);
-                            };
-
-                            reader.store(data);
-                            Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::Bool))
-                        }
-                        LexemeId::QUOTED | LexemeId::UNQUOTED => {
-                            let Some(len) =
-                                reader.peek_bytes::<2>().copied().map(u16::from_le_bytes)
-                            else {
-                                return Ok(jomini::binary::ng::TokenSignal::MoreData);
-                            };
-
-                            if reader.read_slice(len + 2).is_none() {
-                                return Ok(jomini::binary::ng::TokenSignal::MoreData);
-                            }
-
-                            reader.store(len.to_le_bytes());
-                            if id == LexemeId::QUOTED {
-                                Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::Quoted))
-                            } else {
-                                Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::Unquoted))
-                            }
-                        }
-                        id => {
-                            reader.store(id.0.to_le_bytes());
-                            Ok(jomini::binary::ng::TokenSignal::Kind(TokenKind::Id))
+            impl jomini::binary::ng::StreamToken for BenchToken {
+                fn structure(&self) -> jomini::binary::ng::StructureKind {
+                    match self {
+                        BenchToken::Open => jomini::binary::ng::StructureKind::Open,
+                        BenchToken::Close => jomini::binary::ng::StructureKind::Close,
+                        BenchToken::Equal => jomini::binary::ng::StructureKind::Equal,
+                        BenchToken::Id(_) | BenchToken::Value => {
+                            jomini::binary::ng::StructureKind::Value
                         }
                     }
+                }
+            }
+
+            struct MyFormat;
+
+            impl jomini::binary::ng::BinaryTokenFormat for MyFormat {
+                type Token<'a> = BenchToken;
+
+                fn next_token<'a>(
+                    &mut self,
+                    reader: &'a mut jomini::binary::ng::ParserState,
+                ) -> Result<jomini::binary::ng::TokenResult<Self::Token<'a>>, jomini::Error>
+                {
+                    #[inline]
+                    fn lexeme_at(data: &[u8], offset: usize) -> LexemeId {
+                        LexemeId::new(u16::from_le_bytes([data[offset], data[offset + 1]]))
+                    }
+
+                    let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+                        return Ok(jomini::binary::ng::TokenResult::MoreData);
+                    };
+                    let id = LexemeId::new(u16::from_le_bytes(id_bytes));
+
+                    let token = match id {
+                        LexemeId::OPEN => {
+                            unsafe { reader.consume(2) };
+                            BenchToken::Open
+                        }
+                        LexemeId::CLOSE => {
+                            unsafe { reader.consume(2) };
+                            BenchToken::Close
+                        }
+                        LexemeId::EQUAL => {
+                            unsafe { reader.consume(2) };
+                            BenchToken::Equal
+                        }
+                        LexemeId::U32 | LexemeId::I32 | LexemeId::F32 => {
+                            if reader.len() < 6 {
+                                return Ok(jomini::binary::ng::TokenResult::MoreData);
+                            }
+                            unsafe { reader.consume(2) };
+                            let _ = reader.read_exact::<4>()?;
+                            BenchToken::Value
+                        }
+                        LexemeId::U64 | LexemeId::I64 | LexemeId::F64 => {
+                            if reader.len() < 10 {
+                                return Ok(jomini::binary::ng::TokenResult::MoreData);
+                            }
+                            unsafe { reader.consume(2) };
+                            let _ = reader.read_exact::<8>()?;
+                            BenchToken::Value
+                        }
+                        LexemeId::BOOL | LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
+                            if reader.len() < 3 {
+                                return Ok(jomini::binary::ng::TokenResult::MoreData);
+                            }
+                            unsafe { reader.consume(2) };
+                            let _ = reader.read_exact::<1>()?;
+                            BenchToken::Value
+                        }
+                        LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
+                            if reader.len() < 4 {
+                                return Ok(jomini::binary::ng::TokenResult::MoreData);
+                            }
+                            unsafe { reader.consume(2) };
+                            let _ = reader.read_exact::<2>()?;
+                            BenchToken::Value
+                        }
+                        LexemeId::LOOKUP_U24 => {
+                            if reader.len() < 5 {
+                                return Ok(jomini::binary::ng::TokenResult::MoreData);
+                            }
+                            unsafe { reader.consume(2) };
+                            let _ = reader.read_exact::<3>()?;
+                            BenchToken::Value
+                        }
+                        LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                            let Some(header) = reader.peek_bytes::<4>().copied() else {
+                                return Ok(jomini::binary::ng::TokenResult::MoreData);
+                            };
+                            let len = u16::from_le_bytes([header[2], header[3]]);
+                            if reader.len() < len as usize + 4 {
+                                return Ok(jomini::binary::ng::TokenResult::MoreData);
+                            }
+                            unsafe { reader.consume(4) };
+                            let _ = reader.read_slice(len).ok_or_else(jomini::Error::eof)?;
+                            BenchToken::Value
+                        }
+                        LexemeId::RGB => {
+                            if reader.len() < 24 {
+                                return Ok(jomini::binary::ng::TokenResult::MoreData);
+                            }
+
+                            let data = reader.peek_bytes::<24>().unwrap();
+                            let base_rgb = lexeme_at(data, 2) == LexemeId::OPEN
+                                && lexeme_at(data, 4) == LexemeId::U32
+                                && lexeme_at(data, 10) == LexemeId::U32
+                                && lexeme_at(data, 16) == LexemeId::U32;
+                            let next = lexeme_at(data, 22);
+
+                            if base_rgb && next == LexemeId::CLOSE {
+                                unsafe { reader.consume(24) };
+                                BenchToken::Value
+                            } else if base_rgb && next == LexemeId::U32 {
+                                if reader.len() < 30 {
+                                    return Ok(jomini::binary::ng::TokenResult::MoreData);
+                                }
+                                let data = reader.peek_bytes::<30>().unwrap();
+                                if lexeme_at(data, 28) != LexemeId::CLOSE {
+                                    return Err(jomini::Error::invalid_syntax(
+                                        "invalid rgb token",
+                                        0,
+                                    ));
+                                }
+                                unsafe { reader.consume(30) };
+                                BenchToken::Value
+                            } else {
+                                return Err(jomini::Error::invalid_syntax("invalid rgb token", 0));
+                            }
+                        }
+                        id if id >= LexemeId::FIXED5_ZERO && id <= LexemeId::FIXED5_I56 => {
+                            let offset = id.0 - LexemeId::FIXED5_ZERO.0;
+                            let is_negative = offset > 7;
+                            let byte_count = offset - (is_negative as u16 * 7);
+                            if reader.len() < byte_count as usize + 2 {
+                                return Ok(jomini::binary::ng::TokenResult::MoreData);
+                            }
+                            unsafe { reader.consume(2) };
+                            if byte_count != 0 {
+                                let _ = reader
+                                    .read_slice(byte_count)
+                                    .ok_or_else(jomini::Error::eof)?;
+                            }
+                            BenchToken::Value
+                        }
+                        id => {
+                            unsafe { reader.consume(2) };
+                            BenchToken::Id(jomini::binary::ng::FieldId::new(id.0))
+                        }
+                    };
+
+                    Ok(jomini::binary::ng::TokenResult::Token(token))
                 }
             }
 
@@ -331,9 +403,9 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
                 let mut format = MyFormat;
                 let mut reader = jomini::binary::ng::TokenReader::from_slice(&data[..]);
                 let mut counter: u64 = 0;
-                while let Ok(Some(token)) = reader.next_kind(&mut format) {
-                    if token == jomini::binary::TokenKind::Id {
-                        counter = counter.wrapping_add(u64::from(reader.field_id().value()));
+                while let Ok(Some(token)) = reader.next_token(&mut format) {
+                    if let BenchToken::Id(field) = token {
+                        counter = counter.wrapping_add(u64::from(field.value()));
                     }
                 }
                 black_box(counter);
