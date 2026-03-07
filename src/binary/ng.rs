@@ -1514,6 +1514,21 @@ where
     F: BinaryValueFormat + BinaryTokenFormat,
     RES: FieldResolver,
 {
+    /// Create a binary reader deserializer with the provided format and config
+    pub fn from_reader_with_config(reader: R, format: F, config: BinaryConfig<RES>) -> Self {
+        BinaryReaderDeserializer {
+            reader: TokenReader {
+                reader,
+                state: ParserState {
+                    buf: ParserBuf::new(32 * 1024),
+                    storage: [0u8; 8],
+                },
+            },
+            format,
+            config,
+        }
+    }
+
     /// Deserialize into provided type
     pub fn deserialize<T>(&mut self) -> Result<T, Error>
     where
@@ -1577,17 +1592,7 @@ where
     F: BinaryValueFormat + BinaryTokenFormat,
     RES: FieldResolver,
 {
-    let mut reader = BinaryReaderDeserializer {
-        reader: TokenReader {
-            reader,
-            state: ParserState {
-                buf: ParserBuf::new(32 * 1024),
-                storage: [0u8; 8],
-            },
-        },
-        format,
-        config,
-    };
+    let mut reader = BinaryReaderDeserializer::from_reader_with_config(reader, format, config);
 
     let value = serde::de::Deserialize::deserialize(&mut reader)?;
 

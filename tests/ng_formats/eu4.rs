@@ -3,15 +3,15 @@ use crate::support::{
     push_lexeme, push_lookup_u8, push_quoted, push_u32, push_unquoted,
 };
 use jomini::{
+    Error, Windows1252Encoding,
     binary::ng::{
-        from_slice, from_slice_with_config, BinaryConfig, BinaryTokenFormat, BinaryValueFormat,
-        FieldId, FieldResolver, ParserState, PdxVisitor, StreamToken, StructureKind, TokenReader,
-        TokenResult, ValueResult,
+        BinaryConfig, BinaryTokenFormat, BinaryValueFormat, FieldId, FieldResolver, ParserState,
+        PdxVisitor, StreamToken, StructureKind, TokenReader, TokenResult, ValueResult, from_slice,
+        from_slice_with_config,
     },
     binary::{FailedResolveStrategy, LexemeId},
-    Error, Windows1252Encoding,
 };
-use serde::{de::Error as _, Deserialize};
+use serde::{Deserialize, de::Error as _};
 use std::{borrow::Cow, collections::HashMap};
 
 fn resolve_name<'de, V, RES>(
