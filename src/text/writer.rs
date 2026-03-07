@@ -171,7 +171,7 @@ where
     /// Write out the start of container ('{')
     ///
     /// If the type of the container is known to be an array or object, prefer
-    /// [`write_object_start`] or [`write_array_start`]
+    /// [`Self::write_object_start`] or [`Self::write_array_start`]
     #[inline]
     pub fn write_start(&mut self) -> Result<(), Error> {
         self.write_preamble()?;
