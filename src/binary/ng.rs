@@ -179,6 +179,16 @@ pub trait BinaryTokenFormat {
         &mut self,
         reader: &'a mut ParserState,
     ) -> Result<TokenResult<Self::Token<'a>>, Error>;
+
+    fn skip_token(
+        &mut self,
+        reader: &mut ParserState,
+    ) -> Result<TokenResult<StructureKind>, Error> {
+        match self.next_token(reader)? {
+            TokenResult::Token(token) => Ok(TokenResult::Token(token.structure())),
+            TokenResult::MoreData => Ok(TokenResult::MoreData),
+        }
+    }
 }
 
 pub trait PdxVisitor<'de>: Sized {
@@ -402,6 +412,13 @@ impl<F: BinaryTokenFormat> BinaryTokenFormat for &'_ mut F {
         reader: &'a mut ParserState,
     ) -> Result<TokenResult<Self::Token<'a>>, Error> {
         (**self).next_token(reader)
+    }
+
+    fn skip_token(
+        &mut self,
+        reader: &mut ParserState,
+    ) -> Result<TokenResult<StructureKind>, Error> {
+        (**self).skip_token(reader)
     }
 }
 
@@ -757,6 +774,123 @@ impl BinaryTokenFormat for StandardFormat {
             id => {
                 unsafe { reader.consume(2) };
                 Ok(TokenResult::Token(StandardToken::Id(FieldId::new(id.0))))
+            }
+        }
+    }
+
+    fn skip_token(
+        &mut self,
+        reader: &mut ParserState,
+    ) -> Result<TokenResult<StructureKind>, Error> {
+        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+            return Ok(TokenResult::MoreData);
+        };
+        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
+
+        match id {
+            LexemeId::OPEN => {
+                unsafe { reader.consume(2) };
+                Ok(TokenResult::Token(StructureKind::Open))
+            }
+            LexemeId::CLOSE => {
+                unsafe { reader.consume(2) };
+                Ok(TokenResult::Token(StructureKind::Close))
+            }
+            LexemeId::EQUAL => {
+                unsafe { reader.consume(2) };
+                Ok(TokenResult::Token(StructureKind::Equal))
+            }
+            LexemeId::U32 | LexemeId::I32 | LexemeId::F32 => {
+                if reader.len() < 6 {
+                    return Ok(TokenResult::MoreData);
+                }
+                unsafe { reader.consume(6) };
+                Ok(TokenResult::Token(StructureKind::Value))
+            }
+            LexemeId::U64 | LexemeId::I64 | LexemeId::F64 => {
+                if reader.len() < 10 {
+                    return Ok(TokenResult::MoreData);
+                }
+                unsafe { reader.consume(10) };
+                Ok(TokenResult::Token(StructureKind::Value))
+            }
+            LexemeId::BOOL => {
+                if reader.len() < 3 {
+                    return Ok(TokenResult::MoreData);
+                }
+                unsafe { reader.consume(3) };
+                Ok(TokenResult::Token(StructureKind::Value))
+            }
+            LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                let Some(header) = reader.peek_bytes::<4>().copied() else {
+                    return Ok(TokenResult::MoreData);
+                };
+                let len = u16::from_le_bytes([header[2], header[3]]);
+                let total = len as usize + 4;
+                if reader.len() < total {
+                    return Ok(TokenResult::MoreData);
+                }
+                unsafe { reader.consume(total) };
+                Ok(TokenResult::Token(StructureKind::Value))
+            }
+            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
+                if reader.len() < 3 {
+                    return Ok(TokenResult::MoreData);
+                }
+                unsafe { reader.consume(3) };
+                Ok(TokenResult::Token(StructureKind::Value))
+            }
+            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
+                if reader.len() < 4 {
+                    return Ok(TokenResult::MoreData);
+                }
+                unsafe { reader.consume(4) };
+                Ok(TokenResult::Token(StructureKind::Value))
+            }
+            LexemeId::LOOKUP_U24 => {
+                if reader.len() < 5 {
+                    return Ok(TokenResult::MoreData);
+                }
+                unsafe { reader.consume(5) };
+                Ok(TokenResult::Token(StructureKind::Value))
+            }
+            LexemeId::RGB => {
+                let slice = &reader.buf.as_slice()[2..];
+                if reader.len() < 30 {
+                    match read_rgb(slice) {
+                        Ok((_, rest)) => {
+                            let consumed = slice.len() - rest.len();
+                            unsafe {
+                                reader.consume(consumed + 2);
+                            }
+                            Ok(TokenResult::Token(StructureKind::Value))
+                        }
+                        Err(_) => Ok(TokenResult::MoreData),
+                    }
+                } else {
+                    let (_, rest) =
+                        read_rgb(slice).map_err(|e| Error::from(e.at(reader.buf.total_read)))?;
+                    let consumed = slice.len() - rest.len();
+                    unsafe {
+                        reader.consume(consumed + 2);
+                    }
+                    Ok(TokenResult::Token(StructureKind::Value))
+                }
+            }
+            id if id >= LexemeId::FIXED5_ZERO && id <= LexemeId::FIXED5_I56 => {
+                let offset = id.0 - LexemeId::FIXED5_ZERO.0;
+                let is_negative = offset > 7;
+                let byte_count = offset - (is_negative as u16 * 7);
+                let total = byte_count as usize + 2;
+                if reader.len() < total {
+                    return Ok(TokenResult::MoreData);
+                }
+                unsafe { reader.consume(total) };
+                Ok(TokenResult::Token(StructureKind::Value))
+            }
+            _ => {
+                unsafe { reader.consume(2) };
+                Ok(TokenResult::Token(StructureKind::Value))
             }
         }
     }
@@ -1280,11 +1414,42 @@ where
     }
 
     #[inline]
-    pub fn skip_next<F: BinaryTokenFormat>(&mut self, format: &mut F) -> Result<(), Error> {
-        let structure = {
-            let token = self.read_token(format)?;
-            token.structure()
-        };
+    fn next_structure<F: BinaryTokenFormat>(
+        &mut self,
+        format: &mut F,
+    ) -> Result<Option<StructureKind>, Error> {
+        loop {
+            let state = std::ptr::addr_of_mut!(self.state);
+            match format.skip_token(unsafe { &mut *state })? {
+                TokenResult::Token(structure) => return Ok(Some(structure)),
+                TokenResult::MoreData => {
+                    let amt = self.fill()?;
+                    if amt == 0 {
+                        return if self.state.is_empty() {
+                            Ok(None)
+                        } else {
+                            Err(Error::eof())
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    #[inline]
+    fn read_structure<F: BinaryTokenFormat>(
+        &mut self,
+        format: &mut F,
+    ) -> Result<StructureKind, Error> {
+        match self.next_structure(format)? {
+            Some(structure) => Ok(structure),
+            None => Err(Error::eof()),
+        }
+    }
+
+    #[inline]
+    fn skip_next<F: BinaryTokenFormat>(&mut self, format: &mut F) -> Result<(), Error> {
+        let structure = self.read_structure(format)?;
         if structure == StructureKind::Open {
             self.skip_container(format)
         } else {
@@ -1292,13 +1457,10 @@ where
         }
     }
 
-    pub fn skip_container<F: BinaryTokenFormat>(&mut self, format: &mut F) -> Result<(), Error> {
+    fn skip_container<F: BinaryTokenFormat>(&mut self, format: &mut F) -> Result<(), Error> {
         let mut depth = 1;
         loop {
-            let structure = {
-                let token = self.read_token(format)?;
-                token.structure()
-            };
+            let structure = self.read_structure(format)?;
             match structure {
                 StructureKind::Open => depth += 1,
                 StructureKind::Close => {

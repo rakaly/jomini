@@ -290,6 +290,12 @@ struct Hoi4Data {
     weight: f64,
 }
 
+#[derive(Debug, Deserialize, PartialEq)]
+struct Hoi4IgnoredVersionData {
+    metric: f32,
+    weight: f64,
+}
+
 fn hoi4_legacy_fixture() -> Vec<u8> {
     let mut data = Vec::new();
     push_field(&mut data, 0x349d);
@@ -335,6 +341,16 @@ fn hoi4_save_version_31_switches_f32_layout() {
 
     let actual: Hoi4Data = assert_slice_and_reader(&data, Hoi4Format::default, Hoi4Fields);
     assert_eq!(actual.save_version, 31);
+    assert_eq!(actual.metric, 1.23456);
+    assert_eq!(actual.weight, 3.0);
+}
+
+#[test]
+fn hoi4_ignored_save_version_still_switches_f32_layout() {
+    let data = hoi4_modern_fixture();
+
+    let actual: Hoi4IgnoredVersionData =
+        assert_slice_and_reader(&data, Hoi4Format::default, Hoi4Fields);
     assert_eq!(actual.metric, 1.23456);
     assert_eq!(actual.weight, 3.0);
 }

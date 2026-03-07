@@ -3,15 +3,15 @@ use crate::support::{
     push_lexeme, push_lookup_u8, push_quoted, push_u32, push_unquoted,
 };
 use jomini::{
-    Error, Windows1252Encoding,
     binary::ng::{
-        BinaryConfig, BinaryTokenFormat, BinaryValueFormat, FieldId, FieldResolver, ParserState,
-        PdxVisitor, StreamToken, StructureKind, TokenReader, TokenResult, ValueResult, from_slice,
-        from_slice_with_config,
+        from_slice, from_slice_with_config, BinaryConfig, BinaryTokenFormat, BinaryValueFormat,
+        FieldId, FieldResolver, ParserState, PdxVisitor, StreamToken, StructureKind, TokenReader,
+        TokenResult, ValueResult,
     },
     binary::{FailedResolveStrategy, LexemeId},
+    Error, Windows1252Encoding,
 };
-use serde::{Deserialize, de::Error as _};
+use serde::{de::Error as _, Deserialize};
 use std::{borrow::Cow, collections::HashMap};
 
 fn resolve_name<'de, V, RES>(
@@ -154,8 +154,12 @@ impl Eu4Format {
         let val = i64::from_le_bytes(raw) as f64 / 32768.0;
         (val * 100_000.0).round() / 100_000.0
     }
-    
-    fn deserialize_str<'de, V: PdxVisitor<'de>>(&mut self, reader: &mut ParserState, visitor: V) -> Result<ValueResult<<V as PdxVisitor<'de>>::Value, V>, Error> {
+
+    fn deserialize_str<'de, V: PdxVisitor<'de>>(
+        &mut self,
+        reader: &mut ParserState,
+        visitor: V,
+    ) -> Result<ValueResult<<V as PdxVisitor<'de>>::Value, V>, Error> {
         let Some(header) = reader.peek_bytes::<4>() else {
             return Ok(ValueResult::MoreData(visitor));
         };
@@ -242,12 +246,76 @@ impl BinaryTokenFormat for Eu4Format {
                 let Some(bytes) = reader.read_bytes::<10>() else {
                     return Ok(TokenResult::MoreData);
                 };
-                let data = [bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9]];
+                let data = [
+                    bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9],
+                ];
                 Ok(TokenResult::Token(Eu4Token::F64(data)))
             }
             id => {
                 unsafe { reader.consume(2) };
                 Ok(TokenResult::Token(Eu4Token::Field(FieldId::new(id.0))))
+            }
+        }
+    }
+
+    fn skip_token(
+        &mut self,
+        reader: &mut ParserState,
+    ) -> Result<TokenResult<StructureKind>, Error> {
+        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+            return Ok(TokenResult::MoreData);
+        };
+        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
+
+        match id {
+            LexemeId::OPEN => {
+                unsafe { reader.consume(2) };
+                Ok(TokenResult::Token(StructureKind::Open))
+            }
+            LexemeId::CLOSE => {
+                unsafe { reader.consume(2) };
+                Ok(TokenResult::Token(StructureKind::Close))
+            }
+            LexemeId::EQUAL => {
+                unsafe { reader.consume(2) };
+                Ok(TokenResult::Token(StructureKind::Equal))
+            }
+            LexemeId::BOOL => {
+                if reader.len() < 3 {
+                    return Ok(TokenResult::MoreData);
+                }
+                unsafe { reader.consume(3) };
+                Ok(TokenResult::Token(StructureKind::Value))
+            }
+            LexemeId::U32 | LexemeId::I32 | LexemeId::F32 => {
+                if reader.len() < 6 {
+                    return Ok(TokenResult::MoreData);
+                }
+                unsafe { reader.consume(6) };
+                Ok(TokenResult::Token(StructureKind::Value))
+            }
+            LexemeId::F64 => {
+                if reader.len() < 10 {
+                    return Ok(TokenResult::MoreData);
+                }
+                unsafe { reader.consume(10) };
+                Ok(TokenResult::Token(StructureKind::Value))
+            }
+            LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                let Some(header) = reader.peek_bytes::<4>().copied() else {
+                    return Ok(TokenResult::MoreData);
+                };
+                let len = u16::from_le_bytes([header[2], header[3]]) as usize;
+                let total = len + 4;
+                if reader.len() < total {
+                    return Ok(TokenResult::MoreData);
+                }
+                unsafe { reader.consume(total) };
+                Ok(TokenResult::Token(StructureKind::Value))
+            }
+            _ => {
+                unsafe { reader.consume(2) };
+                Ok(TokenResult::Token(StructureKind::Value))
             }
         }
     }
@@ -271,7 +339,7 @@ impl BinaryValueFormat for Eu4Format {
         let field = FieldId::new(u16::from_le_bytes(id_bytes));
         if let Some(name) = config.field_resolver().resolve_field(field) {
             unsafe { reader.consume(2) };
-            return Ok(ValueResult::Value(visitor.visit_str(name)?))
+            return Ok(ValueResult::Value(visitor.visit_str(name)?));
         };
 
         let id = LexemeId::new(u16::from_le_bytes(id_bytes));
@@ -301,7 +369,7 @@ impl BinaryValueFormat for Eu4Format {
                 let Some(bytes) = reader.read_bytes::<3>() else {
                     return Ok(ValueResult::MoreData(visitor));
                 };
-                Ok(ValueResult::Value(visitor.visit_bool(bytes[3] != 0)?))
+                Ok(ValueResult::Value(visitor.visit_bool(bytes[2] != 0)?))
             }
             LexemeId::U32 => {
                 let Some(bytes) = reader.read_bytes::<6>() else {
@@ -486,6 +554,12 @@ fn eu4_unknown_field_fixture() -> Vec<u8> {
 mod deserialize {
     use super::*;
 
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Eu4IgnoredNestedData {
+        flag: bool,
+        score32: f32,
+    }
+
     #[test]
     fn deserializes_windows1252_chinese_scalars_and_fixed_float_rules() {
         let data = eu4_scalar_rules_fixture();
@@ -526,13 +600,28 @@ mod deserialize {
             }
         );
     }
+
+    #[test]
+    fn ignores_nested_objects_and_continues_parsing() {
+        let data = eu4_common_tokens_fixture();
+
+        let actual: Eu4IgnoredNestedData =
+            assert_slice_and_reader(&data, Eu4Format::default, Eu4Fields);
+        assert_eq!(
+            actual,
+            Eu4IgnoredNestedData {
+                flag: true,
+                score32: 1.234,
+            }
+        );
+    }
 }
 
 mod token_stream {
     use super::*;
 
     #[test]
-    fn covers_common_tokens_and_shared_skip() {
+    fn covers_common_tokens() {
         let data = eu4_common_tokens_fixture();
         let mut reader = TokenReader::from_slice(&data);
         let mut format = Eu4Format::default();
@@ -582,7 +671,13 @@ mod token_stream {
         );
         assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Equal);
         assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Open);
-        reader.skip_container(&mut format).unwrap();
+        assert_eq!(
+            reader.read_token(&mut format).unwrap(),
+            Eu4Token::Field(FieldId::new(0x2009))
+        );
+        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::I32(9));
+        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Close);
         assert_eq!(
             reader.read_token(&mut format).unwrap(),
             Eu4Token::Field(FieldId::new(0x2002))

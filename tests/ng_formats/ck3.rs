@@ -276,6 +276,12 @@ struct Ck3Data {
     value64: f64,
 }
 
+#[derive(Debug, Deserialize, PartialEq)]
+struct Ck3IgnoredVersionData {
+    value32: f32,
+    value64: f64,
+}
+
 #[test]
 fn ck3_version_can_switch_float_decoding_without_changing_widths() {
     let mut legacy = Vec::new();
@@ -307,4 +313,23 @@ fn ck3_version_can_switch_float_decoding_without_changing_widths() {
     let modern_actual: Ck3Data = assert_slice_and_reader(&modern, Ck3Format::default, Ck3Fields);
     assert_eq!(modern_actual.value32, 3.14);
     assert_eq!(modern_actual.value64, 2.71828);
+}
+
+#[test]
+fn ck3_ignored_version_still_switches_float_decoding() {
+    let mut data = Vec::new();
+    push_field(&mut data, 0x00ee);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_i32(&mut data, 2);
+    push_field(&mut data, 0x4001);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_f32_raw(&mut data, 3140i32.to_le_bytes());
+    push_field(&mut data, 0x4002);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_f64_raw(&mut data, 271_828i64.to_le_bytes());
+
+    let actual: Ck3IgnoredVersionData =
+        assert_slice_and_reader(&data, Ck3Format::default, Ck3Fields);
+    assert_eq!(actual.value32, 3.14);
+    assert_eq!(actual.value64, 2.71828);
 }
