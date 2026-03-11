@@ -258,64 +258,154 @@ impl BinaryTokenFormat for Eu4Format {
         }
     }
 
-    fn skip_token(
+    fn skip_value(
         &mut self,
-        reader: &mut ParserState,
-    ) -> Result<TokenResult<StructureKind>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
-            return Ok(TokenResult::MoreData);
-        };
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
+        state: &mut ParserState,
+        fill: &mut impl FnMut(&mut ParserState) -> Result<usize, Error>,
+    ) -> Result<(), Error> {
+        // Phase 1: consume the first token. Scalars return immediately;
+        // OPEN breaks into the container scan below.
+        loop {
+            let slice = state.as_slice();
+            if slice.len() < 2 {
+                if fill(state)? == 0 {
+                    return Err(Error::eof());
+                }
+                continue;
+            }
+            let id = LexemeId::new(u16::from_le_bytes([slice[0], slice[1]]));
+            match id {
+                LexemeId::OPEN => {
+                    unsafe { state.consume(2) };
+                    break;
+                }
+                LexemeId::CLOSE => {
+                    unsafe { state.consume(2) };
+                    return Ok(());
+                }
+                LexemeId::BOOL => {
+                    if slice.len() < 3 {
+                        if fill(state)? == 0 {
+                            return Err(Error::eof());
+                        }
+                        continue;
+                    }
+                    unsafe { state.consume(3) };
+                    return Ok(());
+                }
+                LexemeId::I32 | LexemeId::F32 | LexemeId::U32 => {
+                    if slice.len() < 6 {
+                        if fill(state)? == 0 {
+                            return Err(Error::eof());
+                        }
+                        continue;
+                    }
+                    unsafe { state.consume(6) };
+                    return Ok(());
+                }
+                LexemeId::F64 => {
+                    if slice.len() < 10 {
+                        if fill(state)? == 0 {
+                            return Err(Error::eof());
+                        }
+                        continue;
+                    }
+                    unsafe { state.consume(10) };
+                    return Ok(());
+                }
+                LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                    if slice.len() < 4 {
+                        if fill(state)? == 0 {
+                            return Err(Error::eof());
+                        }
+                        continue;
+                    }
+                    let len = u16::from_le_bytes([slice[2], slice[3]]) as usize;
+                    if slice.len() < 4 + len {
+                        if fill(state)? == 0 {
+                            return Err(Error::eof());
+                        }
+                        continue;
+                    }
+                    unsafe { state.consume(4 + len) };
+                    return Ok(());
+                }
+                _ => {
+                    // field ID or EQUAL: 2 bytes
+                    unsafe { state.consume(2) };
+                    return Ok(());
+                }
+            }
+        }
 
-        match id {
-            LexemeId::OPEN => {
-                unsafe { reader.consume(2) };
-                Ok(TokenResult::Token(StructureKind::Open))
-            }
-            LexemeId::CLOSE => {
-                unsafe { reader.consume(2) };
-                Ok(TokenResult::Token(StructureKind::Close))
-            }
-            LexemeId::EQUAL => {
-                unsafe { reader.consume(2) };
-                Ok(TokenResult::Token(StructureKind::Equal))
-            }
-            LexemeId::BOOL => {
-                if reader.len() < 3 {
-                    return Ok(TokenResult::MoreData);
+        // Phase 2: container scan — scalars are skipped without any depth
+        // check; only OPEN/CLOSE affect depth.
+        let mut depth: usize = 1;
+        loop {
+            let slice = state.as_slice();
+            let mut pos = 0;
+
+            loop {
+                if pos + 2 > slice.len() {
+                    break;
                 }
-                unsafe { reader.consume(3) };
-                Ok(TokenResult::Token(StructureKind::Value))
-            }
-            LexemeId::U32 | LexemeId::I32 | LexemeId::F32 => {
-                if reader.len() < 6 {
-                    return Ok(TokenResult::MoreData);
+                let id = LexemeId::new(u16::from_le_bytes(unsafe {
+                    [*slice.get_unchecked(pos), *slice.get_unchecked(pos + 1)]
+                }));
+
+                match id {
+                    LexemeId::CLOSE => {
+                        pos += 2;
+                        depth -= 1;
+                        if depth == 0 {
+                            unsafe { state.consume(pos) };
+                            return Ok(());
+                        }
+                    }
+                    LexemeId::OPEN => {
+                        depth += 1;
+                        pos += 2;
+                    }
+                    LexemeId::BOOL => {
+                        if pos + 3 > slice.len() {
+                            break;
+                        }
+                        pos += 3;
+                    }
+                    LexemeId::I32 | LexemeId::F32 | LexemeId::U32 => {
+                        if pos + 6 > slice.len() {
+                            break;
+                        }
+                        pos += 6;
+                    }
+                    LexemeId::F64 => {
+                        if pos + 10 > slice.len() {
+                            break;
+                        }
+                        pos += 10;
+                    }
+                    LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                        if pos + 4 > slice.len() {
+                            break;
+                        }
+                        let len = u16::from_le_bytes(unsafe {
+                            [*slice.get_unchecked(pos + 2), *slice.get_unchecked(pos + 3)]
+                        }) as usize;
+                        if pos + 4 + len > slice.len() {
+                            break;
+                        }
+                        pos += 4 + len;
+                    }
+                    _ => {
+                        // field ID or EQUAL: 2 bytes
+                        pos += 2;
+                    }
                 }
-                unsafe { reader.consume(6) };
-                Ok(TokenResult::Token(StructureKind::Value))
             }
-            LexemeId::F64 => {
-                if reader.len() < 10 {
-                    return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(10) };
-                Ok(TokenResult::Token(StructureKind::Value))
-            }
-            LexemeId::QUOTED | LexemeId::UNQUOTED => {
-                let Some(header) = reader.peek_bytes::<4>().copied() else {
-                    return Ok(TokenResult::MoreData);
-                };
-                let len = u16::from_le_bytes([header[2], header[3]]) as usize;
-                let total = len + 4;
-                if reader.len() < total {
-                    return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(total) };
-                Ok(TokenResult::Token(StructureKind::Value))
-            }
-            _ => {
-                unsafe { reader.consume(2) };
-                Ok(TokenResult::Token(StructureKind::Value))
+
+            unsafe { state.consume(pos) };
+            if fill(state)? == 0 {
+                return Err(Error::eof());
             }
         }
     }
