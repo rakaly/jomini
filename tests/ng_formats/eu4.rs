@@ -144,7 +144,7 @@ impl Eu4Format {
         (val * 100_000.0).round() / 100_000.0
     }
 
-    fn deserialize_str<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+    fn parse_str_token<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
@@ -384,6 +384,123 @@ impl BinaryValueFormat for Eu4Format {
         eu4_scalar(data)
     }
 
+    fn deserialize_bool<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+        &mut self,
+        reader: &mut ParserState,
+        visitor: V,
+        config: &BinaryConfig<RES>,
+    ) -> Result<ValueResult<V::Value, V>, Error> {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
+            return Ok(ValueResult::MoreData(visitor));
+        };
+        if id != LexemeId::BOOL {
+            return self.deserialize_any(reader, visitor, config);
+        }
+        let Some(bytes) = cursor.read_bytes::<1>().copied() else {
+            return Ok(ValueResult::MoreData(visitor));
+        };
+        cursor.consume();
+        Ok(ValueResult::Value(visitor.visit_bool(bytes[0] != 0)?))
+    }
+
+    fn deserialize_u32<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+        &mut self,
+        reader: &mut ParserState,
+        visitor: V,
+        config: &BinaryConfig<RES>,
+    ) -> Result<ValueResult<V::Value, V>, Error> {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
+            return Ok(ValueResult::MoreData(visitor));
+        };
+        if id != LexemeId::U32 {
+            return self.deserialize_any(reader, visitor, config);
+        }
+        let Some(bytes) = cursor.read_bytes::<4>().copied() else {
+            return Ok(ValueResult::MoreData(visitor));
+        };
+        cursor.consume();
+        Ok(ValueResult::Value(
+            visitor.visit_u32(u32::from_le_bytes(bytes))?,
+        ))
+    }
+
+    fn deserialize_i32<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+        &mut self,
+        reader: &mut ParserState,
+        visitor: V,
+        config: &BinaryConfig<RES>,
+    ) -> Result<ValueResult<V::Value, V>, Error> {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
+            return Ok(ValueResult::MoreData(visitor));
+        };
+        if id != LexemeId::I32 {
+            return self.deserialize_any(reader, visitor, config);
+        }
+        let Some(bytes) = cursor.read_bytes::<4>().copied() else {
+            return Ok(ValueResult::MoreData(visitor));
+        };
+        cursor.consume();
+        Ok(ValueResult::Value(
+            visitor.visit_i32(i32::from_le_bytes(bytes))?,
+        ))
+    }
+
+    fn deserialize_f32<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+        &mut self,
+        reader: &mut ParserState,
+        visitor: V,
+        config: &BinaryConfig<RES>,
+    ) -> Result<ValueResult<V::Value, V>, Error> {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
+            return Ok(ValueResult::MoreData(visitor));
+        };
+        if id != LexemeId::F32 {
+            return self.deserialize_any(reader, visitor, config);
+        }
+        let Some(bytes) = cursor.read_bytes::<4>().copied() else {
+            return Ok(ValueResult::MoreData(visitor));
+        };
+        cursor.consume();
+        Ok(ValueResult::Value(
+            visitor.visit_f32(Self::decode_f32(bytes))?,
+        ))
+    }
+
+    fn deserialize_f64<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+        &mut self,
+        reader: &mut ParserState,
+        visitor: V,
+        config: &BinaryConfig<RES>,
+    ) -> Result<ValueResult<V::Value, V>, Error> {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
+            return Ok(ValueResult::MoreData(visitor));
+        };
+        if id != LexemeId::F64 {
+            return self.deserialize_any(reader, visitor, config);
+        }
+        let Some(bytes) = cursor.read_bytes::<8>().copied() else {
+            return Ok(ValueResult::MoreData(visitor));
+        };
+        cursor.consume();
+        Ok(ValueResult::Value(
+            visitor.visit_f64(Self::decode_f64(bytes))?,
+        ))
+    }
+
+    fn deserialize_str<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+        &mut self,
+        reader: &mut ParserState,
+        visitor: V,
+        config: &BinaryConfig<RES>,
+    ) -> Result<ValueResult<V::Value, V>, Error> {
+        self.parse_str_token(reader, visitor, config)
+    }
+
     fn deserialize_identifier<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
         &mut self,
         reader: &mut ParserState,
@@ -400,7 +517,7 @@ impl BinaryValueFormat for Eu4Format {
             return Ok(ValueResult::Value(visitor.visit_str(name)?));
         }
         if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
-            self.deserialize_str(reader, visitor, config)
+            self.parse_str_token(reader, visitor, config)
         } else {
             self.deserialize_any(reader, visitor, config)
         }
@@ -446,7 +563,7 @@ impl BinaryValueFormat for Eu4Format {
                     visitor.visit_i32(i32::from_le_bytes(bytes))?,
                 ))
             }
-            LexemeId::QUOTED | LexemeId::UNQUOTED => self.deserialize_str(reader, visitor, config),
+            LexemeId::QUOTED | LexemeId::UNQUOTED => self.parse_str_token(reader, visitor, config),
             LexemeId::F32 => {
                 let Some(bytes) = cursor.read_bytes::<4>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
@@ -601,6 +718,29 @@ fn eu4_common_object_fixture() -> Vec<u8> {
     data
 }
 
+fn eu4_speculative_primitives_fixture() -> Vec<u8> {
+    let mut data = Vec::new();
+    push_field(&mut data, 0x2004);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_bool(&mut data, true);
+    push_field(&mut data, 0x2005);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_u32(&mut data, 42);
+    push_field(&mut data, 0x2006);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_i32(&mut data, -7);
+    push_field(&mut data, 0x2007);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_unquoted(&mut data, b"plain");
+    push_field(&mut data, 0x2002);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_f32_raw(&mut data, 1234i32.to_le_bytes());
+    push_field(&mut data, 0x2003);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_f64_raw(&mut data, (12i64 * 32768).to_le_bytes());
+    data
+}
+
 fn eu4_unknown_field_fixture() -> Vec<u8> {
     let mut data = Vec::new();
     push_field(&mut data, 0x2010);
@@ -643,6 +783,16 @@ mod deserialize {
         word: String,
     }
 
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Eu4SpeculativePrimitives {
+        flag: bool,
+        count: u32,
+        delta: i32,
+        word: String,
+        score32: f32,
+        score64: f64,
+    }
+
     #[test]
     fn deserializes_windows1252_chinese_scalars_and_fixed_float_rules() {
         let data = eu4_scalar_rules_fixture();
@@ -680,6 +830,33 @@ mod deserialize {
                 delta: -7,
                 word: String::from("plain"),
                 nested: Eu4NestedData { inner: 9 },
+            }
+        );
+    }
+
+    #[test]
+    fn speculatively_deserializes_primitives_across_small_chunks() {
+        let data = eu4_speculative_primitives_fixture();
+
+        let from_bytes: Eu4SpeculativePrimitives =
+            from_slice(&data, Eu4Format::default(), Eu4Fields).unwrap();
+        let from_stream: Eu4SpeculativePrimitives = jomini::binary::ng::from_reader(
+            crate::support::ChunkedReader::new(&data, 2),
+            Eu4Format::default(),
+            Eu4Fields,
+        )
+        .unwrap();
+
+        assert_eq!(from_stream, from_bytes);
+        assert_eq!(
+            from_stream,
+            Eu4SpeculativePrimitives {
+                flag: true,
+                count: 42,
+                delta: -7,
+                word: String::from("plain"),
+                score32: 1.234,
+                score64: 12.0,
             }
         );
     }
