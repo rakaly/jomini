@@ -125,6 +125,7 @@ impl FieldResolver for Eu4Fields {
             0x2007 => Some("word"),
             0x2008 => Some("nested"),
             0x2009 => Some("inner"),
+            0x200a => Some("members"),
             _ => None,
         }
     }
@@ -608,13 +609,38 @@ fn eu4_unknown_field_fixture() -> Vec<u8> {
     data
 }
 
+fn eu4_nested_sequence_fixture() -> Vec<u8> {
+    let mut data = Vec::new();
+    push_unquoted(&mut data, b"AAA");
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_lexeme(&mut data, LexemeId::OPEN);
+    push_field(&mut data, 0x200a);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_lexeme(&mut data, LexemeId::OPEN);
+    push_i32(&mut data, 1);
+    push_i32(&mut data, 2);
+    push_lexeme(&mut data, LexemeId::CLOSE);
+    push_field(&mut data, 0x2007);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_unquoted(&mut data, b"plain");
+    push_lexeme(&mut data, LexemeId::CLOSE);
+    data
+}
+
 mod deserialize {
     use super::*;
+    use std::collections::HashMap;
 
     #[derive(Debug, Deserialize, PartialEq)]
     struct Eu4IgnoredNestedData {
         flag: bool,
         score32: f32,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Eu4SeqInMapValue {
+        members: Vec<i32>,
+        word: String,
     }
 
     #[test]
@@ -670,6 +696,21 @@ mod deserialize {
                 flag: true,
                 score32: 1.234,
             }
+        );
+    }
+
+    #[test]
+    fn consumes_sequence_close_before_returning_to_parent_map() {
+        let data = eu4_nested_sequence_fixture();
+
+        let actual: HashMap<String, Eu4SeqInMapValue> =
+            assert_slice_and_reader(&data, Eu4Format::default, Eu4Fields);
+        assert_eq!(
+            actual.get("AAA"),
+            Some(&Eu4SeqInMapValue {
+                members: vec![1, 2],
+                word: String::from("plain"),
+            })
         );
     }
 }

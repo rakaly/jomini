@@ -1003,12 +1003,14 @@ where
                 let mut seq = BinaryReaderSeq::new(de);
                 let result = visitor.visit_seq(&mut seq)?;
                 if !seq.hit_end {
-                    if de.reader.peek_lexeme_id()? != Some(LexemeId::CLOSE) {
+                    if de.reader.peek_lexeme_id_refill()? != Some(LexemeId::CLOSE) {
                         return Err(Error::invalid_syntax(
                             "Expected sequence to be terminated with an end token",
                             de.reader.position(),
                         ));
                     }
+
+                    unsafe { de.reader.consume_lexeme_id() };
                 }
                 Ok(result)
             }
