@@ -88,42 +88,36 @@ impl BinaryTokenFormat for Hoi4Format {
         &mut self,
         reader: &'a mut ParserState,
     ) -> Result<TokenResult<Self::Token<'a>>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(TokenResult::MoreData);
         };
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
 
         match id {
             LexemeId::OPEN => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Hoi4Token::Open))
             }
             LexemeId::CLOSE => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Hoi4Token::Close))
             }
             LexemeId::EQUAL => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Hoi4Token::Equal))
             }
             LexemeId::QUOTED | LexemeId::UNQUOTED => {
-                let Some(header) = reader.peek_bytes::<4>().copied() else {
+                let Some(data) = cursor.read_len_prefixed() else {
                     return Ok(TokenResult::MoreData);
                 };
-                let len = u16::from_le_bytes([header[2], header[3]]);
-                if reader.len() < 4 + len as usize {
-                    return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(4) };
-                let data = reader.read_slice(len).ok_or_else(Error::eof)?;
+                cursor.consume();
                 Ok(TokenResult::Token(Hoi4Token::Scalar(data)))
             }
             LexemeId::I32 => {
-                if reader.len() < 6 {
+                let Some(data) = cursor.read_bytes::<4>().copied() else {
                     return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(2) };
-                let data = reader.read_exact::<4>()?;
+                };
+                cursor.consume();
                 let value = i32::from_le_bytes(data);
                 if self.pending_save_version {
                     self.save_version = value;
@@ -133,31 +127,28 @@ impl BinaryTokenFormat for Hoi4Format {
             }
             LexemeId::F32 => {
                 if self.modern_f32() {
-                    if reader.len() < 10 {
+                    let Some(data) = cursor.read_bytes::<8>().copied() else {
                         return Ok(TokenResult::MoreData);
-                    }
-                    unsafe { reader.consume(2) };
-                    let data = reader.read_exact::<8>()?;
+                    };
+                    cursor.consume();
                     Ok(TokenResult::Token(Hoi4Token::ModernF32(data)))
                 } else {
-                    if reader.len() < 6 {
+                    let Some(data) = cursor.read_bytes::<4>().copied() else {
                         return Ok(TokenResult::MoreData);
-                    }
-                    unsafe { reader.consume(2) };
-                    let data = reader.read_exact::<4>()?;
+                    };
+                    cursor.consume();
                     Ok(TokenResult::Token(Hoi4Token::LegacyF32(data)))
                 }
             }
             LexemeId::F64 => {
-                if reader.len() < 10 {
+                let Some(data) = cursor.read_bytes::<8>().copied() else {
                     return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(2) };
-                let data = reader.read_exact::<8>()?;
+                };
+                cursor.consume();
                 Ok(TokenResult::Token(Hoi4Token::F64(data)))
             }
             id => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 self.pending_save_version = id.0 == 0x349d;
                 Ok(TokenResult::Token(Hoi4Token::Field(FieldId::new(id.0))))
             }
@@ -176,20 +167,15 @@ impl BinaryValueFormat for Hoi4Format {
         visitor: V,
         config: &BinaryConfig<RES>,
     ) -> Result<ValueResult<V::Value, V>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
         if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
-            let Some(header) = reader.peek_bytes::<4>() else {
+            let Some(data) = cursor.read_len_prefixed() else {
                 return Ok(ValueResult::MoreData(visitor));
             };
-            let len = u16::from_le_bytes([header[2], header[3]]);
-            if reader.len() < 4 + len as usize {
-                return Ok(ValueResult::MoreData(visitor));
-            }
-            unsafe { reader.consume(4) };
-            let data = reader.read_slice(len).ok_or_else(Error::eof)?;
+            cursor.consume();
             let value = match self.decode_scalar(data)? {
                 Cow::Borrowed(x) => visitor.visit_str(x)?,
                 Cow::Owned(x) => visitor.visit_string(x)?,
@@ -206,7 +192,7 @@ impl BinaryValueFormat for Hoi4Format {
         ) {
             self.deserialize_any(reader, visitor, config)
         } else {
-            unsafe { reader.consume(2) };
+            cursor.consume();
             self.pending_save_version = id.0 == 0x349d;
             resolve_name(FieldId::new(id.0), visitor, config)
         }
@@ -218,21 +204,21 @@ impl BinaryValueFormat for Hoi4Format {
         visitor: V,
         config: &BinaryConfig<RES>,
     ) -> Result<ValueResult<V::Value, V>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
         match id {
             LexemeId::OPEN => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(ValueResult::Open(visitor))
             }
             LexemeId::I32 => {
-                if reader.len() < 6 {
+                let Some(data) = cursor.read_bytes::<4>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
-                }
-                unsafe { reader.consume(2) };
-                let value = i32::from_le_bytes(reader.read_exact::<4>()?);
+                };
+                cursor.consume();
+                let value = i32::from_le_bytes(data);
                 if self.pending_save_version {
                     self.save_version = value;
                     self.pending_save_version = false;
@@ -240,32 +226,32 @@ impl BinaryValueFormat for Hoi4Format {
                 Ok(ValueResult::Value(visitor.visit_i32(value)?))
             }
             LexemeId::F32 => {
-                if self.modern_f32() {
-                    if reader.len() < 10 {
-                        return Ok(ValueResult::MoreData(visitor));
-                    }
-                } else if reader.len() < 6 {
-                    return Ok(ValueResult::MoreData(visitor));
-                }
-                unsafe { reader.consume(2) };
                 let value = if self.modern_f32() {
-                    i64::from_le_bytes(reader.read_exact::<8>()?) as f32 / 100_000.0
+                    let Some(data) = cursor.read_bytes::<8>().copied() else {
+                        return Ok(ValueResult::MoreData(visitor));
+                    };
+                    cursor.consume();
+                    i64::from_le_bytes(data) as f32 / 100_000.0
                 } else {
-                    i32::from_le_bytes(reader.read_exact::<4>()?) as f32 / 1000.0
+                    let Some(data) = cursor.read_bytes::<4>().copied() else {
+                        return Ok(ValueResult::MoreData(visitor));
+                    };
+                    cursor.consume();
+                    i32::from_le_bytes(data) as f32 / 1000.0
                 };
                 Ok(ValueResult::Value(visitor.visit_f32(value)?))
             }
             LexemeId::F64 => {
-                if reader.len() < 10 {
+                let Some(data) = cursor.read_bytes::<8>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
-                }
-                unsafe { reader.consume(2) };
+                };
+                cursor.consume();
                 Ok(ValueResult::Value(
-                    visitor.visit_f64(Self::decode_f64(reader.read_exact::<8>()?))?,
+                    visitor.visit_f64(Self::decode_f64(data))?,
                 ))
             }
             id => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 resolve_name(FieldId::new(id.0), visitor, config)
             }
         }

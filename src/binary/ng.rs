@@ -159,12 +159,15 @@ impl ParserState {
     /// The caller must ensure that `amt` does not exceed the current buffer length,
     /// otherwise this will result in undefined behavior by reading beyond the buffer bounds.
     #[inline]
-    pub unsafe fn consume(&mut self, amt: usize) {
+    pub(crate) unsafe fn consume(&mut self, amt: usize) {
         self.buf.start = unsafe { self.buf.start.add(amt) };
         self.buf.len -= amt;
         self.buf.total_read += amt;
     }
 }
+
+#[derive(Clone, Copy)]
+pub struct CursorCheckpoint(usize);
 
 pub struct TokenCursor<'a> {
     state: &'a mut ParserBuf,
@@ -172,6 +175,11 @@ pub struct TokenCursor<'a> {
 }
 
 impl<'a> TokenCursor<'a> {
+    #[inline]
+    pub fn checkpoint(&self) -> CursorCheckpoint {
+        CursorCheckpoint(self.consumed)
+    }
+
     #[inline]
     pub fn consumed(&self) -> usize {
         self.consumed
@@ -222,6 +230,14 @@ impl<'a> TokenCursor<'a> {
         self.state.start = unsafe { self.state.start.add(self.consumed) };
         self.state.len -= self.consumed;
         self.state.total_read += self.consumed;
+    }
+
+    #[inline]
+    pub fn consume_to(self, checkpoint: CursorCheckpoint) {
+        debug_assert!(checkpoint.0 <= self.consumed);
+        self.state.start = unsafe { self.state.start.add(checkpoint.0) };
+        self.state.len -= checkpoint.0;
+        self.state.total_read += checkpoint.0;
     }
 }
 

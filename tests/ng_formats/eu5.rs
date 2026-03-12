@@ -140,78 +140,74 @@ impl BinaryTokenFormat for Eu5Format {
         &mut self,
         reader: &'a mut ParserState,
     ) -> Result<TokenResult<Self::Token<'a>>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(TokenResult::MoreData);
         };
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
 
         match id {
             LexemeId::OPEN => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Eu5Token::Open))
             }
             LexemeId::CLOSE => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Eu5Token::Close))
             }
             LexemeId::EQUAL => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Eu5Token::Equal))
             }
             LexemeId::QUOTED | LexemeId::UNQUOTED => {
-                let Some(header) = reader.peek_bytes::<4>().copied() else {
+                let Some(data) = cursor.read_len_prefixed() else {
                     return Ok(TokenResult::MoreData);
                 };
-                let len = u16::from_le_bytes([header[2], header[3]]);
-                if reader.len() < 4 + len as usize {
-                    return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(4) };
-                let data = reader.read_slice(len).ok_or_else(Error::eof)?;
+                cursor.consume();
                 Ok(TokenResult::Token(Eu5Token::Scalar(data)))
             }
             LexemeId::LOOKUP_U8 => {
-                if reader.len() < 3 {
+                let Some(data) = cursor.read_bytes::<1>().copied() else {
                     return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(2) };
-                let data = reader.read_exact::<1>()?;
+                };
+                cursor.consume();
                 Ok(TokenResult::Token(Eu5Token::Lookup(LookupIndex::new(
                     data[0] as u32,
                 ))))
             }
             LexemeId::I32 => {
-                if reader.len() < 6 {
+                let Some(data) = cursor.read_bytes::<4>().copied() else {
                     return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(2) };
-                let data = reader.read_exact::<4>()?;
+                };
+                cursor.consume();
                 Ok(TokenResult::Token(Eu5Token::I32(i32::from_le_bytes(data))))
             }
             LexemeId::F64 => {
-                if reader.len() < 10 {
+                let Some(data) = cursor.read_bytes::<8>().copied() else {
                     return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(2) };
-                let data = reader.read_exact::<8>()?;
+                };
+                cursor.consume();
                 Ok(TokenResult::Token(Eu5Token::RawF64(data)))
             }
             id if id >= LexemeId::FIXED5_ZERO && id <= LexemeId::FIXED5_I56 => {
-                if id != LexemeId::FIXED5_ZERO {
-                    let offset = id.0 - LexemeId::FIXED5_ZERO.0;
-                    let is_negative = offset > 7;
-                    let byte_count = offset - (is_negative as u16 * 7);
-                    if reader.len() < byte_count as usize + 2 {
+                let offset = id.0 - LexemeId::FIXED5_ZERO.0;
+                let is_negative = offset > 7;
+                let byte_count = offset - (is_negative as u16 * 7);
+                let raw = if byte_count == 0 {
+                    0
+                } else {
+                    let Some(data) = cursor.read_slice(byte_count) else {
                         return Ok(TokenResult::MoreData);
-                    }
-                }
-                unsafe { reader.consume(2) };
-                Ok(TokenResult::Token(Eu5Token::Fixed5(fixed5_raw(
-                    reader, id,
-                )?)))
+                    };
+                    let mut buf = [0u8; 8];
+                    buf[..byte_count as usize].copy_from_slice(data);
+                    let raw = u64::from_le_bytes(buf) as i64;
+                    if is_negative { -raw } else { raw }
+                };
+                cursor.consume();
+                Ok(TokenResult::Token(Eu5Token::Fixed5(raw)))
             }
             id => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Eu5Token::Field(FieldId::new(id.0))))
             }
         }
@@ -229,33 +225,33 @@ impl BinaryValueFormat for Eu5Format {
         visitor: V,
         config: &BinaryConfig<RES>,
     ) -> Result<ValueResult<V::Value, V>, Error> {
-        let Some(header) = reader.peek_bytes::<4>() else {
-            let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
-                return Ok(ValueResult::MoreData(visitor));
-            };
-            let id = LexemeId::new(u16::from_le_bytes(id_bytes));
-            return if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
-                Ok(ValueResult::MoreData(visitor))
-            } else {
-                self.deserialize_any(reader, visitor, config)
-            };
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
+            return Ok(ValueResult::MoreData(visitor));
         };
-        let id = LexemeId::new(u16::from_le_bytes([header[0], header[1]]));
         match id {
             LexemeId::QUOTED | LexemeId::UNQUOTED => {
-                let len = u16::from_le_bytes([header[2], header[3]]);
-                if reader.len() < 4 + len as usize {
+                let Some(data) = cursor.read_len_prefixed() else {
                     return Ok(ValueResult::MoreData(visitor));
-                }
-                unsafe { reader.consume(4) };
-                let data = reader.read_slice(len).ok_or_else(Error::eof)?;
+                };
+                cursor.consume();
                 let value = match self.decode_scalar(data)? {
                     Cow::Borrowed(x) => visitor.visit_str(x)?,
                     Cow::Owned(x) => visitor.visit_string(x)?,
                 };
                 Ok(ValueResult::Value(value))
             }
-            _ => self.deserialize_any(reader, visitor, config),
+            _ => {
+                let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+                    return Ok(ValueResult::MoreData(visitor));
+                };
+                let id = LexemeId::new(u16::from_le_bytes(id_bytes));
+                return if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
+                    Ok(ValueResult::MoreData(visitor))
+                } else {
+                    self.deserialize_any(reader, visitor, config)
+                };
+            }
         }
     }
 
@@ -265,10 +261,10 @@ impl BinaryValueFormat for Eu5Format {
         visitor: V,
         config: &BinaryConfig<RES>,
     ) -> Result<ValueResult<V::Value, V>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
         if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
             self.deserialize_str(reader, visitor, config)
         } else if matches!(
@@ -285,7 +281,7 @@ impl BinaryValueFormat for Eu5Format {
         {
             self.deserialize_any(reader, visitor, config)
         } else {
-            unsafe { reader.consume(2) };
+            cursor.consume();
             resolve_name(FieldId::new(id.0), visitor, config)
         }
     }
@@ -296,41 +292,41 @@ impl BinaryValueFormat for Eu5Format {
         visitor: V,
         config: &BinaryConfig<RES>,
     ) -> Result<ValueResult<V::Value, V>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
         match id {
             LexemeId::OPEN => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(ValueResult::Open(visitor))
             }
             LexemeId::I32 => {
-                if reader.len() < 6 {
+                let Some(data) = cursor.read_bytes::<4>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
-                }
-                unsafe { reader.consume(2) };
-                Ok(ValueResult::Value(visitor.visit_i32(
-                    i32::from_le_bytes(reader.read_exact::<4>()?),
-                )?))
+                };
+                cursor.consume();
+                Ok(ValueResult::Value(
+                    visitor.visit_i32(i32::from_le_bytes(data))?,
+                ))
             }
             LexemeId::F64 => {
-                if reader.len() < 10 {
+                let Some(data) = cursor.read_bytes::<8>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
-                }
-                unsafe { reader.consume(2) };
-                let raw = i64::from_le_bytes(reader.read_exact::<8>()?);
+                };
+                cursor.consume();
+                let raw = i64::from_le_bytes(data);
                 Ok(ValueResult::Value(
                     visitor.visit_f64(Self::decode_f64(raw))?,
                 ))
             }
             LexemeId::QUOTED | LexemeId::UNQUOTED => self.deserialize_str(reader, visitor, config),
             LexemeId::LOOKUP_U8 => {
-                if reader.len() < 3 {
+                let Some(data) = cursor.read_bytes::<1>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
-                }
-                unsafe { reader.consume(2) };
-                let index = LookupIndex::new(reader.read_exact::<1>()?[0] as u32);
+                };
+                cursor.consume();
+                let index = LookupIndex::new(data[0] as u32);
                 resolve_lookup(
                     self.lookups.get(&index.value()).copied(),
                     index,
@@ -342,17 +338,17 @@ impl BinaryValueFormat for Eu5Format {
                 let offset = id.0 - LexemeId::FIXED5_ZERO.0;
                 let is_negative = offset > 7;
                 let byte_count = offset - (is_negative as u16 * 7);
-                if reader.len() < byte_count as usize + 2 {
+                if cursor.len() < byte_count as usize {
                     return Ok(ValueResult::MoreData(visitor));
                 }
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 let raw = fixed5_raw(reader, id)?;
                 Ok(ValueResult::Value(
                     visitor.visit_f64(Self::decode_f64(raw))?,
                 ))
             }
             id => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 resolve_name(FieldId::new(id.0), visitor, config)
             }
         }

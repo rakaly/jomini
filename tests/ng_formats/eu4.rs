@@ -329,7 +329,7 @@ impl BinaryTokenFormat for Eu4Format {
         loop {
             let mut cursor = state.token_cursor();
             let committed = loop {
-                let committed = cursor.consumed();
+                let committed = cursor.checkpoint();
                 let Some(id) = cursor.read_lexeme() else {
                     break committed;
                 };
@@ -371,7 +371,7 @@ impl BinaryTokenFormat for Eu4Format {
                 }
             };
 
-            unsafe { state.consume(committed) };
+            cursor.consume_to(committed);
             if fill(state)? == 0 {
                 return Err(Error::eof());
             }

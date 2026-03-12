@@ -126,69 +126,61 @@ impl BinaryTokenFormat for Ck3Format {
         &mut self,
         reader: &'a mut ParserState,
     ) -> Result<TokenResult<Self::Token<'a>>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(TokenResult::MoreData);
         };
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
 
         match id {
             LexemeId::OPEN => {
                 self.on_open();
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Ck3Token::Open))
             }
             LexemeId::CLOSE => {
                 self.on_close();
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Ck3Token::Close))
             }
             LexemeId::EQUAL => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Ck3Token::Equal))
             }
             LexemeId::QUOTED | LexemeId::UNQUOTED => {
-                let Some(header) = reader.peek_bytes::<4>().copied() else {
+                let Some(data) = cursor.read_len_prefixed() else {
                     return Ok(TokenResult::MoreData);
                 };
-                let len = u16::from_le_bytes([header[2], header[3]]);
-                if reader.len() < 4 + len as usize {
-                    return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(4) };
-                let data = reader.read_slice(len).ok_or_else(Error::eof)?;
+                cursor.consume();
                 self.on_scalar_value();
                 Ok(TokenResult::Token(Ck3Token::Scalar(data)))
             }
             LexemeId::I32 => {
-                if reader.len() < 6 {
+                let Some(data) = cursor.read_bytes::<4>().copied() else {
                     return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(2) };
-                let data = reader.read_exact::<4>()?;
+                };
+                cursor.consume();
                 let value = i32::from_le_bytes(data);
                 self.on_i32(value);
                 Ok(TokenResult::Token(Ck3Token::I32(value)))
             }
             LexemeId::F32 => {
-                if reader.len() < 6 {
+                let Some(data) = cursor.read_bytes::<4>().copied() else {
                     return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(2) };
-                let data = reader.read_exact::<4>()?;
+                };
+                cursor.consume();
                 self.on_scalar_value();
                 Ok(TokenResult::Token(Ck3Token::F32(data)))
             }
             LexemeId::F64 => {
-                if reader.len() < 10 {
+                let Some(data) = cursor.read_bytes::<8>().copied() else {
                     return Ok(TokenResult::MoreData);
-                }
-                unsafe { reader.consume(2) };
-                let data = reader.read_exact::<8>()?;
+                };
+                cursor.consume();
                 self.on_scalar_value();
                 Ok(TokenResult::Token(Ck3Token::F64(data)))
             }
             id => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 let field = FieldId::new(id.0);
                 self.on_field(field);
                 Ok(TokenResult::Token(Ck3Token::Field(field)))
@@ -208,20 +200,15 @@ impl BinaryValueFormat for Ck3Format {
         visitor: V,
         config: &BinaryConfig<RES>,
     ) -> Result<ValueResult<V::Value, V>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
         if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
-            let Some(header) = reader.peek_bytes::<4>() else {
+            let Some(data) = cursor.read_len_prefixed() else {
                 return Ok(ValueResult::MoreData(visitor));
             };
-            let len = u16::from_le_bytes([header[2], header[3]]);
-            if reader.len() < 4 + len as usize {
-                return Ok(ValueResult::MoreData(visitor));
-            }
-            unsafe { reader.consume(4) };
-            let data = reader.read_slice(len).ok_or_else(Error::eof)?;
+            cursor.consume();
             self.on_scalar_value();
             let value = match self.decode_scalar(data)? {
                 Cow::Borrowed(x) => visitor.visit_str(x)?,
@@ -239,7 +226,7 @@ impl BinaryValueFormat for Ck3Format {
         ) {
             self.deserialize_any(reader, visitor, config)
         } else {
-            unsafe { reader.consume(2) };
+            cursor.consume();
             let field = FieldId::new(id.0);
             self.on_field(field);
             resolve_name(field, visitor, config)
@@ -252,31 +239,30 @@ impl BinaryValueFormat for Ck3Format {
         visitor: V,
         config: &BinaryConfig<RES>,
     ) -> Result<ValueResult<V::Value, V>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
         match id {
             LexemeId::OPEN => {
                 self.on_open();
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(ValueResult::Open(visitor))
             }
             LexemeId::I32 => {
-                if reader.len() < 6 {
+                let Some(data) = cursor.read_bytes::<4>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
-                }
-                unsafe { reader.consume(2) };
-                let value = i32::from_le_bytes(reader.read_exact::<4>()?);
+                };
+                cursor.consume();
+                let value = i32::from_le_bytes(data);
                 self.on_i32(value);
                 Ok(ValueResult::Value(visitor.visit_i32(value)?))
             }
             LexemeId::F32 => {
-                if reader.len() < 6 {
+                let Some(raw) = cursor.read_bytes::<4>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
-                }
-                unsafe { reader.consume(2) };
-                let raw = reader.read_exact::<4>()?;
+                };
+                cursor.consume();
                 let value = if self.modern() {
                     i32::from_le_bytes(raw) as f32 / 1000.0
                 } else {
@@ -286,11 +272,10 @@ impl BinaryValueFormat for Ck3Format {
                 Ok(ValueResult::Value(visitor.visit_f32(value)?))
             }
             LexemeId::F64 => {
-                if reader.len() < 10 {
+                let Some(raw) = cursor.read_bytes::<8>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
-                }
-                unsafe { reader.consume(2) };
-                let raw = reader.read_exact::<8>()?;
+                };
+                cursor.consume();
                 let value = if self.f64_uses_q49_15() {
                     let val = i64::from_le_bytes(raw) as f64 / 32768.0;
                     (val * 100_000.0).round() / 100_000.0
@@ -303,7 +288,7 @@ impl BinaryValueFormat for Ck3Format {
                 Ok(ValueResult::Value(visitor.visit_f64(value)?))
             }
             id => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 let field = FieldId::new(id.0);
                 self.on_field(field);
                 resolve_name(field, visitor, config)

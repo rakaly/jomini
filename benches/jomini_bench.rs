@@ -258,103 +258,92 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
                         LexemeId::new(u16::from_le_bytes([data[offset], data[offset + 1]]))
                     }
 
-                    let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+                    let mut cursor = reader.token_cursor();
+                    let Some(id) = cursor.read_lexeme() else {
                         return Ok(jomini::binary::ng::TokenResult::MoreData);
                     };
-                    let id = LexemeId::new(u16::from_le_bytes(id_bytes));
 
                     let token = match id {
                         LexemeId::OPEN => {
-                            unsafe { reader.consume(2) };
+                            cursor.consume();
                             BenchToken::Open
                         }
                         LexemeId::CLOSE => {
-                            unsafe { reader.consume(2) };
+                            cursor.consume();
                             BenchToken::Close
                         }
                         LexemeId::EQUAL => {
-                            unsafe { reader.consume(2) };
+                            cursor.consume();
                             BenchToken::Equal
                         }
                         LexemeId::U32 | LexemeId::I32 | LexemeId::F32 => {
-                            if reader.len() < 6 {
+                            if cursor.read_bytes::<4>().is_none() {
                                 return Ok(jomini::binary::ng::TokenResult::MoreData);
                             }
-                            unsafe { reader.consume(2) };
-                            let _ = reader.read_exact::<4>()?;
+                            cursor.consume();
                             BenchToken::Value
                         }
                         LexemeId::U64 | LexemeId::I64 | LexemeId::F64 => {
-                            if reader.len() < 10 {
+                            if cursor.read_bytes::<8>().is_none() {
                                 return Ok(jomini::binary::ng::TokenResult::MoreData);
                             }
-                            unsafe { reader.consume(2) };
-                            let _ = reader.read_exact::<8>()?;
+                            cursor.consume();
                             BenchToken::Value
                         }
                         LexemeId::BOOL | LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
-                            if reader.len() < 3 {
+                            if cursor.read_bytes::<1>().is_none() {
                                 return Ok(jomini::binary::ng::TokenResult::MoreData);
                             }
-                            unsafe { reader.consume(2) };
-                            let _ = reader.read_exact::<1>()?;
+                            cursor.consume();
                             BenchToken::Value
                         }
                         LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
-                            if reader.len() < 4 {
+                            if cursor.read_bytes::<2>().is_none() {
                                 return Ok(jomini::binary::ng::TokenResult::MoreData);
                             }
-                            unsafe { reader.consume(2) };
-                            let _ = reader.read_exact::<2>()?;
+                            cursor.consume();
                             BenchToken::Value
                         }
                         LexemeId::LOOKUP_U24 => {
-                            if reader.len() < 5 {
+                            if cursor.read_bytes::<3>().is_none() {
                                 return Ok(jomini::binary::ng::TokenResult::MoreData);
                             }
-                            unsafe { reader.consume(2) };
-                            let _ = reader.read_exact::<3>()?;
+                            cursor.consume();
                             BenchToken::Value
                         }
                         LexemeId::QUOTED | LexemeId::UNQUOTED => {
-                            let Some(header) = reader.peek_bytes::<4>().copied() else {
-                                return Ok(jomini::binary::ng::TokenResult::MoreData);
-                            };
-                            let len = u16::from_le_bytes([header[2], header[3]]);
-                            if reader.len() < len as usize + 4 {
+                            if cursor.read_len_prefixed().is_none() {
                                 return Ok(jomini::binary::ng::TokenResult::MoreData);
                             }
-                            unsafe { reader.consume(4) };
-                            let _ = reader.read_slice(len).ok_or_else(jomini::Error::eof)?;
+                            cursor.consume();
                             BenchToken::Value
                         }
                         LexemeId::RGB => {
-                            if reader.len() < 24 {
+                            if cursor.len() < 22 {
                                 return Ok(jomini::binary::ng::TokenResult::MoreData);
                             }
 
-                            let data = reader.peek_bytes::<24>().unwrap();
-                            let base_rgb = lexeme_at(data, 2) == LexemeId::OPEN
-                                && lexeme_at(data, 4) == LexemeId::U32
-                                && lexeme_at(data, 10) == LexemeId::U32
-                                && lexeme_at(data, 16) == LexemeId::U32;
-                            let next = lexeme_at(data, 22);
+                            let data = cursor.read_bytes::<22>().unwrap();
+                            let base_rgb = lexeme_at(data, 0) == LexemeId::OPEN
+                                && lexeme_at(data, 2) == LexemeId::U32
+                                && lexeme_at(data, 8) == LexemeId::U32
+                                && lexeme_at(data, 14) == LexemeId::U32;
+                            let next = lexeme_at(data, 20);
 
                             if base_rgb && next == LexemeId::CLOSE {
-                                unsafe { reader.consume(24) };
+                                cursor.consume();
                                 BenchToken::Value
                             } else if base_rgb && next == LexemeId::U32 {
-                                if reader.len() < 30 {
+                                let Some(data) = cursor.read_bytes::<6>() else {
                                     return Ok(jomini::binary::ng::TokenResult::MoreData);
-                                }
-                                let data = reader.peek_bytes::<30>().unwrap();
-                                if lexeme_at(data, 28) != LexemeId::CLOSE {
+                                };
+                                if lexeme_at(data, 4) != LexemeId::CLOSE {
                                     return Err(jomini::Error::invalid_syntax(
                                         "invalid rgb token",
                                         0,
                                     ));
                                 }
-                                unsafe { reader.consume(30) };
+                                cursor.consume();
                                 BenchToken::Value
                             } else {
                                 return Err(jomini::Error::invalid_syntax("invalid rgb token", 0));
@@ -364,19 +353,17 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
                             let offset = id.0 - LexemeId::FIXED5_ZERO.0;
                             let is_negative = offset > 7;
                             let byte_count = offset - (is_negative as u16 * 7);
-                            if reader.len() < byte_count as usize + 2 {
+                            if cursor.len() < byte_count as usize {
                                 return Ok(jomini::binary::ng::TokenResult::MoreData);
                             }
-                            unsafe { reader.consume(2) };
                             if byte_count != 0 {
-                                let _ = reader
-                                    .read_slice(byte_count)
-                                    .ok_or_else(jomini::Error::eof)?;
+                                let _ = cursor.read_slice(byte_count).unwrap();
                             }
+                            cursor.consume();
                             BenchToken::Value
                         }
                         id => {
-                            unsafe { reader.consume(2) };
+                            cursor.consume();
                             BenchToken::Id(jomini::binary::ng::FieldId::new(id.0))
                         }
                     };
