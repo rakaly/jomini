@@ -243,19 +243,6 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
                 Value,
             }
 
-            impl jomini::binary::ng::StreamToken for BenchToken {
-                fn structure(&self) -> jomini::binary::ng::StructureKind {
-                    match self {
-                        BenchToken::Open => jomini::binary::ng::StructureKind::Open,
-                        BenchToken::Close => jomini::binary::ng::StructureKind::Close,
-                        BenchToken::Equal => jomini::binary::ng::StructureKind::Equal,
-                        BenchToken::Id(_) | BenchToken::Value => {
-                            jomini::binary::ng::StructureKind::Value
-                        }
-                    }
-                }
-            }
-
             struct MyFormat;
 
             impl jomini::binary::ng::BinaryTokenFormat for MyFormat {
@@ -400,10 +387,9 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
 
             let data = data.load();
             b.iter(|| {
-                let mut format = MyFormat;
-                let mut reader = jomini::binary::ng::TokenReader::from_slice(&data[..]);
+                let mut reader = jomini::binary::ng::TokenReader::from_slice(&data[..], MyFormat);
                 let mut counter: u64 = 0;
-                while let Ok(Some(token)) = reader.next_token(&mut format) {
+                while let Ok(Some(token)) = reader.next_token() {
                     if let BenchToken::Id(field) = token {
                         counter = counter.wrapping_add(u64::from(field.value()));
                     }

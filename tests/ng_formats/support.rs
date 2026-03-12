@@ -1,6 +1,6 @@
 use jomini::{
     binary::LexemeId,
-    binary::ng::{BinaryTokenFormat, BinaryValueFormat, FieldResolver, from_reader, from_slice},
+    binary::ng::{BinaryFormat, FieldResolver, from_reader, from_slice},
 };
 use serde::Deserialize;
 use std::{fmt::Debug, io::Read};
@@ -97,7 +97,7 @@ pub(crate) fn assert_slice_and_reader<T, F, RES, Make>(
 ) -> T
 where
     T: for<'de> Deserialize<'de> + PartialEq + Debug,
-    F: BinaryValueFormat + BinaryTokenFormat,
+    F: BinaryFormat,
     RES: FieldResolver + Copy,
     Make: Fn() -> F,
 {

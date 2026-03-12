@@ -6,7 +6,7 @@ use jomini::{
     binary::LexemeId,
     binary::ng::{
         BinaryConfig, BinaryTokenFormat, BinaryValueFormat, FieldId, FieldResolver, ParserState,
-        PdxVisitor, StreamToken, StructureKind, TokenResult, ValueResult,
+        PdxVisitor, TokenResult, ValueResult,
     },
 };
 use serde::{Deserialize, de::Error as _};
@@ -49,17 +49,6 @@ enum Ck3Token<'a> {
     F64([u8; 8]),
 }
 
-impl StreamToken for Ck3Token<'_> {
-    fn structure(&self) -> StructureKind {
-        match self {
-            Ck3Token::Open => StructureKind::Open,
-            Ck3Token::Close => StructureKind::Close,
-            Ck3Token::Equal => StructureKind::Equal,
-            _ => StructureKind::Value,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Default)]
 struct Ck3Fields;
 
@@ -69,6 +58,8 @@ impl FieldResolver for Ck3Fields {
             0x00ee => Some("version"),
             0x4001 => Some("value32"),
             0x4002 => Some("value64"),
+            0x5000 => Some("alive_data"),
+            0x5001 => Some("gold"),
             _ => None,
         }
     }
@@ -76,13 +67,55 @@ impl FieldResolver for Ck3Fields {
 
 #[derive(Default)]
 struct Ck3Format {
+    pending_field: Option<FieldId>,
     pending_version: bool,
     version: i32,
+    scope_stack: Vec<FieldId>,
 }
 
 impl Ck3Format {
+    const VERSION_FIELD: FieldId = FieldId::new(0x00ee);
+    const ALIVE_DATA_FIELD: FieldId = FieldId::new(0x5000);
+    const GOLD_FIELD: FieldId = FieldId::new(0x5001);
+
     fn modern(&self) -> bool {
         self.version >= 2
+    }
+
+    fn on_field(&mut self, field: FieldId) {
+        self.pending_field = Some(field);
+        self.pending_version = field == Self::VERSION_FIELD;
+    }
+
+    fn on_i32(&mut self, value: i32) {
+        if self.pending_version {
+            self.version = value;
+            self.pending_version = false;
+        }
+        self.pending_field = None;
+    }
+
+    fn on_scalar_value(&mut self) {
+        self.pending_version = false;
+        self.pending_field = None;
+    }
+
+    fn on_open(&mut self) {
+        if let Some(field) = self.pending_field.take() {
+            self.scope_stack.push(field);
+        }
+        self.pending_version = false;
+    }
+
+    fn on_close(&mut self) {
+        let _ = self.scope_stack.pop();
+        self.pending_version = false;
+        self.pending_field = None;
+    }
+
+    fn f64_uses_q49_15(&self) -> bool {
+        self.pending_field == Some(Self::GOLD_FIELD)
+            && self.scope_stack.last().copied() == Some(Self::ALIVE_DATA_FIELD)
     }
 }
 
@@ -100,10 +133,12 @@ impl BinaryTokenFormat for Ck3Format {
 
         match id {
             LexemeId::OPEN => {
+                self.on_open();
                 unsafe { reader.consume(2) };
                 Ok(TokenResult::Token(Ck3Token::Open))
             }
             LexemeId::CLOSE => {
+                self.on_close();
                 unsafe { reader.consume(2) };
                 Ok(TokenResult::Token(Ck3Token::Close))
             }
@@ -121,6 +156,7 @@ impl BinaryTokenFormat for Ck3Format {
                 }
                 unsafe { reader.consume(4) };
                 let data = reader.read_slice(len).ok_or_else(Error::eof)?;
+                self.on_scalar_value();
                 Ok(TokenResult::Token(Ck3Token::Scalar(data)))
             }
             LexemeId::I32 => {
@@ -130,10 +166,7 @@ impl BinaryTokenFormat for Ck3Format {
                 unsafe { reader.consume(2) };
                 let data = reader.read_exact::<4>()?;
                 let value = i32::from_le_bytes(data);
-                if self.pending_version {
-                    self.version = value;
-                    self.pending_version = false;
-                }
+                self.on_i32(value);
                 Ok(TokenResult::Token(Ck3Token::I32(value)))
             }
             LexemeId::F32 => {
@@ -142,6 +175,7 @@ impl BinaryTokenFormat for Ck3Format {
                 }
                 unsafe { reader.consume(2) };
                 let data = reader.read_exact::<4>()?;
+                self.on_scalar_value();
                 Ok(TokenResult::Token(Ck3Token::F32(data)))
             }
             LexemeId::F64 => {
@@ -150,12 +184,14 @@ impl BinaryTokenFormat for Ck3Format {
                 }
                 unsafe { reader.consume(2) };
                 let data = reader.read_exact::<8>()?;
+                self.on_scalar_value();
                 Ok(TokenResult::Token(Ck3Token::F64(data)))
             }
             id => {
                 unsafe { reader.consume(2) };
-                self.pending_version = id.0 == 0x00ee;
-                Ok(TokenResult::Token(Ck3Token::Field(FieldId::new(id.0))))
+                let field = FieldId::new(id.0);
+                self.on_field(field);
+                Ok(TokenResult::Token(Ck3Token::Field(field)))
             }
         }
     }
@@ -186,6 +222,7 @@ impl BinaryValueFormat for Ck3Format {
             }
             unsafe { reader.consume(4) };
             let data = reader.read_slice(len).ok_or_else(Error::eof)?;
+            self.on_scalar_value();
             let value = match self.decode_scalar(data)? {
                 Cow::Borrowed(x) => visitor.visit_str(x)?,
                 Cow::Owned(x) => visitor.visit_string(x)?,
@@ -203,8 +240,9 @@ impl BinaryValueFormat for Ck3Format {
             self.deserialize_any(reader, visitor, config)
         } else {
             unsafe { reader.consume(2) };
-            self.pending_version = id.0 == 0x00ee;
-            resolve_name(FieldId::new(id.0), visitor, config)
+            let field = FieldId::new(id.0);
+            self.on_field(field);
+            resolve_name(field, visitor, config)
         }
     }
 
@@ -220,6 +258,7 @@ impl BinaryValueFormat for Ck3Format {
         let id = LexemeId::new(u16::from_le_bytes(id_bytes));
         match id {
             LexemeId::OPEN => {
+                self.on_open();
                 unsafe { reader.consume(2) };
                 Ok(ValueResult::Open(visitor))
             }
@@ -229,10 +268,7 @@ impl BinaryValueFormat for Ck3Format {
                 }
                 unsafe { reader.consume(2) };
                 let value = i32::from_le_bytes(reader.read_exact::<4>()?);
-                if self.pending_version {
-                    self.version = value;
-                    self.pending_version = false;
-                }
+                self.on_i32(value);
                 Ok(ValueResult::Value(visitor.visit_i32(value)?))
             }
             LexemeId::F32 => {
@@ -246,6 +282,7 @@ impl BinaryValueFormat for Ck3Format {
                 } else {
                     f32::from_le_bytes(raw)
                 };
+                self.on_scalar_value();
                 Ok(ValueResult::Value(visitor.visit_f32(value)?))
             }
             LexemeId::F64 => {
@@ -254,16 +291,22 @@ impl BinaryValueFormat for Ck3Format {
                 }
                 unsafe { reader.consume(2) };
                 let raw = reader.read_exact::<8>()?;
-                let value = if self.modern() {
+                let value = if self.f64_uses_q49_15() {
+                    let val = i64::from_le_bytes(raw) as f64 / 32768.0;
+                    (val * 100_000.0).round() / 100_000.0
+                } else if self.modern() {
                     i64::from_le_bytes(raw) as f64 / 100_000.0
                 } else {
                     f64::from_le_bytes(raw)
                 };
+                self.on_scalar_value();
                 Ok(ValueResult::Value(visitor.visit_f64(value)?))
             }
             id => {
                 unsafe { reader.consume(2) };
-                resolve_name(FieldId::new(id.0), visitor, config)
+                let field = FieldId::new(id.0);
+                self.on_field(field);
+                resolve_name(field, visitor, config)
             }
         }
     }
@@ -280,6 +323,18 @@ struct Ck3Data {
 struct Ck3IgnoredVersionData {
     value32: f32,
     value64: f64,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct Ck3AliveData {
+    gold: f64,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct Ck3ScopedGoldData {
+    version: i32,
+    gold: f64,
+    alive_data: Ck3AliveData,
 }
 
 #[test]
@@ -332,4 +387,28 @@ fn ck3_ignored_version_still_switches_float_decoding() {
         assert_slice_and_reader(&data, Ck3Format::default, Ck3Fields);
     assert_eq!(actual.value32, 3.14);
     assert_eq!(actual.value64, 2.71828);
+}
+
+#[test]
+fn ck3_alive_data_gold_can_use_q49_15_while_other_gold_uses_decimal_fixed_point() {
+    let mut data = Vec::new();
+    push_field(&mut data, 0x00ee);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_i32(&mut data, 2);
+
+    push_field(&mut data, 0x5001);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_f64_raw(&mut data, 123_456i64.to_le_bytes());
+
+    push_field(&mut data, 0x5000);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_lexeme(&mut data, LexemeId::OPEN);
+    push_field(&mut data, 0x5001);
+    push_lexeme(&mut data, LexemeId::EQUAL);
+    push_f64_raw(&mut data, (2i64 * 32768).to_le_bytes());
+    push_lexeme(&mut data, LexemeId::CLOSE);
+
+    let actual: Ck3ScopedGoldData = assert_slice_and_reader(&data, Ck3Format::default, Ck3Fields);
+    assert_eq!(actual.gold, 1.23456);
+    assert_eq!(actual.alive_data.gold, 2.0);
 }

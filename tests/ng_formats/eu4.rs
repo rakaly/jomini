@@ -6,8 +6,7 @@ use jomini::{
     Error, Windows1252Encoding,
     binary::ng::{
         BinaryConfig, BinaryTokenFormat, BinaryValueFormat, FieldId, FieldResolver, ParserState,
-        PdxVisitor, StreamToken, StructureKind, TokenReader, TokenResult, ValueResult, from_slice,
-        from_slice_with_config,
+        PdxVisitor, TokenReader, TokenResult, ValueResult, from_slice, from_slice_with_config,
     },
     binary::{FailedResolveStrategy, LexemeId},
 };
@@ -110,17 +109,6 @@ impl From<Eu4Token<'_>> for Eu4TokenOwned {
     }
 }
 
-impl StreamToken for Eu4Token<'_> {
-    fn structure(&self) -> StructureKind {
-        match self {
-            Eu4Token::Open => StructureKind::Open,
-            Eu4Token::Close => StructureKind::Close,
-            Eu4Token::Equal => StructureKind::Equal,
-            _ => StructureKind::Value,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Default)]
 struct Eu4Fields;
 
@@ -155,19 +143,24 @@ impl Eu4Format {
         (val * 100_000.0).round() / 100_000.0
     }
 
-    fn deserialize_str<'de, V: PdxVisitor<'de>>(
+    fn deserialize_str<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
+        config: &BinaryConfig<RES>,
     ) -> Result<ValueResult<<V as PdxVisitor<'de>>::Value, V>, Error> {
-        let Some(header) = reader.peek_bytes::<4>() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
-        let len = u16::from_le_bytes([header[2], header[3]]);
-        let Some(data) = reader.read_slice(4 + len) else {
+        if !matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
+            return self.deserialize_any(reader, visitor, config);
+        }
+        let Some(data) = cursor.read_len_prefixed() else {
             return Ok(ValueResult::MoreData(visitor));
         };
-        let value = match self.decode_scalar(&data[4..])? {
+        cursor.consume();
+        let value = match self.decode_scalar(data)? {
             Cow::Borrowed(x) => visitor.visit_str(x)?,
             Cow::Owned(x) => visitor.visit_string(x)?,
         };
@@ -182,53 +175,50 @@ impl BinaryTokenFormat for Eu4Format {
         &mut self,
         reader: &'a mut ParserState,
     ) -> Result<TokenResult<Self::Token<'a>>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(TokenResult::MoreData);
         };
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
-
         match id {
             LexemeId::OPEN => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Eu4Token::Open))
             }
             LexemeId::CLOSE => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Eu4Token::Close))
             }
             LexemeId::EQUAL => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Eu4Token::Equal))
             }
             LexemeId::BOOL => {
-                let Some(bytes) = reader.read_bytes::<3>() else {
+                let Some(bytes) = cursor.read_bytes::<1>().copied() else {
                     return Ok(TokenResult::MoreData);
                 };
-                Ok(TokenResult::Token(Eu4Token::Bool(bytes[2] != 0)))
+                cursor.consume();
+                Ok(TokenResult::Token(Eu4Token::Bool(bytes[0] != 0)))
             }
             LexemeId::U32 => {
-                let Some(bytes) = reader.read_bytes::<6>() else {
+                let Some(bytes) = cursor.read_bytes::<4>().copied() else {
                     return Ok(TokenResult::MoreData);
                 };
-                let data = [bytes[2], bytes[3], bytes[4], bytes[5]];
-                Ok(TokenResult::Token(Eu4Token::U32(u32::from_le_bytes(data))))
+                cursor.consume();
+                Ok(TokenResult::Token(Eu4Token::U32(u32::from_le_bytes(bytes))))
             }
             LexemeId::I32 => {
-                let Some(bytes) = reader.read_bytes::<6>() else {
+                let Some(bytes) = cursor.read_bytes::<4>().copied() else {
                     return Ok(TokenResult::MoreData);
                 };
-                let data = [bytes[2], bytes[3], bytes[4], bytes[5]];
-                Ok(TokenResult::Token(Eu4Token::I32(i32::from_le_bytes(data))))
+                cursor.consume();
+                Ok(TokenResult::Token(Eu4Token::I32(i32::from_le_bytes(bytes))))
             }
             LexemeId::QUOTED | LexemeId::UNQUOTED => {
-                let Some(header) = reader.peek_bytes::<4>().copied() else {
+                let Some(data) = cursor.read_len_prefixed() else {
                     return Ok(TokenResult::MoreData);
                 };
-                let len = u16::from_le_bytes([header[2], header[3]]);
-                let Some(bytes) = reader.read_slice(len + 4) else {
-                    return Ok(TokenResult::MoreData);
-                };
-                let data = &bytes[4..];
+
+                cursor.consume();
                 if id == LexemeId::QUOTED {
                     Ok(TokenResult::Token(Eu4Token::Quoted(data)))
                 } else {
@@ -236,23 +226,21 @@ impl BinaryTokenFormat for Eu4Format {
                 }
             }
             LexemeId::F32 => {
-                let Some(bytes) = reader.read_bytes::<6>() else {
+                let Some(bytes) = cursor.read_bytes::<4>().copied() else {
                     return Ok(TokenResult::MoreData);
                 };
-                let data = [bytes[2], bytes[3], bytes[4], bytes[5]];
-                Ok(TokenResult::Token(Eu4Token::F32(data)))
+                cursor.consume();
+                Ok(TokenResult::Token(Eu4Token::F32(bytes)))
             }
             LexemeId::F64 => {
-                let Some(bytes) = reader.read_bytes::<10>() else {
+                let Some(bytes) = cursor.read_bytes::<8>().copied() else {
                     return Ok(TokenResult::MoreData);
                 };
-                let data = [
-                    bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9],
-                ];
-                Ok(TokenResult::Token(Eu4Token::F64(data)))
+                cursor.consume();
+                Ok(TokenResult::Token(Eu4Token::F64(bytes)))
             }
             id => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(TokenResult::Token(Eu4Token::Field(FieldId::new(id.0))))
             }
         }
@@ -266,73 +254,69 @@ impl BinaryTokenFormat for Eu4Format {
         // Phase 1: consume the first token. Scalars return immediately;
         // OPEN breaks into the container scan below.
         loop {
-            let slice = state.as_slice();
-            if slice.len() < 2 {
+            let mut cursor = state.token_cursor();
+            let Some(id) = cursor.read_lexeme() else {
                 if fill(state)? == 0 {
                     return Err(Error::eof());
                 }
                 continue;
-            }
-            let id = LexemeId::new(u16::from_le_bytes([slice[0], slice[1]]));
+            };
+
             match id {
                 LexemeId::OPEN => {
-                    unsafe { state.consume(2) };
+                    cursor.consume();
                     break;
                 }
                 LexemeId::CLOSE => {
-                    unsafe { state.consume(2) };
+                    cursor.consume();
                     return Ok(());
                 }
                 LexemeId::BOOL => {
-                    if slice.len() < 3 {
-                        if fill(state)? == 0 {
-                            return Err(Error::eof());
-                        }
-                        continue;
+                    if cursor.read_bytes::<1>().is_some() {
+                        cursor.consume();
+                        return Ok(());
                     }
-                    unsafe { state.consume(3) };
-                    return Ok(());
+
+                    if fill(state)? == 0 {
+                        return Err(Error::eof());
+                    }
+                    continue;
                 }
                 LexemeId::I32 | LexemeId::F32 | LexemeId::U32 => {
-                    if slice.len() < 6 {
-                        if fill(state)? == 0 {
-                            return Err(Error::eof());
-                        }
-                        continue;
+                    if cursor.read_bytes::<4>().is_some() {
+                        cursor.consume();
+                        return Ok(());
                     }
-                    unsafe { state.consume(6) };
-                    return Ok(());
+
+                    if fill(state)? == 0 {
+                        return Err(Error::eof());
+                    }
+                    continue;
                 }
                 LexemeId::F64 => {
-                    if slice.len() < 10 {
-                        if fill(state)? == 0 {
-                            return Err(Error::eof());
-                        }
-                        continue;
+                    if cursor.read_bytes::<8>().is_some() {
+                        cursor.consume();
+                        return Ok(());
                     }
-                    unsafe { state.consume(10) };
-                    return Ok(());
+
+                    if fill(state)? == 0 {
+                        return Err(Error::eof());
+                    }
+                    continue;
                 }
                 LexemeId::QUOTED | LexemeId::UNQUOTED => {
-                    if slice.len() < 4 {
+                    if cursor.read_len_prefixed().is_none() {
                         if fill(state)? == 0 {
                             return Err(Error::eof());
                         }
                         continue;
                     }
-                    let len = u16::from_le_bytes([slice[2], slice[3]]) as usize;
-                    if slice.len() < 4 + len {
-                        if fill(state)? == 0 {
-                            return Err(Error::eof());
-                        }
-                        continue;
-                    }
-                    unsafe { state.consume(4 + len) };
+                    cursor.consume();
                     return Ok(());
                 }
                 _ => {
                     // field ID or EQUAL: 2 bytes
-                    unsafe { state.consume(2) };
+                    cursor.consume();
                     return Ok(());
                 }
             }
@@ -342,68 +326,51 @@ impl BinaryTokenFormat for Eu4Format {
         // check; only OPEN/CLOSE affect depth.
         let mut depth: usize = 1;
         loop {
-            let slice = state.as_slice();
-            let mut pos = 0;
+            let mut cursor = state.token_cursor();
 
             loop {
-                if pos + 2 > slice.len() {
+                let Some(id) = cursor.read_lexeme() else {
                     break;
-                }
-                let id = LexemeId::new(u16::from_le_bytes(unsafe {
-                    [*slice.get_unchecked(pos), *slice.get_unchecked(pos + 1)]
-                }));
+                };
 
                 match id {
                     LexemeId::CLOSE => {
-                        pos += 2;
                         depth -= 1;
                         if depth == 0 {
-                            unsafe { state.consume(pos) };
+                            cursor.consume();
                             return Ok(());
                         }
                     }
                     LexemeId::OPEN => {
                         depth += 1;
-                        pos += 2;
                     }
                     LexemeId::BOOL => {
-                        if pos + 3 > slice.len() {
+                        if cursor.read_bytes::<1>().is_none() {
                             break;
                         }
-                        pos += 3;
                     }
                     LexemeId::I32 | LexemeId::F32 | LexemeId::U32 => {
-                        if pos + 6 > slice.len() {
+                        if cursor.read_bytes::<4>().is_none() {
                             break;
                         }
-                        pos += 6;
                     }
                     LexemeId::F64 => {
-                        if pos + 10 > slice.len() {
+                        if cursor.read_bytes::<8>().is_none() {
                             break;
                         }
-                        pos += 10;
                     }
                     LexemeId::QUOTED | LexemeId::UNQUOTED => {
-                        if pos + 4 > slice.len() {
+                        if cursor.read_len_prefixed().is_none() {
                             break;
                         }
-                        let len = u16::from_le_bytes(unsafe {
-                            [*slice.get_unchecked(pos + 2), *slice.get_unchecked(pos + 3)]
-                        }) as usize;
-                        if pos + 4 + len > slice.len() {
-                            break;
-                        }
-                        pos += 4 + len;
                     }
                     _ => {
-                        // field ID or EQUAL: 2 bytes
-                        pos += 2;
+                        // field ID or EQUAL: only the lexeme bytes are consumed.
                     }
                 }
             }
 
-            unsafe { state.consume(pos) };
+            cursor.consume();
             if fill(state)? == 0 {
                 return Err(Error::eof());
             }
@@ -422,19 +389,17 @@ impl BinaryValueFormat for Eu4Format {
         visitor: V,
         config: &BinaryConfig<RES>,
     ) -> Result<ValueResult<V::Value, V>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
-
-        let field = FieldId::new(u16::from_le_bytes(id_bytes));
+        let field = FieldId::new(id.0);
         if let Some(name) = config.field_resolver().resolve_field(field) {
-            unsafe { reader.consume(2) };
+            cursor.consume();
             return Ok(ValueResult::Value(visitor.visit_str(name)?));
-        };
-
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
+        }
         if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
-            self.deserialize_str(reader, visitor)
+            self.deserialize_str(reader, visitor, config)
         } else {
             self.deserialize_any(reader, visitor, config)
         }
@@ -446,59 +411,61 @@ impl BinaryValueFormat for Eu4Format {
         visitor: V,
         config: &BinaryConfig<RES>,
     ) -> Result<ValueResult<V::Value, V>, Error> {
-        let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
+        let mut cursor = reader.token_cursor();
+        let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
-        let id = LexemeId::new(u16::from_le_bytes(id_bytes));
         match id {
             LexemeId::OPEN => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 Ok(ValueResult::Open(visitor))
             }
             LexemeId::BOOL => {
-                let Some(bytes) = reader.read_bytes::<3>() else {
+                let Some(bytes) = cursor.read_bytes::<1>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
                 };
-                Ok(ValueResult::Value(visitor.visit_bool(bytes[2] != 0)?))
+                cursor.consume();
+                Ok(ValueResult::Value(visitor.visit_bool(bytes[0] != 0)?))
             }
             LexemeId::U32 => {
-                let Some(bytes) = reader.read_bytes::<6>() else {
+                let Some(bytes) = cursor.read_bytes::<4>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
                 };
-                Ok(ValueResult::Value(visitor.visit_u32(
-                    u32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]),
-                )?))
+                cursor.consume();
+                Ok(ValueResult::Value(
+                    visitor.visit_u32(u32::from_le_bytes(bytes))?,
+                ))
             }
             LexemeId::I32 => {
-                let Some(bytes) = reader.read_bytes::<6>() else {
+                let Some(bytes) = cursor.read_bytes::<4>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
                 };
-                Ok(ValueResult::Value(visitor.visit_i32(
-                    i32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]),
-                )?))
+                cursor.consume();
+                Ok(ValueResult::Value(
+                    visitor.visit_i32(i32::from_le_bytes(bytes))?,
+                ))
             }
-            LexemeId::QUOTED | LexemeId::UNQUOTED => self.deserialize_str(reader, visitor),
+            LexemeId::QUOTED | LexemeId::UNQUOTED => self.deserialize_str(reader, visitor, config),
             LexemeId::F32 => {
-                let Some(bytes) = reader.read_bytes::<6>() else {
+                let Some(bytes) = cursor.read_bytes::<4>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
                 };
-                Ok(ValueResult::Value(visitor.visit_f32(Self::decode_f32(
-                    [bytes[2], bytes[3], bytes[4], bytes[5]],
-                ))?))
+                cursor.consume();
+                Ok(ValueResult::Value(
+                    visitor.visit_f32(Self::decode_f32(bytes))?,
+                ))
             }
             LexemeId::F64 => {
-                let Some(bytes) = reader.read_bytes::<10>() else {
+                let Some(bytes) = cursor.read_bytes::<8>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
                 };
-                Ok(ValueResult::Value(visitor.visit_f64(Self::decode_f64(
-                    [
-                        bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8],
-                        bytes[9],
-                    ],
-                ))?))
+                cursor.consume();
+                Ok(ValueResult::Value(
+                    visitor.visit_f64(Self::decode_f64(bytes))?,
+                ))
             }
             id => {
-                unsafe { reader.consume(2) };
+                cursor.consume();
                 resolve_name(FieldId::new(id.0), visitor, config)
             }
         }
@@ -713,77 +680,67 @@ mod token_stream {
     #[test]
     fn covers_common_tokens() {
         let data = eu4_common_tokens_fixture();
-        let mut reader = TokenReader::from_slice(&data);
-        let mut format = Eu4Format::default();
+        let mut reader = TokenReader::from_slice(&data, Eu4Format::default());
 
         assert_eq!(
-            reader.read_token(&mut format).unwrap(),
+            reader.read_token().unwrap(),
             Eu4Token::Field(FieldId::new(0x2004))
         );
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Bool(true));
         assert_eq!(
-            reader.read_token(&mut format).unwrap(),
-            Eu4Token::Bool(true)
-        );
-        assert_eq!(
-            reader.read_token(&mut format).unwrap(),
+            reader.read_token().unwrap(),
             Eu4Token::Field(FieldId::new(0x2005))
         );
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Equal);
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::U32(42));
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::U32(42));
         assert_eq!(
-            reader.read_token(&mut format).unwrap(),
+            reader.read_token().unwrap(),
             Eu4Token::Field(FieldId::new(0x2006))
         );
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Equal);
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::I32(-7));
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::I32(-7));
         assert_eq!(
-            reader.read_token(&mut format).unwrap(),
+            reader.read_token().unwrap(),
             Eu4Token::Field(FieldId::new(0x2000))
         );
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Quoted(b"quoted"));
         assert_eq!(
-            reader.read_token(&mut format).unwrap(),
-            Eu4Token::Quoted(b"quoted")
-        );
-        assert_eq!(
-            reader.read_token(&mut format).unwrap(),
+            reader.read_token().unwrap(),
             Eu4Token::Field(FieldId::new(0x2007))
         );
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Unquoted(b"plain"));
         assert_eq!(
-            reader.read_token(&mut format).unwrap(),
-            Eu4Token::Unquoted(b"plain")
-        );
-        assert_eq!(
-            reader.read_token(&mut format).unwrap(),
+            reader.read_token().unwrap(),
             Eu4Token::Field(FieldId::new(0x2008))
         );
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Equal);
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Open);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Open);
         assert_eq!(
-            reader.read_token(&mut format).unwrap(),
+            reader.read_token().unwrap(),
             Eu4Token::Field(FieldId::new(0x2009))
         );
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Equal);
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::I32(9));
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Close);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::I32(9));
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Close);
         assert_eq!(
-            reader.read_token(&mut format).unwrap(),
+            reader.read_token().unwrap(),
             Eu4Token::Field(FieldId::new(0x2002))
         );
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Equal);
         assert_eq!(
-            reader.read_token(&mut format).unwrap(),
+            reader.read_token().unwrap(),
             Eu4Token::F32(1234i32.to_le_bytes())
         );
         assert_eq!(
-            reader.read_token(&mut format).unwrap(),
+            reader.read_token().unwrap(),
             Eu4Token::Field(FieldId::new(0x2003))
         );
-        assert_eq!(reader.read_token(&mut format).unwrap(), Eu4Token::Equal);
+        assert_eq!(reader.read_token().unwrap(), Eu4Token::Equal);
         assert_eq!(
-            reader.read_token(&mut format).unwrap(),
+            reader.read_token().unwrap(),
             Eu4Token::F64((12i64 * 32768).to_le_bytes())
         );
     }
@@ -791,16 +748,11 @@ mod token_stream {
     #[test]
     fn can_be_iterated() {
         let data = eu4_iteration_fixture();
-        let mut reader = TokenReader::from_slice(&data);
-        let mut format = Eu4Format::default();
+        let mut reader = TokenReader::from_slice(&data, Eu4Format::default());
         let mut tokens = Vec::new();
 
         loop {
-            let Some(token) = reader
-                .next_token(&mut format)
-                .unwrap()
-                .map(Eu4TokenOwned::from)
-            else {
+            let Some(token) = reader.next_token().unwrap().map(Eu4TokenOwned::from) else {
                 break;
             };
             tokens.push(token);

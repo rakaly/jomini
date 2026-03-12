@@ -6,7 +6,7 @@ use jomini::{
     binary::LexemeId,
     binary::ng::{
         BinaryConfig, BinaryTokenFormat, BinaryValueFormat, FieldId, FieldResolver, ParserState,
-        PdxVisitor, StreamToken, StructureKind, TokenReader, TokenResult, ValueResult,
+        PdxVisitor, TokenReader, TokenResult, ValueResult,
     },
 };
 use serde::{Deserialize, de::Error as _};
@@ -48,17 +48,6 @@ enum Hoi4Token<'a> {
     LegacyF32([u8; 4]),
     ModernF32([u8; 8]),
     F64([u8; 8]),
-}
-
-impl StreamToken for Hoi4Token<'_> {
-    fn structure(&self) -> StructureKind {
-        match self {
-            Hoi4Token::Open => StructureKind::Open,
-            Hoi4Token::Close => StructureKind::Close,
-            Hoi4Token::Equal => StructureKind::Equal,
-            _ => StructureKind::Value,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -358,22 +347,21 @@ fn hoi4_ignored_save_version_still_switches_f32_layout() {
 #[test]
 fn hoi4_token_stream_switches_f32_variant_after_save_version() {
     let data = hoi4_modern_fixture();
-    let mut reader = TokenReader::from_slice(&data);
-    let mut format = Hoi4Format::default();
+    let mut reader = TokenReader::from_slice(&data, Hoi4Format::default());
 
     assert_eq!(
-        reader.read_token(&mut format).unwrap(),
+        reader.read_token().unwrap(),
         Hoi4Token::Field(FieldId::new(0x349d))
     );
-    assert_eq!(reader.read_token(&mut format).unwrap(), Hoi4Token::Equal);
-    assert_eq!(reader.read_token(&mut format).unwrap(), Hoi4Token::I32(31));
+    assert_eq!(reader.read_token().unwrap(), Hoi4Token::Equal);
+    assert_eq!(reader.read_token().unwrap(), Hoi4Token::I32(31));
     assert_eq!(
-        reader.read_token(&mut format).unwrap(),
+        reader.read_token().unwrap(),
         Hoi4Token::Field(FieldId::new(0x3001))
     );
-    assert_eq!(reader.read_token(&mut format).unwrap(), Hoi4Token::Equal);
+    assert_eq!(reader.read_token().unwrap(), Hoi4Token::Equal);
     assert_eq!(
-        reader.read_token(&mut format).unwrap(),
+        reader.read_token().unwrap(),
         Hoi4Token::ModernF32(123_456i64.to_le_bytes())
     );
 }

@@ -6,7 +6,7 @@ use jomini::{
     Error, Utf8Encoding,
     binary::ng::{
         BinaryConfig, BinaryTokenFormat, BinaryValueFormat, FieldId, FieldResolver, LookupIndex,
-        ParserState, PdxVisitor, StreamToken, StructureKind, TokenReader, TokenResult, ValueResult,
+        ParserState, PdxVisitor, TokenReader, TokenResult, ValueResult,
     },
     binary::{FailedResolveStrategy, LexemeId},
 };
@@ -98,17 +98,6 @@ enum Eu5Token<'a> {
     I32(i32),
     RawF64([u8; 8]),
     Fixed5(i64),
-}
-
-impl StreamToken for Eu5Token<'_> {
-    fn structure(&self) -> StructureKind {
-        match self {
-            Eu5Token::Open => StructureKind::Open,
-            Eu5Token::Close => StructureKind::Close,
-            Eu5Token::Equal => StructureKind::Equal,
-            _ => StructureKind::Value,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -412,15 +401,11 @@ fn eu5_token_stream_exposes_lookup_and_fixed5_tokens() {
     push_lookup_u8(&mut data, 7);
     push_fixed5_i16(&mut data, 750);
 
-    let mut reader = TokenReader::from_slice(&data);
-    let mut format = Eu5Format::new();
+    let mut reader = TokenReader::from_slice(&data, Eu5Format::new());
 
     assert_eq!(
-        reader.read_token(&mut format).unwrap(),
+        reader.read_token().unwrap(),
         Eu5Token::Lookup(LookupIndex::new(7))
     );
-    assert_eq!(
-        reader.read_token(&mut format).unwrap(),
-        Eu5Token::Fixed5(-750)
-    );
+    assert_eq!(reader.read_token().unwrap(), Eu5Token::Fixed5(-750));
 }
