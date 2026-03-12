@@ -328,10 +328,10 @@ impl BinaryTokenFormat for Eu4Format {
         let mut depth: usize = 1;
         loop {
             let mut cursor = state.token_cursor();
-
-            loop {
+            let committed = loop {
+                let committed = cursor.consumed();
                 let Some(id) = cursor.read_lexeme() else {
-                    break;
+                    break committed;
                 };
 
                 match id {
@@ -347,31 +347,31 @@ impl BinaryTokenFormat for Eu4Format {
                     }
                     LexemeId::BOOL => {
                         if cursor.read_bytes::<1>().is_none() {
-                            break;
+                            break committed;
                         }
                     }
                     LexemeId::I32 | LexemeId::F32 | LexemeId::U32 => {
                         if cursor.read_bytes::<4>().is_none() {
-                            break;
+                            break committed;
                         }
                     }
                     LexemeId::F64 => {
                         if cursor.read_bytes::<8>().is_none() {
-                            break;
+                            break committed;
                         }
                     }
                     LexemeId::QUOTED | LexemeId::UNQUOTED => {
                         if cursor.read_len_prefixed().is_none() {
-                            break;
+                            break committed;
                         }
                     }
                     _ => {
                         // field ID or EQUAL: only the lexeme bytes are consumed.
                     }
                 }
-            }
+            };
 
-            cursor.consume();
+            unsafe { state.consume(committed) };
             if fill(state)? == 0 {
                 return Err(Error::eof());
             }
@@ -692,6 +692,78 @@ mod deserialize {
             assert_slice_and_reader(&data, Eu4Format::default, Eu4Fields);
         assert_eq!(
             actual,
+            Eu4IgnoredNestedData {
+                flag: true,
+                score32: 1.234,
+            }
+        );
+    }
+
+    #[test]
+    fn ignores_nested_objects_with_split_length_prefixed_strings() {
+        let mut data = Vec::new();
+        push_field(&mut data, 0x2004);
+        push_lexeme(&mut data, LexemeId::EQUAL);
+        push_bool(&mut data, true);
+        push_field(&mut data, 0x2008);
+        push_lexeme(&mut data, LexemeId::EQUAL);
+        push_lexeme(&mut data, LexemeId::OPEN);
+        push_field(&mut data, 0x2000);
+        push_lexeme(&mut data, LexemeId::EQUAL);
+        push_quoted(&mut data, b"abcdef");
+        push_lexeme(&mut data, LexemeId::CLOSE);
+        push_field(&mut data, 0x2002);
+        push_lexeme(&mut data, LexemeId::EQUAL);
+        push_f32_raw(&mut data, 1234i32.to_le_bytes());
+
+        let from_bytes: Eu4IgnoredNestedData =
+            from_slice(&data, Eu4Format::default(), Eu4Fields).unwrap();
+        let from_stream: Eu4IgnoredNestedData = jomini::binary::ng::from_reader(
+            crate::support::ChunkedReader::new(&data, 21),
+            Eu4Format::default(),
+            Eu4Fields,
+        )
+        .unwrap();
+
+        assert_eq!(from_stream, from_bytes);
+        assert_eq!(
+            from_stream,
+            Eu4IgnoredNestedData {
+                flag: true,
+                score32: 1.234,
+            }
+        );
+    }
+
+    #[test]
+    fn ignores_nested_objects_with_split_fixed_width_tokens_after_lexeme() {
+        let mut data = Vec::new();
+        push_field(&mut data, 0x2004);
+        push_lexeme(&mut data, LexemeId::EQUAL);
+        push_bool(&mut data, true);
+        push_field(&mut data, 0x2008);
+        push_lexeme(&mut data, LexemeId::EQUAL);
+        push_lexeme(&mut data, LexemeId::OPEN);
+        push_field(&mut data, 0x2004);
+        push_lexeme(&mut data, LexemeId::EQUAL);
+        push_bool(&mut data, false);
+        push_lexeme(&mut data, LexemeId::CLOSE);
+        push_field(&mut data, 0x2002);
+        push_lexeme(&mut data, LexemeId::EQUAL);
+        push_f32_raw(&mut data, 1234i32.to_le_bytes());
+
+        let from_bytes: Eu4IgnoredNestedData =
+            from_slice(&data, Eu4Format::default(), Eu4Fields).unwrap();
+        let from_stream: Eu4IgnoredNestedData = jomini::binary::ng::from_reader(
+            crate::support::ChunkedReader::new(&data, 19),
+            Eu4Format::default(),
+            Eu4Fields,
+        )
+        .unwrap();
+
+        assert_eq!(from_stream, from_bytes);
+        assert_eq!(
+            from_stream,
             Eu4IgnoredNestedData {
                 flag: true,
                 score32: 1.234,

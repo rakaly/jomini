@@ -173,6 +173,11 @@ pub struct TokenCursor<'a> {
 
 impl<'a> TokenCursor<'a> {
     #[inline]
+    pub fn consumed(&self) -> usize {
+        self.consumed
+    }
+
+    #[inline]
     pub fn len(&self) -> usize {
         self.state.len - self.consumed
     }
@@ -197,8 +202,13 @@ impl<'a> TokenCursor<'a> {
 
     #[inline]
     pub fn read_len_prefixed(&mut self) -> Option<&'a [u8]> {
-        let len = self.read_bytes::<2>().copied()?;
-        self.read_slice(u16::from_le_bytes(len))
+        let slice =
+            unsafe { std::slice::from_raw_parts(self.state.start.add(self.consumed), self.len()) };
+        let len_bytes = slice.first_chunk::<2>()?;
+        let len = u16::from_le_bytes(*len_bytes) as usize;
+        let result = slice.get(2..2 + len)?;
+        self.consumed += 2 + len;
+        Some(result)
     }
 
     #[inline]
@@ -2211,6 +2221,22 @@ mod tests {
         assert_eq!(slice, Some(&[1u8, 2, 3][..]));
         assert_eq!(buf.len, 0);
         assert_eq!(buf.total_read, 3);
+    }
+
+    #[test]
+    fn test_read_len_prefixed_is_transactional_on_incomplete_payload() {
+        let data = [0x04u8, 0x00, b'a', b'b'];
+        let mut state = ParserState {
+            buf: ParserBuf::from_slice(&data),
+            storage: [0u8; 8],
+        };
+
+        let mut cursor = state.token_cursor();
+        assert_eq!(cursor.read_len_prefixed(), None);
+        cursor.consume();
+
+        assert_eq!(state.as_slice(), &data);
+        assert_eq!(state.buf.total_read, 0);
     }
 
     #[test]
