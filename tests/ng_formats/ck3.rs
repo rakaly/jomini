@@ -187,6 +187,14 @@ impl BinaryTokenFormat for Ck3Format {
             }
         }
     }
+
+    fn on_open(&mut self) {
+        Ck3Format::on_open(self);
+    }
+
+    fn on_close(&mut self) {
+        Ck3Format::on_close(self);
+    }
 }
 
 impl BinaryValueFormat for Ck3Format {

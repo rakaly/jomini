@@ -254,6 +254,21 @@ pub trait BinaryTokenFormat {
         reader: &'a mut ParserState,
     ) -> Result<TokenResult<Self::Token<'a>>, Error>;
 
+    #[inline]
+    fn on_open(&mut self) {}
+
+    /// Called by the serde deserializer after it has already peeked and
+    /// identified an `=` structural lexeme and before it consumes the 2-byte
+    /// lexeme from the stream.
+    #[inline]
+    fn on_equal(&mut self) {}
+
+    /// Called by the serde deserializer after it has already peeked and
+    /// identified a `}` structural lexeme and before it consumes the 2-byte
+    /// lexeme from the stream.
+    #[inline]
+    fn on_close(&mut self) {}
+
     fn skip_value(
         &mut self,
         state: &mut ParserState,
@@ -537,6 +552,21 @@ impl<F: BinaryTokenFormat> BinaryTokenFormat for &'_ mut F {
         (**self).next_token(reader)
     }
 
+    #[inline]
+    fn on_open(&mut self) {
+        (**self).on_open()
+    }
+
+    #[inline]
+    fn on_equal(&mut self) {
+        (**self).on_equal()
+    }
+
+    #[inline]
+    fn on_close(&mut self) {
+        (**self).on_close()
+    }
+
     fn skip_value(
         &mut self,
         state: &mut ParserState,
@@ -723,36 +753,19 @@ where
     }
 
     #[inline]
-    fn advance_if_peeked(&mut self, expected: LexemeId) -> Result<bool, Error> {
-        if self.peek_lexeme_id()? != Some(expected) {
-            return Ok(false);
+    fn consume_peeked_structural_lexeme(&mut self, expected: LexemeId) {
+        debug_assert!(matches!(
+            expected,
+            LexemeId::OPEN | LexemeId::CLOSE | LexemeId::EQUAL
+        ));
+
+        match expected {
+            LexemeId::OPEN => self.format.on_open(),
+            LexemeId::CLOSE => self.format.on_close(),
+            LexemeId::EQUAL => self.format.on_equal(),
+            _ => unreachable!("structural lexeme assertion should reject this"),
         }
 
-        let start = self.position();
-        let advanced = self.next_token()?.is_some();
-        if advanced && self.position() > start {
-            Ok(true)
-        } else if advanced {
-            Err(Error::invalid_syntax(
-                format!(
-                    "expected token consumer to advance lexeme 0x{:x}",
-                    expected.0
-                ),
-                start,
-            ))
-        } else {
-            Err(Error::eof())
-        }
-    }
-
-    /// Consumes the 2-byte LexemeId that was previously peeked.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that at least 2 bytes are available (i.e., a successful
-    /// `peek_lexeme_id` was called and no data was consumed since).
-    #[inline]
-    unsafe fn consume_lexeme_id(&mut self) {
         unsafe { self.state.consume(2) };
     }
 
@@ -955,12 +968,12 @@ where
                 None if ROOT => return Ok(None),
                 None => return Err(LexError::Eof.at(self.de.reader.position()).into()),
                 Some(LexemeId::CLOSE) => {
-                    let _ = self.de.reader.advance_if_peeked(LexemeId::CLOSE)?;
+                    self.de.reader.consume_peeked_structural_lexeme(LexemeId::CLOSE);
                     return Ok(None);
                 }
                 Some(LexemeId::OPEN) => {
                     // Ghost object: consume open, skip the key inside
-                    let _ = self.de.reader.advance_if_peeked(LexemeId::OPEN)?;
+                    self.de.reader.consume_peeked_structural_lexeme(LexemeId::OPEN);
                     self.de.reader.skip_value()?;
                 }
                 Some(_) => {
@@ -980,7 +993,7 @@ where
     {
         // Peek and skip Equal if present
         if let Some(LexemeId::EQUAL) = self.de.reader.peek_lexeme_id()? {
-            unsafe { self.de.reader.consume_lexeme_id() };
+            self.de.reader.consume_peeked_structural_lexeme(LexemeId::EQUAL);
         }
 
         seed.deserialize(BinaryReaderTokenDeserializer { de: self.de })
@@ -1059,7 +1072,7 @@ where
                         ));
                     }
 
-                    unsafe { de.reader.consume_lexeme_id() };
+                    de.reader.consume_peeked_structural_lexeme(LexemeId::CLOSE);
                 }
                 Ok(result)
             }
@@ -1366,13 +1379,13 @@ where
     {
         match self.de.reader.peek_lexeme_id()? {
             Some(LexemeId::CLOSE) => {
-                let _ = self.de.reader.advance_if_peeked(LexemeId::CLOSE)?;
+                self.de.reader.consume_peeked_structural_lexeme(LexemeId::CLOSE);
                 self.hit_end = true;
                 return Ok(None);
             }
             Some(LexemeId::EQUAL) => {
                 // This is a standalone Equal token from object template syntax
-                unsafe { self.de.reader.consume_lexeme_id() };
+                self.de.reader.consume_peeked_structural_lexeme(LexemeId::EQUAL);
             }
             Some(_) => {}
             None => return Err(Error::eof()),
@@ -2208,6 +2221,22 @@ mod tests {
             }
 
             self.inner.next_token(reader)
+        }
+
+        fn on_open(&mut self) {
+            let mut state = self.state.borrow_mut();
+            state.seen_lexemes.push(LexemeId::OPEN);
+        }
+
+        fn on_equal(&mut self) {
+            let mut state = self.state.borrow_mut();
+            state.seen_lexemes.push(LexemeId::EQUAL);
+        }
+
+        fn on_close(&mut self) {
+            let mut state = self.state.borrow_mut();
+            state.seen_lexemes.push(LexemeId::CLOSE);
+            state.saw_close = true;
         }
 
         fn skip_value(
