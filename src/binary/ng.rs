@@ -722,6 +722,29 @@ where
         }
     }
 
+    #[inline]
+    fn advance_if_peeked(&mut self, expected: LexemeId) -> Result<bool, Error> {
+        if self.peek_lexeme_id()? != Some(expected) {
+            return Ok(false);
+        }
+
+        let start = self.position();
+        let advanced = self.next_token()?.is_some();
+        if advanced && self.position() > start {
+            Ok(true)
+        } else if advanced {
+            Err(Error::invalid_syntax(
+                format!(
+                    "expected token consumer to advance lexeme 0x{:x}",
+                    expected.0
+                ),
+                start,
+            ))
+        } else {
+            Err(Error::eof())
+        }
+    }
+
     /// Consumes the 2-byte LexemeId that was previously peeked.
     ///
     /// # Safety
@@ -932,12 +955,12 @@ where
                 None if ROOT => return Ok(None),
                 None => return Err(LexError::Eof.at(self.de.reader.position()).into()),
                 Some(LexemeId::CLOSE) => {
-                    unsafe { self.de.reader.consume_lexeme_id() };
+                    let _ = self.de.reader.advance_if_peeked(LexemeId::CLOSE)?;
                     return Ok(None);
                 }
                 Some(LexemeId::OPEN) => {
                     // Ghost object: consume open, skip the key inside
-                    unsafe { self.de.reader.consume_lexeme_id() };
+                    let _ = self.de.reader.advance_if_peeked(LexemeId::OPEN)?;
                     self.de.reader.skip_value()?;
                 }
                 Some(_) => {
@@ -1343,7 +1366,7 @@ where
     {
         match self.de.reader.peek_lexeme_id()? {
             Some(LexemeId::CLOSE) => {
-                unsafe { self.de.reader.consume_lexeme_id() };
+                let _ = self.de.reader.advance_if_peeked(LexemeId::CLOSE)?;
                 self.hit_end = true;
                 return Ok(None);
             }
@@ -1446,7 +1469,9 @@ mod tests {
         binary::{Rgb, Token, lexer::read_rgb},
     };
     use rstest::*;
+    use serde::de::Error as _;
     use standard_support::{StandardFormat, StandardToken};
+    use std::{cell::RefCell, rc::Rc};
 
     mod standard_support {
         use super::*;
@@ -2128,6 +2153,164 @@ mod tests {
         }
     }
 
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    struct NestedSyncData {
+        nested: InnerSyncData,
+        after: i32,
+    }
+
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    struct InnerSyncData {
+        inner: i32,
+    }
+
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    struct SequenceSyncData {
+        values: Vec<i32>,
+        after: i32,
+    }
+
+    #[derive(Default)]
+    struct TrackingState {
+        waiting_for_close: bool,
+        saw_close: bool,
+        seen_lexemes: Vec<LexemeId>,
+    }
+
+    struct TrackingStandardFormat {
+        inner: StandardFormat,
+        state: Rc<RefCell<TrackingState>>,
+    }
+
+    impl TrackingStandardFormat {
+        fn new(state: Rc<RefCell<TrackingState>>) -> Self {
+            Self {
+                inner: StandardFormat,
+                state,
+            }
+        }
+    }
+
+    impl BinaryTokenFormat for TrackingStandardFormat {
+        type Token<'a> = StandardToken<'a>;
+
+        fn next_token<'a>(
+            &mut self,
+            reader: &'a mut ParserState,
+        ) -> Result<TokenResult<Self::Token<'a>>, Error> {
+            if let Some(id_bytes) = reader.peek_bytes::<2>().copied() {
+                let id = LexemeId::new(u16::from_le_bytes(id_bytes));
+                let mut state = self.state.borrow_mut();
+                state.seen_lexemes.push(id);
+                if id == LexemeId::CLOSE {
+                    state.saw_close = true;
+                }
+            }
+
+            self.inner.next_token(reader)
+        }
+
+        fn skip_value(
+            &mut self,
+            state: &mut ParserState,
+            fill: &mut impl FnMut(&mut ParserState) -> Result<usize, Error>,
+        ) -> Result<(), Error> {
+            self.inner.skip_value(state, fill)
+        }
+    }
+
+    impl BinaryValueFormat for TrackingStandardFormat {
+        fn decode_scalar<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
+            self.inner.decode_scalar(data)
+        }
+
+        fn deserialize_identifier<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+            &mut self,
+            reader: &mut ParserState,
+            visitor: V,
+            config: &BinaryConfig<RES>,
+        ) -> VisitResult<'de, V> {
+            if let Some(id_bytes) = reader.peek_bytes::<2>().copied() {
+                let id = u16::from_le_bytes(id_bytes);
+                if matches!(id, 0x1002 | 0x1101) {
+                    let mut state = self.state.borrow_mut();
+                    if state.waiting_for_close && !state.saw_close {
+                        return Err(Error::custom("stateful close was not synchronized"));
+                    }
+                    state.waiting_for_close = false;
+                    state.saw_close = false;
+                }
+            }
+
+            self.inner.deserialize_identifier(reader, visitor, config)
+        }
+
+        fn deserialize_any<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+            &mut self,
+            reader: &mut ParserState,
+            visitor: V,
+            config: &BinaryConfig<RES>,
+        ) -> VisitResult<'de, V> {
+            if let Some(id_bytes) = reader.peek_bytes::<2>().copied() {
+                let id = LexemeId::new(u16::from_le_bytes(id_bytes));
+                if id == LexemeId::OPEN {
+                    let mut state = self.state.borrow_mut();
+                    state.waiting_for_close = true;
+                    state.saw_close = false;
+                }
+            }
+
+            self.inner.deserialize_any(reader, visitor, config)
+        }
+    }
+
+    fn tracking_resolver() -> HashMap<u16, &'static str> {
+        HashMap::from([
+            (0x1000, "nested"),
+            (0x1001, "inner"),
+            (0x1002, "after"),
+            (0x1100, "values"),
+            (0x1101, "after"),
+        ])
+    }
+
+    fn encode_tokens(tokens: &[Token]) -> Vec<u8> {
+        let mut writer = std::io::Cursor::new(Vec::new());
+        for token in tokens {
+            token.write(&mut writer).unwrap();
+        }
+        writer.into_inner()
+    }
+
+    fn nested_map_sync_fixture() -> Vec<u8> {
+        encode_tokens(&[
+            Token::Id(0x1000),
+            Token::Equal,
+            Token::Open,
+            Token::Id(0x1001),
+            Token::Equal,
+            Token::I32(1),
+            Token::Close,
+            Token::Id(0x1002),
+            Token::Equal,
+            Token::I32(2),
+        ])
+    }
+
+    fn nested_sequence_sync_fixture() -> Vec<u8> {
+        encode_tokens(&[
+            Token::Id(0x1100),
+            Token::Equal,
+            Token::Open,
+            Token::I32(1),
+            Token::I32(2),
+            Token::Close,
+            Token::Id(0x1101),
+            Token::Equal,
+            Token::I32(3),
+        ])
+    }
+
     #[test]
     fn test_parser_buf_from_slice() {
         let data = [1u8, 2, 3, 4, 5];
@@ -2649,5 +2832,49 @@ mod tests {
         assert_eq!(rgb.g, 28);
         assert_eq!(rgb.b, 27);
         assert_eq!(rgb.a, Some(128));
+    }
+
+    #[test]
+    fn map_access_consumes_nested_close_via_next_token() {
+        let state = Rc::new(RefCell::new(TrackingState::default()));
+        let data = nested_map_sync_fixture();
+
+        let actual: NestedSyncData = from_slice(
+            &data,
+            TrackingStandardFormat::new(state.clone()),
+            tracking_resolver(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            actual,
+            NestedSyncData {
+                nested: InnerSyncData { inner: 1 },
+                after: 2,
+            }
+        );
+        assert!(state.borrow().seen_lexemes.contains(&LexemeId::CLOSE));
+    }
+
+    #[test]
+    fn seq_access_consumes_nested_close_via_next_token() {
+        let state = Rc::new(RefCell::new(TrackingState::default()));
+        let data = nested_sequence_sync_fixture();
+
+        let actual: SequenceSyncData = from_slice(
+            &data,
+            TrackingStandardFormat::new(state.clone()),
+            tracking_resolver(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            actual,
+            SequenceSyncData {
+                values: vec![1, 2],
+                after: 3,
+            }
+        );
+        assert!(state.borrow().seen_lexemes.contains(&LexemeId::CLOSE));
     }
 }
