@@ -5,23 +5,22 @@ use jomini::{
     Error, Utf8Encoding,
     binary::LexemeId,
     binary::ng::{
-        BinaryConfig, BinaryTokenFormat, BinaryValueFormat, FieldId, FieldResolver, ParserState,
-        PdxVisitor, TokenReader, TokenResult, ValueResult,
+        BinaryTokenFormat, BinaryValueFormat, FieldId, ParserState, PdxVisitor, TokenReader,
+        TokenResult, ValueResult,
     },
 };
 use serde::{Deserialize, de::Error as _};
 use std::borrow::Cow;
 
-fn resolve_name<'de, V, RES>(
+fn resolve_name<'de, V>(
     field: FieldId,
     visitor: V,
-    config: &BinaryConfig<RES>,
+    context: &Hoi4Context,
 ) -> Result<ValueResult<V::Value, V>, Error>
 where
     V: PdxVisitor<'de>,
-    RES: FieldResolver,
 {
-    match config.field_resolver().resolve_field(field) {
+    match context.resolve_field(field) {
         Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
         None => Err(Error::custom(format!(
             "unknown field token 0x{:x}",
@@ -53,14 +52,28 @@ enum Hoi4Token<'a> {
 #[derive(Clone, Copy, Default)]
 struct Hoi4Fields;
 
-impl FieldResolver for Hoi4Fields {
-    fn resolve_field(&self, token: FieldId) -> Option<&str> {
+impl Hoi4Fields {
+    fn resolve_field(self, token: FieldId) -> Option<&'static str> {
         match token.value() {
             0x349d => Some("save_version"),
             0x3001 => Some("metric"),
             0x3002 => Some("weight"),
             _ => None,
         }
+    }
+}
+
+struct Hoi4Context {
+    fields: Hoi4Fields,
+}
+
+impl Hoi4Context {
+    fn new() -> Self {
+        Self { fields: Hoi4Fields }
+    }
+
+    fn resolve_field(&self, field: FieldId) -> Option<&str> {
+        self.fields.resolve_field(field)
     }
 }
 
@@ -157,15 +170,17 @@ impl BinaryTokenFormat for Hoi4Format {
 }
 
 impl BinaryValueFormat for Hoi4Format {
+    type Context = Hoi4Context;
+
     fn decode_scalar<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
         utf8_scalar(data)
     }
 
-    fn deserialize_identifier<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+    fn deserialize_identifier<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        config: &BinaryConfig<RES>,
+        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
@@ -190,19 +205,19 @@ impl BinaryValueFormat for Hoi4Format {
                 | LexemeId::F32
                 | LexemeId::F64
         ) {
-            self.deserialize_any(reader, visitor, config)
+            self.deserialize_any(reader, visitor, context)
         } else {
             cursor.consume();
             self.pending_save_version = id.0 == 0x349d;
-            resolve_name(FieldId::new(id.0), visitor, config)
+            resolve_name(FieldId::new(id.0), visitor, context)
         }
     }
 
-    fn deserialize_any<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+    fn deserialize_any<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        config: &BinaryConfig<RES>,
+        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
@@ -252,7 +267,7 @@ impl BinaryValueFormat for Hoi4Format {
             }
             id => {
                 cursor.consume();
-                resolve_name(FieldId::new(id.0), visitor, config)
+                resolve_name(FieldId::new(id.0), visitor, context)
             }
         }
     }
@@ -303,8 +318,9 @@ fn hoi4_modern_fixture() -> Vec<u8> {
 #[test]
 fn hoi4_save_version_30_uses_legacy_f32_layout() {
     let data = hoi4_legacy_fixture();
+    let context = Hoi4Context::new();
 
-    let actual: Hoi4Data = assert_slice_and_reader(&data, Hoi4Format::default, Hoi4Fields);
+    let actual: Hoi4Data = assert_slice_and_reader(&data, Hoi4Format::default, &context);
     assert_eq!(actual.save_version, 30);
     assert_eq!(actual.metric, 1.234);
     assert_eq!(actual.weight, 2.0);
@@ -313,8 +329,9 @@ fn hoi4_save_version_30_uses_legacy_f32_layout() {
 #[test]
 fn hoi4_save_version_31_switches_f32_layout() {
     let data = hoi4_modern_fixture();
+    let context = Hoi4Context::new();
 
-    let actual: Hoi4Data = assert_slice_and_reader(&data, Hoi4Format::default, Hoi4Fields);
+    let actual: Hoi4Data = assert_slice_and_reader(&data, Hoi4Format::default, &context);
     assert_eq!(actual.save_version, 31);
     assert_eq!(actual.metric, 1.23456);
     assert_eq!(actual.weight, 3.0);
@@ -323,9 +340,10 @@ fn hoi4_save_version_31_switches_f32_layout() {
 #[test]
 fn hoi4_ignored_save_version_still_switches_f32_layout() {
     let data = hoi4_modern_fixture();
+    let context = Hoi4Context::new();
 
     let actual: Hoi4IgnoredVersionData =
-        assert_slice_and_reader(&data, Hoi4Format::default, Hoi4Fields);
+        assert_slice_and_reader(&data, Hoi4Format::default, &context);
     assert_eq!(actual.metric, 1.23456);
     assert_eq!(actual.weight, 3.0);
 }

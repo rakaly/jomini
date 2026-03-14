@@ -1,6 +1,6 @@
 use jomini::{
     binary::LexemeId,
-    binary::ng::{BinaryFormat, FieldResolver, from_reader, from_slice},
+    binary::ng::{BinaryFormat, from_reader, from_slice},
 };
 use serde::Deserialize;
 use std::{fmt::Debug, io::Read};
@@ -90,19 +90,18 @@ impl Read for ChunkedReader<'_> {
     }
 }
 
-pub(crate) fn assert_slice_and_reader<T, F, RES, Make>(
+pub(crate) fn assert_slice_and_reader<T, F, Make>(
     data: &[u8],
     make_format: Make,
-    resolver: RES,
+    context: &F::Context,
 ) -> T
 where
     T: for<'de> Deserialize<'de> + PartialEq + Debug,
     F: BinaryFormat,
-    RES: FieldResolver + Copy,
     Make: Fn() -> F,
 {
-    let from_bytes: T = from_slice(data, make_format(), resolver).unwrap();
-    let from_stream: T = from_reader(ChunkedReader::new(data, 3), make_format(), resolver).unwrap();
+    let from_bytes: T = from_slice(data, make_format(), context).unwrap();
+    let from_stream: T = from_reader(ChunkedReader::new(data, 3), make_format(), context).unwrap();
     assert_eq!(from_bytes, from_stream);
     from_bytes
 }

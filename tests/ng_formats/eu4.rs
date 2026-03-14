@@ -5,26 +5,25 @@ use crate::support::{
 use jomini::{
     Error, Windows1252Encoding,
     binary::ng::{
-        BinaryConfig, BinaryTokenFormat, BinaryValueFormat, FieldId, FieldResolver, ParserState,
-        PdxVisitor, TokenReader, TokenResult, ValueResult, from_slice, from_slice_with_config,
+        BinaryTokenFormat, BinaryValueFormat, FieldId, ParserState, PdxVisitor, TokenReader,
+        TokenResult, ValueResult, from_slice,
     },
     binary::{FailedResolveStrategy, LexemeId},
 };
 use serde::{Deserialize, de::Error as _};
 use std::{borrow::Cow, collections::HashMap};
 
-fn resolve_name<'de, V, RES>(
+fn resolve_name<'de, V>(
     field: FieldId,
     visitor: V,
-    config: &BinaryConfig<RES>,
+    context: &Eu4Context,
 ) -> Result<ValueResult<V::Value, V>, Error>
 where
     V: PdxVisitor<'de>,
-    RES: FieldResolver,
 {
-    match config.field_resolver().resolve_field(field) {
+    match context.resolve_field(field) {
         Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
-        None => match config.failed_resolve_strategy() {
+        None => match context.failed_resolve_strategy() {
             FailedResolveStrategy::Error => Err(Error::custom(format!(
                 "unknown field token 0x{:x}",
                 field.value()
@@ -109,26 +108,53 @@ impl From<Eu4Token<'_>> for Eu4TokenOwned {
     }
 }
 
-#[derive(Clone, Copy, Default)]
-struct Eu4Fields;
+type Eu4Fields = HashMap<u16, String>;
 
-impl FieldResolver for Eu4Fields {
-    fn resolve_field(&self, token: FieldId) -> Option<&str> {
-        match token.value() {
-            0x2000 => Some("label"),
-            0x2001 => Some("han"),
-            0x2002 => Some("score32"),
-            0x2003 => Some("score64"),
-            0x2004 => Some("flag"),
-            0x2005 => Some("count"),
-            0x2006 => Some("delta"),
-            0x2007 => Some("word"),
-            0x2008 => Some("nested"),
-            0x2009 => Some("inner"),
-            0x200a => Some("members"),
-            _ => None,
+struct Eu4Context {
+    fields: Eu4Fields,
+    failed_resolve_strategy: FailedResolveStrategy,
+}
+
+impl Eu4Context {
+    fn new(fields: Eu4Fields) -> Self {
+        Self {
+            fields,
+            failed_resolve_strategy: FailedResolveStrategy::Error,
         }
     }
+
+    fn with_failed_resolve_strategy(mut self, strategy: FailedResolveStrategy) -> Self {
+        self.failed_resolve_strategy = strategy;
+        self
+    }
+
+    fn resolve_field(&self, field: FieldId) -> Option<&str> {
+        self.fields.get(&field.value()).map(String::as_str)
+    }
+
+    fn failed_resolve_strategy(&self) -> FailedResolveStrategy {
+        self.failed_resolve_strategy
+    }
+}
+
+fn eu4_fields() -> Eu4Fields {
+    HashMap::from([
+        (0x2000, String::from("label")),
+        (0x2001, String::from("han")),
+        (0x2002, String::from("score32")),
+        (0x2003, String::from("score64")),
+        (0x2004, String::from("flag")),
+        (0x2005, String::from("count")),
+        (0x2006, String::from("delta")),
+        (0x2007, String::from("word")),
+        (0x2008, String::from("nested")),
+        (0x2009, String::from("inner")),
+        (0x200a, String::from("members")),
+    ])
+}
+
+fn eu4_context() -> Eu4Context {
+    Eu4Context::new(eu4_fields())
 }
 
 #[derive(Default)]
@@ -144,18 +170,18 @@ impl Eu4Format {
         (val * 100_000.0).round() / 100_000.0
     }
 
-    fn parse_str_token<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+    fn parse_str_token<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        config: &BinaryConfig<RES>,
+        context: &Eu4Context,
     ) -> Result<ValueResult<<V as PdxVisitor<'de>>::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
         if !matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
-            return self.deserialize_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, context);
         }
         let Some(data) = cursor.read_len_prefixed() else {
             return Ok(ValueResult::MoreData(visitor));
@@ -380,22 +406,24 @@ impl BinaryTokenFormat for Eu4Format {
 }
 
 impl BinaryValueFormat for Eu4Format {
+    type Context = Eu4Context;
+
     fn decode_scalar<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
         eu4_scalar(data)
     }
 
-    fn deserialize_bool<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+    fn deserialize_bool<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        config: &BinaryConfig<RES>,
+        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
         if id != LexemeId::BOOL {
-            return self.deserialize_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, context);
         }
         let Some(bytes) = cursor.read_bytes::<1>().copied() else {
             return Ok(ValueResult::MoreData(visitor));
@@ -404,18 +432,18 @@ impl BinaryValueFormat for Eu4Format {
         Ok(ValueResult::Value(visitor.visit_bool(bytes[0] != 0)?))
     }
 
-    fn deserialize_u32<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+    fn deserialize_u32<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        config: &BinaryConfig<RES>,
+        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
         if id != LexemeId::U32 {
-            return self.deserialize_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, context);
         }
         let Some(bytes) = cursor.read_bytes::<4>().copied() else {
             return Ok(ValueResult::MoreData(visitor));
@@ -426,18 +454,18 @@ impl BinaryValueFormat for Eu4Format {
         ))
     }
 
-    fn deserialize_i32<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+    fn deserialize_i32<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        config: &BinaryConfig<RES>,
+        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
         if id != LexemeId::I32 {
-            return self.deserialize_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, context);
         }
         let Some(bytes) = cursor.read_bytes::<4>().copied() else {
             return Ok(ValueResult::MoreData(visitor));
@@ -448,18 +476,18 @@ impl BinaryValueFormat for Eu4Format {
         ))
     }
 
-    fn deserialize_f32<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+    fn deserialize_f32<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        config: &BinaryConfig<RES>,
+        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
         if id != LexemeId::F32 {
-            return self.deserialize_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, context);
         }
         let Some(bytes) = cursor.read_bytes::<4>().copied() else {
             return Ok(ValueResult::MoreData(visitor));
@@ -470,18 +498,18 @@ impl BinaryValueFormat for Eu4Format {
         ))
     }
 
-    fn deserialize_f64<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+    fn deserialize_f64<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        config: &BinaryConfig<RES>,
+        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
         if id != LexemeId::F64 {
-            return self.deserialize_any(reader, visitor, config);
+            return self.deserialize_any(reader, visitor, context);
         }
         let Some(bytes) = cursor.read_bytes::<8>().copied() else {
             return Ok(ValueResult::MoreData(visitor));
@@ -492,42 +520,42 @@ impl BinaryValueFormat for Eu4Format {
         ))
     }
 
-    fn deserialize_str<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+    fn deserialize_str<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        config: &BinaryConfig<RES>,
+        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
-        self.parse_str_token(reader, visitor, config)
+        self.parse_str_token(reader, visitor, context)
     }
 
-    fn deserialize_identifier<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+    fn deserialize_identifier<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        config: &BinaryConfig<RES>,
+        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
         let field = FieldId::new(id.0);
-        if let Some(name) = config.field_resolver().resolve_field(field) {
+        if let Some(name) = context.resolve_field(field) {
             cursor.consume();
             return Ok(ValueResult::Value(visitor.visit_str(name)?));
         }
         if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
-            self.parse_str_token(reader, visitor, config)
+            self.parse_str_token(reader, visitor, context)
         } else {
-            self.deserialize_any(reader, visitor, config)
+            self.deserialize_any(reader, visitor, context)
         }
     }
 
-    fn deserialize_any<'de, V: PdxVisitor<'de>, RES: FieldResolver>(
+    fn deserialize_any<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        config: &BinaryConfig<RES>,
+        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
@@ -563,7 +591,7 @@ impl BinaryValueFormat for Eu4Format {
                     visitor.visit_i32(i32::from_le_bytes(bytes))?,
                 ))
             }
-            LexemeId::QUOTED | LexemeId::UNQUOTED => self.parse_str_token(reader, visitor, config),
+            LexemeId::QUOTED | LexemeId::UNQUOTED => self.parse_str_token(reader, visitor, context),
             LexemeId::F32 => {
                 let Some(bytes) = cursor.read_bytes::<4>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
@@ -584,7 +612,7 @@ impl BinaryValueFormat for Eu4Format {
             }
             id => {
                 cursor.consume();
-                resolve_name(FieldId::new(id.0), visitor, config)
+                resolve_name(FieldId::new(id.0), visitor, context)
             }
         }
     }
@@ -796,8 +824,9 @@ mod deserialize {
     #[test]
     fn deserializes_windows1252_chinese_scalars_and_fixed_float_rules() {
         let data = eu4_scalar_rules_fixture();
+        let context = eu4_context();
 
-        let actual: Eu4Data = assert_slice_and_reader(&data, Eu4Format::default, Eu4Fields);
+        let actual: Eu4Data = assert_slice_and_reader(&data, Eu4Format::default, &context);
         assert_eq!(actual.label, "\u{a7}G");
         assert_eq!(actual.han, "你好");
         assert_eq!(actual.score32, 1.234);
@@ -813,15 +842,17 @@ mod deserialize {
         }
 
         let data = eu4_lookup_fixture();
-        let err = from_slice::<Eu4LookupData, _, _>(&data, Eu4Format, Eu4Fields).unwrap_err();
+        let context = eu4_context();
+        let err = from_slice::<Eu4LookupData, _>(&data, Eu4Format, &context).unwrap_err();
         assert!(err.to_string().contains("unknown field token"));
     }
 
     #[test]
     fn deserializes_common_tokens_and_nested_objects() {
         let data = eu4_common_object_fixture();
+        let context = eu4_context();
 
-        let actual: Eu4CommonData = assert_slice_and_reader(&data, Eu4Format::default, Eu4Fields);
+        let actual: Eu4CommonData = assert_slice_and_reader(&data, Eu4Format::default, &context);
         assert_eq!(
             actual,
             Eu4CommonData {
@@ -837,13 +868,14 @@ mod deserialize {
     #[test]
     fn speculatively_deserializes_primitives_across_small_chunks() {
         let data = eu4_speculative_primitives_fixture();
+        let context = eu4_context();
 
         let from_bytes: Eu4SpeculativePrimitives =
-            from_slice(&data, Eu4Format::default(), Eu4Fields).unwrap();
+            from_slice(&data, Eu4Format::default(), &context).unwrap();
         let from_stream: Eu4SpeculativePrimitives = jomini::binary::ng::from_reader(
             crate::support::ChunkedReader::new(&data, 2),
             Eu4Format::default(),
-            Eu4Fields,
+            &context,
         )
         .unwrap();
 
@@ -864,9 +896,10 @@ mod deserialize {
     #[test]
     fn ignores_nested_objects_and_continues_parsing() {
         let data = eu4_common_tokens_fixture();
+        let context = eu4_context();
 
         let actual: Eu4IgnoredNestedData =
-            assert_slice_and_reader(&data, Eu4Format::default, Eu4Fields);
+            assert_slice_and_reader(&data, Eu4Format::default, &context);
         assert_eq!(
             actual,
             Eu4IgnoredNestedData {
@@ -892,13 +925,14 @@ mod deserialize {
         push_field(&mut data, 0x2002);
         push_lexeme(&mut data, LexemeId::EQUAL);
         push_f32_raw(&mut data, 1234i32.to_le_bytes());
+        let context = eu4_context();
 
         let from_bytes: Eu4IgnoredNestedData =
-            from_slice(&data, Eu4Format::default(), Eu4Fields).unwrap();
+            from_slice(&data, Eu4Format::default(), &context).unwrap();
         let from_stream: Eu4IgnoredNestedData = jomini::binary::ng::from_reader(
             crate::support::ChunkedReader::new(&data, 21),
             Eu4Format::default(),
-            Eu4Fields,
+            &context,
         )
         .unwrap();
 
@@ -928,13 +962,14 @@ mod deserialize {
         push_field(&mut data, 0x2002);
         push_lexeme(&mut data, LexemeId::EQUAL);
         push_f32_raw(&mut data, 1234i32.to_le_bytes());
+        let context = eu4_context();
 
         let from_bytes: Eu4IgnoredNestedData =
-            from_slice(&data, Eu4Format::default(), Eu4Fields).unwrap();
+            from_slice(&data, Eu4Format::default(), &context).unwrap();
         let from_stream: Eu4IgnoredNestedData = jomini::binary::ng::from_reader(
             crate::support::ChunkedReader::new(&data, 19),
             Eu4Format::default(),
-            Eu4Fields,
+            &context,
         )
         .unwrap();
 
@@ -951,9 +986,10 @@ mod deserialize {
     #[test]
     fn consumes_sequence_close_before_returning_to_parent_map() {
         let data = eu4_nested_sequence_fixture();
+        let context = eu4_context();
 
         let actual: HashMap<String, Eu4SeqInMapValue> =
-            assert_slice_and_reader(&data, Eu4Format::default, Eu4Fields);
+            assert_slice_and_reader(&data, Eu4Format::default, &context);
         assert_eq!(
             actual.get("AAA"),
             Some(&Eu4SeqInMapValue {
@@ -1081,13 +1117,11 @@ mod unresolved_fields {
     #[test]
     fn uses_stringify_strategy() {
         let data = eu4_unknown_field_fixture();
+        let context = Eu4Context::new(HashMap::new())
+            .with_failed_resolve_strategy(FailedResolveStrategy::Stringify);
 
-        let actual: HashMap<String, i32> = from_slice_with_config(
-            &data,
-            Eu4Format::default(),
-            BinaryConfig::new(()).with_failed_resolve_strategy(FailedResolveStrategy::Stringify),
-        )
-        .unwrap();
+        let actual: HashMap<String, i32> =
+            from_slice(&data, Eu4Format::default(), &context).unwrap();
 
         assert_eq!(actual.get("0x2010"), Some(&7));
     }
@@ -1095,13 +1129,11 @@ mod unresolved_fields {
     #[test]
     fn uses_ignore_strategy() {
         let data = eu4_unknown_field_fixture();
+        let context = Eu4Context::new(HashMap::new())
+            .with_failed_resolve_strategy(FailedResolveStrategy::Ignore);
 
-        let actual: HashMap<String, i32> = from_slice_with_config(
-            &data,
-            Eu4Format::default(),
-            BinaryConfig::new(()).with_failed_resolve_strategy(FailedResolveStrategy::Ignore),
-        )
-        .unwrap();
+        let actual: HashMap<String, i32> =
+            from_slice(&data, Eu4Format::default(), &context).unwrap();
 
         assert_eq!(actual.get("__internal_identifier_ignore"), Some(&7));
     }
@@ -1109,13 +1141,11 @@ mod unresolved_fields {
     #[test]
     fn uses_error_strategy() {
         let data = eu4_unknown_field_fixture();
+        let context = Eu4Context::new(HashMap::new())
+            .with_failed_resolve_strategy(FailedResolveStrategy::Error);
 
-        let err = from_slice_with_config::<HashMap<String, i32>, _, _>(
-            &data,
-            Eu4Format::default(),
-            BinaryConfig::new(()).with_failed_resolve_strategy(FailedResolveStrategy::Error),
-        )
-        .unwrap_err();
+        let err = from_slice::<HashMap<String, i32>, _>(&data, Eu4Format::default(), &context)
+            .unwrap_err();
 
         assert!(err.to_string().contains("unknown field token"));
     }
