@@ -27,12 +27,12 @@ impl FieldId {
 fn resolve_name<'de, V>(
     field: FieldId,
     visitor: V,
-    context: &Ck3Context,
+    format: &Ck3Format,
 ) -> Result<ValueResult<V::Value, V>, Error>
 where
     V: PdxVisitor<'de>,
 {
-    match context.resolve_field(field) {
+    match format.fields.resolve_field(field) {
         Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
         None => Err(Error::custom(format!(
             "unknown field token 0x{:x}",
@@ -76,26 +76,24 @@ impl Ck3Fields {
     }
 }
 
-struct Ck3Context {
-    fields: Ck3Fields,
-}
-
-impl Ck3Context {
-    fn new() -> Self {
-        Self { fields: Ck3Fields }
-    }
-
-    fn resolve_field(&self, field: FieldId) -> Option<&str> {
-        self.fields.resolve_field(field)
-    }
-}
-
-#[derive(Default)]
 struct Ck3Format {
+    fields: Ck3Fields,
     pending_field: Option<FieldId>,
     pending_version: bool,
     version: i32,
     scope_stack: Vec<FieldId>,
+}
+
+impl Default for Ck3Format {
+    fn default() -> Self {
+        Self {
+            fields: Ck3Fields,
+            pending_field: None,
+            pending_version: false,
+            version: 0,
+            scope_stack: Vec::new(),
+        }
+    }
 }
 
 impl Ck3Format {
@@ -223,8 +221,6 @@ impl BinaryTokenFormat for Ck3Format {
 }
 
 impl BinaryValueFormat for Ck3Format {
-    type Context = Ck3Context;
-
     fn decode_scalar<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
         utf8_scalar(data)
     }
@@ -233,7 +229,6 @@ impl BinaryValueFormat for Ck3Format {
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
@@ -259,12 +254,12 @@ impl BinaryValueFormat for Ck3Format {
                 | LexemeId::F32
                 | LexemeId::F64
         ) {
-            self.deserialize_any(reader, visitor, context)
+            self.deserialize_any(reader, visitor)
         } else {
             cursor.consume();
             let field = FieldId::new(id.0);
             self.on_field(field);
-            resolve_name(field, visitor, context)
+            resolve_name(field, visitor, self)
         }
     }
 
@@ -272,7 +267,6 @@ impl BinaryValueFormat for Ck3Format {
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
@@ -326,7 +320,7 @@ impl BinaryValueFormat for Ck3Format {
                 cursor.consume();
                 let field = FieldId::new(id.0);
                 self.on_field(field);
-                resolve_name(field, visitor, context)
+                resolve_name(field, visitor, self)
             }
         }
     }
@@ -359,7 +353,7 @@ struct Ck3ScopedGoldData {
 
 #[test]
 fn ck3_version_can_switch_float_decoding_without_changing_widths() {
-    let context = Ck3Context::new();
+
     let mut legacy = Vec::new();
     push_field(&mut legacy, 0x00ee);
     push_lexeme(&mut legacy, LexemeId::EQUAL);
@@ -371,7 +365,7 @@ fn ck3_version_can_switch_float_decoding_without_changing_widths() {
     push_lexeme(&mut legacy, LexemeId::EQUAL);
     push_f64_raw(&mut legacy, 2.25f64.to_le_bytes());
 
-    let legacy_actual: Ck3Data = assert_slice_and_reader(&legacy, Ck3Format::default, &context);
+    let legacy_actual: Ck3Data = assert_slice_and_reader(&legacy, Ck3Format::default);
     assert_eq!(legacy_actual.value32, 1.5);
     assert_eq!(legacy_actual.value64, 2.25);
 
@@ -386,14 +380,14 @@ fn ck3_version_can_switch_float_decoding_without_changing_widths() {
     push_lexeme(&mut modern, LexemeId::EQUAL);
     push_f64_raw(&mut modern, 271_828i64.to_le_bytes());
 
-    let modern_actual: Ck3Data = assert_slice_and_reader(&modern, Ck3Format::default, &context);
+    let modern_actual: Ck3Data = assert_slice_and_reader(&modern, Ck3Format::default);
     assert_eq!(modern_actual.value32, 3.14);
     assert_eq!(modern_actual.value64, 2.71828);
 }
 
 #[test]
 fn ck3_ignored_version_still_switches_float_decoding() {
-    let context = Ck3Context::new();
+
     let mut data = Vec::new();
     push_field(&mut data, 0x00ee);
     push_lexeme(&mut data, LexemeId::EQUAL);
@@ -406,14 +400,14 @@ fn ck3_ignored_version_still_switches_float_decoding() {
     push_f64_raw(&mut data, 271_828i64.to_le_bytes());
 
     let actual: Ck3IgnoredVersionData =
-        assert_slice_and_reader(&data, Ck3Format::default, &context);
+        assert_slice_and_reader(&data, Ck3Format::default);
     assert_eq!(actual.value32, 3.14);
     assert_eq!(actual.value64, 2.71828);
 }
 
 #[test]
 fn ck3_alive_data_gold_can_use_q49_15_while_other_gold_uses_decimal_fixed_point() {
-    let context = Ck3Context::new();
+
     let mut data = Vec::new();
     push_field(&mut data, 0x00ee);
     push_lexeme(&mut data, LexemeId::EQUAL);
@@ -431,7 +425,7 @@ fn ck3_alive_data_gold_can_use_q49_15_while_other_gold_uses_decimal_fixed_point(
     push_f64_raw(&mut data, (2i64 * 32768).to_le_bytes());
     push_lexeme(&mut data, LexemeId::CLOSE);
 
-    let actual: Ck3ScopedGoldData = assert_slice_and_reader(&data, Ck3Format::default, &context);
+    let actual: Ck3ScopedGoldData = assert_slice_and_reader(&data, Ck3Format::default);
     assert_eq!(actual.gold, 1.23456);
     assert_eq!(actual.alive_data.gold, 2.0);
 }

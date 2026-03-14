@@ -42,14 +42,14 @@ impl LookupIndex {
 fn resolve_name<'de, V>(
     field: FieldId,
     visitor: V,
-    context: &Eu5Context,
+    format: &Eu5Format,
 ) -> Result<ValueResult<V::Value, V>, Error>
 where
     V: PdxVisitor<'de>,
 {
-    match context.resolve_field(field) {
+    match format.fields.resolve_field(field) {
         Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
-        None => match context.failed_resolve_strategy() {
+        None => match format.failed_resolve_strategy {
             FailedResolveStrategy::Error => Err(Error::custom(format!(
                 "unknown field token 0x{:x}",
                 field.value()
@@ -140,35 +140,17 @@ impl Eu5Fields {
     }
 }
 
-struct Eu5Context {
+struct Eu5Format {
     fields: Eu5Fields,
     failed_resolve_strategy: FailedResolveStrategy,
-}
-
-impl Eu5Context {
-    fn new() -> Self {
-        Self {
-            fields: Eu5Fields,
-            failed_resolve_strategy: FailedResolveStrategy::Error,
-        }
-    }
-
-    fn resolve_field(&self, field: FieldId) -> Option<&str> {
-        self.fields.resolve_field(field)
-    }
-
-    fn failed_resolve_strategy(&self) -> FailedResolveStrategy {
-        self.failed_resolve_strategy
-    }
-}
-
-struct Eu5Format {
     lookups: HashMap<u32, &'static str>,
 }
 
 impl Eu5Format {
     fn new() -> Self {
         Self {
+            fields: Eu5Fields,
+            failed_resolve_strategy: FailedResolveStrategy::Error,
             lookups: HashMap::from([(7, "FRA")]),
         }
     }
@@ -262,8 +244,6 @@ impl BinaryTokenFormat for Eu5Format {
 }
 
 impl BinaryValueFormat for Eu5Format {
-    type Context = Eu5Context;
-
     fn decode_scalar<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
         utf8_scalar(data)
     }
@@ -272,7 +252,6 @@ impl BinaryValueFormat for Eu5Format {
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
@@ -298,7 +277,7 @@ impl BinaryValueFormat for Eu5Format {
                 return if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
                     Ok(ValueResult::MoreData(visitor))
                 } else {
-                    self.deserialize_any(reader, visitor, context)
+                    self.deserialize_any(reader, visitor)
                 };
             }
         }
@@ -308,14 +287,13 @@ impl BinaryValueFormat for Eu5Format {
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
             return Ok(ValueResult::MoreData(visitor));
         };
         if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
-            self.deserialize_str(reader, visitor, context)
+            self.deserialize_str(reader, visitor)
         } else if matches!(
             id,
             LexemeId::OPEN | LexemeId::EQUAL | LexemeId::CLOSE | LexemeId::I32 | LexemeId::F64
@@ -328,10 +306,10 @@ impl BinaryValueFormat for Eu5Format {
                 | LexemeId::LOOKUP_U24
         ) || (id >= LexemeId::FIXED5_ZERO && id <= LexemeId::FIXED5_I56)
         {
-            self.deserialize_any(reader, visitor, context)
+            self.deserialize_any(reader, visitor)
         } else {
             cursor.consume();
-            resolve_name(FieldId::new(id.0), visitor, context)
+            resolve_name(FieldId::new(id.0), visitor, self)
         }
     }
 
@@ -339,7 +317,6 @@ impl BinaryValueFormat for Eu5Format {
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> Result<ValueResult<V::Value, V>, Error> {
         let mut cursor = reader.token_cursor();
         let Some(id) = cursor.read_lexeme() else {
@@ -369,7 +346,7 @@ impl BinaryValueFormat for Eu5Format {
                     visitor.visit_f64(Self::decode_f64(raw))?,
                 ))
             }
-            LexemeId::QUOTED | LexemeId::UNQUOTED => self.deserialize_str(reader, visitor, context),
+            LexemeId::QUOTED | LexemeId::UNQUOTED => self.deserialize_str(reader, visitor),
             LexemeId::LOOKUP_U8 => {
                 let Some(data) = cursor.read_bytes::<1>().copied() else {
                     return Ok(ValueResult::MoreData(visitor));
@@ -379,7 +356,7 @@ impl BinaryValueFormat for Eu5Format {
                 resolve_lookup(
                     self.lookups.get(&index.value()).copied(),
                     index,
-                    context.failed_resolve_strategy(),
+                    self.failed_resolve_strategy,
                     visitor,
                 )
             }
@@ -398,7 +375,7 @@ impl BinaryValueFormat for Eu5Format {
             }
             id => {
                 cursor.consume();
-                resolve_name(FieldId::new(id.0), visitor, context)
+                resolve_name(FieldId::new(id.0), visitor, self)
             }
         }
     }
@@ -432,9 +409,7 @@ fn eu5_fixture() -> Vec<u8> {
 #[test]
 fn eu5_deserializes_lookup_fixed_and_utf8_scalars() {
     let data = eu5_fixture();
-    let context = Eu5Context::new();
-
-    let actual: Eu5Data = assert_slice_and_reader(&data, Eu5Format::new, &context);
+    let actual: Eu5Data = assert_slice_and_reader(&data, Eu5Format::new);
     assert_eq!(actual.name, "Europa");
     assert_eq!(actual.country, "FRA");
     assert_eq!(actual.growth, -0.0075);

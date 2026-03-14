@@ -331,96 +331,84 @@ fn skip_value_slow<F: BinaryTokenFormat>(
 }
 
 pub trait BinaryValueFormat {
-    type Context: ?Sized;
-
     fn decode_scalar<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, str>, Error>;
 
     fn deserialize_i32<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> VisitResult<'de, V> {
-        self.deserialize_any(reader, visitor, context)
+        self.deserialize_any(reader, visitor)
     }
 
     fn deserialize_u32<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> VisitResult<'de, V> {
-        self.deserialize_any(reader, visitor, context)
+        self.deserialize_any(reader, visitor)
     }
 
     fn deserialize_i64<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> VisitResult<'de, V> {
-        self.deserialize_any(reader, visitor, context)
+        self.deserialize_any(reader, visitor)
     }
 
     fn deserialize_u64<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> VisitResult<'de, V> {
-        self.deserialize_any(reader, visitor, context)
+        self.deserialize_any(reader, visitor)
     }
 
     fn deserialize_f32<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> VisitResult<'de, V> {
-        self.deserialize_any(reader, visitor, context)
+        self.deserialize_any(reader, visitor)
     }
 
     fn deserialize_f64<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> VisitResult<'de, V> {
-        self.deserialize_any(reader, visitor, context)
+        self.deserialize_any(reader, visitor)
     }
 
     fn deserialize_bool<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> VisitResult<'de, V> {
-        self.deserialize_any(reader, visitor, context)
+        self.deserialize_any(reader, visitor)
     }
 
     fn deserialize_str<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> VisitResult<'de, V> {
-        self.deserialize_any(reader, visitor, context)
+        self.deserialize_any(reader, visitor)
     }
 
     fn deserialize_identifier<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> VisitResult<'de, V> {
-        self.deserialize_any(reader, visitor, context)
+        self.deserialize_any(reader, visitor)
     }
 
     fn deserialize_any<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
         visitor: V,
-        context: &Self::Context,
     ) -> VisitResult<'de, V>;
 }
 
@@ -520,16 +508,13 @@ macro_rules! forward_deserialize {
             &mut self,
             reader: &mut ParserState,
             visitor: V,
-            context: &Self::Context,
         ) -> VisitResult<'de, V> {
-            (**self).$method(reader, visitor, context)
+            (**self).$method(reader, visitor)
         }
     };
 }
 
 impl<F: BinaryValueFormat> BinaryValueFormat for &'_ mut F {
-    type Context = F::Context;
-
     fn decode_scalar<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
         (**self).decode_scalar(data)
     }
@@ -697,24 +682,22 @@ where
     }
 }
 
-pub struct BinaryReaderDeserializer<'ctx, R, F>
+pub struct BinaryReaderDeserializer<R, F>
 where
     F: BinaryFormat,
 {
     reader: TokenReader<R, F>,
-    context: &'ctx F::Context,
 }
 
-impl<'ctx, R, F> BinaryReaderDeserializer<'ctx, R, F>
+impl<R, F> BinaryReaderDeserializer<R, F>
 where
     R: Read,
     F: BinaryFormat,
 {
-    /// Create a binary reader deserializer with the provided format and context
-    pub fn from_reader(reader: R, format: F, context: &'ctx F::Context) -> Self {
+    /// Create a binary reader deserializer with the provided format
+    pub fn from_reader(reader: R, format: F) -> Self {
         BinaryReaderDeserializer {
             reader: TokenReader::new(reader, format),
-            context,
         }
     }
 
@@ -727,42 +710,33 @@ where
     }
 }
 
-pub fn from_slice<'de, 'ctx, T, F>(
-    data: &'de [u8],
-    format: F,
-    context: &'ctx F::Context,
-) -> Result<T, Error>
+pub fn from_slice<'de, T, F>(data: &'de [u8], format: F) -> Result<T, Error>
 where
     T: Deserialize<'de>,
     F: BinaryFormat,
 {
     let mut reader = BinaryReaderDeserializer {
         reader: TokenReader::from_slice(data, format),
-        context,
     };
     let value = serde::de::Deserialize::deserialize(&mut reader)?;
 
     Ok(value)
 }
 
-pub fn from_reader<'ctx, T, R, F>(
-    reader: R,
-    format: F,
-    context: &'ctx F::Context,
-) -> Result<T, Error>
+pub fn from_reader<T, R, F>(reader: R, format: F) -> Result<T, Error>
 where
     T: DeserializeOwned,
     R: Read,
     F: BinaryFormat,
 {
-    let mut reader = BinaryReaderDeserializer::from_reader(reader, format, context);
+    let mut reader = BinaryReaderDeserializer::from_reader(reader, format);
 
     let value = serde::de::Deserialize::deserialize(&mut reader)?;
 
     Ok(value)
 }
 
-impl<'de, F, R> de::Deserializer<'de> for &'_ mut BinaryReaderDeserializer<'_, R, F>
+impl<'de, F, R> de::Deserializer<'de> for &'_ mut BinaryReaderDeserializer<R, F>
 where
     F: BinaryFormat,
     R: Read,
@@ -806,25 +780,25 @@ where
     }
 }
 
-struct BinaryReaderMap<'a, 'ctx, const ROOT: bool, R, F>
+struct BinaryReaderMap<'a, const ROOT: bool, R, F>
 where
     F: BinaryFormat,
 {
-    de: &'a mut BinaryReaderDeserializer<'ctx, R, F>,
+    de: &'a mut BinaryReaderDeserializer<R, F>,
 }
 
-impl<'a, 'ctx, R, F> BinaryReaderMap<'a, 'ctx, false, R, F>
+impl<'a, R, F> BinaryReaderMap<'a, false, R, F>
 where
     F: BinaryFormat,
 {
     fn new<const ROOT: bool>(
-        de: &'a mut BinaryReaderDeserializer<'ctx, R, F>,
-    ) -> BinaryReaderMap<'a, 'ctx, ROOT, R, F> {
-        BinaryReaderMap::<'a, 'ctx, ROOT, R, F> { de }
+        de: &'a mut BinaryReaderDeserializer<R, F>,
+    ) -> BinaryReaderMap<'a, ROOT, R, F> {
+        BinaryReaderMap::<'a, ROOT, R, F> { de }
     }
 }
 
-impl<'de, const ROOT: bool, R, F> MapAccess<'de> for BinaryReaderMap<'_, '_, ROOT, R, F>
+impl<'de, const ROOT: bool, R, F> MapAccess<'de> for BinaryReaderMap<'_, ROOT, R, F>
 where
     R: Read,
     F: BinaryFormat,
@@ -882,27 +856,26 @@ where
     }
 }
 
-struct BinaryReaderTokenDeserializer<'a, 'ctx, R, F>
+struct BinaryReaderTokenDeserializer<'a, R, F>
 where
     F: BinaryFormat,
 {
-    de: &'a mut BinaryReaderDeserializer<'ctx, R, F>,
+    de: &'a mut BinaryReaderDeserializer<R, F>,
 }
 
-impl<R, F> BinaryReaderTokenDeserializer<'_, '_, R, F>
+impl<R, F> BinaryReaderTokenDeserializer<'_, R, F>
 where
     R: Read,
     F: BinaryFormat,
 {
     #[inline]
     fn parse_with_refill<'de, V>(
-        de: &mut BinaryReaderDeserializer<'_, R, F>,
+        de: &mut BinaryReaderDeserializer<R, F>,
         visitor: V,
         mut parse: impl FnMut(
             &mut F,
             &mut ParserState,
             PdxSerdeVisitor<V>,
-            &F::Context,
         ) -> Result<ValueResult<V::Value, PdxSerdeVisitor<V>>, Error>,
     ) -> Result<ValueResult<V::Value, PdxSerdeVisitor<V>>, Error>
     where
@@ -917,7 +890,6 @@ where
                     &mut de.reader.format,
                     &mut de.reader.state,
                     visitor,
-                    de.context,
                 )?
             };
 
@@ -936,7 +908,7 @@ where
 
     #[inline]
     fn handle_parse_result<'de, V>(
-        de: &mut BinaryReaderDeserializer<'_, R, F>,
+        de: &mut BinaryReaderDeserializer<R, F>,
         result: ValueResult<V::Value, PdxSerdeVisitor<V>>,
     ) -> Result<V::Value, Error>
     where
@@ -976,15 +948,15 @@ macro_rules! deserialize_speculative {
             V: Visitor<'de>,
         {
             let result =
-                Self::parse_with_refill(self.de, visitor, |format, state, visitor, config| {
-                    format.$method(state, visitor, config)
+                Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
+                    format.$method(state, visitor)
                 })?;
             Self::handle_parse_result(self.de, result)
         }
     };
 }
 
-impl<'de, R: Read, F> de::Deserializer<'de> for BinaryReaderTokenDeserializer<'_, '_, R, F>
+impl<'de, R: Read, F> de::Deserializer<'de> for BinaryReaderTokenDeserializer<'_, R, F>
 where
     F: BinaryFormat,
 {
@@ -996,8 +968,8 @@ where
         V: Visitor<'de>,
     {
         let result =
-            Self::parse_with_refill(self.de, visitor, |format, state, visitor, config| {
-                format.deserialize_any(state, visitor, config)
+            Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
+                format.deserialize_any(state, visitor)
             })?;
         Self::handle_parse_result(self.de, result)
     }
@@ -1056,8 +1028,8 @@ where
         V: Visitor<'de>,
     {
         let result =
-            Self::parse_with_refill(self.de, visitor, |format, state, visitor, config| {
-                format.deserialize_identifier(state, visitor, config)
+            Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
+                format.deserialize_identifier(state, visitor)
             })?;
         Self::handle_parse_result(self.de, result)
     }
@@ -1084,8 +1056,8 @@ where
         V: Visitor<'de>,
     {
         let result =
-            Self::parse_with_refill(self.de, visitor, |format, state, visitor, config| {
-                format.deserialize_str(state, visitor, config)
+            Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
+                format.deserialize_str(state, visitor)
             })?;
         Self::handle_parse_result(self.de, result)
     }
@@ -1144,8 +1116,8 @@ where
         V: Visitor<'de>,
     {
         let result =
-            Self::parse_with_refill(self.de, visitor, |format, state, visitor, config| {
-                format.deserialize_any(state, visitor, config)
+            Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
+                format.deserialize_any(state, visitor)
             })?;
         Self::handle_parse_result(self.de, result)
     }
@@ -1177,8 +1149,8 @@ where
         V: Visitor<'de>,
     {
         let result =
-            Self::parse_with_refill(self.de, visitor, |format, state, visitor, config| {
-                format.deserialize_any(state, visitor, config)
+            Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
+                format.deserialize_any(state, visitor)
             })?;
         match result {
             ValueResult::Value(v) => Ok(v),
@@ -1241,24 +1213,24 @@ where
     }
 }
 
-struct BinaryReaderSeq<'a, 'ctx, R, F>
+struct BinaryReaderSeq<'a, R, F>
 where
     F: BinaryFormat,
 {
-    de: &'a mut BinaryReaderDeserializer<'ctx, R, F>,
+    de: &'a mut BinaryReaderDeserializer<R, F>,
     hit_end: bool,
 }
 
-impl<'a, 'ctx, R, F> BinaryReaderSeq<'a, 'ctx, R, F>
+impl<'a, R, F> BinaryReaderSeq<'a, R, F>
 where
     F: BinaryFormat,
 {
-    fn new(de: &'a mut BinaryReaderDeserializer<'ctx, R, F>) -> Self {
+    fn new(de: &'a mut BinaryReaderDeserializer<R, F>) -> Self {
         BinaryReaderSeq { de, hit_end: false }
     }
 }
 
-impl<'de, R: Read, F> SeqAccess<'de> for BinaryReaderSeq<'_, '_, R, F>
+impl<'de, R: Read, F> SeqAccess<'de> for BinaryReaderSeq<'_, R, F>
 where
     F: BinaryFormat,
 {
@@ -1295,23 +1267,23 @@ where
 
 /// Deserializer for a token that has already been consumed via the old `read_kind` path.
 /// Used for enum variants and ignored_any where the token kind is already known.
-struct BinaryReaderEnum<'a, 'ctx, R, F>
+struct BinaryReaderEnum<'a, R, F>
 where
     F: BinaryFormat,
 {
-    de: &'a mut BinaryReaderDeserializer<'ctx, R, F>,
+    de: &'a mut BinaryReaderDeserializer<R, F>,
 }
 
-impl<'a, 'ctx, F, R> BinaryReaderEnum<'a, 'ctx, R, F>
+impl<'a, F, R> BinaryReaderEnum<'a, R, F>
 where
     F: BinaryFormat,
 {
-    fn new(de: &'a mut BinaryReaderDeserializer<'ctx, R, F>) -> Self {
+    fn new(de: &'a mut BinaryReaderDeserializer<R, F>) -> Self {
         BinaryReaderEnum { de }
     }
 }
 
-impl<'de, R: Read, F> de::EnumAccess<'de> for BinaryReaderEnum<'_, '_, R, F>
+impl<'de, R: Read, F> de::EnumAccess<'de> for BinaryReaderEnum<'_, R, F>
 where
     F: BinaryFormat,
 {
@@ -1327,7 +1299,7 @@ where
     }
 }
 
-impl<'de, R: Read, F> de::VariantAccess<'de> for BinaryReaderEnum<'_, '_, R, F>
+impl<'de, R: Read, F> de::VariantAccess<'de> for BinaryReaderEnum<'_, R, F>
 where
     F: BinaryFormat,
 {
@@ -1420,36 +1392,14 @@ mod tests {
     mod standard_support {
         use super::*;
 
-        pub struct StandardContext {
-            fields: HashMap<u16, &'static str>,
-            failed_resolve_strategy: FailedResolveStrategy,
-        }
-
-        impl StandardContext {
-            pub fn new(fields: HashMap<u16, &'static str>) -> Self {
-                Self {
-                    fields,
-                    failed_resolve_strategy: FailedResolveStrategy::Error,
-                }
-            }
-
-            fn resolve_field(&self, field: FieldId) -> Option<&str> {
-                self.fields.get(&field.value()).copied()
-            }
-
-            fn failed_resolve_strategy(&self) -> FailedResolveStrategy {
-                self.failed_resolve_strategy
-            }
-        }
-
         fn visit_field_identifier<'de, V: PdxVisitor<'de>>(
             field: FieldId,
             visitor: V,
-            context: &StandardContext,
+            format: &StandardFormat,
         ) -> VisitResult<'de, V> {
-            match context.resolve_field(field) {
+            match format.fields.get(&field.value()).copied() {
                 Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
-                None => match context.failed_resolve_strategy() {
+                None => match format.failed_resolve_strategy {
                     FailedResolveStrategy::Error => Err(Error::from(DeserializeError {
                         kind: DeserializeErrorKind::UnknownToken {
                             token_id: field.value() as u32,
@@ -1509,7 +1459,25 @@ mod tests {
             ) && !(id >= LexemeId::FIXED5_ZERO && id <= LexemeId::FIXED5_I56)
         }
 
-        pub struct StandardFormat;
+        pub struct StandardFormat {
+            pub fields: HashMap<u16, &'static str>,
+            pub failed_resolve_strategy: FailedResolveStrategy,
+        }
+
+        impl StandardFormat {
+            pub fn new(fields: HashMap<u16, &'static str>) -> Self {
+                Self {
+                    fields,
+                    failed_resolve_strategy: FailedResolveStrategy::Error,
+                }
+            }
+        }
+
+        impl Default for StandardFormat {
+            fn default() -> Self {
+                Self::new(HashMap::new())
+            }
+        }
 
         impl BinaryTokenFormat for StandardFormat {
             type Token<'a>
@@ -1715,8 +1683,6 @@ mod tests {
         }
 
         impl BinaryValueFormat for StandardFormat {
-            type Context = StandardContext;
-
             fn decode_scalar<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
                 std::str::from_utf8(data)
                     .map(Cow::Borrowed)
@@ -1728,14 +1694,13 @@ mod tests {
                 &mut self,
                 reader: &mut ParserState,
                 visitor: V,
-                context: &Self::Context,
             ) -> VisitResult<'de, V> {
                 let Some(data) = reader.peek_bytes::<6>() else {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 };
                 let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
                 if id != LexemeId::I32 {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 }
                 let result = i32::from_le_bytes([data[2], data[3], data[4], data[5]]);
                 unsafe { reader.consume(6) };
@@ -1747,14 +1712,13 @@ mod tests {
                 &mut self,
                 reader: &mut ParserState,
                 visitor: V,
-                context: &Self::Context,
             ) -> VisitResult<'de, V> {
                 let Some(data) = reader.peek_bytes::<6>() else {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 };
                 let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
                 if id != LexemeId::U32 {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 }
                 let result = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
                 unsafe { reader.consume(6) };
@@ -1766,14 +1730,13 @@ mod tests {
                 &mut self,
                 reader: &mut ParserState,
                 visitor: V,
-                context: &Self::Context,
             ) -> VisitResult<'de, V> {
                 let Some(data) = reader.peek_bytes::<10>() else {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 };
                 let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
                 if id != LexemeId::I64 {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 }
                 let result = i64::from_le_bytes([
                     data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
@@ -1787,14 +1750,13 @@ mod tests {
                 &mut self,
                 reader: &mut ParserState,
                 visitor: V,
-                context: &Self::Context,
             ) -> VisitResult<'de, V> {
                 let Some(data) = reader.peek_bytes::<10>() else {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 };
                 let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
                 if id != LexemeId::U64 {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 }
                 let result = u64::from_le_bytes([
                     data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
@@ -1808,14 +1770,13 @@ mod tests {
                 &mut self,
                 reader: &mut ParserState,
                 visitor: V,
-                context: &Self::Context,
             ) -> VisitResult<'de, V> {
                 let Some(data) = reader.peek_bytes::<6>() else {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 };
                 let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
                 if id != LexemeId::F32 {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 }
                 let result = f32::from_le_bytes([data[2], data[3], data[4], data[5]]);
                 unsafe { reader.consume(6) };
@@ -1827,14 +1788,13 @@ mod tests {
                 &mut self,
                 reader: &mut ParserState,
                 visitor: V,
-                context: &Self::Context,
             ) -> VisitResult<'de, V> {
                 let Some(data) = reader.peek_bytes::<10>() else {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 };
                 let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
                 if id != LexemeId::F64 {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 }
                 let result = f64::from_le_bytes([
                     data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
@@ -1848,14 +1808,13 @@ mod tests {
                 &mut self,
                 reader: &mut ParserState,
                 visitor: V,
-                context: &Self::Context,
             ) -> VisitResult<'de, V> {
                 let Some(data) = reader.peek_bytes::<3>() else {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 };
                 let id = LexemeId::new(u16::from_le_bytes([data[0], data[1]]));
                 if id != LexemeId::BOOL {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 }
                 let result = data[2] != 0;
                 unsafe { reader.consume(3) };
@@ -1867,7 +1826,6 @@ mod tests {
                 &mut self,
                 reader: &mut ParserState,
                 visitor: V,
-                context: &Self::Context,
             ) -> VisitResult<'de, V> {
                 let Some(header) = reader.peek_bytes::<4>() else {
                     let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
@@ -1877,7 +1835,7 @@ mod tests {
                     return if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
                         Ok(ValueResult::MoreData(visitor))
                     } else {
-                        self.deserialize_any(reader, visitor, context)
+                        self.deserialize_any(reader, visitor)
                     };
                 };
                 let id = LexemeId::new(u16::from_le_bytes([header[0], header[1]]));
@@ -1885,7 +1843,7 @@ mod tests {
                     LexemeId::QUOTED | LexemeId::UNQUOTED => {
                         let len = u16::from_le_bytes([header[2], header[3]]);
                         if reader.len() < 4 + len as usize {
-                            return self.deserialize_any(reader, visitor, context);
+                            return self.deserialize_any(reader, visitor);
                         }
                         unsafe { reader.consume(4) };
                         let data = reader.read_slice(len).ok_or_else(Error::eof)?;
@@ -1895,7 +1853,7 @@ mod tests {
                         };
                         Ok(ValueResult::Value(value))
                     }
-                    _ => self.deserialize_any(reader, visitor, context),
+                    _ => self.deserialize_any(reader, visitor),
                 }
             }
 
@@ -1904,32 +1862,30 @@ mod tests {
                 &mut self,
                 reader: &mut ParserState,
                 visitor: V,
-                context: &Self::Context,
             ) -> VisitResult<'de, V> {
                 let Some(id_bytes) = reader.peek_bytes::<2>() else {
-                    return self.deserialize_any(reader, visitor, context);
+                    return self.deserialize_any(reader, visitor);
                 };
                 let id = LexemeId::new(u16::from_le_bytes([id_bytes[0], id_bytes[1]]));
 
                 if standard_is_field_id(id) {
                     unsafe { reader.consume(2) };
-                    return visit_field_identifier(FieldId::new(id.0), visitor, context);
+                    return visit_field_identifier(FieldId::new(id.0), visitor, self);
                 }
 
                 if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
-                    return self.deserialize_str(reader, visitor, context);
+                    return self.deserialize_str(reader, visitor);
                 }
 
-                self.deserialize_any(reader, visitor, context)
+                self.deserialize_any(reader, visitor)
             }
 
             fn deserialize_any<'de, V: PdxVisitor<'de>>(
                 &mut self,
                 reader: &mut ParserState,
                 visitor: V,
-                context: &Self::Context,
             ) -> VisitResult<'de, V> {
-                standard_deserialize_any(self, reader, visitor, context)
+                standard_deserialize_any(self, reader, visitor)
             }
         }
 
@@ -1937,7 +1893,6 @@ mod tests {
             format: &StandardFormat,
             reader: &mut ParserState,
             visitor: V,
-            context: &StandardContext,
         ) -> VisitResult<'de, V> {
             let Some(id_bytes) = reader.peek_bytes::<2>().copied() else {
                 return Ok(ValueResult::MoreData(visitor));
@@ -2111,7 +2066,7 @@ mod tests {
                 )),
                 id if standard_is_field_id(id) => {
                     unsafe { reader.consume(2) };
-                    visit_field_identifier(FieldId::new(id.0), visitor, context)
+                    visit_field_identifier(FieldId::new(id.0), visitor, format)
                 }
                 id => Err(Error::invalid_syntax(
                     format!("unsupported lexeme 0x{:x}", id.0),
@@ -2151,9 +2106,9 @@ mod tests {
     }
 
     impl TrackingStandardFormat {
-        fn new(state: Rc<RefCell<TrackingState>>) -> Self {
+        fn new(state: Rc<RefCell<TrackingState>>, fields: HashMap<u16, &'static str>) -> Self {
             Self {
-                inner: StandardFormat,
+                inner: StandardFormat::new(fields),
                 state,
             }
         }
@@ -2204,8 +2159,6 @@ mod tests {
     }
 
     impl BinaryValueFormat for TrackingStandardFormat {
-        type Context = standard_support::StandardContext;
-
         fn decode_scalar<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
             self.inner.decode_scalar(data)
         }
@@ -2214,7 +2167,6 @@ mod tests {
             &mut self,
             reader: &mut ParserState,
             visitor: V,
-            context: &Self::Context,
         ) -> VisitResult<'de, V> {
             if let Some(id_bytes) = reader.peek_bytes::<2>().copied() {
                 let id = u16::from_le_bytes(id_bytes);
@@ -2228,14 +2180,13 @@ mod tests {
                 }
             }
 
-            self.inner.deserialize_identifier(reader, visitor, context)
+            self.inner.deserialize_identifier(reader, visitor)
         }
 
         fn deserialize_any<'de, V: PdxVisitor<'de>>(
             &mut self,
             reader: &mut ParserState,
             visitor: V,
-            context: &Self::Context,
         ) -> VisitResult<'de, V> {
             if let Some(id_bytes) = reader.peek_bytes::<2>().copied() {
                 let id = LexemeId::new(u16::from_le_bytes(id_bytes));
@@ -2246,18 +2197,18 @@ mod tests {
                 }
             }
 
-            self.inner.deserialize_any(reader, visitor, context)
+            self.inner.deserialize_any(reader, visitor)
         }
     }
 
-    fn tracking_context() -> standard_support::StandardContext {
-        standard_support::StandardContext::new(HashMap::from([
+    fn tracking_fields() -> HashMap<u16, &'static str> {
+        HashMap::from([
             (0x1000, "nested"),
             (0x1001, "inner"),
             (0x1002, "after"),
             (0x1100, "values"),
             (0x1101, "after"),
-        ]))
+        ])
     }
 
     fn encode_tokens(tokens: &[Token]) -> Vec<u8> {
@@ -2460,7 +2411,7 @@ mod tests {
             0xFF, 0xFF, 0xFF, // value 16777215
         ];
 
-        let mut reader = TokenReader::from_slice(&data, StandardFormat);
+        let mut reader = TokenReader::from_slice(&data, StandardFormat::default());
 
         // LOOKUP_U8
         assert_eq!(
@@ -2485,12 +2436,12 @@ mod tests {
     fn test_standard_format_fixed5() {
         // Test FIXED5_ZERO
         let data = vec![0x47, 0x0d]; // FIXED5_ZERO
-        let mut reader = TokenReader::from_slice(&data, StandardFormat);
+        let mut reader = TokenReader::from_slice(&data, StandardFormat::default());
         assert_eq!(reader.next_token().unwrap(), Some(StandardToken::Fixed5(0)));
 
         // Test FIXED5_U8 (e.g., raw value 123 = 0.00123)
         let data = vec![0x48, 0x0d, 0x7B]; // FIXED5_U8, value 123
-        let mut reader = TokenReader::from_slice(&data, StandardFormat);
+        let mut reader = TokenReader::from_slice(&data, StandardFormat::default());
         assert_eq!(
             reader.next_token().unwrap(),
             Some(StandardToken::Fixed5(123))
@@ -2498,7 +2449,7 @@ mod tests {
 
         // Test FIXED5_I8 (negative, e.g., raw value 123 = -0.00123)
         let data = vec![0x4f, 0x0d, 0x7B]; // FIXED5_I8, value -123
-        let mut reader = TokenReader::from_slice(&data, StandardFormat);
+        let mut reader = TokenReader::from_slice(&data, StandardFormat::default());
         assert_eq!(
             reader.next_token().unwrap(),
             Some(StandardToken::Fixed5(-123))
@@ -2520,7 +2471,7 @@ mod tests {
             0x04, 0x00, // CLOSE (0x0004)
         ];
 
-        let mut reader = TokenReader::from_slice(&data, StandardFormat);
+        let mut reader = TokenReader::from_slice(&data, StandardFormat::default());
         let Some(StandardToken::Rgb(rgb)) = reader.next_token().unwrap() else {
             panic!("expected rgb token");
         };
@@ -2614,7 +2565,7 @@ mod tests {
         let data = writer.into_inner();
 
         // Read back using new API
-        let mut reader = TokenReader::from_slice(data.as_slice(), StandardFormat);
+        let mut reader = TokenReader::from_slice(data.as_slice(), StandardFormat::default());
 
         for (i, expected) in input.iter().enumerate() {
             let token = reader.read_token().unwrap();
@@ -2682,7 +2633,7 @@ mod tests {
 
     #[test]
     fn test_not_enough_data() {
-        let mut reader = TokenReader::from_slice(&[0x43], StandardFormat);
+        let mut reader = TokenReader::from_slice(&[0x43], StandardFormat::default());
         let result = reader.read_token();
         assert!(matches!(result.unwrap_err().kind(), ErrorKind::Eof));
     }
@@ -2695,7 +2646,7 @@ mod tests {
     #[case(&[0x0f, 0x00, 0x05, 0x00, 0x61, 0x62])] // Quoted lexeme (0x000f) with length prefix 5 but only 2 bytes of payload
     #[case(&[0x0f, 0x00, 0x05, 0x00, 0x61, 0x62])]
     fn test_truncated_payload(#[case] data: &[u8]) {
-        let mut reader = TokenReader::from_slice(data, StandardFormat);
+        let mut reader = TokenReader::from_slice(data, StandardFormat::default());
         let result = reader.read_token();
         assert!(
             matches!(result.unwrap_err().kind(), ErrorKind::Eof),
@@ -2712,7 +2663,7 @@ mod tests {
         Token::Bool(false).write(&mut writer).unwrap();
         let data = writer.into_inner();
 
-        let mut reader = TokenReader::from_slice(&data, StandardFormat);
+        let mut reader = TokenReader::from_slice(&data, StandardFormat::default());
 
         assert_eq!(reader.read_token().unwrap(), StandardToken::Bool(true));
 
@@ -2728,7 +2679,7 @@ mod tests {
         Token::U32(42).write(&mut writer).unwrap();
         let data = writer.into_inner();
 
-        let mut reader = TokenReader::from_slice(&data, StandardFormat);
+        let mut reader = TokenReader::from_slice(&data, StandardFormat::default());
 
         assert_eq!(reader.position(), 0);
 
@@ -2750,7 +2701,7 @@ mod tests {
         Token::Quoted(Scalar::new(b"x")).write(&mut writer).unwrap();
         let data = writer.into_inner();
 
-        let mut reader = TokenReader::from_slice(&data, StandardFormat);
+        let mut reader = TokenReader::from_slice(&data, StandardFormat::default());
 
         assert_eq!(reader.read_token().unwrap(), StandardToken::Quoted(b"x"));
 
@@ -2763,7 +2714,7 @@ mod tests {
             .unwrap();
         let data = writer.into_inner();
 
-        let mut reader = TokenReader::from_slice(&data, StandardFormat);
+        let mut reader = TokenReader::from_slice(&data, StandardFormat::default());
 
         assert_eq!(
             reader.read_token().unwrap(),
@@ -2786,7 +2737,7 @@ mod tests {
         .unwrap();
         let data = writer.into_inner();
 
-        let mut reader = TokenReader::from_slice(&data, StandardFormat);
+        let mut reader = TokenReader::from_slice(&data, StandardFormat::default());
 
         let StandardToken::Rgb(rgb) = reader.read_token().unwrap() else {
             panic!("expected rgb token");
@@ -2809,7 +2760,7 @@ mod tests {
         .unwrap();
         let data = writer.into_inner();
 
-        let mut reader = TokenReader::from_slice(&data, StandardFormat);
+        let mut reader = TokenReader::from_slice(&data, StandardFormat::default());
 
         let StandardToken::Rgb(rgb) = reader.read_token().unwrap() else {
             panic!("expected rgb token");
@@ -2824,10 +2775,9 @@ mod tests {
     fn map_access_consumes_nested_close_via_next_token() {
         let state = Rc::new(RefCell::new(TrackingState::default()));
         let data = nested_map_sync_fixture();
-        let context = tracking_context();
 
         let actual: NestedSyncData =
-            from_slice(&data, TrackingStandardFormat::new(state.clone()), &context).unwrap();
+            from_slice(&data, TrackingStandardFormat::new(state.clone(), tracking_fields())).unwrap();
 
         assert_eq!(
             actual,
@@ -2843,10 +2793,9 @@ mod tests {
     fn seq_access_consumes_nested_close_via_next_token() {
         let state = Rc::new(RefCell::new(TrackingState::default()));
         let data = nested_sequence_sync_fixture();
-        let context = tracking_context();
 
         let actual: SequenceSyncData =
-            from_slice(&data, TrackingStandardFormat::new(state.clone()), &context).unwrap();
+            from_slice(&data, TrackingStandardFormat::new(state.clone(), tracking_fields())).unwrap();
 
         assert_eq!(
             actual,

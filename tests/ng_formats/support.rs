@@ -90,18 +90,14 @@ impl Read for ChunkedReader<'_> {
     }
 }
 
-pub(crate) fn assert_slice_and_reader<T, F, Make>(
-    data: &[u8],
-    make_format: Make,
-    context: &F::Context,
-) -> T
+pub(crate) fn assert_slice_and_reader<T, F, Make>(data: &[u8], make_format: Make) -> T
 where
     T: for<'de> Deserialize<'de> + PartialEq + Debug,
     F: BinaryFormat,
     Make: Fn() -> F,
 {
-    let from_bytes: T = from_slice(data, make_format(), context).unwrap();
-    let from_stream: T = from_reader(ChunkedReader::new(data, 3), make_format(), context).unwrap();
+    let from_bytes: T = from_slice(data, make_format()).unwrap();
+    let from_stream: T = from_reader(ChunkedReader::new(data, 3), make_format()).unwrap();
     assert_eq!(from_bytes, from_stream);
     from_bytes
 }
