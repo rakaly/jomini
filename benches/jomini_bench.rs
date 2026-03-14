@@ -235,11 +235,24 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
 
         group.bench_function(BenchmarkId::new("reader-ng", game), |b| {
             #[derive(Clone, Copy)]
+            struct BenchFieldId(u16);
+
+            impl BenchFieldId {
+                fn new(index: u16) -> Self {
+                    Self(index)
+                }
+
+                fn value(self) -> u16 {
+                    self.0
+                }
+            }
+
+            #[derive(Clone, Copy)]
             enum BenchToken {
                 Open,
                 Close,
                 Equal,
-                Id(jomini::binary::ng::FieldId),
+                Id(BenchFieldId),
                 Value,
             }
 
@@ -364,7 +377,7 @@ pub fn binary_parse_benchmark(c: &mut Criterion) {
                         }
                         id => {
                             cursor.consume();
-                            BenchToken::Id(jomini::binary::ng::FieldId::new(id.0))
+                            BenchToken::Id(BenchFieldId::new(id.0))
                         }
                     };
 

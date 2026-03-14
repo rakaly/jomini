@@ -7,7 +7,7 @@ use serde::{
     Deserialize,
     de::{self, DeserializeOwned, DeserializeSeed, MapAccess, SeqAccess, Visitor},
 };
-use std::{borrow::Cow, collections::HashMap, hash::BuildHasher, io::Read};
+use std::{borrow::Cow, io::Read};
 
 pub struct ParserBuf {
     buf: Box<[u8]>,
@@ -580,72 +580,6 @@ impl<F: BinaryTokenFormat> BinaryTokenFormat for &'_ mut F {
     }
 }
 
-pub trait FieldResolver {
-    fn resolve_field(&self, _token: FieldId) -> Option<&str> {
-        None
-    }
-}
-
-impl<T: FieldResolver + ?Sized> FieldResolver for &'_ T {
-    fn resolve_field(&self, token: FieldId) -> Option<&str> {
-        (**self).resolve_field(token)
-    }
-}
-
-impl<T: FieldResolver + ?Sized> FieldResolver for Box<T> {
-    fn resolve_field(&self, token: FieldId) -> Option<&str> {
-        (**self).resolve_field(token)
-    }
-}
-
-impl<V, S> FieldResolver for HashMap<u16, V, S>
-where
-    V: AsRef<str>,
-    S: BuildHasher,
-{
-    fn resolve_field(&self, token: FieldId) -> Option<&str> {
-        self.get(&token.value()).map(AsRef::as_ref)
-    }
-}
-
-impl<V, S> FieldResolver for HashMap<FieldId, V, S>
-where
-    V: AsRef<str>,
-    S: BuildHasher,
-{
-    fn resolve_field(&self, token: FieldId) -> Option<&str> {
-        self.get(&token).map(AsRef::as_ref)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct FieldId(u16);
-
-impl FieldId {
-    #[inline]
-    pub const fn new(index: u16) -> Self {
-        FieldId(index)
-    }
-
-    #[inline]
-    pub const fn value(self) -> u16 {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct LookupIndex(u32);
-
-impl LookupIndex {
-    pub const fn new(index: u32) -> Self {
-        LookupIndex(index)
-    }
-
-    pub const fn value(self) -> u32 {
-        self.0
-    }
-}
-
 pub struct TokenReader<R, F> {
     reader: R,
     state: ParserState,
@@ -907,13 +841,17 @@ where
                 None if ROOT => return Ok(None),
                 None => return Err(LexError::Eof.at(self.de.reader.position()).into()),
                 Some(LexemeId::CLOSE) => {
-                    unsafe { self.de.reader.state.consume(2); }
+                    unsafe {
+                        self.de.reader.state.consume(2);
+                    }
                     self.de.reader.format.on_close();
                     return Ok(None);
                 }
                 Some(LexemeId::OPEN) => {
                     // Ghost object: consume open, skip the key inside
-                    unsafe { self.de.reader.state.consume(2); }
+                    unsafe {
+                        self.de.reader.state.consume(2);
+                    }
                     self.de.reader.format.on_open();
                     self.de.reader.skip_value()?;
                 }
@@ -934,7 +872,9 @@ where
     {
         // Peek and skip Equal if present
         if let Some(LexemeId::EQUAL) = self.de.reader.peek_lexeme_id()? {
-            unsafe { self.de.reader.state.consume(2); }
+            unsafe {
+                self.de.reader.state.consume(2);
+            }
             self.de.reader.format.on_equal();
         }
 
@@ -1016,7 +956,9 @@ where
                         ));
                     }
 
-                    unsafe { de.reader.state.consume(2); }
+                    unsafe {
+                        de.reader.state.consume(2);
+                    }
                     de.reader.format.on_close();
                 }
                 Ok(result)
@@ -1328,14 +1270,18 @@ where
     {
         match self.de.reader.peek_lexeme_id()? {
             Some(LexemeId::CLOSE) => {
-                unsafe { self.de.reader.state.consume(2); }
+                unsafe {
+                    self.de.reader.state.consume(2);
+                }
                 self.de.reader.format.on_close();
                 self.hit_end = true;
                 return Ok(None);
             }
             Some(LexemeId::EQUAL) => {
                 // This is a standalone Equal token from object template syntax
-                unsafe { self.de.reader.state.consume(2); }
+                unsafe {
+                    self.de.reader.state.consume(2);
+                }
                 self.de.reader.format.on_equal();
             }
             Some(_) => {}
@@ -1439,7 +1385,37 @@ mod tests {
     use rstest::*;
     use serde::de::Error as _;
     use standard_support::{StandardFormat, StandardToken};
-    use std::{cell::RefCell, rc::Rc};
+    use std::{cell::RefCell, collections::HashMap, rc::Rc};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    struct FieldId(u16);
+
+    impl FieldId {
+        #[inline]
+        const fn new(index: u16) -> Self {
+            Self(index)
+        }
+
+        #[inline]
+        const fn value(self) -> u16 {
+            self.0
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    struct LookupIndex(u32);
+
+    impl LookupIndex {
+        #[inline]
+        const fn new(index: u32) -> Self {
+            Self(index)
+        }
+
+        #[inline]
+        const fn value(self) -> u32 {
+            self.0
+        }
+    }
 
     mod standard_support {
         use super::*;

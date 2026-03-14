@@ -5,12 +5,25 @@ use jomini::{
     Error, Utf8Encoding,
     binary::LexemeId,
     binary::ng::{
-        BinaryTokenFormat, BinaryValueFormat, FieldId, ParserState, PdxVisitor, TokenReader,
-        TokenResult, ValueResult,
+        BinaryTokenFormat, BinaryValueFormat, ParserState, PdxVisitor, TokenReader, TokenResult,
+        ValueResult,
     },
 };
 use serde::{Deserialize, de::Error as _};
 use std::borrow::Cow;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct FieldId(u16);
+
+impl FieldId {
+    const fn new(index: u16) -> Self {
+        Self(index)
+    }
+
+    const fn value(self) -> u16 {
+        self.0
+    }
+}
 
 fn resolve_name<'de, V>(
     field: FieldId,

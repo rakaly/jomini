@@ -5,13 +5,26 @@ use crate::support::{
 use jomini::{
     Error, Windows1252Encoding,
     binary::ng::{
-        BinaryTokenFormat, BinaryValueFormat, FieldId, ParserState, PdxVisitor, TokenReader,
-        TokenResult, ValueResult, from_slice,
+        BinaryTokenFormat, BinaryValueFormat, ParserState, PdxVisitor, TokenReader, TokenResult,
+        ValueResult, from_slice,
     },
     binary::{FailedResolveStrategy, LexemeId},
 };
 use serde::{Deserialize, de::Error as _};
 use std::{borrow::Cow, collections::HashMap};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct FieldId(u16);
+
+impl FieldId {
+    const fn new(index: u16) -> Self {
+        Self(index)
+    }
+
+    const fn value(self) -> u16 {
+        self.0
+    }
+}
 
 fn resolve_name<'de, V>(
     field: FieldId,
