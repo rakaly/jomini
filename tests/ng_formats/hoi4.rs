@@ -25,23 +25,6 @@ impl FieldId {
     }
 }
 
-fn resolve_name<'de, V>(
-    field: FieldId,
-    visitor: V,
-    format: &Hoi4Format,
-) -> Result<ValueResult<V::Value, V>, Error>
-where
-    V: PdxVisitor<'de>,
-{
-    match format.fields.resolve_field(field) {
-        Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
-        None => Err(Error::custom(format!(
-            "unknown field token 0x{:x}",
-            field.value()
-        ))),
-    }
-}
-
 fn utf8_scalar<'a>(data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
     match Utf8Encoding::decode(data) {
         Cow::Borrowed(x) => Ok(Cow::Borrowed(x)),
@@ -93,6 +76,23 @@ impl Default for Hoi4Format {
 }
 
 impl Hoi4Format {
+    fn resolve_name<'de, V>(
+        &self,
+        field: FieldId,
+        visitor: V,
+    ) -> Result<ValueResult<V::Value, V>, Error>
+    where
+        V: PdxVisitor<'de>,
+    {
+        match self.fields.resolve_field(field) {
+            Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
+            None => Err(Error::custom(format!(
+                "unknown field token 0x{:x}",
+                field.value()
+            ))),
+        }
+    }
+
     fn modern_f32(&self) -> bool {
         self.save_version > 30
     }
@@ -215,7 +215,7 @@ impl BinaryValueFormat for Hoi4Format {
         } else {
             cursor.consume();
             self.pending_save_version = id.0 == 0x349d;
-            resolve_name(FieldId::new(id.0), visitor, self)
+            self.resolve_name(FieldId::new(id.0), visitor)
         }
     }
 
@@ -272,7 +272,7 @@ impl BinaryValueFormat for Hoi4Format {
             }
             id => {
                 cursor.consume();
-                resolve_name(FieldId::new(id.0), visitor, self)
+                self.resolve_name(FieldId::new(id.0), visitor)
             }
         }
     }

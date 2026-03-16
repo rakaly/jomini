@@ -26,31 +26,6 @@ impl FieldId {
     }
 }
 
-fn resolve_name<'de, V>(
-    field: FieldId,
-    visitor: V,
-    format: &Eu4Format,
-) -> Result<ValueResult<V::Value, V>, Error>
-where
-    V: PdxVisitor<'de>,
-{
-    match format.fields.get(&field.value()).map(String::as_str) {
-        Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
-        None => match format.failed_resolve_strategy {
-            FailedResolveStrategy::Error => Err(Error::custom(format!(
-                "unknown field token 0x{:x}",
-                field.value()
-            ))),
-            FailedResolveStrategy::Stringify => Ok(ValueResult::Value(
-                visitor.visit_string(format!("0x{:x}", field.value()))?,
-            )),
-            FailedResolveStrategy::Ignore => Ok(ValueResult::Value(
-                visitor.visit_str("__internal_identifier_ignore")?,
-            )),
-        },
-    }
-}
-
 fn eu4_scalar<'a>(data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
     if let Some(prefix) = data.first() {
         if (0x10..=0x13).contains(prefix) {
@@ -149,6 +124,31 @@ impl Eu4Format {
         Self {
             fields,
             failed_resolve_strategy: FailedResolveStrategy::Error,
+        }
+    }
+
+    fn resolve_name<'de, V>(
+        &self,
+        field: FieldId,
+        visitor: V,
+    ) -> Result<ValueResult<V::Value, V>, Error>
+    where
+        V: PdxVisitor<'de>,
+    {
+        match self.fields.get(&field.value()).map(String::as_str) {
+            Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
+            None => match self.failed_resolve_strategy {
+                FailedResolveStrategy::Error => Err(Error::custom(format!(
+                    "unknown field token 0x{:x}",
+                    field.value()
+                ))),
+                FailedResolveStrategy::Stringify => Ok(ValueResult::Value(
+                    visitor.visit_string(format!("0x{:x}", field.value()))?,
+                )),
+                FailedResolveStrategy::Ignore => Ok(ValueResult::Value(
+                    visitor.visit_str("__internal_identifier_ignore")?,
+                )),
+            },
         }
     }
 
@@ -605,7 +605,7 @@ impl BinaryValueFormat for Eu4Format {
             }
             id => {
                 cursor.consume();
-                resolve_name(FieldId::new(id.0), visitor, self)
+                self.resolve_name(FieldId::new(id.0), visitor)
             }
         }
     }

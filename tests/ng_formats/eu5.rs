@@ -39,31 +39,6 @@ impl LookupIndex {
     }
 }
 
-fn resolve_name<'de, V>(
-    field: FieldId,
-    visitor: V,
-    format: &Eu5Format,
-) -> Result<ValueResult<V::Value, V>, Error>
-where
-    V: PdxVisitor<'de>,
-{
-    match format.fields.resolve_field(field) {
-        Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
-        None => match format.failed_resolve_strategy {
-            FailedResolveStrategy::Error => Err(Error::custom(format!(
-                "unknown field token 0x{:x}",
-                field.value()
-            ))),
-            FailedResolveStrategy::Stringify => Ok(ValueResult::Value(
-                visitor.visit_string(format!("0x{:x}", field.value()))?,
-            )),
-            FailedResolveStrategy::Ignore => Ok(ValueResult::Value(
-                visitor.visit_str("__internal_identifier_ignore")?,
-            )),
-        },
-    }
-}
-
 fn resolve_lookup<'de, V>(
     lookup: Option<&str>,
     index: LookupIndex,
@@ -152,6 +127,31 @@ impl Eu5Format {
             fields: Eu5Fields,
             failed_resolve_strategy: FailedResolveStrategy::Error,
             lookups: HashMap::from([(7, "FRA")]),
+        }
+    }
+
+    fn resolve_name<'de, V>(
+        &self,
+        field: FieldId,
+        visitor: V,
+    ) -> Result<ValueResult<V::Value, V>, Error>
+    where
+        V: PdxVisitor<'de>,
+    {
+        match self.fields.resolve_field(field) {
+            Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
+            None => match self.failed_resolve_strategy {
+                FailedResolveStrategy::Error => Err(Error::custom(format!(
+                    "unknown field token 0x{:x}",
+                    field.value()
+                ))),
+                FailedResolveStrategy::Stringify => Ok(ValueResult::Value(
+                    visitor.visit_string(format!("0x{:x}", field.value()))?,
+                )),
+                FailedResolveStrategy::Ignore => Ok(ValueResult::Value(
+                    visitor.visit_str("__internal_identifier_ignore")?,
+                )),
+            },
         }
     }
 
@@ -309,7 +309,7 @@ impl BinaryValueFormat for Eu5Format {
             self.deserialize_any(reader, visitor)
         } else {
             cursor.consume();
-            resolve_name(FieldId::new(id.0), visitor, self)
+            self.resolve_name(FieldId::new(id.0), visitor)
         }
     }
 
@@ -375,7 +375,7 @@ impl BinaryValueFormat for Eu5Format {
             }
             id => {
                 cursor.consume();
-                resolve_name(FieldId::new(id.0), visitor, self)
+                self.resolve_name(FieldId::new(id.0), visitor)
             }
         }
     }

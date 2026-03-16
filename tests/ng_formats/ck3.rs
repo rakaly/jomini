@@ -24,23 +24,6 @@ impl FieldId {
     }
 }
 
-fn resolve_name<'de, V>(
-    field: FieldId,
-    visitor: V,
-    format: &Ck3Format,
-) -> Result<ValueResult<V::Value, V>, Error>
-where
-    V: PdxVisitor<'de>,
-{
-    match format.fields.resolve_field(field) {
-        Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
-        None => Err(Error::custom(format!(
-            "unknown field token 0x{:x}",
-            field.value()
-        ))),
-    }
-}
-
 fn utf8_scalar<'a>(data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
     match Utf8Encoding::decode(data) {
         Cow::Borrowed(x) => Ok(Cow::Borrowed(x)),
@@ -100,6 +83,23 @@ impl Ck3Format {
     const VERSION_FIELD: FieldId = FieldId::new(0x00ee);
     const ALIVE_DATA_FIELD: FieldId = FieldId::new(0x5000);
     const GOLD_FIELD: FieldId = FieldId::new(0x5001);
+
+    fn resolve_name<'de, V>(
+        &self,
+        field: FieldId,
+        visitor: V,
+    ) -> Result<ValueResult<V::Value, V>, Error>
+    where
+        V: PdxVisitor<'de>,
+    {
+        match self.fields.resolve_field(field) {
+            Some(name) => Ok(ValueResult::Value(visitor.visit_str(name)?)),
+            None => Err(Error::custom(format!(
+                "unknown field token 0x{:x}",
+                field.value()
+            ))),
+        }
+    }
 
     fn modern(&self) -> bool {
         self.version >= 2
@@ -259,7 +259,7 @@ impl BinaryValueFormat for Ck3Format {
             cursor.consume();
             let field = FieldId::new(id.0);
             self.on_field(field);
-            resolve_name(field, visitor, self)
+            self.resolve_name(field, visitor)
         }
     }
 
@@ -320,7 +320,7 @@ impl BinaryValueFormat for Ck3Format {
                 cursor.consume();
                 let field = FieldId::new(id.0);
                 self.on_field(field);
-                resolve_name(field, visitor, self)
+                self.resolve_name(field, visitor)
             }
         }
     }

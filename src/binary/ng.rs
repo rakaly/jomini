@@ -673,8 +673,9 @@ where
         }
     }
 
+    /// Skips the next binary value using the active format's skip logic.
     #[inline]
-    fn skip_value(&mut self) -> Result<(), Error> {
+    pub fn skip_value(&mut self) -> Result<(), Error> {
         let reader = &mut self.reader;
         self.format.skip_value(&mut self.state, &mut |state| {
             Ok(state.buf.fill(&mut *reader)?)
