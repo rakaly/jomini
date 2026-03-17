@@ -1,3 +1,139 @@
+//! **(Experimental)** Next-generation, stateful, game-specific binary parsing
+//! primitives.
+//!
+//! This module exposes the low-level building blocks for binary formats whose
+//! semantics depend on game, patch level, or surrounding parse context.
+//! Implementors typically provide a format type that implements:
+//!
+//! - [`BinaryTokenFormat`] for raw tokenization, useful for transcoding binary
+//!   to plaintext (melting).
+//! - [`BinaryValueFormat`] for semantic deserialization into Serde visitors.
+//!
+//! The same format instance is shared between streaming tokenization and Serde
+//! deserialization, which allows patch-dependent and scope-dependent state to
+//! be tracked in one place. That makes it practical to support formats where
+//! the meaning of later bytes depends on earlier fields (like how the number of
+//! bytes HOI4 values are encoded in is patch-dependent).
+//!
+//! `BinaryValueFormat` also supports speculative parsing. A typed
+//! `deserialize_*` implementation can assume the next lexeme matches the target
+//! type and fast-path the common case, falling back to `deserialize_any` when
+//! it does not.
+//!
+//! Use [`from_slice`] for borrowed deserialization from in-memory data,
+//! [`from_reader`] or [`BinaryReaderDeserializer`] for streaming
+//! deserialization, and [`TokenReader`] when you need a token stream instead of
+//! a fully deserialized value.
+//!
+//! ```rust
+//! use jomini::{
+//!     Error,
+//!     binary::{
+//!         LexemeId,
+//!         ng::{
+//!             self, BinaryTokenFormat, BinaryValueFormat, ParserState, PdxVisitor, TokenResult,
+//!             ValueResult,
+//!         },
+//!     },
+//! };
+//! use serde::Deserialize;
+//! use std::borrow::Cow;
+//!
+//! #[derive(Default)]
+//! struct MiniFormat;
+//!
+//! impl BinaryTokenFormat for MiniFormat {
+//!     type Token<'a> = ();
+//!
+//!     fn next_token<'a>(
+//!         &mut self,
+//!         reader: &'a mut ParserState,
+//!     ) -> Result<TokenResult<Self::Token<'a>>, Error> {
+//!         let mut cursor = reader.token_cursor();
+//!         let Some(id) = cursor.read_lexeme() else {
+//!             return Ok(TokenResult::MoreData);
+//!         };
+//!
+//!         match id {
+//!             LexemeId::I32 => {
+//!                 if cursor.read_bytes::<4>().is_none() {
+//!                     return Ok(TokenResult::MoreData);
+//!                 }
+//!             }
+//!             LexemeId::EQUAL | LexemeId::OPEN | LexemeId::CLOSE => {}
+//!             _ => {}
+//!         }
+//!
+//!         cursor.consume();
+//!         Ok(TokenResult::Token(()))
+//!     }
+//! }
+//!
+//! impl BinaryValueFormat for MiniFormat {
+//!     fn decode_scalar<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
+//!         Ok(String::from_utf8_lossy(data))
+//!     }
+//!
+//!     fn deserialize_i32<'de, V: PdxVisitor<'de>>(
+//!         &mut self,
+//!         reader: &mut ParserState,
+//!         visitor: V,
+//!     ) -> Result<ValueResult<V::Value, V>, Error> {
+//!         let mut cursor = reader.token_cursor();
+//!         let Some(id) = cursor.read_lexeme() else {
+//!             return Ok(ValueResult::MoreData(visitor));
+//!         };
+//!         if id != LexemeId::I32 {
+//!             return self.deserialize_any(reader, visitor);
+//!         }
+//!         let Some(raw) = cursor.read_bytes::<4>().copied() else {
+//!             return Ok(ValueResult::MoreData(visitor));
+//!         };
+//!         cursor.consume();
+//!         Ok(ValueResult::Value(visitor.visit_i32(i32::from_le_bytes(raw))?))
+//!     }
+//!
+//!     fn deserialize_identifier<'de, V: PdxVisitor<'de>>(
+//!         &mut self,
+//!         reader: &mut ParserState,
+//!         visitor: V,
+//!     ) -> Result<ValueResult<V::Value, V>, Error> {
+//!         let mut cursor = reader.token_cursor();
+//!         let Some(id) = cursor.read_lexeme() else {
+//!             return Ok(ValueResult::MoreData(visitor));
+//!         };
+//!         if id == LexemeId::new(0x2000) {
+//!             cursor.consume();
+//!             Ok(ValueResult::Value(visitor.visit_str("value")?))
+//!         } else {
+//!             self.deserialize_any(reader, visitor)
+//!         }
+//!     }
+//!
+//!     fn deserialize_any<'de, V: PdxVisitor<'de>>(
+//!         &mut self,
+//!         reader: &mut ParserState,
+//!         visitor: V,
+//!     ) -> Result<ValueResult<V::Value, V>, Error> {
+//!         self.deserialize_i32(reader, visitor)
+//!     }
+//! }
+//!
+//! #[derive(Debug, Deserialize, PartialEq)]
+//! struct Data {
+//!     value: i32,
+//! }
+//!
+//! let mut bytes = Vec::new();
+//! bytes.extend_from_slice(&0x2000u16.to_le_bytes());
+//! bytes.extend_from_slice(&LexemeId::EQUAL.0.to_le_bytes());
+//! bytes.extend_from_slice(&LexemeId::I32.0.to_le_bytes());
+//! bytes.extend_from_slice(&7i32.to_le_bytes());
+//!
+//! let data: Data = ng::from_slice(&bytes, MiniFormat).unwrap();
+//! assert_eq!(data, Data { value: 7 });
+//! ```
+
 use crate::{
     DeserializeError, DeserializeErrorKind, Error,
     binary::{LexError, LexemeId, Rgb},
@@ -9,6 +145,11 @@ use serde::{
 };
 use std::{borrow::Cow, io::Read};
 
+/// Buffer window used by the streaming parser.
+///
+/// This type is mostly visible so callers can seed a parser from a slice or
+/// recover buffered remainder data through [`TokenReader::into_remainder`].
+/// Most format implementations interact with [`ParserState`] instead.
 pub struct ParserBuf {
     buf: Box<[u8]>,
     start: *const u8,
@@ -17,6 +158,9 @@ pub struct ParserBuf {
 }
 
 impl ParserBuf {
+    /// Creates a parser buffer that borrows directly from the provided slice.
+    ///
+    /// No copy is performed.
     pub fn from_slice(data: &[u8]) -> Self {
         Self {
             buf: Box::new([]),
@@ -26,6 +170,7 @@ impl ParserBuf {
         }
     }
 
+    /// Creates an empty owned buffer with the given capacity for streaming use.
     pub fn new(size: usize) -> Self {
         let buf = vec![0u8; size].into_boxed_slice();
         let start = buf.as_ptr();
@@ -37,16 +182,19 @@ impl ParserBuf {
         }
     }
 
+    /// Returns the currently buffered unread bytes.
     #[inline]
     pub fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.start, self.len) }
     }
 
+    /// Returns the number of unread bytes in the current window.
     #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Returns `true` when no unread bytes remain in the current window.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
@@ -98,42 +246,52 @@ impl ParserBuf {
     }
 }
 
+/// Mutable parser view handed to binary format implementations.
+///
+/// Direct `read_*` methods consume bytes immediately. Use [`ParserState::token_cursor`]
+/// when decoding may need to roll back on incomplete input.
 pub struct ParserState {
     buf: ParserBuf,
-    storage: [u8; 8],
 }
 
 impl ParserState {
+    /// Reads `N` bytes and advances the parser on success.
+    ///
+    /// Returns `None` if the current buffer window does not contain enough
+    /// bytes. No refill is attempted.
     #[inline]
     pub fn read_bytes<const N: usize>(&mut self) -> Option<&[u8; N]> {
         self.buf.read_bytes::<N>()
     }
 
+    /// Reads exactly `N` bytes or returns [`Error::eof`].
     #[inline]
     pub fn read_exact<const N: usize>(&mut self) -> Result<[u8; N], Error> {
         self.read_bytes::<N>().copied().ok_or_else(Error::eof)
     }
 
+    /// Reads a variable-length byte slice and advances the parser on success.
     #[inline]
     pub fn read_slice(&mut self, len: u16) -> Option<&[u8]> {
         self.buf.read_slice(len)
     }
 
-    #[inline]
-    pub fn store<const N: usize>(&mut self, data: [u8; N]) {
-        self.storage[..N].copy_from_slice(&data);
-    }
-
+    /// Returns the unread bytes in the current parser window.
     #[inline]
     pub fn as_slice(&self) -> &[u8] {
         self.buf.as_slice()
     }
 
+    /// Peeks `N` bytes without advancing the parser.
     #[inline]
     pub fn peek_bytes<const N: usize>(&self) -> Option<&[u8; N]> {
         self.buf.peek_bytes::<N>()
     }
 
+    /// Creates a transactional cursor over the current unread window.
+    ///
+    /// Bytes are only committed once the cursor is consumed, which makes this
+    /// the preferred API for speculative parsing and handling split tokens.
     #[inline]
     pub fn token_cursor(&mut self) -> TokenCursor<'_> {
         TokenCursor {
@@ -142,11 +300,13 @@ impl ParserState {
         }
     }
 
+    /// Returns the number of unread bytes in the current parser window.
     #[inline]
     pub fn len(&self) -> usize {
         self.buf.len()
     }
 
+    /// Returns `true` when the current parser window is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
@@ -166,30 +326,48 @@ impl ParserState {
     }
 }
 
+/// Opaque checkpoint captured from a [`TokenCursor`].
+///
+/// Use with [`TokenCursor::consume_to`] to commit only a prefix of speculative
+/// reads.
 #[derive(Clone, Copy)]
 pub struct CursorCheckpoint(usize);
 
+/// Transactional reader over a [`ParserState`] window.
+///
+/// This cursor allows callers to speculatively read a token and either commit
+/// the consumed prefix or leave the underlying parser untouched.
 pub struct TokenCursor<'a> {
     state: &'a mut ParserBuf,
     consumed: usize,
 }
 
 impl<'a> TokenCursor<'a> {
+    /// Captures the current consumed position for later partial commit.
     #[inline]
     pub fn checkpoint(&self) -> CursorCheckpoint {
         CursorCheckpoint(self.consumed)
     }
 
+    /// Returns the number of bytes read through this cursor.
     #[inline]
     pub fn consumed(&self) -> usize {
         self.consumed
     }
 
+    /// Returns the remaining unread bytes available to this cursor.
     #[inline]
     pub fn len(&self) -> usize {
         self.state.len - self.consumed
     }
 
+    /// Returns `true` when no unread bytes remain for this cursor.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Reads `N` bytes without committing them to the underlying parser.
     #[inline]
     pub fn read_bytes<const N: usize>(&mut self) -> Option<&'a [u8; N]> {
         let result =
@@ -199,6 +377,7 @@ impl<'a> TokenCursor<'a> {
         Some(result)
     }
 
+    /// Reads `len` bytes without committing them to the underlying parser.
     #[inline]
     pub fn read_slice(&mut self, len: u16) -> Option<&'a [u8]> {
         let result =
@@ -208,6 +387,7 @@ impl<'a> TokenCursor<'a> {
         Some(result)
     }
 
+    /// Reads a `u16` length-prefixed payload without committing it.
     #[inline]
     pub fn read_len_prefixed(&mut self) -> Option<&'a [u8]> {
         let slice =
@@ -219,12 +399,14 @@ impl<'a> TokenCursor<'a> {
         Some(result)
     }
 
+    /// Reads the next two bytes as a [`LexemeId`] without committing them.
     #[inline]
     pub fn read_lexeme(&mut self) -> Option<LexemeId> {
         let data = self.read_bytes::<2>()?;
         Some(LexemeId::new(u16::from_le_bytes(*data)))
     }
 
+    /// Commits all bytes consumed through this cursor to the underlying parser.
     #[inline]
     pub fn consume(self) {
         self.state.start = unsafe { self.state.start.add(self.consumed) };
@@ -232,6 +414,7 @@ impl<'a> TokenCursor<'a> {
         self.state.total_read += self.consumed;
     }
 
+    /// Commits bytes up to the provided checkpoint and discards the rest.
     #[inline]
     pub fn consume_to(self, checkpoint: CursorCheckpoint) {
         debug_assert!(checkpoint.0 <= self.consumed);
@@ -241,19 +424,34 @@ impl<'a> TokenCursor<'a> {
     }
 }
 
+/// Result of attempting to decode the next token from a buffered stream.
 pub enum TokenResult<T> {
+    /// A complete token was decoded.
     Token(T),
+    /// More bytes are required before the token can be decoded.
     MoreData,
 }
 
+/// Tokenization behavior for a game-specific binary format.
+///
+/// Implement this trait when you need a streaming token reader or custom skip
+/// logic. The same format instance is reused by [`TokenReader`] and
+/// [`BinaryReaderDeserializer`], so any state recorded here is shared with
+/// [`BinaryValueFormat`] methods.
 pub trait BinaryTokenFormat {
+    /// Token type yielded by [`TokenReader`].
     type Token<'a>;
 
+    /// Attempts to decode the next token from the current parser state.
+    ///
+    /// Return [`TokenResult::MoreData`] if the token is incomplete and the
+    /// caller should refill the buffer and retry.
     fn next_token<'a>(
         &mut self,
         reader: &'a mut ParserState,
     ) -> Result<TokenResult<Self::Token<'a>>, Error>;
 
+    /// Called when the deserializer is about to consume an opening delimiter.
     #[inline]
     fn on_open(&mut self) {}
 
@@ -266,9 +464,15 @@ pub trait BinaryTokenFormat {
     /// Called by the serde deserializer after it has already peeked and
     /// identified a `}` structural lexeme and before it consumes the 2-byte
     /// lexeme from the stream.
+    /// Called when the deserializer is about to consume a closing delimiter.
     #[inline]
     fn on_close(&mut self) {}
 
+    /// Skips the next semantic value.
+    ///
+    /// Override this when the format can skip values faster than repeated calls
+    /// to [`BinaryTokenFormat::next_token`]. On success the parser must be left
+    /// positioned immediately after the skipped value.
     fn skip_value(
         &mut self,
         state: &mut ParserState,
@@ -330,9 +534,17 @@ fn skip_value_slow<F: BinaryTokenFormat>(
     }
 }
 
+/// Semantic deserialization behavior for a game-specific binary format.
+///
+/// Implementors map raw lexemes and payloads into Serde-compatible values.
+/// Specialized `deserialize_*` methods are intended for speculative fast paths:
+/// if the expected type is present, decode it directly; otherwise delegate to
+/// [`BinaryValueFormat::deserialize_any`].
 pub trait BinaryValueFormat {
+    /// Decodes raw scalar bytes into text.
     fn decode_scalar<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, str>, Error>;
 
+    /// Attempts to deserialize the next value as `i32`.
     fn deserialize_i32<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
@@ -341,6 +553,7 @@ pub trait BinaryValueFormat {
         self.deserialize_any(reader, visitor)
     }
 
+    /// Attempts to deserialize the next value as `u32`.
     fn deserialize_u32<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
@@ -349,6 +562,7 @@ pub trait BinaryValueFormat {
         self.deserialize_any(reader, visitor)
     }
 
+    /// Attempts to deserialize the next value as `i64`.
     fn deserialize_i64<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
@@ -357,6 +571,7 @@ pub trait BinaryValueFormat {
         self.deserialize_any(reader, visitor)
     }
 
+    /// Attempts to deserialize the next value as `u64`.
     fn deserialize_u64<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
@@ -365,6 +580,7 @@ pub trait BinaryValueFormat {
         self.deserialize_any(reader, visitor)
     }
 
+    /// Attempts to deserialize the next value as `f32`.
     fn deserialize_f32<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
@@ -373,6 +589,7 @@ pub trait BinaryValueFormat {
         self.deserialize_any(reader, visitor)
     }
 
+    /// Attempts to deserialize the next value as `f64`.
     fn deserialize_f64<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
@@ -381,6 +598,7 @@ pub trait BinaryValueFormat {
         self.deserialize_any(reader, visitor)
     }
 
+    /// Attempts to deserialize the next value as `bool`.
     fn deserialize_bool<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
@@ -389,6 +607,7 @@ pub trait BinaryValueFormat {
         self.deserialize_any(reader, visitor)
     }
 
+    /// Attempts to deserialize the next value as a string-like scalar.
     fn deserialize_str<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
@@ -397,6 +616,9 @@ pub trait BinaryValueFormat {
         self.deserialize_any(reader, visitor)
     }
 
+    /// Attempts to deserialize the next value as an identifier.
+    ///
+    /// This is typically where field-token-to-name resolution happens.
     fn deserialize_identifier<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
@@ -405,6 +627,10 @@ pub trait BinaryValueFormat {
         self.deserialize_any(reader, visitor)
     }
 
+    /// Deserializes the next value without any type hint.
+    ///
+    /// Returning [`ValueResult::Open`] hands container traversal back to the
+    /// surrounding deserializer.
     fn deserialize_any<'de, V: PdxVisitor<'de>>(
         &mut self,
         reader: &mut ParserState,
@@ -412,11 +638,17 @@ pub trait BinaryValueFormat {
     ) -> VisitResult<'de, V>;
 }
 
+/// Convenience trait alias for a complete binary format implementation.
 pub trait BinaryFormat: BinaryTokenFormat + BinaryValueFormat {}
 
 impl<T: BinaryTokenFormat + BinaryValueFormat> BinaryFormat for T {}
 
+/// Visitor abstraction used by [`BinaryValueFormat`] implementations.
+///
+/// Most callers do not implement this directly; it exists so formats can work
+/// with Serde visitors while also exposing rgb-specific handling.
 pub trait PdxVisitor<'de>: Sized {
+    /// Result type produced by the visitor.
     type Value;
     fn visit_i32(self, v: i32) -> Result<Self::Value, Error>;
     fn visit_u32(self, v: u32) -> Result<Self::Value, Error>;
@@ -432,12 +664,17 @@ pub trait PdxVisitor<'de>: Sized {
     fn visit_rgb(self, rgb: Rgb) -> Result<Self::Value, Error>;
 }
 
+/// Result of a semantic value parse attempt.
 pub enum ValueResult<T, V> {
+    /// A value was fully decoded.
     Value(T),
+    /// The next value is a container that has already consumed its opening token.
     Open(V),
+    /// More bytes are required before the value can be decoded.
     MoreData(V),
 }
 
+/// Convenience alias for results returned by [`BinaryValueFormat`] methods.
 pub type VisitResult<'de, V> = Result<ValueResult<<V as PdxVisitor<'de>>::Value, V>, Error>;
 
 struct PdxSerdeVisitor<V>(V);
@@ -565,6 +802,10 @@ impl<F: BinaryTokenFormat> BinaryTokenFormat for &'_ mut F {
     }
 }
 
+/// Incremental binary token reader backed by a game-specific format.
+///
+/// This reader is useful for streaming use cases such as melting or custom
+/// walkers that need raw tokens rather than full Serde deserialization.
 pub struct TokenReader<R, F> {
     reader: R,
     state: ParserState,
@@ -572,12 +813,12 @@ pub struct TokenReader<R, F> {
 }
 
 impl<F> TokenReader<(), F> {
+    /// Creates a token reader over a byte slice without copying.
     pub fn from_slice(data: &[u8], format: F) -> TokenReader<&[u8], F> {
         TokenReader {
             reader: data,
             state: ParserState {
                 buf: ParserBuf::from_slice(data),
-                storage: [0u8; 8],
             },
             format,
         }
@@ -589,25 +830,28 @@ where
     R: std::io::Read,
     F: BinaryTokenFormat,
 {
+    /// Creates a streaming token reader with a default 32 KiB internal buffer.
     pub fn new(reader: R, format: F) -> Self {
         TokenReader {
             reader,
             state: ParserState {
                 buf: ParserBuf::new(32 * 1024),
-                storage: [0u8; 8],
             },
             format,
         }
     }
 
+    /// Returns the unread buffered bytes.
     pub fn buffered_data(&self) -> &[u8] {
         self.state.buf.as_slice()
     }
 
+    /// Consumes the reader and returns the underlying reader, buffer, and format.
     pub fn into_remainder(self) -> (R, ParserBuf, F) {
         (self.reader, self.state.buf, self.format)
     }
 
+    /// Returns the total number of bytes committed as consumed.
     pub fn position(&self) -> usize {
         self.state.buf.total_read
     }
@@ -618,6 +862,7 @@ where
         Ok(amt)
     }
 
+    /// Reads the next token, returning `Ok(None)` at end of stream.
     #[inline]
     pub fn next_token(&mut self) -> Result<Option<F::Token<'_>>, Error> {
         loop {
@@ -638,6 +883,7 @@ where
         }
     }
 
+    /// Reads the next token or returns [`Error::eof`] if the stream is finished.
     #[inline]
     pub fn read_token(&mut self) -> Result<F::Token<'_>, Error> {
         match self.next_token()? {
@@ -683,6 +929,9 @@ where
     }
 }
 
+/// Serde deserializer backed by a [`TokenReader`] and a game-specific format.
+///
+/// The root document is deserialized as a map-like sequence of key/value pairs.
 pub struct BinaryReaderDeserializer<R, F>
 where
     F: BinaryFormat,
@@ -702,7 +951,7 @@ where
         }
     }
 
-    /// Deserialize into provided type
+    /// Deserializes the stream into the requested owned type.
     pub fn deserialize<T>(&mut self) -> Result<T, Error>
     where
         T: DeserializeOwned,
@@ -711,6 +960,10 @@ where
     }
 }
 
+/// Deserializes a value from in-memory binary data.
+///
+/// Unlike [`from_reader`], this can produce borrowed output because the input
+/// slice outlives the deserialized value.
 pub fn from_slice<'de, T, F>(data: &'de [u8], format: F) -> Result<T, Error>
 where
     T: Deserialize<'de>,
@@ -724,6 +977,10 @@ where
     Ok(value)
 }
 
+/// Deserializes a value from a streaming reader.
+///
+/// The output must be owned because deserialization may require refilling the
+/// internal buffer.
 pub fn from_reader<T, R, F>(reader: R, format: F) -> Result<T, Error>
 where
     T: DeserializeOwned,
@@ -887,11 +1144,7 @@ where
         loop {
             let result = {
                 let de = &mut *de;
-                parse(
-                    &mut de.reader.format,
-                    &mut de.reader.state,
-                    visitor,
-                )?
+                parse(&mut de.reader.format, &mut de.reader.state, visitor)?
             };
 
             match result {
@@ -948,10 +1201,9 @@ macro_rules! deserialize_speculative {
         where
             V: Visitor<'de>,
         {
-            let result =
-                Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
-                    format.$method(state, visitor)
-                })?;
+            let result = Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
+                format.$method(state, visitor)
+            })?;
             Self::handle_parse_result(self.de, result)
         }
     };
@@ -968,10 +1220,9 @@ where
     where
         V: Visitor<'de>,
     {
-        let result =
-            Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
-                format.deserialize_any(state, visitor)
-            })?;
+        let result = Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
+            format.deserialize_any(state, visitor)
+        })?;
         Self::handle_parse_result(self.de, result)
     }
 
@@ -1028,10 +1279,9 @@ where
     where
         V: Visitor<'de>,
     {
-        let result =
-            Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
-                format.deserialize_identifier(state, visitor)
-            })?;
+        let result = Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
+            format.deserialize_identifier(state, visitor)
+        })?;
         Self::handle_parse_result(self.de, result)
     }
 
@@ -1056,10 +1306,9 @@ where
     where
         V: Visitor<'de>,
     {
-        let result =
-            Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
-                format.deserialize_str(state, visitor)
-            })?;
+        let result = Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
+            format.deserialize_str(state, visitor)
+        })?;
         Self::handle_parse_result(self.de, result)
     }
 
@@ -1116,10 +1365,9 @@ where
     where
         V: Visitor<'de>,
     {
-        let result =
-            Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
-                format.deserialize_any(state, visitor)
-            })?;
+        let result = Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
+            format.deserialize_any(state, visitor)
+        })?;
         Self::handle_parse_result(self.de, result)
     }
 
@@ -1149,10 +1397,9 @@ where
     where
         V: Visitor<'de>,
     {
-        let result =
-            Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
-                format.deserialize_any(state, visitor)
-            })?;
+        let result = Self::parse_with_refill(self.de, visitor, |format, state, visitor| {
+            format.deserialize_any(state, visitor)
+        })?;
         match result {
             ValueResult::Value(v) => Ok(v),
             ValueResult::Open(pdx) => pdx
@@ -1437,7 +1684,7 @@ mod tests {
         }
 
         fn standard_is_field_id(id: LexemeId) -> bool {
-            !matches!(
+            !(matches!(
                 id,
                 LexemeId::OPEN
                     | LexemeId::CLOSE
@@ -1457,7 +1704,7 @@ mod tests {
                     | LexemeId::LOOKUP_U16_ALT
                     | LexemeId::LOOKUP_U24
                     | LexemeId::RGB
-            ) && !(id >= LexemeId::FIXED5_ZERO && id <= LexemeId::FIXED5_I56)
+            ) || id >= LexemeId::FIXED5_ZERO && id <= LexemeId::FIXED5_I56)
         }
 
         pub struct StandardFormat {
@@ -2365,7 +2612,6 @@ mod tests {
         let data = [0x04u8, 0x00, b'a', b'b'];
         let mut state = ParserState {
             buf: ParserBuf::from_slice(&data),
-            storage: [0u8; 8],
         };
 
         let mut cursor = state.token_cursor();
@@ -2777,8 +3023,11 @@ mod tests {
         let state = Rc::new(RefCell::new(TrackingState::default()));
         let data = nested_map_sync_fixture();
 
-        let actual: NestedSyncData =
-            from_slice(&data, TrackingStandardFormat::new(state.clone(), tracking_fields())).unwrap();
+        let actual: NestedSyncData = from_slice(
+            &data,
+            TrackingStandardFormat::new(state.clone(), tracking_fields()),
+        )
+        .unwrap();
 
         assert_eq!(
             actual,
@@ -2795,8 +3044,11 @@ mod tests {
         let state = Rc::new(RefCell::new(TrackingState::default()));
         let data = nested_sequence_sync_fixture();
 
-        let actual: SequenceSyncData =
-            from_slice(&data, TrackingStandardFormat::new(state.clone(), tracking_fields())).unwrap();
+        let actual: SequenceSyncData = from_slice(
+            &data,
+            TrackingStandardFormat::new(state.clone(), tracking_fields()),
+        )
+        .unwrap();
 
         assert_eq!(
             actual,

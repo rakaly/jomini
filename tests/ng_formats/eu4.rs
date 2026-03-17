@@ -27,22 +27,22 @@ impl FieldId {
 }
 
 fn eu4_scalar<'a>(data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
-    if let Some(prefix) = data.first() {
-        if (0x10..=0x13).contains(prefix) {
-            if (data.len() - 1) % 2 != 0 {
-                return Err(Error::custom("invalid escaped text length"));
-            }
-
-            let mut text = String::new();
-            for chunk in data[1..].chunks_exact(2) {
-                let cp = u16::from_le_bytes([chunk[0], chunk[1]]) as u32;
-                let ch = char::from_u32(cp)
-                    .ok_or_else(|| Error::custom("invalid escaped text code point"))?;
-                text.push(ch);
-            }
-
-            return Ok(Cow::Owned(text));
+    if let Some(prefix) = data.first()
+        && (0x10..=0x13).contains(prefix)
+    {
+        if !(data.len() - 1).is_multiple_of(2) {
+            return Err(Error::custom("invalid escaped text length"));
         }
+
+        let mut text = String::new();
+        for chunk in data[1..].chunks_exact(2) {
+            let cp = u16::from_le_bytes([chunk[0], chunk[1]]) as u32;
+            let ch = char::from_u32(cp)
+                .ok_or_else(|| Error::custom("invalid escaped text code point"))?;
+            text.push(ch);
+        }
+
+        return Ok(Cow::Owned(text));
     }
 
     Ok(Windows1252Encoding::decode(data))

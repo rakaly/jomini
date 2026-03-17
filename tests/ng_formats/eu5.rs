@@ -274,11 +274,11 @@ impl BinaryValueFormat for Eu5Format {
                     return Ok(ValueResult::MoreData(visitor));
                 };
                 let id = LexemeId::new(u16::from_le_bytes(id_bytes));
-                return if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
+                if matches!(id, LexemeId::QUOTED | LexemeId::UNQUOTED) {
                     Ok(ValueResult::MoreData(visitor))
                 } else {
                     self.deserialize_any(reader, visitor)
-                };
+                }
             }
         }
     }

@@ -353,7 +353,6 @@ struct Ck3ScopedGoldData {
 
 #[test]
 fn ck3_version_can_switch_float_decoding_without_changing_widths() {
-
     let mut legacy = Vec::new();
     push_field(&mut legacy, 0x00ee);
     push_lexeme(&mut legacy, LexemeId::EQUAL);
@@ -381,13 +380,12 @@ fn ck3_version_can_switch_float_decoding_without_changing_widths() {
     push_f64_raw(&mut modern, 271_828i64.to_le_bytes());
 
     let modern_actual: Ck3Data = assert_slice_and_reader(&modern, Ck3Format::default);
-    assert_eq!(modern_actual.value32, 3.14);
-    assert_eq!(modern_actual.value64, 2.71828);
+    assert_eq!(modern_actual.value32, 314_f32 / 100.0);
+    assert_eq!(modern_actual.value64, 271_828_f64 / 100_000.0);
 }
 
 #[test]
 fn ck3_ignored_version_still_switches_float_decoding() {
-
     let mut data = Vec::new();
     push_field(&mut data, 0x00ee);
     push_lexeme(&mut data, LexemeId::EQUAL);
@@ -399,15 +397,13 @@ fn ck3_ignored_version_still_switches_float_decoding() {
     push_lexeme(&mut data, LexemeId::EQUAL);
     push_f64_raw(&mut data, 271_828i64.to_le_bytes());
 
-    let actual: Ck3IgnoredVersionData =
-        assert_slice_and_reader(&data, Ck3Format::default);
-    assert_eq!(actual.value32, 3.14);
-    assert_eq!(actual.value64, 2.71828);
+    let actual: Ck3IgnoredVersionData = assert_slice_and_reader(&data, Ck3Format::default);
+    assert_eq!(actual.value32, 314_f32 / 100.0);
+    assert_eq!(actual.value64, 271_828_f64 / 100_000.0);
 }
 
 #[test]
 fn ck3_alive_data_gold_can_use_q49_15_while_other_gold_uses_decimal_fixed_point() {
-
     let mut data = Vec::new();
     push_field(&mut data, 0x00ee);
     push_lexeme(&mut data, LexemeId::EQUAL);

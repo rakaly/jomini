@@ -344,8 +344,7 @@ fn hoi4_save_version_31_switches_f32_layout() {
 fn hoi4_ignored_save_version_still_switches_f32_layout() {
     let data = hoi4_modern_fixture();
 
-    let actual: Hoi4IgnoredVersionData =
-        assert_slice_and_reader(&data, Hoi4Format::default);
+    let actual: Hoi4IgnoredVersionData = assert_slice_and_reader(&data, Hoi4Format::default);
     assert_eq!(actual.metric, 1.23456);
     assert_eq!(actual.weight, 3.0);
 }
