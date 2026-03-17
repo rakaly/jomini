@@ -37,13 +37,21 @@
 //!     },
 //! };
 //! use serde::Deserialize;
+//! use serde::de::Error as _;
 //! use std::borrow::Cow;
+//!
+//! #[derive(Debug, PartialEq)]
+//! enum MiniToken {
+//!     Field(&'static str),
+//!     Equal,
+//!     I32(i32),
+//! }
 //!
 //! #[derive(Default)]
 //! struct MiniFormat;
 //!
 //! impl BinaryTokenFormat for MiniFormat {
-//!     type Token<'a> = ();
+//!     type Token<'a> = MiniToken;
 //!
 //!     fn next_token<'a>(
 //!         &mut self,
@@ -56,16 +64,22 @@
 //!
 //!         match id {
 //!             LexemeId::I32 => {
-//!                 if cursor.read_bytes::<4>().is_none() {
+//!                 let Some(raw) = cursor.read_bytes::<4>().copied() else {
 //!                     return Ok(TokenResult::MoreData);
-//!                 }
+//!                 };
+//!                 cursor.consume();
+//!                 Ok(TokenResult::Token(MiniToken::I32(i32::from_le_bytes(raw))))
 //!             }
-//!             LexemeId::EQUAL | LexemeId::OPEN | LexemeId::CLOSE => {}
-//!             _ => {}
+//!             LexemeId::EQUAL => {
+//!                 cursor.consume();
+//!                 Ok(TokenResult::Token(MiniToken::Equal))
+//!             }
+//!             id if id == LexemeId::new(0x2000) => {
+//!                 cursor.consume();
+//!                 Ok(TokenResult::Token(MiniToken::Field("value")))
+//!             }
+//!             _ => Err(Error::custom("unknown field id")),
 //!         }
-//!
-//!         cursor.consume();
-//!         Ok(TokenResult::Token(()))
 //!     }
 //! }
 //!
@@ -130,6 +144,12 @@
 //! bytes.extend_from_slice(&LexemeId::I32.0.to_le_bytes());
 //! bytes.extend_from_slice(&7i32.to_le_bytes());
 //!
+//! let mut reader = ng::TokenReader::from_slice(&bytes, MiniFormat);
+//! assert_eq!(reader.next_token().unwrap(), Some(MiniToken::Field("value")));
+//! assert_eq!(reader.next_token().unwrap(), Some(MiniToken::Equal));
+//! assert_eq!(reader.next_token().unwrap(), Some(MiniToken::I32(7)));
+//! assert_eq!(reader.next_token().unwrap(), None);
+//!
 //! let data: Data = ng::from_slice(&bytes, MiniFormat).unwrap();
 //! assert_eq!(data, Data { value: 7 });
 //! ```
@@ -145,12 +165,7 @@ use serde::{
 };
 use std::{borrow::Cow, io::Read};
 
-/// Buffer window used by the streaming parser.
-///
-/// This type is mostly visible so callers can seed a parser from a slice or
-/// recover buffered remainder data through [`TokenReader::into_remainder`].
-/// Most format implementations interact with [`ParserState`] instead.
-pub struct ParserBuf {
+struct ParserBuf {
     buf: Box<[u8]>,
     start: *const u8,
     len: usize,
@@ -158,10 +173,7 @@ pub struct ParserBuf {
 }
 
 impl ParserBuf {
-    /// Creates a parser buffer that borrows directly from the provided slice.
-    ///
-    /// No copy is performed.
-    pub fn from_slice(data: &[u8]) -> Self {
+    fn from_slice(data: &[u8]) -> Self {
         Self {
             buf: Box::new([]),
             start: data.as_ptr(),
@@ -170,8 +182,7 @@ impl ParserBuf {
         }
     }
 
-    /// Creates an empty owned buffer with the given capacity for streaming use.
-    pub fn new(size: usize) -> Self {
+    fn new(size: usize) -> Self {
         let buf = vec![0u8; size].into_boxed_slice();
         let start = buf.as_ptr();
         Self {
@@ -182,21 +193,18 @@ impl ParserBuf {
         }
     }
 
-    /// Returns the currently buffered unread bytes.
     #[inline]
-    pub fn as_slice(&self) -> &[u8] {
+    fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.start, self.len) }
     }
 
-    /// Returns the number of unread bytes in the current window.
     #[inline]
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.len
     }
 
-    /// Returns `true` when no unread bytes remain in the current window.
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.len == 0
     }
 
@@ -455,16 +463,11 @@ pub trait BinaryTokenFormat {
     #[inline]
     fn on_open(&mut self) {}
 
-    /// Called by the serde deserializer after it has already peeked and
-    /// identified an `=` structural lexeme and before it consumes the 2-byte
-    /// lexeme from the stream.
+    /// Called by the serde deserializer after it has identified an `=`
     #[inline]
     fn on_equal(&mut self) {}
 
-    /// Called by the serde deserializer after it has already peeked and
-    /// identified a `}` structural lexeme and before it consumes the 2-byte
-    /// lexeme from the stream.
-    /// Called when the deserializer is about to consume a closing delimiter.
+    /// Called when the deserializer consumes a closing delimiter.
     #[inline]
     fn on_close(&mut self) {}
 
@@ -844,11 +847,6 @@ where
     /// Returns the unread buffered bytes.
     pub fn buffered_data(&self) -> &[u8] {
         self.state.buf.as_slice()
-    }
-
-    /// Consumes the reader and returns the underlying reader, buffer, and format.
-    pub fn into_remainder(self) -> (R, ParserBuf, F) {
-        (self.reader, self.state.buf, self.format)
     }
 
     /// Returns the total number of bytes committed as consumed.
