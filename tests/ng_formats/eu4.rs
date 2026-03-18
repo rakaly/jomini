@@ -3,14 +3,14 @@ use crate::support::{
     push_lexeme, push_lookup_u8, push_quoted, push_u32, push_unquoted,
 };
 use jomini::{
-    Error, Windows1252Encoding,
     binary::ng::{
-        BinaryTokenFormat, BinaryValueFormat, ParserState, PdxVisitor, TokenReader, TokenResult,
-        ValueResult, from_slice,
+        from_slice, BinaryTokenFormat, BinaryValueFormat, ParserState, PdxVisitor, TokenReader,
+        TokenResult, ValueResult,
     },
     binary::{FailedResolveStrategy, LexemeId},
+    Error, Windows1252Encoding,
 };
-use serde::{Deserialize, de::Error as _};
+use serde::{de::Error as _, Deserialize};
 use std::{borrow::Cow, collections::HashMap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -27,25 +27,80 @@ impl FieldId {
 }
 
 fn eu4_scalar<'a>(data: &'a [u8]) -> Result<Cow<'a, str>, Error> {
-    if let Some(prefix) = data.first()
-        && (0x10..=0x13).contains(prefix)
-    {
-        if !(data.len() - 1).is_multiple_of(2) {
-            return Err(Error::custom("invalid escaped text length"));
-        }
+    if matches!(data.first(), Some(0x10..=0x13)) {
+        Ok(Cow::Owned(decode_eu4_escaped_text(data)))
+    } else {
+        Ok(Windows1252Encoding::decode(data))
+    }
+}
 
-        let mut text = String::new();
-        for chunk in data[1..].chunks_exact(2) {
-            let cp = u16::from_le_bytes([chunk[0], chunk[1]]) as u32;
-            let ch = char::from_u32(cp)
-                .ok_or_else(|| Error::custom("invalid escaped text code point"))?;
-            text.push(ch);
-        }
+fn decode_eu4_escaped_text(mut input: &[u8]) -> String {
+    const ELLIPSIS: u32 = '…' as u32;
+    let mut wide_chars = Vec::with_capacity(input.len());
 
-        return Ok(Cow::Owned(text));
+    while let Some((&cp, rest)) = input.split_first() {
+        input = rest;
+        let code_point = match cp {
+            0x10..=0x13 => match input.split_first_chunk::<2>() {
+                None => ELLIPSIS,
+                Some(([low, high], rest)) => {
+                    input = rest;
+                    let mut sp = (u32::from(*high) << 8) + u32::from(*low);
+                    sp = match cp {
+                        0x10 => sp,
+                        0x11 => sp.saturating_sub(0xE),
+                        0x12 => sp.saturating_add(0x900),
+                        0x13 => sp.saturating_add(0x8F2),
+                        _ => sp,
+                    };
+
+                    if sp > 0xFFFF {
+                        ELLIPSIS
+                    } else {
+                        sp
+                    }
+                }
+            },
+            _ => cp1252_to_ucs2(cp),
+        };
+
+        wide_chars.push(code_point as u16);
     }
 
-    Ok(Windows1252Encoding::decode(data))
+    String::from_utf16_lossy(&wide_chars)
+}
+
+fn cp1252_to_ucs2(cp: u8) -> u32 {
+    match cp {
+        0x80 => 0x20AC,
+        0x82 => 0x201A,
+        0x83 => 0x0192,
+        0x84 => 0x201E,
+        0x85 => 0x2026,
+        0x86 => 0x2020,
+        0x87 => 0x2021,
+        0x88 => 0x02C6,
+        0x89 => 0x2030,
+        0x8A => 0x0160,
+        0x8B => 0x2039,
+        0x8C => 0x0152,
+        0x8E => 0x017D,
+        0x91 => 0x2018,
+        0x92 => 0x2019,
+        0x93 => 0x201C,
+        0x94 => 0x201D,
+        0x95 => 0x2022,
+        0x96 => 0x2013,
+        0x97 => 0x2014,
+        0x98 => 0x02DC,
+        0x99 => 0x2122,
+        0x9A => 0x0161,
+        0x9B => 0x203A,
+        0x9C => 0x0153,
+        0x9E => 0x017E,
+        0x9F => 0x0178,
+        _ => u32::from(cp),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -640,7 +695,7 @@ fn eu4_scalar_rules_fixture() -> Vec<u8> {
     push_quoted(&mut data, &[0xa7, b'G']);
     push_field(&mut data, 0x2001);
     push_lexeme(&mut data, LexemeId::EQUAL);
-    push_quoted(&mut data, &[0x10, 0x60, 0x4f, 0x7d, 0x59]);
+    push_quoted(&mut data, &[0x10, 0x60, 0x4f, 0x10, 0x7d, 0x59]);
     push_field(&mut data, 0x2002);
     push_lexeme(&mut data, LexemeId::EQUAL);
     push_f32_raw(&mut data, 1234i32.to_le_bytes());
@@ -812,6 +867,23 @@ mod deserialize {
         word: String,
         score32: f32,
         score64: f64,
+    }
+
+    #[test]
+    fn decodes_eu4_escape_transform_variants_and_mixed_cp1252() {
+        let scalar = eu4_scalar(&[
+            0x10, 0x60, 0x4f, 0x11, 0x4f, 0x00, 0x12, 0x60, 0x46, 0x13, 0x8b, 0x50, 0x85,
+        ])
+        .unwrap();
+
+        assert_eq!(scalar, "你A你好…");
+    }
+
+    #[test]
+    fn truncates_eu4_escape_sequences_to_ellipsis() {
+        let scalar = eu4_scalar(&[0x10]).unwrap();
+
+        assert_eq!(scalar, "…");
     }
 
     #[test]
