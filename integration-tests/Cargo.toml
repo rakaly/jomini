@@ -1,0 +1,19 @@
+[package]
+name = "jomini-integration-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+eu4save = { git = "https://github.com/rakaly/eu4save.git", branch = "ng" }
+hoi4save = { git = "https://github.com/rakaly/hoi4save.git", branch = "ng" }
+jomini = { path = "..", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+
+[patch.'https://github.com/rakaly/eu4save.git']
+jomini = { path = ".." }
+jomini_derive = { path = "../jomini_derive" }
+
+[patch.'https://github.com/rakaly/hoi4save.git']
+jomini = { path = ".." }
+jomini_derive = { path = "../jomini_derive" }

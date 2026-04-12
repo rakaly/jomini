@@ -8,6 +8,18 @@ on:
   - cron: '00 01 * * *'
 
 jobs:
+  integration:
+    name: integration tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+    - name: Run integration tests
+      run: cargo test --manifest-path integration-tests/Cargo.toml --verbose
+
   rustfmt:
     name: rustfmt
     runs-on: ubuntu-latest

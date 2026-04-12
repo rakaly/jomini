@@ -16,6 +16,7 @@ all-features = true
 
 [workspace]
 members = ["jomini_derive"]
+exclude = ["integration-tests"]
 
 [dependencies]
 itoa = { version = "1.0", optional = true }
