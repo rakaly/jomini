@@ -619,11 +619,10 @@ where
             WriteState::Key => {
                 self.write_indent()?;
             }
-            WriteState::KeyValueSeparator => {
-                // Only inject equals in non-verbatim mode
-                if !self.verbatim {
-                    self.writer.write_all(b"=")?;
-                }
+
+            // Only inject equals in non-verbatim mode
+            WriteState::KeyValueSeparator if !self.verbatim => {
+                self.writer.write_all(b"=")?;
             }
             x if x.no_data_encountered_yet() => {
                 self.write_indent()?;
