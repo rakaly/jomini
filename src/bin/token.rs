@@ -52,11 +52,9 @@ fn main() -> Result<(), Box<dyn error::Error>> {
                     println!("value");
                     state = 0;
                 }
-                2 => {
-                    if !matches!(token, jomini::binary::Token::Open) {
-                        println!("{:?}", token);
-                        state = 0;
-                    }
+                2 if !matches!(token, jomini::binary::Token::Open) => {
+                    println!("{:?}", token);
+                    state = 0;
                 }
                 _ => {}
             },
