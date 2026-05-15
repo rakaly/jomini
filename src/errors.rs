@@ -31,6 +31,14 @@ impl Error {
         })
     }
 
+    pub(crate) fn deserialize(kind: DeserializeErrorKind) -> Self {
+        Self::new(ErrorKind::Deserialize(DeserializeError { kind }))
+    }
+
+    pub(crate) fn deserialize_msg(msg: impl Into<Box<str>>) -> Self {
+        Self::deserialize(DeserializeErrorKind::Message(msg.into()))
+    }
+
     /// Return the specific type of error
     pub fn kind(&self) -> &ErrorKind {
         &self.0
@@ -126,7 +134,7 @@ impl std::fmt::Display for Error {
                 "invalid syntax encountered: {} (offset: {})",
                 msg, offset
             ),
-            ErrorKind::Deserialize(ref err) => write!(f, "deserialize error: {}", err),
+            ErrorKind::Deserialize(ref err) => err.fmt(f),
             ErrorKind::Io(ref err) => write!(f, "io error: {}", err),
             ErrorKind::BufferFull => {
                 write!(f, "max buffer size exceeded")
@@ -194,10 +202,10 @@ impl DeserializeError {
 #[derive(Debug, PartialEq)]
 pub enum DeserializeErrorKind {
     /// A generic Serde deserialization error
-    Message(String),
+    Message(Box<str>),
 
     /// Requested serde operation is unsupported
-    Unsupported(String),
+    Unsupported(&'static str),
 
     /// Error converting underlying data to desired format
     Scalar(ScalarError),
@@ -222,7 +230,7 @@ impl std::fmt::Display for DeserializeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.kind {
             DeserializeErrorKind::Message(ref msg) => write!(f, "{}", msg),
-            DeserializeErrorKind::Unsupported(ref msg) => {
+            DeserializeErrorKind::Unsupported(msg) => {
                 write!(f, "unsupported deserializer method: {}", msg)
             }
             DeserializeErrorKind::Scalar(ref e) => e.fmt(f),
@@ -236,9 +244,7 @@ impl std::fmt::Display for DeserializeError {
 #[cfg(feature = "serde")]
 impl serde::de::Error for Error {
     fn custom<T: fmt::Display>(msg: T) -> Self {
-        Error::new(ErrorKind::Deserialize(DeserializeError {
-            kind: DeserializeErrorKind::Message(msg.to_string()),
-        }))
+        Error::deserialize_msg(msg.to_string())
     }
 }
 
@@ -246,7 +252,7 @@ impl serde::de::Error for Error {
 impl serde::de::Error for DeserializeError {
     fn custom<T: fmt::Display>(msg: T) -> Self {
         DeserializeError {
-            kind: DeserializeErrorKind::Message(msg.to_string()),
+            kind: DeserializeErrorKind::Message(msg.to_string().into_boxed_str()),
         }
     }
 }
@@ -259,9 +265,7 @@ impl From<std::io::Error> for Error {
 
 impl From<ScalarError> for Error {
     fn from(error: ScalarError) -> Self {
-        Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Scalar(error),
-        })
+        Error::deserialize(DeserializeErrorKind::Scalar(error))
     }
 }
 
@@ -272,5 +276,17 @@ mod tests {
     #[test]
     fn test_size_error_struct() {
         assert!(std::mem::size_of::<Error>() <= 8);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_no_duplicate_deserialize_prefix() {
+        use serde::de::Error as _;
+        let inner = Error::custom("io error: something bad");
+        let mid = Error::custom(inner.to_string());
+        let outer = Error::custom(mid.to_string());
+        assert_eq!(inner.to_string(), mid.to_string());
+        assert_eq!(mid.to_string(), outer.to_string());
+        assert_eq!(outer.to_string(), "io error: something bad");
     }
 }

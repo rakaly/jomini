@@ -212,7 +212,7 @@ where
             Reader::Scalar(x) => Ok(x.read_str()),
             Reader::Value(x) => x.read_str(),
             _ => Err(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from("not a scalar")),
+                kind: DeserializeErrorKind::Unsupported("not a scalar"),
             }),
         }
     }
@@ -224,7 +224,7 @@ where
             Reader::Scalar(x) => Ok(x.read_string()),
             Reader::Value(x) => x.read_string(),
             _ => Err(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from("not a scalar")),
+                kind: DeserializeErrorKind::Unsupported("not a scalar"),
             }),
         }
     }
@@ -236,7 +236,7 @@ where
             Reader::Scalar(x) => Ok(x.read_scalar()),
             Reader::Value(x) => x.read_scalar(),
             _ => Err(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from("not a scalar")),
+                kind: DeserializeErrorKind::Unsupported("not a scalar"),
             }),
         }
     }
@@ -717,19 +717,17 @@ where
     /// Interpret the current value as string
     #[inline]
     pub fn read_str(&self) -> Result<Cow<'data, str>, DeserializeError> {
-        self.raw_str().ok_or_else(|| DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from("not a string")),
+        self.raw_str().ok_or(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported("not a string"),
         })
     }
 
     /// Interpret the current value as string
     #[inline]
     pub fn read_string(&self) -> Result<String, DeserializeError> {
-        self.raw_str()
-            .map(String::from)
-            .ok_or_else(|| DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from("not a string")),
-            })
+        self.raw_str().map(String::from).ok_or(DeserializeError {
+            kind: DeserializeErrorKind::Unsupported("not a string"),
+        })
     }
 
     /// Interpret the current value as a scalar
@@ -737,8 +735,8 @@ where
     pub fn read_scalar(&self) -> Result<Scalar<'data>, DeserializeError> {
         self.tokens[self.value_ind]
             .as_scalar()
-            .ok_or_else(|| DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from("not a scalar")),
+            .ok_or(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported("not a scalar"),
             })
     }
 
@@ -771,7 +769,7 @@ where
             }),
 
             _ => Err(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from("not an object")),
+                kind: DeserializeErrorKind::Unsupported("not an object"),
             }),
         }
     }
@@ -809,7 +807,7 @@ where
             }),
 
             _ => Err(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from("not an array")),
+                kind: DeserializeErrorKind::Unsupported("not an array"),
             }),
         }
     }

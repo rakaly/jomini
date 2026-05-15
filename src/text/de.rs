@@ -180,9 +180,9 @@ impl<'de, R: Read, E: Encoding> de::Deserializer<'de> for &'_ mut TextReaderDese
         V: Visitor<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "root deserializer can only work with key value pairs",
-            )),
+            ),
         }))
     }
 
@@ -703,9 +703,9 @@ impl<'de, R: Read, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'_, R,
         T: DeserializeSeed<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "unsupported enum deserialization. Please file issue",
-            )),
+            ),
         }))
     }
 
@@ -714,9 +714,9 @@ impl<'de, R: Read, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'_, R,
         V: Visitor<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "unsupported enum deserialization. Please file issue",
-            )),
+            ),
         }))
     }
 
@@ -729,9 +729,9 @@ impl<'de, R: Read, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'_, R,
         V: Visitor<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "unsupported enum deserialization. Please file issue",
-            )),
+            ),
         }))
     }
 }
@@ -966,9 +966,9 @@ where
         V: Visitor<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "root deserializer can only work with key value pairs",
-            )),
+            ),
         }))
     }
 
@@ -1166,9 +1166,7 @@ macro_rules! deserialize_any_value {
             TextToken::Array { .. } => $self.deserialize_seq($visitor),
             TextToken::Object { .. } => $self.deserialize_map($visitor),
             _ => Err(Error::from(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from(
-                    "unsupported value reader token",
-                )),
+                kind: DeserializeErrorKind::Unsupported("unsupported value reader token"),
             })),
         }
     };
@@ -1482,7 +1480,7 @@ where
     {
         let err = || {
             Err(Error::from(DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from("unexpected reader for enum")),
+                kind: DeserializeErrorKind::Unsupported("unexpected reader for enum"),
             }))
         };
 
@@ -1653,10 +1651,8 @@ where
             .values
             .as_mut()
             .and_then(|x| x.next())
-            .ok_or_else(|| DeserializeError {
-                kind: DeserializeErrorKind::Unsupported(String::from(
-                    "unexpected none for enum variant seed",
-                )),
+            .ok_or(DeserializeError {
+                kind: DeserializeErrorKind::Unsupported("unexpected none for enum variant seed"),
             })?;
 
         Ok(ValueKind::Value(val))
