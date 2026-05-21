@@ -10,6 +10,20 @@ hoi4save = { git = "https://github.com/rakaly/hoi4save.git", branch = "ng" }
 jomini = { path = "..", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 
+[dev-dependencies]
+criterion = "0.6.0"
+flate2 = { version = "1.1.5", default-features = false, features = ["zlib-rs"] }
+gungraun = "0.19.0"
+rawzip = "0.4.2"
+
+[[bench]]
+name = "ng_provinces"
+harness = false
+
+[[bench]]
+name = "ng_tokens_gungraun"
+harness = false
+
 [patch.'https://github.com/rakaly/eu4save.git']
 jomini = { path = ".." }
 jomini_derive = { path = "../jomini_derive" }
