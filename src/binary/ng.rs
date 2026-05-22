@@ -165,6 +165,8 @@ use serde::{
 };
 use std::{borrow::Cow, io::Read};
 
+mod buf;
+
 struct ParserBuf {
     buf: Box<[u8]>,
     start: *const u8,
@@ -327,7 +329,7 @@ impl ParserState {
     /// The caller must ensure that `amt` does not exceed the current buffer length,
     /// otherwise this will result in undefined behavior by reading beyond the buffer bounds.
     #[inline]
-    pub(crate) unsafe fn consume(&mut self, amt: usize) {
+    pub unsafe fn consume(&mut self, amt: usize) {
         self.buf.start = unsafe { self.buf.start.add(amt) };
         self.buf.len -= amt;
         self.buf.total_read += amt;
@@ -854,8 +856,48 @@ where
         self.state.buf.total_read
     }
 
+    /// Returns a shared reference to the underlying [`ParserState`].
+    #[inline]
+    pub fn state(&self) -> &ParserState {
+        &self.state
+    }
+
+    /// Returns a mutable reference to the underlying [`ParserState`].
+    ///
+    /// Useful for per-game extension traits that drive the format directly.
+    #[inline]
+    pub fn state_mut(&mut self) -> &mut ParserState {
+        &mut self.state
+    }
+
+    /// Returns a shared reference to the active format.
+    #[inline]
+    pub fn format(&self) -> &F {
+        &self.format
+    }
+
+    /// Returns a mutable reference to the active format.
+    #[inline]
+    pub fn format_mut(&mut self) -> &mut F {
+        &mut self.format
+    }
+
+    /// Returns split mutable references to the format and parser state.
+    ///
+    /// Useful for per-game extension traits that need to call a format method
+    /// taking `&mut ParserState` while still holding `&mut F`.
+    #[inline]
+    pub fn split_mut(&mut self) -> (&mut F, &mut ParserState) {
+        (&mut self.format, &mut self.state)
+    }
+
+    /// Refills the internal buffer from the underlying reader.
+    ///
+    /// Returns the number of bytes appended; a return of `0` indicates the
+    /// underlying reader has signaled EOF. Per-game extension traits use this
+    /// to drive their own dispatch loops without touching private state.
     #[cold]
-    fn fill(&mut self) -> Result<usize, Error> {
+    pub fn refill(&mut self) -> Result<usize, Error> {
         let amt = self.state.buf.fill(&mut self.reader)?;
         Ok(amt)
     }
@@ -868,7 +910,7 @@ where
             match self.format.next_token(unsafe { &mut *state })? {
                 TokenResult::Token(token) => return Ok(Some(token)),
                 TokenResult::MoreData => {
-                    let amt = self.fill()?;
+                    let amt = self.refill()?;
                     if amt == 0 {
                         return if self.state.is_empty() {
                             Ok(None)
@@ -905,7 +947,7 @@ where
 
     #[cold]
     fn peek_lexeme_id_refill(&mut self) -> Result<Option<LexemeId>, Error> {
-        let amt = self.fill()?;
+        let amt = self.refill()?;
         if amt == 0 {
             return Ok(None);
         }
@@ -1148,7 +1190,7 @@ where
             match result {
                 ValueResult::MoreData(pdx) => {
                     visitor = pdx;
-                    let amt = de.reader.fill()?;
+                    let amt = de.reader.refill()?;
                     if amt == 0 {
                         return Err(Error::eof());
                     }

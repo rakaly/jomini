@@ -257,6 +257,12 @@ impl From<std::io::Error> for Error {
     }
 }
 
+impl From<std::convert::Infallible> for Error {
+    fn from(error: std::convert::Infallible) -> Self {
+        match error {}
+    }
+}
+
 impl From<ScalarError> for Error {
     fn from(error: ScalarError) -> Self {
         Error::from(DeserializeError {
