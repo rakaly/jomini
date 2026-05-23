@@ -27,11 +27,11 @@ serde_json = { version = "1.0.114", optional = true }
 
 [features]
 default = ["derive", "faster_writer"]
-derive = ["serde/derive", "jomini_derive"]
+derive = ["serde", "jomini_derive"]
 envelope = ["dep:rawzip", "dep:flate2"]
 faster_writer = ["dep:itoa"]
 json = ["serde", "serde_json"]
-serde = ["dep:serde"]
+serde = ["dep:serde", "serde/derive"]
 
 [dev-dependencies]
 attohttpc = { version = "0.30.1", features = ["tls-vendored"] }
