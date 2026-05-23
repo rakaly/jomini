@@ -1,0 +1,41 @@
+[package]
+publish = false
+name = "jomini-bench"
+version = "0.0.1"
+authors = ["Nick Babcock <nbabcock19@hotmail.com>"]
+description = "Benchmark suite for jomini."
+homepage = "https://github.com/rakaly/jomini/tree/master/bench"
+repository = "https://github.com/rakaly/jomini"
+license = "MIT"
+edition = "2024"
+
+[workspace]
+
+[lib]
+bench = false
+
+[[bench]]
+name = "jomini-bench-criterion"
+harness = false
+path = "src/criterion_main.rs"
+
+[[bench]]
+name = "jomini-bench-gungraun"
+harness = false
+path = "src/gungraun_main.rs"
+
+[features]
+default = []
+json = ["jomini/json"]
+
+[dependencies]
+attohttpc = { version = "0.29", features = ["tls-vendored"] }
+criterion = { version = "0.8", features = ["csv_output"] }
+flate2 = { version = "1.1.5", default-features = false, features = ["zlib-rs"] }
+gungraun = "0.19.0"
+jomini = { path = "..", default-features = false, features = ["serde", "derive"] }
+rawzip = "0.4.2"
+serde = { version = "1.0", features = ["derive"] }
+
+[profile.bench]
+debug = true
