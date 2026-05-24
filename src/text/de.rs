@@ -157,12 +157,12 @@ where
 }
 
 /// A serde deserializer over streaming data
-pub struct TextReaderDeserializer<R, E> {
-    reader: TokenReader<R>,
+pub struct TextReaderDeserializer<'r, E> {
+    reader: TokenReader<'r>,
     encoding: E,
 }
 
-impl<R: Read, E: Encoding> TextReaderDeserializer<R, E> {
+impl<'r, E: Encoding> TextReaderDeserializer<'r, E> {
     /// Deserialize into provided type
     pub fn deserialize<T>(&mut self) -> Result<T, Error>
     where
@@ -172,7 +172,7 @@ impl<R: Read, E: Encoding> TextReaderDeserializer<R, E> {
     }
 }
 
-impl<'de, R: Read, E: Encoding> de::Deserializer<'de> for &'_ mut TextReaderDeserializer<R, E> {
+impl<'de, 'r, E: Encoding> de::Deserializer<'de> for &'_ mut TextReaderDeserializer<'r, E> {
     type Error = Error;
 
     fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
@@ -213,18 +213,18 @@ impl<'de, R: Read, E: Encoding> de::Deserializer<'de> for &'_ mut TextReaderDese
     }
 }
 
-struct TextReaderMap<'a, R, E> {
-    de: *const &'a mut TextReaderDeserializer<R, E>,
+struct TextReaderMap<'a, 'r, E> {
+    de: *const &'a mut TextReaderDeserializer<'r, E>,
     root: bool,
 }
 
-impl<'a, R, E> TextReaderMap<'a, R, E> {
-    fn new(de: *const &'a mut TextReaderDeserializer<R, E>, root: bool) -> Self {
+impl<'a, 'r, E> TextReaderMap<'a, 'r, E> {
+    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, root: bool) -> Self {
         TextReaderMap { de, root }
     }
 }
 
-impl<'de, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'_, R, E> {
+impl<'de, 'r, E: Encoding> de::MapAccess<'de> for TextReaderMap<'_, 'r, E> {
     type Error = Error;
 
     #[inline]
@@ -269,14 +269,14 @@ impl<'de, R: Read, E: Encoding> de::MapAccess<'de> for TextReaderMap<'_, R, E> {
     }
 }
 
-struct TextReaderTokenDeserializer<'a, R, E> {
-    de: *const &'a mut TextReaderDeserializer<R, E>,
+struct TextReaderTokenDeserializer<'a, 'r, E> {
+    de: *const &'a mut TextReaderDeserializer<'r, E>,
     token: Token<'a>,
     op: Operator,
 }
 
-impl<'a, R, E> TextReaderTokenDeserializer<'a, R, E> {
-    fn new(de: *const &'a mut TextReaderDeserializer<R, E>, token: Token<'a>) -> Self {
+impl<'a, 'r, E> TextReaderTokenDeserializer<'a, 'r, E> {
+    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, token: Token<'a>) -> Self {
         Self {
             de,
             token,
@@ -285,8 +285,8 @@ impl<'a, R, E> TextReaderTokenDeserializer<'a, R, E> {
     }
 }
 
-impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
-    for TextReaderTokenDeserializer<'a, R, E>
+impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
+    for TextReaderTokenDeserializer<'a, 'r, E>
 {
     type Error = Error;
 
@@ -587,22 +587,18 @@ impl<'a, 'de: 'a, R: Read, E: Encoding> de::Deserializer<'de>
     }
 }
 
-struct TextReaderSeq<'a, R, E> {
-    de: *const &'a mut TextReaderDeserializer<R, E>,
+struct TextReaderSeq<'a, 'r, E> {
+    de: *const &'a mut TextReaderDeserializer<'r, E>,
     hit_end: bool,
 }
 
-impl<'a, R, E> TextReaderSeq<'a, R, E> {
-    fn new(de: *const &'a mut TextReaderDeserializer<R, E>) -> Self {
+impl<'a, 'r, E> TextReaderSeq<'a, 'r, E> {
+    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>) -> Self {
         TextReaderSeq { de, hit_end: false }
     }
 }
 
-impl<'de, R, E> de::SeqAccess<'de> for TextReaderSeq<'_, R, E>
-where
-    R: Read,
-    E: Encoding,
-{
+impl<'de, 'r, E: Encoding> de::SeqAccess<'de> for TextReaderSeq<'_, 'r, E> {
     type Error = Error;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
@@ -627,13 +623,13 @@ where
 /// ```plain
 /// color = rgb { 100 10 200 }
 /// ```
-struct TextReaderInitSeq<'a, R, E> {
-    de: *const &'a mut TextReaderDeserializer<R, E>,
+struct TextReaderInitSeq<'a, 'r, E> {
+    de: *const &'a mut TextReaderDeserializer<'r, E>,
     token: Option<Token<'a>>,
 }
 
-impl<'a, R, E> TextReaderInitSeq<'a, R, E> {
-    fn new(de: *const &'a mut TextReaderDeserializer<R, E>, token: Token<'a>) -> Self {
+impl<'a, 'r, E> TextReaderInitSeq<'a, 'r, E> {
+    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, token: Token<'a>) -> Self {
         TextReaderInitSeq {
             de,
             token: Some(token),
@@ -641,11 +637,7 @@ impl<'a, R, E> TextReaderInitSeq<'a, R, E> {
     }
 }
 
-impl<'de, R, E> de::SeqAccess<'de> for TextReaderInitSeq<'_, R, E>
-where
-    R: Read,
-    E: Encoding,
-{
+impl<'de, 'r, E: Encoding> de::SeqAccess<'de> for TextReaderInitSeq<'_, 'r, E> {
     type Error = Error;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
@@ -667,18 +659,18 @@ where
     }
 }
 
-struct TextReaderEnum<'a, R, E> {
-    de: *const &'a mut TextReaderDeserializer<R, E>,
+struct TextReaderEnum<'a, 'r, E> {
+    de: *const &'a mut TextReaderDeserializer<'r, E>,
     token: Token<'a>,
 }
 
-impl<'a, R, E> TextReaderEnum<'a, R, E> {
-    fn new(de: *const &'a mut TextReaderDeserializer<R, E>, token: Token<'a>) -> Self {
+impl<'a, 'r, E> TextReaderEnum<'a, 'r, E> {
+    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, token: Token<'a>) -> Self {
         TextReaderEnum { de, token }
     }
 }
 
-impl<'de, R: Read, E: Encoding> de::EnumAccess<'de> for TextReaderEnum<'_, R, E> {
+impl<'de, 'r, E: Encoding> de::EnumAccess<'de> for TextReaderEnum<'_, 'r, E> {
     type Error = Error;
     type Variant = Self;
 
@@ -691,7 +683,7 @@ impl<'de, R: Read, E: Encoding> de::EnumAccess<'de> for TextReaderEnum<'_, R, E>
     }
 }
 
-impl<'de, R: Read, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'_, R, E> {
+impl<'de, 'r, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'_, 'r, E> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<(), Self::Error> {
@@ -736,18 +728,14 @@ impl<'de, R: Read, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'_, R,
     }
 }
 
-struct PropertyReaderMap<'a, R, E> {
-    de: *const &'a mut TextReaderDeserializer<R, E>,
+struct PropertyReaderMap<'a, 'r, E> {
+    de: *const &'a mut TextReaderDeserializer<'r, E>,
     op: Operator,
     token: Token<'a>,
     state: usize,
 }
 
-impl<'de, R, E> de::MapAccess<'de> for PropertyReaderMap<'_, R, E>
-where
-    E: Encoding,
-    R: Read,
-{
+impl<'de, 'r, E: Encoding> de::MapAccess<'de> for PropertyReaderMap<'_, 'r, E> {
     type Error = Error;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
@@ -841,12 +829,9 @@ impl TextDeserializer<'_, '_, Windows1252Encoding> {
     ///
     /// Considered experimental as it uses a [TokenReader] under the hood, which
     /// uses a different parsing routine geared toward save files.
-    pub fn from_windows1252_reader<R>(
-        reader: TokenReader<R>,
-    ) -> TextReaderDeserializer<R, Windows1252Encoding>
-    where
-        R: Read,
-    {
+    pub fn from_windows1252_reader<'r>(
+        reader: TokenReader<'r>,
+    ) -> TextReaderDeserializer<'r, Windows1252Encoding> {
         TextReaderDeserializer {
             reader,
             encoding: Windows1252Encoding,
@@ -856,10 +841,9 @@ impl TextDeserializer<'_, '_, Windows1252Encoding> {
 
 impl TextDeserializer<'_, '_, Utf8Encoding> {
     /// Create a UTF8 text deserializer over a reader
-    pub fn from_utf8_reader<R>(reader: TokenReader<R>) -> TextReaderDeserializer<R, Utf8Encoding>
-    where
-        R: Read,
-    {
+    pub fn from_utf8_reader<'r>(
+        reader: TokenReader<'r>,
+    ) -> TextReaderDeserializer<'r, Utf8Encoding> {
         TextReaderDeserializer {
             reader,
             encoding: Utf8Encoding,

@@ -90,8 +90,7 @@ enum Backing<'a> {
     },
 }
 
-/// A windowed byte parser that unifies zero-copy slice parsing and buffered
-/// streaming parsing.
+/// A byte-level parser unifying zero-copy slice parsing and streaming.
 ///
 /// Two construction modes are supported:
 ///
@@ -111,7 +110,7 @@ enum Backing<'a> {
 /// reports EOF. The same code works for both slice and streaming inputs.
 ///
 /// ```
-/// use jomini::binary::{ParserSource, ParserError};
+/// use jomini::{ParserError, ParserSource};
 ///
 /// fn sum_u32_records(parser: &mut ParserSource<'_>) -> Result<u64, ParserError> {
 ///     let mut total = 0u64;
@@ -138,6 +137,16 @@ pub struct ParserSource<'a> {
     _marker: PhantomData<&'a [u8]>,
 }
 
+impl std::fmt::Debug for ParserSource<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParserSource")
+            .field("remaining", &self.remaining())
+            .field("position", &self.position())
+            .field("streaming", &self.streaming.is_some())
+            .finish()
+    }
+}
+
 impl<'a> ParserSource<'a> {
     /// Zero-copy initialization for in-memory byte slices.
     pub fn from_slice(data: &'a [u8]) -> Self {
@@ -155,7 +164,7 @@ impl<'a> ParserSource<'a> {
     /// Zero-copy initialization that takes ownership of the underlying buffer.
     ///
     /// ```
-    /// use jomini::binary::ParserSource;
+    /// use jomini::ParserSource;
     ///
     /// let mut parser = ParserSource::from_owned(vec![1u8, 2, 3, 4]);
     /// assert_eq!(parser.take_array::<4>().unwrap(), &[1u8, 2, 3, 4]);
@@ -192,7 +201,7 @@ impl<'a> ParserSource<'a> {
     /// This lets callers control capacity or reuse an existing allocation.
     ///
     /// ```
-    /// use jomini::binary::ParserSource;
+    /// use jomini::ParserSource;
     ///
     /// let buffer = vec![0; 1024];
     /// let _parser = ParserSource::from_reader_with_buf(&b"EU4bin"[..], buffer);
@@ -216,7 +225,7 @@ impl<'a> ParserSource<'a> {
         }
     }
 
-    /// High-performance check for structured boundary limits (e.g., matching keys)
+    /// Check if the parser is at the end of the input.
     #[inline(always)]
     pub fn is_eof(&mut self) -> Result<bool, ParserError> {
         if self.ptr != self.end {
@@ -225,7 +234,7 @@ impl<'a> ParserSource<'a> {
         self.refill_and_check_empty()
     }
 
-    /// Guaranteed contiguous memory validation. Crucial for speculative parsing.
+    /// Guarantees the required bytes are present in the current window, refilling as necessary.
     #[inline(always)]
     pub fn ensure_bytes(&mut self, required: usize) -> Result<(), ParserError> {
         let available = unsafe { self.end.offset_from_unsigned(self.ptr) };
@@ -235,7 +244,7 @@ impl<'a> ParserSource<'a> {
         self.refill_slow(required)
     }
 
-    /// On-demand metric progress tracking with absolute zero hot-path write overhead.
+    /// Returns how many total bytes have been read.
     #[inline(always)]
     pub fn position(&self) -> usize {
         let consumed_in_current_window = unsafe { self.ptr.offset_from_unsigned(self.base_ptr) };
@@ -290,6 +299,42 @@ impl<'a> ParserSource<'a> {
     #[inline(always)]
     pub fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr, self.remaining()) }
+    }
+
+    /// Refills the current window from the underlying reader.
+    ///
+    /// Any unread bytes in the current window are preserved and moved to the
+    /// front of the internal buffer before reading. Returns the number of new
+    /// bytes read from the underlying reader. Slice and owned sources cannot be
+    /// refilled, so they return `Ok(0)`.
+    #[inline]
+    pub fn refill(&mut self) -> Result<usize, ParserError> {
+        let (buffer, source) = match self.streaming.as_deref_mut() {
+            Some(Backing::Owned { .. }) | None => return Ok(0),
+            Some(Backing::Stream { buffer, source }) => (buffer, source),
+        };
+
+        let unparsed_len = unsafe { self.end.offset_from_unsigned(self.ptr) };
+        if unparsed_len >= buffer.len() {
+            return Err(ParserError::buffer_too_small());
+        }
+
+        let consumed_in_window = unsafe { self.ptr.offset_from_unsigned(self.base_ptr) };
+        self.total_bytes_parsed += consumed_in_window;
+
+        let internal_buffer_start = buffer.as_mut_ptr();
+        if unparsed_len > 0 {
+            unsafe {
+                ptr::copy(self.ptr, internal_buffer_start, unparsed_len);
+            }
+        }
+
+        self.ptr = internal_buffer_start;
+        self.end = unsafe { internal_buffer_start.add(unparsed_len) };
+
+        let bytes_written = source.read(&mut buffer[unparsed_len..])?;
+        self.end = unsafe { self.end.add(bytes_written) };
+        Ok(bytes_written)
     }
 
     /// Peek at the next `N` bytes without advancing.
@@ -690,6 +735,57 @@ mod tests {
         assert_eq!(parser.position(), 2);
         assert_eq!(*parser.take_array::<2>().unwrap(), [30, 40]);
         assert_eq!(parser.as_slice(), &[50]);
+    }
+
+    #[test]
+    fn refill_preserves_unread_bytes_and_reads_once() {
+        let data: Vec<u8> = (0..10u8).collect();
+        let mut parser =
+            ParserSource::from_reader_with_buf(ChunkedReader::new(data, 3), vec![0; 8]);
+
+        assert_eq!(parser.refill().unwrap(), 3);
+        assert_eq!(parser.as_slice(), &[0, 1, 2]);
+        assert!(parser.advance(2));
+        assert_eq!(parser.position(), 2);
+
+        assert_eq!(parser.refill().unwrap(), 3);
+        assert_eq!(parser.position(), 2);
+        assert_eq!(parser.as_slice(), &[2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn refill_returns_zero_at_stream_eof() {
+        let mut parser =
+            ParserSource::from_reader_with_buf(ChunkedReader::new(vec![1, 2], 8), vec![0; 8]);
+
+        assert_eq!(parser.refill().unwrap(), 2);
+        assert_eq!(parser.take_array::<2>().unwrap(), &[1, 2]);
+        assert_eq!(parser.refill().unwrap(), 0);
+        assert_eq!(parser.position(), 2);
+        assert_eq!(parser.remaining(), 0);
+    }
+
+    #[test]
+    fn refill_on_slice_and_owned_sources_returns_zero() {
+        let mut slice = ParserSource::from_slice(&[1, 2, 3]);
+        let mut owned = ParserSource::from_owned(vec![1u8, 2, 3]);
+
+        assert_eq!(slice.refill().unwrap(), 0);
+        assert_eq!(slice.as_slice(), &[1, 2, 3]);
+        assert_eq!(owned.refill().unwrap(), 0);
+        assert_eq!(owned.as_slice(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn refill_errors_when_unread_window_fills_stream_buffer() {
+        let mut parser =
+            ParserSource::from_reader_with_buf(ChunkedReader::new(vec![1, 2, 3, 4], 8), vec![0; 4]);
+
+        assert_eq!(parser.refill().unwrap(), 4);
+        let err = parser.refill().unwrap_err();
+        assert!(err.is_buffer_too_small());
+        assert_eq!(parser.as_slice(), &[1, 2, 3, 4]);
+        assert_eq!(parser.position(), 0);
     }
 
     #[test]

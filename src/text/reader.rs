@@ -1,7 +1,6 @@
 use super::Operator;
 use crate::{
-    Scalar,
-    buffer::{BufferError, BufferWindow, BufferWindowBuilder},
+    ParserError, ParserSource, Scalar,
     data::is_boundary,
     util::{contains_zero_byte, count_chunk, leading_whitespace, repeat_byte},
 };
@@ -28,6 +27,25 @@ pub enum Token<'a> {
 
     /// value that is quoted
     Quoted(Scalar<'a>),
+}
+
+/// Kind of text token represented by a [TokenReader].
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum TokenKind {
+    /// '{' or '['
+    Open,
+
+    /// '{' or ']'
+    Close,
+
+    /// An operator (eg: `foo=bar`)
+    Operator(Operator),
+
+    /// value that is not surrounded by quotes
+    Unquoted,
+
+    /// value that is quoted
+    Quoted,
 }
 
 impl<'a> Token<'a> {
@@ -100,32 +118,47 @@ enum ParseState {
 /// for tokens that are impossible to fit within the buffer (eg: if the provided
 /// with 100 byte buffer but there is a binary string that is 101 bytes long).
 #[derive(Debug)]
-pub struct TokenReader<R> {
-    reader: R,
-    buf: BufferWindow,
+pub struct TokenReader<'a> {
+    source: ParserSource<'a>,
     utf8: Utf8Bom,
+    scalar_start: usize,
+    scalar_len: usize,
 }
 
-impl TokenReader<()> {
+impl<'a> TokenReader<'a> {
     /// Read from a byte slice without memcpy's
     #[inline]
-    pub fn from_slice(data: &[u8]) -> TokenReader<&'_ [u8]> {
-        TokenReader {
-            reader: data,
-            buf: BufferWindow::from_slice(data),
-            utf8: Utf8Bom::Unknown,
-        }
+    pub fn from_slice(data: &'a [u8]) -> Self {
+        Self::from_source(ParserSource::from_slice(data))
     }
-}
 
-impl<R> TokenReader<R>
-where
-    R: Read,
-{
     /// Create a new text reader
     #[inline]
-    pub fn new(reader: R) -> Self {
-        TokenReader::builder().build(reader)
+    pub fn new<R>(reader: R) -> Self
+    where
+        R: Read + 'a,
+    {
+        Self::from_source(ParserSource::from_reader(reader))
+    }
+
+    /// Construct a text reader with a caller-provided streaming buffer.
+    #[inline]
+    pub fn from_reader_with_buf<R>(reader: R, buffer: Vec<u8>) -> Self
+    where
+        R: Read + 'a,
+    {
+        Self::from_source(ParserSource::from_reader_with_buf(reader, buffer))
+    }
+
+    /// Create a token reader from an existing parser source.
+    #[inline]
+    pub fn from_source(source: ParserSource<'a>) -> Self {
+        TokenReader {
+            source,
+            utf8: Utf8Bom::Unknown,
+            scalar_start: 0,
+            scalar_len: 0,
+        }
     }
 
     /// Returns the byte position of the data stream that has been processed.
@@ -138,90 +171,142 @@ where
     /// ```
     #[inline]
     pub fn position(&self) -> usize {
-        self.buf.position()
+        self.source.position()
     }
 
-    unsafe fn next_opt_refill(
+    #[inline]
+    fn advance(&mut self, amt: usize) {
+        let advanced = self.source.advance(amt);
+        debug_assert!(advanced);
+    }
+
+    #[inline]
+    unsafe fn advance_to(&mut self, window_start: *const u8, ptr: *const u8) {
+        let amt = unsafe { ptr.offset_from(window_start) as usize };
+        self.advance(amt);
+    }
+
+    #[inline]
+    fn window_ptrs(&self) -> (*const u8, *const u8) {
+        let window = self.source.as_slice();
+        let start = window.as_ptr();
+        (start, unsafe { start.add(window.len()) })
+    }
+
+    #[inline]
+    fn set_scalar(&mut self, start: *const u8, end: *const u8) {
+        debug_assert!(start <= end);
+        self.scalar_start = start as usize;
+        self.scalar_len = unsafe { end.offset_from(start) as usize };
+    }
+
+    #[inline]
+    fn scalar_data(&self) -> Scalar<'_> {
+        Scalar::new(unsafe {
+            std::slice::from_raw_parts(self.scalar_start as *const u8, self.scalar_len)
+        })
+    }
+
+    #[inline]
+    fn token_from_kind(&self, kind: TokenKind) -> Token<'_> {
+        match kind {
+            TokenKind::Open => Token::Open,
+            TokenKind::Close => Token::Close,
+            TokenKind::Operator(op) => Token::Operator(op),
+            TokenKind::Unquoted => Token::Unquoted(self.scalar_data()),
+            TokenKind::Quoted => Token::Quoted(self.scalar_data()),
+        }
+    }
+
+    #[cold]
+    #[inline(always)]
+    fn parser_error(&self, e: ParserError) -> ReaderError {
+        ReaderError::new(self.position(), ReaderErrorKind::from(e))
+    }
+
+    unsafe fn next_kind_refill(
         &mut self,
         state: ParseState,
         carry_over: usize,
         offset: usize,
-    ) -> (Option<Token<'_>>, Option<ReaderError>) {
+    ) -> Result<Option<TokenKind>, ReaderError> {
         unsafe {
-            self.buf.advance_to(self.buf.end.sub(carry_over));
-            match self.buf.fill_buf(&mut self.reader) {
+            let (window_start, window_end) = self.window_ptrs();
+            self.advance_to(window_start, window_end.sub(carry_over));
+            match self.source.refill() {
                 Ok(0) => match state {
                     ParseState::None => {
                         // if we carried over data that isn't a comment, we
                         // should have made forward progress.
-                        if carry_over == 0 || *self.buf.start == b'#' {
-                            self.buf.advance(carry_over);
-                            (None, None)
+                        if carry_over == 0 || self.source.as_slice().first() == Some(&b'#') {
+                            self.advance(carry_over);
+                            Ok(None)
                         } else {
-                            (None, Some(self.eof_error()))
+                            Err(self.eof_error())
                         }
                     }
-                    ParseState::Quote => (None, Some(self.eof_error())),
+                    ParseState::Quote => Err(self.eof_error()),
                     ParseState::Unquoted => {
-                        let scalar = std::slice::from_raw_parts(self.buf.start, carry_over);
-                        self.buf.advance_to(self.buf.end);
-                        (Some(Token::Unquoted(Scalar::new(scalar))), None)
+                        let (start, end) = self.window_ptrs();
+                        self.advance_to(start, end);
+                        self.set_scalar(start, end);
+                        Ok(Some(TokenKind::Unquoted))
                     }
                 },
                 Ok(_) => match state {
-                    ParseState::None => self.next_opt_fallback(),
+                    ParseState::None => self.next_kind_fallback(),
                     ParseState::Quote => {
-                        let mut ptr = self.buf.start.add(offset);
+                        let (window_start, end) = self.window_ptrs();
+                        let mut ptr = window_start.add(offset);
 
-                        while ptr < self.buf.end {
+                        while ptr < end {
                             if *ptr == b'\\' {
-                                let advance = self.buf.end.offset_from(ptr).min(2);
+                                let advance = end.offset_from(ptr).min(2);
                                 ptr = ptr.offset(advance);
                             } else if *ptr != b'"' {
                                 ptr = ptr.add(1);
                             } else {
-                                let start_ptr = self.buf.start;
-                                self.buf.advance_to(ptr.add(1));
-                                let scalar = self.buf.get(start_ptr..ptr);
-                                return (Some(Token::Quoted(scalar)), None);
+                                self.advance_to(window_start, ptr.add(1));
+                                self.set_scalar(window_start, ptr);
+                                return Ok(Some(TokenKind::Quoted));
                             }
                         }
 
                         // buffer or prior read too small
-                        let len = self.buf.window_len();
-                        self.next_opt_refill(ParseState::Quote, len, len)
+                        let len = self.source.remaining();
+                        self.next_kind_refill(ParseState::Quote, len, len)
                     }
                     ParseState::Unquoted => {
-                        let mut ptr = self.buf.start.add(offset);
-                        while ptr < self.buf.end {
+                        let (window_start, end) = self.window_ptrs();
+                        let mut ptr = window_start.add(offset);
+                        while ptr < end {
                             if !is_boundary(*ptr) {
                                 ptr = ptr.add(1);
                             } else {
-                                let start_ptr = self.buf.start;
-                                self.buf.advance_to(ptr);
-                                let scalar = self.buf.get(start_ptr..ptr);
-                                return (Some(Token::Unquoted(scalar)), None);
+                                self.advance_to(window_start, ptr);
+                                self.set_scalar(window_start, ptr);
+                                return Ok(Some(TokenKind::Unquoted));
                             }
                         }
 
                         // buffer or prior read too small
-                        let len = self.buf.window_len();
-                        self.next_opt_refill(ParseState::Unquoted, len, len)
+                        let len = self.source.remaining();
+                        self.next_kind_refill(ParseState::Unquoted, len, len)
                     }
                 },
-                Err(e) => (None, Some(self.buffer_error(e))),
+                Err(e) => Err(self.parser_error(e)),
             }
         }
     }
 
-    unsafe fn next_opt_fallback(&mut self) -> (Option<Token<'_>>, Option<ReaderError>) {
+    unsafe fn next_kind_fallback(&mut self) -> Result<Option<TokenKind>, ReaderError> {
         unsafe {
-            let mut ptr = self.buf.start;
-            let end = self.buf.end;
+            let (window_start, end) = self.window_ptrs();
+            let mut ptr = window_start;
 
             loop {
                 if ptr == end {
-                    return self.next_opt_refill(ParseState::None, 0, 0);
+                    return self.next_kind_refill(ParseState::None, 0, 0);
                 }
 
                 match *ptr {
@@ -232,20 +317,19 @@ where
                             ptr = ptr.add(1);
                             if ptr == end {
                                 let carry_over = end.offset_from(start_ptr) as usize;
-                                return self.next_opt_refill(ParseState::None, carry_over, 0);
+                                return self.next_kind_refill(ParseState::None, carry_over, 0);
                             } else if *ptr == b'\n' {
                                 break;
                             }
                         }
                     }
-
                     b'{' => {
-                        self.buf.advance_to(ptr.add(1));
-                        return (Some(Token::Open), None);
+                        self.advance_to(window_start, ptr.add(1));
+                        return Ok(Some(TokenKind::Open));
                     }
                     b'}' => {
-                        self.buf.advance_to(ptr.add(1));
-                        return (Some(Token::Close), None);
+                        self.advance_to(window_start, ptr.add(1));
+                        return Ok(Some(TokenKind::Close));
                     }
                     b'"' => {
                         ptr = ptr.add(1);
@@ -253,7 +337,7 @@ where
                         loop {
                             if ptr == end {
                                 let carry_over = end.offset_from(start_ptr) as usize;
-                                return self.next_opt_refill(
+                                return self.next_kind_refill(
                                     ParseState::Quote,
                                     carry_over,
                                     carry_over,
@@ -265,7 +349,7 @@ where
                                 ptr = ptr.offset(advance);
                                 if ptr == end {
                                     let carry_over = end.offset_from(start_ptr) as usize;
-                                    return self.next_opt_refill(
+                                    return self.next_kind_refill(
                                         ParseState::Quote,
                                         carry_over,
                                         carry_over.max(2) - 2,
@@ -274,9 +358,9 @@ where
                             } else if *ptr != b'"' {
                                 ptr = ptr.add(1);
                             } else {
-                                self.buf.advance_to(ptr.add(1));
-                                let scalar = self.buf.get(start_ptr..ptr);
-                                return (Some(Token::Quoted(scalar)), None);
+                                self.advance_to(window_start, ptr.add(1));
+                                self.set_scalar(start_ptr, ptr);
+                                return Ok(Some(TokenKind::Quoted));
                             }
                         }
                     }
@@ -284,7 +368,7 @@ where
                         let start_ptr = ptr;
                         ptr = ptr.add(1);
                         if ptr == end {
-                            return self.next_opt_refill(ParseState::None, 1, 0);
+                            return self.next_kind_refill(ParseState::None, 1, 0);
                         }
 
                         if *ptr == b'[' {
@@ -292,12 +376,12 @@ where
                             loop {
                                 if ptr == end {
                                     let carry_over = end.offset_from(start_ptr) as usize;
-                                    return self.next_opt_refill(ParseState::None, carry_over, 0);
+                                    return self.next_kind_refill(ParseState::None, carry_over, 0);
                                 } else if *ptr == b']' {
                                     ptr = ptr.add(1);
-                                    self.buf.advance_to(ptr);
-                                    let scalar = self.buf.get(start_ptr..ptr);
-                                    return (Some(Token::Unquoted(scalar)), None);
+                                    self.advance_to(window_start, ptr);
+                                    self.set_scalar(start_ptr, ptr);
+                                    return Ok(Some(TokenKind::Unquoted));
                                 } else {
                                     ptr = ptr.add(1);
                                 }
@@ -306,7 +390,7 @@ where
                             loop {
                                 if ptr == end {
                                     let carry_over = end.offset_from(start_ptr) as usize;
-                                    return self.next_opt_refill(
+                                    return self.next_kind_refill(
                                         ParseState::Unquoted,
                                         carry_over,
                                         carry_over,
@@ -314,9 +398,9 @@ where
                                 } else if !is_boundary(*ptr) {
                                     ptr = ptr.add(1);
                                 } else {
-                                    self.buf.advance_to(ptr);
-                                    let scalar = self.buf.get(start_ptr..ptr);
-                                    return (Some(Token::Unquoted(scalar)), None);
+                                    self.advance_to(window_start, ptr);
+                                    self.set_scalar(start_ptr, ptr);
+                                    return Ok(Some(TokenKind::Unquoted));
                                 }
                             }
                         }
@@ -324,78 +408,78 @@ where
                     b'=' => {
                         ptr = ptr.add(1);
                         if ptr == end {
-                            return self.next_opt_refill(ParseState::None, 1, 0);
+                            return self.next_kind_refill(ParseState::None, 1, 0);
                         } else if *ptr != b'=' {
-                            self.buf.advance_to(ptr);
-                            return (Some(Token::Operator(Operator::Equal)), None);
+                            self.advance_to(window_start, ptr);
+                            return Ok(Some(TokenKind::Operator(Operator::Equal)));
                         } else {
-                            self.buf.advance_to(ptr.add(1));
-                            return (Some(Token::Operator(Operator::Exact)), None);
+                            self.advance_to(window_start, ptr.add(1));
+                            return Ok(Some(TokenKind::Operator(Operator::Exact)));
                         }
                     }
                     b'<' => {
                         ptr = ptr.add(1);
                         if ptr == end {
-                            return self.next_opt_refill(ParseState::None, 1, 0);
+                            return self.next_kind_refill(ParseState::None, 1, 0);
                         } else if *ptr != b'=' {
-                            self.buf.advance_to(ptr);
-                            return (Some(Token::Operator(Operator::LessThan)), None);
+                            self.advance_to(window_start, ptr);
+                            return Ok(Some(TokenKind::Operator(Operator::LessThan)));
                         } else {
-                            self.buf.advance_to(ptr.add(1));
-                            return (Some(Token::Operator(Operator::LessThanEqual)), None);
+                            self.advance_to(window_start, ptr.add(1));
+                            return Ok(Some(TokenKind::Operator(Operator::LessThanEqual)));
                         }
                     }
                     b'!' => {
                         ptr = ptr.add(1);
                         if ptr == end {
-                            return self.next_opt_refill(ParseState::None, 1, 0);
+                            return self.next_kind_refill(ParseState::None, 1, 0);
                         }
 
                         if *ptr == b'=' {
                             ptr = ptr.add(1);
                         }
 
-                        self.buf.advance_to(ptr);
-                        return (Some(Token::Operator(Operator::NotEqual)), None);
+                        self.advance_to(window_start, ptr);
+                        return Ok(Some(TokenKind::Operator(Operator::NotEqual)));
                     }
                     b'?' => {
                         ptr = ptr.add(1);
                         if ptr == end {
-                            return self.next_opt_refill(ParseState::None, 1, 0);
+                            return self.next_kind_refill(ParseState::None, 1, 0);
                         }
 
                         if *ptr == b'=' {
                             ptr = ptr.add(1);
                         }
 
-                        self.buf.advance_to(ptr);
-                        return (Some(Token::Operator(Operator::Exists)), None);
+                        self.advance_to(window_start, ptr);
+                        return Ok(Some(TokenKind::Operator(Operator::Exists)));
                     }
                     b'>' => {
                         ptr = ptr.add(1);
                         if ptr == end {
-                            return self.next_opt_refill(ParseState::None, 1, 0);
+                            return self.next_kind_refill(ParseState::None, 1, 0);
                         }
 
                         if *ptr != b'=' {
-                            self.buf.advance_to(ptr);
-                            return (Some(Token::Operator(Operator::GreaterThan)), None);
+                            self.advance_to(window_start, ptr);
+                            return Ok(Some(TokenKind::Operator(Operator::GreaterThan)));
                         } else {
-                            self.buf.advance_to(ptr.add(1));
-                            return (Some(Token::Operator(Operator::GreaterThanEqual)), None);
+                            self.advance_to(window_start, ptr.add(1));
+                            return Ok(Some(TokenKind::Operator(Operator::GreaterThanEqual)));
                         }
                     }
                     b'\xef' if matches!(self.utf8, Utf8Bom::Unknown) => {
-                        match self.buf.window().get(..3) {
+                        match self.source.as_slice().get(..3) {
                             Some([0xef, 0xbb, 0xbf]) => {
                                 self.utf8 = Utf8Bom::Present;
                                 ptr = ptr.add(3);
                             }
                             Some(_) => self.utf8 = Utf8Bom::NotPresent,
                             None => {
-                                return self.next_opt_refill(
+                                return self.next_kind_refill(
                                     ParseState::None,
-                                    self.buf.window_len(),
+                                    self.source.remaining(),
                                     0,
                                 );
                             }
@@ -407,15 +491,15 @@ where
                             ptr = ptr.add(1);
                             if ptr == end {
                                 let carry_over = end.offset_from(start_ptr) as usize;
-                                return self.next_opt_refill(
+                                return self.next_kind_refill(
                                     ParseState::Unquoted,
                                     carry_over,
                                     carry_over,
                                 );
                             } else if is_boundary(*ptr) {
-                                self.buf.advance_to(ptr);
-                                let scalar = self.buf.get(start_ptr..ptr);
-                                return (Some(Token::Unquoted(scalar)), None);
+                                self.advance_to(window_start, ptr);
+                                self.set_scalar(start_ptr, ptr);
+                                return Ok(Some(TokenKind::Unquoted));
                             }
                         }
                     }
@@ -425,53 +509,49 @@ where
     }
 
     #[inline]
-    unsafe fn next_opt(&mut self) -> (Option<Token<'_>>, Option<ReaderError>) {
+    unsafe fn next_kind_opt(&mut self) -> Result<Option<TokenKind>, ReaderError> {
         unsafe {
-            let mut ptr = self.buf.start;
-            let end = self.buf.end;
+            let (window_start, end) = self.window_ptrs();
+            let mut ptr = window_start;
 
             if end.offset_from(ptr) < 9 {
-                return self.next_opt_fallback();
+                return self.next_kind_fallback();
             }
 
             // 3.4 million newlines followed by an average of 3.3 tabs
             let data = ptr.cast::<u64>().read_unaligned().to_le();
             ptr = ptr.add(leading_whitespace(data) as usize);
 
-            // Eagerly check for brackets, there'll be millions of them
-            if *ptr == b'{' {
-                self.buf.advance_to(ptr.add(1));
-                return (Some(Token::Open), None);
-            } else if *ptr == b'}' {
-                self.buf.advance_to(ptr.add(1));
-                return (Some(Token::Close), None);
-            }
-            // unquoted values are the most frequent type of values in
-            // text so if we see something that is alphanumeric or a
-            // dash (for negative numbers) we eagerly attempt to match
-            // against it. Loop unrolling is used to minimize the number
-            // of access to the boundary lookup table.
-            else if matches!(*ptr, b'a'..=b'z' | b'0'..=b'9' | b'A'..=b'Z' | b'-') {
+            // unquoted values are by far the most frequent token (~72% in
+            // eu4 saves), so dispatch on them first. Loop unrolling minimizes
+            // accesses to the boundary lookup table.
+            if matches!(*ptr, b'a'..=b'z' | b'0'..=b'9' | b'A'..=b'Z' | b'-') {
                 let start_ptr = ptr;
                 let mut opt_ptr = start_ptr.add(1);
                 while end.offset_from(opt_ptr) > 8 {
                     for _ in 0..8 {
                         if is_boundary(*opt_ptr) {
-                            self.buf.advance_to(opt_ptr);
+                            self.advance_to(window_start, opt_ptr);
+                            self.set_scalar(start_ptr, opt_ptr);
 
                             // for space delimited arrays, advance one
                             if *opt_ptr == b' ' {
-                                self.buf.advance(1);
+                                self.advance(1);
                             }
 
-                            let scalar = self.buf.get(start_ptr..opt_ptr);
-                            return (Some(Token::Unquoted(scalar)), None);
+                            return Ok(Some(TokenKind::Unquoted));
                         }
                         opt_ptr = opt_ptr.add(1);
                     }
                 }
 
                 // optimization failed, fallback to inner parsing loop
+            } else if *ptr == b'{' {
+                self.advance_to(window_start, ptr.add(1));
+                return Ok(Some(TokenKind::Open));
+            } else if *ptr == b'}' {
+                self.advance_to(window_start, ptr.add(1));
+                return Ok(Some(TokenKind::Close));
             } else if *ptr == b'\"' {
                 let start_ptr = ptr.add(1);
                 let mut opt_ptr = start_ptr;
@@ -493,9 +573,9 @@ where
 
                         if !escaped {
                             opt_ptr = opt_ptr.add(quote_ind as usize);
-                            self.buf.advance_to(opt_ptr.add(1));
-                            let scalar = self.buf.get(start_ptr..opt_ptr);
-                            return (Some(Token::Quoted(scalar)), None);
+                            self.advance_to(window_start, opt_ptr.add(1));
+                            self.set_scalar(start_ptr, opt_ptr);
+                            return Ok(Some(TokenKind::Quoted));
                         } else {
                             break;
                         }
@@ -505,9 +585,18 @@ where
                 }
 
                 // optimization failed, fallback to inner parsing loop
+            } else if *ptr == b'=' {
+                // `=` is the most common operator; handle the single-byte Equal
+                // case inline so it doesn't round-trip through the fallback loop.
+                let next = ptr.add(1);
+                if next != end && *next != b'=' {
+                    self.advance_to(window_start, next);
+                    return Ok(Some(TokenKind::Operator(Operator::Equal)));
+                }
+                // `==` (Exact) or `=` at the window edge: defer to fallback
             }
 
-            self.next_opt_fallback()
+            self.next_kind_fallback()
         }
     }
 
@@ -523,15 +612,18 @@ where
     /// ```
     #[inline]
     pub fn read_bytes(&mut self, bytes: usize) -> Result<&[u8], ReaderError> {
-        while self.buf.window_len() < bytes {
-            match self.buf.fill_buf(&mut self.reader) {
+        while self.source.remaining() < bytes {
+            match self.source.refill() {
                 Ok(0) => return Err(self.eof_error()),
                 Ok(_) => {}
-                Err(e) => return Err(self.buffer_error(e)),
+                Err(e) => return Err(self.parser_error(e)),
             }
         }
 
-        Ok(self.buf.split(bytes))
+        match self.source.take(bytes) {
+            Ok(data) => Ok(data),
+            Err(_) => unreachable!("read_bytes ensured bytes are available"),
+        }
     }
 
     /// Advance through the containing block until the closing token is consumed
@@ -557,9 +649,9 @@ where
 
         let mut state = SkipState::None;
         let mut depth = 1;
-        let mut ptr = self.buf.start;
+        let (mut window_start, mut end) = self.window_ptrs();
+        let mut ptr = window_start;
         loop {
-            let end = self.buf.end;
             unsafe {
                 'refill: loop {
                     match state {
@@ -610,7 +702,7 @@ where
                                 b'}' => {
                                     depth -= 1;
                                     if depth == 0 {
-                                        self.buf.advance_to(ptr);
+                                        self.advance_to(window_start, ptr);
                                         return Ok(());
                                     }
                                 }
@@ -660,11 +752,16 @@ where
                 }
             }
 
-            self.buf.advance_to(ptr);
-            match self.buf.fill_buf(&mut self.reader) {
+            unsafe {
+                self.advance_to(window_start, ptr);
+            }
+            match self.source.refill() {
                 Ok(0) => return Err(self.eof_error()),
-                Err(e) => return Err(self.buffer_error(e)),
-                Ok(_) => ptr = self.buf.start,
+                Err(e) => return Err(self.parser_error(e)),
+                Ok(_) => {
+                    (window_start, end) = self.window_ptrs();
+                    ptr = window_start;
+                }
             }
         }
     }
@@ -691,8 +788,8 @@ where
     pub fn skip_unquoted_value(&mut self) -> Result<(), ReaderError> {
         loop {
             unsafe {
-                let mut ptr = self.buf.start;
-                let end = self.buf.end;
+                let (window_start, end) = self.window_ptrs();
+                let mut ptr = window_start;
 
                 if end.offset_from(ptr) >= 4 {
                     let word = ptr.cast::<u32>().read_unaligned().to_le();
@@ -707,7 +804,7 @@ where
                 while ptr < end {
                     match *ptr {
                         b'{' => {
-                            self.buf.advance_to(ptr.add(1));
+                            self.advance_to(window_start, ptr.add(1));
                             return self.skip_container();
                         }
                         b' ' | b'\t' | b'\n' | b'\r' | b';' => {
@@ -717,33 +814,20 @@ where
                     }
                 }
 
-                self.buf.advance_to(end);
-                match self.buf.fill_buf(&mut self.reader) {
+                self.advance_to(window_start, end);
+                match self.source.refill() {
                     Ok(0) => return Ok(()),
-                    Err(e) => return Err(self.buffer_error(e)),
+                    Err(e) => return Err(self.parser_error(e)),
                     Ok(_) => {}
                 }
             }
         }
     }
 
-    /// Consume the token reader and return the internal buffer and reader. This
-    /// allows the buffer to be reused.
-    ///
-    /// ```rust
-    /// use jomini::text::{TokenReader};
-    /// let data = b"EU4txt";
-    /// let mut reader = TokenReader::new(&data[..]);
-    /// assert_eq!(reader.read_bytes(6).unwrap(), &data[..]);
-    ///
-    /// let (buf, _) = reader.into_parts();
-    /// let data = b"HOI4txt";
-    /// let mut reader = TokenReader::builder().buffer(buf).build(&data[..]);
-    /// assert_eq!(reader.read_bytes(7).unwrap(), &data[..]);
-    /// ```
+    /// Consume the token reader and return the parser source.
     #[inline]
-    pub fn into_parts(self) -> (Box<[u8]>, R) {
-        (self.buf.buf, self.reader)
+    pub fn into_source(self) -> ParserSource<'a> {
+        self.source
     }
 
     /// Read the next token in the stream. Will error if not enough data remains
@@ -760,18 +844,18 @@ where
     #[inline]
     pub fn read(&mut self) -> Result<Token<'_>, ReaderError> {
         let s = std::ptr::addr_of!(self);
-        match unsafe { self.next_opt() } {
-            (Some(x), _) => Ok(x),
-            (None, None) => Err(unsafe { (*s).eof_error() }),
-            (None, Some(e)) => Err(e),
+        match self.next_token() {
+            Ok(Some(x)) => Ok(unsafe { (*s).token_from_kind(x) }),
+            Ok(None) => Err(unsafe { (*s).eof_error() }),
+            Err(e) => Err(e),
         }
     }
 
     #[inline]
     pub(crate) fn read_expect_equals(&mut self) -> Result<Token<'_>, ReaderError> {
-        match self.buf.window().first() {
+        match self.source.as_slice().first() {
             Some(b'=') => {
-                self.buf.advance(1);
+                self.advance(1);
                 Ok(Token::Operator(Operator::Equal))
             }
             _ => self.read(),
@@ -791,69 +875,21 @@ where
     #[inline]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Token<'_>>, ReaderError> {
-        match unsafe { self.next_opt() } {
-            (Some(x), _) => Ok(Some(x)),
-            (None, None) => Ok(None),
-            (None, Some(e)) => Err(e),
-        }
+        let s = std::ptr::addr_of!(self);
+        self.next_token()
+            .map(|x| x.map(|kind| unsafe { (*s).token_from_kind(kind) }))
+    }
+
+    /// Read a token kind, returning none when all the data has been consumed.
+    #[inline]
+    pub fn next_token(&mut self) -> Result<Option<TokenKind>, ReaderError> {
+        unsafe { self.next_kind_opt() }
     }
 
     #[cold]
     #[inline(never)]
     pub(crate) fn eof_error(&self) -> ReaderError {
-        ReaderError {
-            position: self.position(),
-            kind: ReaderErrorKind::Eof,
-        }
-    }
-
-    #[cold]
-    #[inline(always)]
-    fn buffer_error(&self, e: BufferError) -> ReaderError {
-        ReaderError {
-            position: self.position(),
-            kind: ReaderErrorKind::from(e),
-        }
-    }
-}
-
-impl TokenReader<()> {
-    /// Initializes a default [TokenReaderBuilder]
-    pub fn builder() -> TokenReaderBuilder {
-        TokenReaderBuilder::default()
-    }
-}
-
-/// Creates a text token reader
-#[derive(Debug, Default)]
-pub struct TokenReaderBuilder {
-    buffer: BufferWindowBuilder,
-}
-
-impl TokenReaderBuilder {
-    /// Set the fixed size buffer to the given buffer
-    #[inline]
-    pub fn buffer(mut self, val: Box<[u8]>) -> TokenReaderBuilder {
-        self.buffer = self.buffer.buffer(val);
-        self
-    }
-
-    /// Set the length of the buffer if no buffer is provided
-    #[inline]
-    pub fn buffer_len(mut self, val: usize) -> TokenReaderBuilder {
-        self.buffer = self.buffer.buffer_len(val);
-        self
-    }
-
-    /// Create a text token reader around a given reader.
-    #[inline]
-    pub fn build<R>(self, reader: R) -> TokenReader<R> {
-        let buf = self.buffer.build();
-        TokenReader {
-            reader,
-            buf,
-            utf8: Utf8Bom::Unknown,
-        }
+        ReaderError::new(self.position(), ReaderErrorKind::Eof)
     }
 }
 
@@ -861,7 +897,7 @@ impl TokenReaderBuilder {
 #[derive(Debug)]
 pub enum ReaderErrorKind {
     /// An underlying error from a [Read]er
-    Read(std::io::Error),
+    Read,
 
     /// The internal buffer does not have enough room to store data for the next
     /// token
@@ -871,12 +907,13 @@ pub enum ReaderErrorKind {
     Eof,
 }
 
-impl From<BufferError> for ReaderErrorKind {
+impl From<ParserError> for ReaderErrorKind {
     #[inline]
-    fn from(value: BufferError) -> Self {
+    fn from(value: ParserError) -> Self {
         match value {
-            BufferError::Io(x) => ReaderErrorKind::Read(x),
-            BufferError::BufferTooSmall => ReaderErrorKind::BufferTooSmall,
+            ParserError::Eof => ReaderErrorKind::Eof,
+            ParserError::BufferTooSmall => ReaderErrorKind::BufferTooSmall,
+            ParserError::Io => ReaderErrorKind::Read,
         }
     }
 }
@@ -884,25 +921,27 @@ impl From<BufferError> for ReaderErrorKind {
 /// An text lexing error over a `Read` implementation
 #[derive(Debug)]
 pub struct ReaderError {
-    position: usize,
-    kind: ReaderErrorKind,
+    // Keep ReaderError to one word to minimize the impact of error handling on
+    // hot paths. The top byte stores ReaderErrorKind and the lower 56 bits
+    // store position.
+    packed: u64,
 }
 
 impl std::fmt::Display for ReaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.kind() {
-            ReaderErrorKind::Read { .. } => {
-                write!(f, "failed to read past position: {}", self.position)
+            ReaderErrorKind::Read => {
+                write!(f, "failed to read past position: {}", self.position())
             }
             ReaderErrorKind::BufferTooSmall => {
                 write!(
                     f,
                     "token exceeds buffer capacity at position: {}",
-                    self.position
+                    self.position()
                 )
             }
             ReaderErrorKind::Eof => {
-                write!(f, "unexpected end of file at position: {}", self.position)
+                write!(f, "unexpected end of file at position: {}", self.position())
             }
         }
     }
@@ -910,28 +949,61 @@ impl std::fmt::Display for ReaderError {
 
 impl std::error::Error for ReaderError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self.kind() {
-            ReaderErrorKind::Read(x) => Some(x),
-            _ => None,
-        }
+        None
     }
 }
 
 impl ReaderError {
-    /// Return the byte position where the error occurred
-    pub fn position(&self) -> usize {
-        self.position
+    const KIND_SHIFT: u64 = 56;
+    const POSITION_MASK: u64 = (1 << Self::KIND_SHIFT) - 1;
+
+    #[inline]
+    fn new(position: usize, kind: ReaderErrorKind) -> Self {
+        ReaderError {
+            packed: Self::pack(position, kind),
+        }
     }
 
-    /// Return a reference the error kind
-    pub fn kind(&self) -> &ReaderErrorKind {
-        &self.kind
+    #[inline]
+    fn pack(position: usize, kind: ReaderErrorKind) -> u64 {
+        ((kind.tag() as u64) << Self::KIND_SHIFT) | ((position as u64) & Self::POSITION_MASK)
+    }
+
+    /// Return the byte position where the error occurred
+    pub fn position(&self) -> usize {
+        (self.packed & Self::POSITION_MASK) as usize
+    }
+
+    /// Return the error kind
+    pub fn kind(&self) -> ReaderErrorKind {
+        ReaderErrorKind::from_tag((self.packed >> Self::KIND_SHIFT) as u8)
     }
 
     /// Consume self and return the error kind
     #[must_use]
     pub fn into_kind(self) -> ReaderErrorKind {
-        self.kind
+        self.kind()
+    }
+}
+
+impl ReaderErrorKind {
+    #[inline]
+    const fn tag(self) -> u8 {
+        match self {
+            ReaderErrorKind::Read => 0,
+            ReaderErrorKind::BufferTooSmall => 1,
+            ReaderErrorKind::Eof => 2,
+        }
+    }
+
+    #[inline]
+    const fn from_tag(tag: u8) -> Self {
+        match tag {
+            0 => ReaderErrorKind::Read,
+            1 => ReaderErrorKind::BufferTooSmall,
+            2 => ReaderErrorKind::Eof,
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -1174,6 +1246,34 @@ mod test {
     }
 
     #[rstest]
+    #[case(b"foo={ bar = \"baz\" @[1-qux] } # comment\nx?=1 y==2 z<=3")]
+    #[case(b"\xef\xbb\xbf@var = value:job|head| \"escaped \\\" quote\"")]
+    fn test_token_kind_matches_token(#[case] input: &[u8]) {
+        fn kind(token: Token<'_>) -> TokenKind {
+            match token {
+                Token::Open => TokenKind::Open,
+                Token::Close => TokenKind::Close,
+                Token::Operator(op) => TokenKind::Operator(op),
+                Token::Unquoted(_) => TokenKind::Unquoted,
+                Token::Quoted(_) => TokenKind::Quoted,
+            }
+        }
+
+        let mut token_reader = TokenReader::from_slice(input);
+        let mut kind_reader = TokenReader::from_slice(input);
+
+        loop {
+            let token = token_reader.next().unwrap().map(kind);
+            let token_kind = kind_reader.next_token().unwrap();
+            assert_eq!(token, token_kind);
+
+            if token.is_none() {
+                break;
+            }
+        }
+    }
+
+    #[rstest]
     #[case(b"   hello=  butIsaytoYou", &[
         Token::Unquoted(Scalar::new(b"hello")),
         Token::Operator(Operator::Equal),
@@ -1202,7 +1302,7 @@ mod test {
             + 1;
 
         for i in min_buffer_size..min_buffer_size + 10 {
-            let mut reader = TokenReader::builder().buffer_len(i).build(input);
+            let mut reader = TokenReader::from_reader_with_buf(input, vec![0; i]);
             for e in expected.iter() {
                 assert_eq!(*e, reader.read().unwrap());
             }
@@ -1219,7 +1319,7 @@ mod test {
     #[case(br#"a={"an object" { "nested array" }} c=d } done"#)]
     fn test_skip_container(#[case] input: &[u8]) {
         for i in 8..16 {
-            let mut reader = TokenReader::builder().buffer_len(i).build(input);
+            let mut reader = TokenReader::from_reader_with_buf(input, vec![0; i]);
             reader.skip_container().unwrap();
 
             assert_eq!(
@@ -1234,5 +1334,10 @@ mod test {
     fn test_crash_regression(#[case] input: &[u8]) {
         let mut reader = TokenReader::new(input);
         while let Ok(Some(_)) = reader.next() {}
+    }
+
+    #[test]
+    fn reader_error_size() {
+        assert_eq!(std::mem::size_of::<ReaderError>(), 8);
     }
 }

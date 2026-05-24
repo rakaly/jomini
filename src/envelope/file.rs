@@ -377,7 +377,7 @@ impl<E, R: ReaderAt> SaveData<E, R> {
 
 impl<R: ReaderAt> SaveData<TextEncoding, R> {
     /// Creates a text deserializer for this save data
-    pub fn deserializer(&self) -> TextReaderDeserializer<impl Read + '_, Utf8Encoding> {
+    pub fn deserializer(&self) -> TextReaderDeserializer<'_, Utf8Encoding> {
         text_deserializer(self.body.cursor())
     }
 }
@@ -513,7 +513,7 @@ impl<R: Read> Read for SaveMetadata<BinaryEncoding, R> {
 
 impl<R: Read> SaveMetadata<TextEncoding, R> {
     /// Creates a text deserializer for this metadata
-    pub fn deserializer(&mut self) -> TextReaderDeserializer<&mut R, Utf8Encoding> {
+    pub fn deserializer(&mut self) -> TextReaderDeserializer<'_, Utf8Encoding> {
         text_deserializer(&mut self.reader)
     }
 }
@@ -628,7 +628,7 @@ impl<R: Read, E> Read for SaveContent<E, R> {
 
 impl<R: Read> SaveContent<TextEncoding, R> {
     /// Creates a text deserializer for this content
-    pub fn deserializer(&mut self) -> TextReaderDeserializer<&mut R, Utf8Encoding> {
+    pub fn deserializer(&mut self) -> TextReaderDeserializer<'_, Utf8Encoding> {
         text_deserializer(&mut self.reader)
     }
 }
@@ -699,6 +699,6 @@ where
     }
 }
 
-fn text_deserializer<R: Read>(reader: R) -> TextReaderDeserializer<R, Utf8Encoding> {
+fn text_deserializer<'r, R: Read + 'r>(reader: R) -> TextReaderDeserializer<'r, Utf8Encoding> {
     TextDeserializer::from_utf8_reader(text::TokenReader::new(reader))
 }

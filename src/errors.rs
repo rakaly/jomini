@@ -180,7 +180,9 @@ impl From<BinReaderError> for Error {
 impl From<TextReaderError> for Error {
     fn from(value: TextReaderError) -> Self {
         match value.into_kind() {
-            crate::text::ReaderErrorKind::Read(x) => Error::new(ErrorKind::Io(x)),
+            crate::text::ReaderErrorKind::Read => Error::new(ErrorKind::Io(std::io::Error::other(
+                "parser source io error",
+            ))),
             crate::text::ReaderErrorKind::BufferTooSmall => Error::new(ErrorKind::BufferTooSmall),
             crate::text::ReaderErrorKind::Eof => Error::eof(),
         }

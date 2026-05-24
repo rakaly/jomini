@@ -22,10 +22,10 @@ pub(crate) fn tape_parse(data: &[u8]) -> usize {
 pub(crate) fn reader_count_equals(data: &[u8]) -> i32 {
     let mut reader = jomini::text::TokenReader::from_slice(data);
     let mut count = 0i32;
-    while let Some(token) = reader.next().unwrap() {
+    while let Some(token) = reader.next_token().unwrap() {
         if matches!(
             token,
-            jomini::text::Token::Operator(jomini::text::Operator::Equal)
+            jomini::text::TokenKind::Operator(jomini::text::Operator::Equal)
         ) {
             count += 1;
         }
@@ -39,8 +39,20 @@ pub(crate) fn deserialize_meta(data: &[u8]) -> Meta {
 }
 
 #[inline(never)]
-pub(crate) fn read_compressed_archive(archive: &CorpusArchive) -> Vec<u8> {
-    black_box(corpus::read_archive_to_vec(archive))
+pub(crate) fn reader_count_compressed_archive(archive: &CorpusArchive) -> i32 {
+    corpus::with_archive_reader(archive, |reader| {
+        let mut reader = jomini::text::TokenReader::new(reader);
+        let mut count = 0i32;
+        while let Some(token) = reader.next_token().unwrap() {
+            if matches!(
+                token,
+                jomini::text::TokenKind::Operator(jomini::text::Operator::Equal)
+            ) {
+                count += 1;
+            }
+        }
+        black_box(count)
+    })
 }
 
 fn setup_eu4() -> &'static [u8] {
@@ -98,7 +110,7 @@ pub mod criterion_benches {
             let archive = corpus::archive(corpus);
             group.throughput(Throughput::Bytes(archive.uncompressed_size));
             group.bench_function(BenchmarkId::from_parameter(game), |b| {
-                b.iter(|| read_compressed_archive(archive))
+                b.iter(|| reader_count_compressed_archive(archive))
             });
         }
         group.finish();
@@ -134,8 +146,8 @@ pub mod gungraun_benches {
     #[library_benchmark]
     #[bench::eu4(setup = setup_eu4_archive)]
     #[bench::ck3(setup = setup_ck3_archive)]
-    fn compressed_read(archive: &CorpusArchive) -> Vec<u8> {
-        read_compressed_archive(archive)
+    fn compressed_read(archive: &CorpusArchive) -> i32 {
+        reader_count_compressed_archive(archive)
     }
 
     library_benchmark_group!(
