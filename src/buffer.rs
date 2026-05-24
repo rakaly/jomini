@@ -19,7 +19,7 @@ pub(crate) struct BufferWindow {
 
 pub enum BufferError {
     Io(std::io::Error),
-    BufferFull,
+    BufferTooSmall,
 }
 
 impl BufferWindow {
@@ -90,7 +90,7 @@ impl BufferWindow {
         // Copy over the unconsumed bytes to the start of the buffer
         if carry_over != 0 {
             if carry_over >= self.buf.len() {
-                return Err(BufferError::BufferFull);
+                return Err(BufferError::BufferTooSmall);
             }
             self.buf.copy_within(self.consumed_data().., 0);
         }

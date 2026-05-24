@@ -65,9 +65,8 @@ fuzz_target!(|data: &[u8]| {
     // Fuzz equality between the lexer and reader when the reader has a buffer
     // large enough to hold all possible binary tokens
     let mut lexer = jomini::binary::Lexer::new(data);
-    let mut reader = jomini::binary::TokenReader::builder()
-        .buffer_len(usize::from(u16::MAX) + 4)
-        .build(data);
+    let mut reader =
+        jomini::binary::TokenReader::from_reader_with_buf(data, vec![0; usize::from(u16::MAX) + 4]);
 
     loop {
         match (lexer.next_token(), reader.next()) {
@@ -77,7 +76,7 @@ fuzz_target!(|data: &[u8]| {
             (Ok(Some(t1)), Ok(Some(t2))) => assert_eq!(t1, t2),
             (Err(e1), Err(e2)) => match e2.kind() {
                 jomini::binary::ReaderErrorKind::Lexer(e) => {
-                    assert_eq!(e1.kind(), e);
+                    assert_eq!(e1.kind(), &e);
                     break;
                 }
                 _ => panic!("different errors"),
@@ -89,9 +88,8 @@ fuzz_target!(|data: &[u8]| {
     // Fuzz equality when reader doesn't have enough space to hold everything
     let mut lexer = jomini::binary::Lexer::new(data);
     let buffer_len = 100;
-    let mut reader = jomini::binary::TokenReader::builder()
-        .buffer_len(buffer_len + 4)
-        .build(data);
+    let mut reader =
+        jomini::binary::TokenReader::from_reader_with_buf(data, vec![0; buffer_len + 4]);
 
     loop {
         match (lexer.read_token(), reader.read()) {

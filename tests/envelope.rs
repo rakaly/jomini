@@ -448,39 +448,50 @@ impl BinaryFlavor for TestFlavor {
     }
 }
 
-type BinaryDeserializer<'res, RES, R> = BinaryReaderDeserializer<'res, RES, TestFlavor, R>;
+type BinaryDeserializer<'r, 'res, RES> = BinaryReaderDeserializer<'r, 'res, RES, TestFlavor>;
 
 trait DeserializeBinary {
-    fn deserializer<'res, RES: TokenResolver>(
-        &mut self,
+    fn deserializer<'r, 'res, RES: TokenResolver>(
+        &'r mut self,
         resolver: &'res RES,
-    ) -> BinaryDeserializer<'res, RES, impl Read + '_>;
+    ) -> BinaryDeserializer<'r, 'res, RES>
+    where
+        Self: 'r;
 }
 
 impl<R: ReaderAt> DeserializeBinary for SaveData<BinaryEncoding, R> {
-    fn deserializer<'res, RES: TokenResolver>(
-        &mut self,
+    fn deserializer<'r, 'res, RES: TokenResolver>(
+        &'r mut self,
         resolver: &'res RES,
-    ) -> BinaryDeserializer<'res, RES, impl Read + '_> {
+    ) -> BinaryDeserializer<'r, 'res, RES>
+    where
+        Self: 'r,
+    {
         BinaryDeserializerBuilder::with_flavor(TestFlavor)
             .from_reader(self.body().cursor(), resolver)
     }
 }
 
 impl<R: Read> DeserializeBinary for SaveContent<BinaryEncoding, R> {
-    fn deserializer<'res, RES: TokenResolver>(
-        &mut self,
+    fn deserializer<'r, 'res, RES: TokenResolver>(
+        &'r mut self,
         resolver: &'res RES,
-    ) -> BinaryDeserializer<'res, RES, impl Read + '_> {
+    ) -> BinaryDeserializer<'r, 'res, RES>
+    where
+        Self: 'r,
+    {
         BinaryDeserializerBuilder::with_flavor(TestFlavor).from_reader(self, resolver)
     }
 }
 
 impl<R: Read> DeserializeBinary for SaveMetadata<BinaryEncoding, R> {
-    fn deserializer<'res, RES: TokenResolver>(
-        &mut self,
+    fn deserializer<'r, 'res, RES: TokenResolver>(
+        &'r mut self,
         resolver: &'res RES,
-    ) -> BinaryDeserializer<'res, RES, impl Read + '_> {
+    ) -> BinaryDeserializer<'r, 'res, RES>
+    where
+        Self: 'r,
+    {
         BinaryDeserializerBuilder::with_flavor(TestFlavor).from_reader(self, resolver)
     }
 }

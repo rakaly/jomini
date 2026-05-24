@@ -115,8 +115,17 @@ pub(crate) fn deserialize_reader(data: &[u8]) -> Gamestate {
 }
 
 #[inline(never)]
-pub(crate) fn read_compressed_archive(archive: &CorpusArchive) -> Vec<u8> {
-    black_box(corpus::read_archive_to_vec(archive))
+pub(crate) fn read_compressed_archive(archive: &CorpusArchive) -> u64 {
+    corpus::with_archive_reader(archive, |reader| {
+        let mut reader = jomini::binary::TokenReader::new(reader);
+        let mut counter: u64 = 0;
+        while let Ok(Some(token)) = reader.next() {
+            if let jomini::binary::Token::Id(x) = token {
+                counter = counter.wrapping_add(u64::from(x));
+            }
+        }
+        black_box(counter)
+    })
 }
 
 fn setup_eu4() -> &'static [u8] {
@@ -265,7 +274,7 @@ pub mod gungraun_benches {
     #[bench::eu4(setup = setup_eu4_archive)]
     #[bench::v3(setup = setup_vic3_archive)]
     #[bench::ck3(setup = setup_ck3_archive)]
-    fn compressed_read(archive: &CorpusArchive) -> Vec<u8> {
+    fn compressed_read(archive: &CorpusArchive) -> u64 {
         read_compressed_archive(archive)
     }
 

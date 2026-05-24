@@ -136,6 +136,27 @@ pub fn bytes(corpus: Corpus) -> CorpusBytes {
 }
 
 pub fn read_archive_to_vec(archive: &CorpusArchive) -> Vec<u8> {
+    with_archive_reader(archive, |reader| {
+        let capacity = archive
+            .uncompressed_size
+            .saturating_sub(archive.header_skip as u64) as usize;
+        let mut output = Vec::with_capacity(capacity);
+        reader
+            .read_to_end(&mut output)
+            .unwrap_or_else(|e| panic!("failed to decompress {}: {e}", archive.corpus));
+        output
+    })
+}
+
+pub fn with_archive_reader<T, F>(archive: &CorpusArchive, f: F) -> T
+where
+    F: FnOnce(
+        &mut rawzip::ZipVerifier<
+            flate2::read::DeflateDecoder<rawzip::ZipReader<&rawzip::FileReader>>,
+            &rawzip::FileReader,
+        >,
+    ) -> T,
+{
     let file = std::fs::File::open(&archive.path).unwrap_or_else(|e| {
         panic!(
             "failed to open corpus archive {} at {}: {e}",
@@ -146,7 +167,7 @@ pub fn read_archive_to_vec(archive: &CorpusArchive) -> Vec<u8> {
     let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
     let zip = rawzip::ZipArchive::from_file(file, &mut buf)
         .unwrap_or_else(|e| panic!("failed to read zip archive {}: {e}", archive.corpus));
-    let (wayfinder, compression_method, max_size) = largest_entry(&zip, &mut buf, archive.corpus);
+    let (wayfinder, compression_method, _) = largest_entry(&zip, &mut buf, archive.corpus);
 
     assert_eq!(
         compression_method,
@@ -169,12 +190,7 @@ pub fn read_archive_to_vec(archive: &CorpusArchive) -> Vec<u8> {
         )
     });
 
-    let capacity = max_size.saturating_sub(archive.header_skip as u64) as usize;
-    let mut output = Vec::with_capacity(capacity);
-    reader
-        .read_to_end(&mut output)
-        .unwrap_or_else(|e| panic!("failed to decompress {}: {e}", archive.corpus));
-    output
+    f(&mut reader)
 }
 
 fn fetch_and_validate(corpus: Corpus) -> CorpusArchive {
