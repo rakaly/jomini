@@ -76,9 +76,11 @@ mod lexer;
 mod reader;
 mod resolver;
 mod rgb;
+mod source;
 
 pub use self::flavor::BinaryFlavor;
 pub use self::lexer::{LexError, LexemeId, Lexer, LexerError, Token, TokenKind};
-pub use self::reader::{ReaderError, ReaderErrorKind, TokenReader, TokenReaderBuilder};
+pub use self::reader::{ReaderError, ReaderErrorKind, TokenReader};
 pub use self::resolver::{BasicTokenResolver, FailedResolveStrategy, TokenResolver};
 pub use self::rgb::*;
+pub use self::source::{BinarySourceExt, ParserError, ParserSource};

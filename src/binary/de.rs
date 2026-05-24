@@ -1,5 +1,5 @@
 use super::{
-    LexError, TokenReader, TokenReaderBuilder,
+    LexError, TokenReader,
     lexer::{LexemeId, Lexer},
 };
 use crate::{
@@ -13,12 +13,12 @@ use serde::de::{
 use std::{borrow::Cow, io::Read};
 
 /// Serde deserializer over a streaming binary reader
-pub struct BinaryReaderDeserializer<'res, RES, F, R> {
-    reader: TokenReader<R>,
+pub struct BinaryReaderDeserializer<'r, 'res, RES, F> {
+    reader: TokenReader<'r>,
     config: BinaryConfig<'res, RES, F>,
 }
 
-impl<RES: TokenResolver, E: BinaryFlavor, R: Read> BinaryReaderDeserializer<'_, RES, E, R> {
+impl<RES: TokenResolver, E: BinaryFlavor> BinaryReaderDeserializer<'_, '_, RES, E> {
     /// Deserialize into provided type
     pub fn deserialize<T>(&mut self) -> Result<T, Error>
     where
@@ -28,8 +28,8 @@ impl<RES: TokenResolver, E: BinaryFlavor, R: Read> BinaryReaderDeserializer<'_, 
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::Deserializer<'de>
-    for &'_ mut BinaryReaderDeserializer<'res, RES, F, R>
+impl<'de, 'r, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
+    for &'_ mut BinaryReaderDeserializer<'r, 'res, RES, F>
 {
     type Error = Error;
 
@@ -70,19 +70,19 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::Deseriali
     }
 }
 
-struct BinaryReaderMap<'a: 'a, 'res, RES: 'a, F, R> {
-    de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
+struct BinaryReaderMap<'a: 'a, 'r, 'res, RES: 'a, F> {
+    de: &'a mut BinaryReaderDeserializer<'r, 'res, RES, F>,
     root: bool,
 }
 
-impl<'a, 'res, RES: 'a, F, R> BinaryReaderMap<'a, 'res, RES, F, R> {
-    fn new(de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>, root: bool) -> Self {
+impl<'a, 'r, 'res, RES: 'a, F> BinaryReaderMap<'a, 'r, 'res, RES, F> {
+    fn new(de: &'a mut BinaryReaderDeserializer<'r, 'res, RES, F>, root: bool) -> Self {
         BinaryReaderMap { de, root }
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> MapAccess<'de>
-    for BinaryReaderMap<'_, 'res, RES, F, R>
+impl<'de, 'r, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> MapAccess<'de>
+    for BinaryReaderMap<'_, 'r, 'res, RES, F>
 {
     type Error = Error;
 
@@ -125,15 +125,14 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> MapAccess<'de
     }
 }
 
-struct BinaryReaderTokenDeserializer<'a, 'res, RES: 'a, F, R> {
-    de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
+struct BinaryReaderTokenDeserializer<'a, 'r, 'res, RES: 'a, F> {
+    de: &'a mut BinaryReaderDeserializer<'r, 'res, RES, F>,
     token: TokenKind,
 }
 
-impl<'res, RES: TokenResolver, F, R> BinaryReaderTokenDeserializer<'_, 'res, RES, F, R>
+impl<'r, 'res, RES: TokenResolver, F> BinaryReaderTokenDeserializer<'_, 'r, 'res, RES, F>
 where
     F: BinaryFlavor,
-    R: Read,
 {
     #[inline]
     fn deser<'de, V>(self, visitor: V) -> Result<V::Value, Error>
@@ -219,8 +218,8 @@ macro_rules! deserialize_scalar {
     };
 }
 
-impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::Deserializer<'de>
-    for BinaryReaderTokenDeserializer<'a, 'res, RES, F, R>
+impl<'a, 'de: 'a, 'r, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
+    for BinaryReaderTokenDeserializer<'a, 'r, 'res, RES, F>
 {
     type Error = Error;
 
@@ -514,19 +513,19 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::D
     }
 }
 
-struct BinaryReaderSeq<'a: 'a, 'res, RES: 'a, F, R> {
-    de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
+struct BinaryReaderSeq<'a: 'a, 'r, 'res, RES: 'a, F> {
+    de: &'a mut BinaryReaderDeserializer<'r, 'res, RES, F>,
     hit_end: bool,
 }
 
-impl<'a, 'res, RES: 'a, F, R> BinaryReaderSeq<'a, 'res, RES, F, R> {
-    fn new(de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>) -> Self {
+impl<'a, 'r, 'res, RES: 'a, F> BinaryReaderSeq<'a, 'r, 'res, RES, F> {
+    fn new(de: &'a mut BinaryReaderDeserializer<'r, 'res, RES, F>) -> Self {
         BinaryReaderSeq { de, hit_end: false }
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> SeqAccess<'de>
-    for BinaryReaderSeq<'_, 'res, RES, F, R>
+impl<'de, 'r, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> SeqAccess<'de>
+    for BinaryReaderSeq<'_, 'r, 'res, RES, F>
 {
     type Error = Error;
 
@@ -548,19 +547,19 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> SeqAccess<'de
     }
 }
 
-struct BinaryReaderEnum<'a, 'res, RES: 'a, F, R> {
-    de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>,
+struct BinaryReaderEnum<'a, 'r, 'res, RES: 'a, F> {
+    de: &'a mut BinaryReaderDeserializer<'r, 'res, RES, F>,
     token: TokenKind,
 }
 
-impl<'a, 'res, RES: 'a, F, R> BinaryReaderEnum<'a, 'res, RES, F, R> {
-    fn new(de: &'a mut BinaryReaderDeserializer<'res, RES, F, R>, token: TokenKind) -> Self {
+impl<'a, 'r, 'res, RES: 'a, F> BinaryReaderEnum<'a, 'r, 'res, RES, F> {
+    fn new(de: &'a mut BinaryReaderDeserializer<'r, 'res, RES, F>, token: TokenKind) -> Self {
         BinaryReaderEnum { de, token }
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::EnumAccess<'de>
-    for BinaryReaderEnum<'_, 'res, RES, F, R>
+impl<'de, 'r, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::EnumAccess<'de>
+    for BinaryReaderEnum<'_, 'r, 'res, RES, F>
 {
     type Error = Error;
     type Variant = Self;
@@ -577,8 +576,8 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::EnumAcces
     }
 }
 
-impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R> de::VariantAccess<'de>
-    for BinaryReaderEnum<'_, 'res, RES, F, R>
+impl<'de, 'r, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
+    for BinaryReaderEnum<'_, 'r, 'res, RES, F>
 {
     type Error = Error;
 
@@ -1297,7 +1296,7 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
 pub struct BinaryDeserializerBuilder<F> {
     failed_resolve_strategy: FailedResolveStrategy,
     flavor: F,
-    reader_config: TokenReaderBuilder,
+    reader_buffer: Option<Vec<u8>>,
 }
 
 /// Type alias for the binary deserializer builder for backward compatibility
@@ -1322,7 +1321,7 @@ where
         BinaryDeserializerBuilder {
             failed_resolve_strategy: FailedResolveStrategy::Ignore,
             flavor,
-            reader_config: TokenReaderBuilder::default(),
+            reader_buffer: None,
         }
     }
 
@@ -1332,22 +1331,26 @@ where
         self
     }
 
-    /// Set the reader buffer config (unused for slice deserializations)
-    pub fn reader_config(&mut self, val: TokenReaderBuilder) -> &mut Self {
-        self.reader_config = val;
+    /// Set the reader buffer configuration (unused for slice deserializations)
+    pub fn reader_buffer(&mut self, val: Vec<u8>) -> &mut Self {
+        self.reader_buffer = Some(val);
         self
     }
 
     /// Create binary deserializer from reader
-    pub fn from_reader<RES, R>(
+    pub fn from_reader<'r, 'res, RES, R>(
         self,
         reader: R,
-        resolver: &RES,
-    ) -> BinaryReaderDeserializer<'_, RES, F, R>
+        resolver: &'res RES,
+    ) -> BinaryReaderDeserializer<'r, 'res, RES, F>
     where
         RES: TokenResolver,
+        R: Read + 'r,
     {
-        let reader = self.reader_config.build(reader);
+        let reader = match self.reader_buffer {
+            Some(buffer) => TokenReader::from_reader_with_buf(reader, buffer),
+            None => TokenReader::new(reader),
+        };
         let config = BinaryConfig {
             resolver,
             failed_resolve_strategy: self.failed_resolve_strategy,
@@ -1358,10 +1361,11 @@ where
     }
 
     /// Deserialize value from reader
-    pub fn deserialize_reader<RES, T, R: Read>(self, reader: R, resolver: &RES) -> Result<T, Error>
+    pub fn deserialize_reader<RES, T, R>(self, reader: R, resolver: &RES) -> Result<T, Error>
     where
         T: DeserializeOwned,
         RES: TokenResolver,
+        R: Read,
     {
         self.from_reader(reader, resolver).deserialize()
     }

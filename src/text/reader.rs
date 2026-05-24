@@ -865,7 +865,7 @@ pub enum ReaderErrorKind {
 
     /// The internal buffer does not have enough room to store data for the next
     /// token
-    BufferFull,
+    BufferTooSmall,
 
     /// An early end of the data encountered
     Eof,
@@ -876,7 +876,7 @@ impl From<BufferError> for ReaderErrorKind {
     fn from(value: BufferError) -> Self {
         match value {
             BufferError::Io(x) => ReaderErrorKind::Read(x),
-            BufferError::BufferFull => ReaderErrorKind::BufferFull,
+            BufferError::BufferTooSmall => ReaderErrorKind::BufferTooSmall,
         }
     }
 }
@@ -894,8 +894,12 @@ impl std::fmt::Display for ReaderError {
             ReaderErrorKind::Read { .. } => {
                 write!(f, "failed to read past position: {}", self.position)
             }
-            ReaderErrorKind::BufferFull => {
-                write!(f, "max buffer size exceeded at position: {}", self.position)
+            ReaderErrorKind::BufferTooSmall => {
+                write!(
+                    f,
+                    "token exceeds buffer capacity at position: {}",
+                    self.position
+                )
             }
             ReaderErrorKind::Eof => {
                 write!(f, "unexpected end of file at position: {}", self.position)
