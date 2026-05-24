@@ -38,9 +38,9 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R: Read> de::Deseriali
         V: Visitor<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "root deserializer can only work with key value pairs",
-            )),
+            ),
         }))
     }
 
@@ -591,9 +591,9 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R> de::VariantAccess<'
         T: DeserializeSeed<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "unsupported enum deserialization. Please file issue",
-            )),
+            ),
         }))
     }
 
@@ -602,9 +602,9 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R> de::VariantAccess<'
         V: Visitor<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "unsupported enum deserialization. Please file issue",
-            )),
+            ),
         }))
     }
 
@@ -617,9 +617,9 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor, R> de::VariantAccess<'
         V: Visitor<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "unsupported enum deserialization. Please file issue",
-            )),
+            ),
         }))
     }
 }
@@ -650,9 +650,9 @@ impl<'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializer<'de>
         V: Visitor<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "root deserializer can only work with key value pairs",
-            )),
+            ),
         }))
     }
 
@@ -1197,9 +1197,9 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
         T: DeserializeSeed<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "unsupported enum deserialization. Please file issue",
-            )),
+            ),
         }))
     }
 
@@ -1208,9 +1208,9 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
         V: Visitor<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "unsupported enum deserialization. Please file issue",
-            )),
+            ),
         }))
     }
 
@@ -1223,9 +1223,9 @@ impl<'de, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::VariantAccess<'de>
         V: Visitor<'de>,
     {
         Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(String::from(
+            kind: DeserializeErrorKind::Unsupported(
                 "unsupported enum deserialization. Please file issue",
-            )),
+            ),
         }))
     }
 }
