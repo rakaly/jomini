@@ -35,7 +35,6 @@ serde = ["dep:serde", "serde/derive"]
 
 [dev-dependencies]
 attohttpc = { version = "0.30.1", features = ["tls-vendored"] }
-criterion = "0.8.2"
 encoding_rs = "0.8"
 flate2 = { version = "1.1.5", default-features = false, features = ["zlib-rs"] }
 quickcheck = "1"
@@ -52,13 +51,8 @@ required-features = ["json"]
 name = "envelope"
 required-features = ["envelope"]
 
-[[bench]]
-name = "jomini_bench"
-harness = false
-
 [profile.bench]
 debug = true
 
 [profile.release]
 debug = true
-

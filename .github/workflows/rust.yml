@@ -34,6 +34,31 @@ jobs:
     - name: Run clippy
       run: cargo clippy --workspace --all-features --all-targets -- -D warnings
 
+  testbench:
+    name: testbench
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+    - name: Check formatting
+      run: cargo fmt --manifest-path bench/Cargo.toml --all -- --check
+    - name: Run clippy
+      run: cargo clippy --manifest-path bench/Cargo.toml --all-targets -- -D warnings
+    - name: Build benchmark (criterion)
+      run: cargo bench --manifest-path bench/Cargo.toml --bench jomini-bench-criterion -- --test
+    - name: Build benchmark (gungraun)
+      run: cargo bench --manifest-path bench/Cargo.toml --bench jomini-bench-gungraun --no-run
+    - name: Run clippy (json benchmark)
+      run: cargo clippy --manifest-path bench/Cargo.toml --all-targets --features json -- -D warnings
+    - name: Build benchmark (criterion, json)
+      run: cargo bench --manifest-path bench/Cargo.toml --features json --bench jomini-bench-criterion -- --test
+    - name: Build benchmark (gungraun, json)
+      run: cargo bench --manifest-path bench/Cargo.toml --features json --bench jomini-bench-gungraun --no-run
+
   test:
     name: test
     runs-on: ${{ matrix.os }}
@@ -102,10 +127,6 @@ jobs:
       run: ${{ env.CARGO }} test --all-features --all --verbose $TARGET
     - name: Run serde-only tests (no derive macros)
       run: ${{ env.CARGO }} test --no-default-features --features serde --all --verbose $TARGET
-
-    - name: Compile benchmarks
-      if: matrix.build == 'stable'
-      run: cargo bench --verbose --no-run $TARGET
 
     - name: Run miri
       if: matrix.build == 'nightly'
