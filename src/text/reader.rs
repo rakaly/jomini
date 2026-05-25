@@ -4,7 +4,10 @@ use crate::{
     data::is_boundary,
     util::{contains_zero_byte, count_chunk, leading_whitespace, repeat_byte},
 };
-use std::io::Read;
+use std::{
+    io::{self, Read},
+    mem::MaybeUninit,
+};
 
 /// Text token, the raw form of [TextToken](crate::text::TextToken)
 ///
@@ -188,7 +191,7 @@ impl<'a> TokenReader<'a> {
 
     #[inline]
     fn window_ptrs(&self) -> (*const u8, *const u8) {
-        let window = self.source.as_slice();
+        let window = self.source.window();
         let start = window.as_ptr();
         (start, unsafe { start.add(window.len()) })
     }
@@ -238,7 +241,7 @@ impl<'a> TokenReader<'a> {
                     ParseState::None => {
                         // if we carried over data that isn't a comment, we
                         // should have made forward progress.
-                        if carry_over == 0 || self.source.as_slice().first() == Some(&b'#') {
+                        if carry_over == 0 || self.source.window().first() == Some(&b'#') {
                             self.advance(carry_over);
                             Ok(None)
                         } else {
@@ -273,7 +276,7 @@ impl<'a> TokenReader<'a> {
                         }
 
                         // buffer or prior read too small
-                        let len = self.source.remaining();
+                        let len = self.source.window_len();
                         self.next_kind_refill(ParseState::Quote, len, len)
                     }
                     ParseState::Unquoted => {
@@ -290,7 +293,7 @@ impl<'a> TokenReader<'a> {
                         }
 
                         // buffer or prior read too small
-                        let len = self.source.remaining();
+                        let len = self.source.window_len();
                         self.next_kind_refill(ParseState::Unquoted, len, len)
                     }
                 },
@@ -470,7 +473,7 @@ impl<'a> TokenReader<'a> {
                         }
                     }
                     b'\xef' if matches!(self.utf8, Utf8Bom::Unknown) => {
-                        match self.source.as_slice().get(..3) {
+                        match self.source.window().get(..3) {
                             Some([0xef, 0xbb, 0xbf]) => {
                                 self.utf8 = Utf8Bom::Present;
                                 ptr = ptr.add(3);
@@ -479,7 +482,7 @@ impl<'a> TokenReader<'a> {
                             None => {
                                 return self.next_kind_refill(
                                     ParseState::None,
-                                    self.source.remaining(),
+                                    self.source.window_len(),
                                     0,
                                 );
                             }
@@ -612,7 +615,7 @@ impl<'a> TokenReader<'a> {
     /// ```
     #[inline]
     pub fn read_bytes(&mut self, bytes: usize) -> Result<&[u8], ReaderError> {
-        while self.source.remaining() < bytes {
+        while self.source.window_len() < bytes {
             match self.source.refill() {
                 Ok(0) => return Err(self.eof_error()),
                 Ok(_) => {}
@@ -620,7 +623,7 @@ impl<'a> TokenReader<'a> {
             }
         }
 
-        match self.source.take(bytes) {
+        match self.source.take_bytes(bytes) {
             Ok(data) => Ok(data),
             Err(_) => unreachable!("read_bytes ensured bytes are available"),
         }
@@ -853,7 +856,7 @@ impl<'a> TokenReader<'a> {
 
     #[inline]
     pub(crate) fn read_expect_equals(&mut self) -> Result<Token<'_>, ReaderError> {
-        match self.source.as_slice().first() {
+        match self.source.window().first() {
             Some(b'=') => {
                 self.advance(1);
                 Ok(Token::Operator(Operator::Equal))
@@ -894,10 +897,10 @@ impl<'a> TokenReader<'a> {
 }
 
 /// The specific text reader error type.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReaderErrorKind {
     /// An underlying error from a [Read]er
-    Read,
+    Read(std::io::ErrorKind),
 
     /// The internal buffer does not have enough room to store data for the next
     /// token
@@ -911,27 +914,42 @@ impl From<ParserError> for ReaderErrorKind {
     #[inline]
     fn from(value: ParserError) -> Self {
         match value {
-            ParserError::Eof => ReaderErrorKind::Eof,
+            ParserError::Io(io::ErrorKind::UnexpectedEof) => ReaderErrorKind::Eof,
             ParserError::BufferTooSmall => ReaderErrorKind::BufferTooSmall,
-            ParserError::Io => ReaderErrorKind::Read,
+            ParserError::Io(kind) => ReaderErrorKind::Read(kind),
         }
     }
 }
 
 /// An text lexing error over a `Read` implementation
-#[derive(Debug)]
 pub struct ReaderError {
-    // Keep ReaderError to one word to minimize the impact of error handling on
-    // hot paths. The top byte stores ReaderErrorKind and the lower 56 bits
-    // store position.
-    packed: u64,
+    // MaybeUninit strips all inhabited niches from ReaderErrorKind, preventing
+    // niche-optimization on Result<Option<TokenKind>, ReaderError>. Without it,
+    // the compiler produces a niche-encoded 8-byte Result that requires extra
+    // bit manipulation in hot loops (~2x instruction count regression).
+    kind: MaybeUninit<ReaderErrorKind>,
+    position: u32,
+}
+
+impl std::fmt::Debug for ReaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReaderError")
+            .field("kind", &self.kind())
+            .field("position", &self.position)
+            .finish()
+    }
 }
 
 impl std::fmt::Display for ReaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.kind() {
-            ReaderErrorKind::Read => {
-                write!(f, "failed to read past position: {}", self.position())
+            ReaderErrorKind::Read(kind) => {
+                write!(
+                    f,
+                    "failed to read past position: {}: {}",
+                    self.position(),
+                    kind
+                )
             }
             ReaderErrorKind::BufferTooSmall => {
                 write!(
@@ -954,56 +972,30 @@ impl std::error::Error for ReaderError {
 }
 
 impl ReaderError {
-    const KIND_SHIFT: u64 = 56;
-    const POSITION_MASK: u64 = (1 << Self::KIND_SHIFT) - 1;
-
     #[inline]
     fn new(position: usize, kind: ReaderErrorKind) -> Self {
         ReaderError {
-            packed: Self::pack(position, kind),
+            kind: MaybeUninit::new(kind),
+            position: position.min(u32::MAX as usize) as u32,
         }
-    }
-
-    #[inline]
-    fn pack(position: usize, kind: ReaderErrorKind) -> u64 {
-        ((kind.tag() as u64) << Self::KIND_SHIFT) | ((position as u64) & Self::POSITION_MASK)
     }
 
     /// Return the byte position where the error occurred
     pub fn position(&self) -> usize {
-        (self.packed & Self::POSITION_MASK) as usize
+        self.position as usize
     }
 
     /// Return the error kind
     pub fn kind(&self) -> ReaderErrorKind {
-        ReaderErrorKind::from_tag((self.packed >> Self::KIND_SHIFT) as u8)
+        // SAFETY: kind is always initialized via new()
+        unsafe { self.kind.assume_init() }
     }
 
     /// Consume self and return the error kind
     #[must_use]
     pub fn into_kind(self) -> ReaderErrorKind {
-        self.kind()
-    }
-}
-
-impl ReaderErrorKind {
-    #[inline]
-    const fn tag(self) -> u8 {
-        match self {
-            ReaderErrorKind::Read => 0,
-            ReaderErrorKind::BufferTooSmall => 1,
-            ReaderErrorKind::Eof => 2,
-        }
-    }
-
-    #[inline]
-    const fn from_tag(tag: u8) -> Self {
-        match tag {
-            0 => ReaderErrorKind::Read,
-            1 => ReaderErrorKind::BufferTooSmall,
-            2 => ReaderErrorKind::Eof,
-            _ => unreachable!(),
-        }
+        // SAFETY: kind is always initialized via new()
+        unsafe { self.kind.assume_init() }
     }
 }
 
@@ -1339,5 +1331,14 @@ mod test {
     #[test]
     fn reader_error_size() {
         assert_eq!(std::mem::size_of::<ReaderError>(), 8);
+        assert_eq!(
+            ReaderError::new(123, ReaderErrorKind::Read(std::io::ErrorKind::WouldBlock)).kind(),
+            ReaderErrorKind::Read(std::io::ErrorKind::WouldBlock)
+        );
+        // Verify large positions saturate safely
+        assert_eq!(
+            ReaderError::new(usize::MAX, ReaderErrorKind::Eof).position(),
+            u32::MAX as usize
+        );
     }
 }
