@@ -1,9 +1,8 @@
 use crate::{
     ScalarError,
-    binary::{LexError, LexerError, ReaderError as BinReaderError},
-    text::ReaderError as TextReaderError,
+    binary::{LexError, LexerError},
 };
-use std::fmt;
+use std::{fmt, mem::MaybeUninit};
 
 /// An error that can occur when processing data
 #[derive(Debug)]
@@ -161,30 +160,113 @@ impl From<LexerError> for Error {
     }
 }
 
-impl From<BinReaderError> for Error {
-    fn from(value: BinReaderError) -> Self {
-        let pos = value.position();
-        match value.into_kind() {
-            crate::binary::ReaderErrorKind::Read(kind) => {
-                Error::new(ErrorKind::Io(std::io::Error::from(kind)))
+/// The specific reader error kind, shared by text and binary [TokenReader](crate::text::TokenReader)s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReaderErrorKind {
+    /// An underlying error from a [Read](std::io::Read)er
+    Read(std::io::ErrorKind),
+
+    /// The internal buffer does not have enough room to store data for the next
+    /// token
+    BufferTooSmall,
+
+    /// An early end of the data encountered
+    Eof,
+
+    /// The binary data is corrupted (invalid RGB token)
+    InvalidRgb,
+}
+
+/// A lexing error over a [Read](std::io::Read) implementation, returned by
+/// text and binary [TokenReader](crate::text::TokenReader)s.
+pub struct ReaderError {
+    // MaybeUninit strips all inhabited niches from ReaderErrorKind, preventing
+    // niche-optimization on Result<Option<TokenKind>, ReaderError>. Without it,
+    // the compiler produces a niche-encoded 8-byte Result that requires extra
+    // bit manipulation in hot loops (~2x instruction count regression).
+    kind: MaybeUninit<ReaderErrorKind>,
+    position: u32,
+}
+
+impl ReaderError {
+    #[inline]
+    pub(crate) fn new(position: usize, kind: ReaderErrorKind) -> Self {
+        ReaderError {
+            kind: MaybeUninit::new(kind),
+            position: position.min(u32::MAX as usize) as u32,
+        }
+    }
+
+    /// Return the byte position where the error occurred
+    pub fn position(&self) -> usize {
+        self.position as usize
+    }
+
+    /// Return the error kind
+    pub fn kind(&self) -> ReaderErrorKind {
+        // SAFETY: kind is always initialized via new()
+        unsafe { self.kind.assume_init() }
+    }
+
+    /// Consume self and return the error kind
+    #[must_use]
+    pub fn into_kind(self) -> ReaderErrorKind {
+        // SAFETY: kind is always initialized via new()
+        unsafe { self.kind.assume_init() }
+    }
+}
+
+impl fmt::Debug for ReaderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReaderError")
+            .field("kind", &self.kind())
+            .field("position", &self.position)
+            .finish()
+    }
+}
+
+impl fmt::Display for ReaderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind() {
+            ReaderErrorKind::Read(kind) => {
+                write!(
+                    f,
+                    "failed to read past position: {}: {}",
+                    self.position(),
+                    kind
+                )
             }
-            crate::binary::ReaderErrorKind::BufferTooSmall => Error::new(ErrorKind::BufferTooSmall),
-            crate::binary::ReaderErrorKind::Lexer(LexError::Eof) => Error::eof(),
-            crate::binary::ReaderErrorKind::Lexer(LexError::InvalidRgb) => {
-                Error::invalid_syntax("invalid rgb", pos)
+            ReaderErrorKind::BufferTooSmall => {
+                write!(
+                    f,
+                    "token exceeds buffer capacity at position: {}",
+                    self.position()
+                )
+            }
+            ReaderErrorKind::Eof => {
+                write!(f, "unexpected end of file at position: {}", self.position())
+            }
+            ReaderErrorKind::InvalidRgb => {
+                write!(f, "invalid rgb at position: {}", self.position())
             }
         }
     }
 }
 
-impl From<TextReaderError> for Error {
-    fn from(value: TextReaderError) -> Self {
+impl std::error::Error for ReaderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+
+impl From<ReaderError> for Error {
+    fn from(value: ReaderError) -> Self {
+        let pos = value.position();
         match value.into_kind() {
-            crate::text::ReaderErrorKind::Read(kind) => {
-                Error::new(ErrorKind::Io(std::io::Error::from(kind)))
-            }
-            crate::text::ReaderErrorKind::BufferTooSmall => Error::new(ErrorKind::BufferTooSmall),
-            crate::text::ReaderErrorKind::Eof => Error::eof(),
+            ReaderErrorKind::Read(kind) => Error::new(ErrorKind::Io(std::io::Error::from(kind))),
+            ReaderErrorKind::BufferTooSmall => Error::new(ErrorKind::BufferTooSmall),
+            ReaderErrorKind::Eof => Error::eof(),
+            ReaderErrorKind::InvalidRgb => Error::invalid_syntax("invalid rgb", pos),
         }
     }
 }
@@ -275,11 +357,25 @@ impl From<ScalarError> for Error {
 
 #[cfg(test)]
 mod tests {
-    use super::Error;
+    use super::{Error, ReaderError, ReaderErrorKind};
 
     #[test]
     fn test_size_error_struct() {
         assert!(std::mem::size_of::<Error>() <= 8);
+    }
+
+    #[test]
+    fn reader_error_is_eight_bytes() {
+        assert_eq!(std::mem::size_of::<ReaderError>(), 8);
+        assert_eq!(
+            ReaderError::new(123, ReaderErrorKind::Read(std::io::ErrorKind::Interrupted)).kind(),
+            ReaderErrorKind::Read(std::io::ErrorKind::Interrupted)
+        );
+        // Verify large positions saturate safely
+        assert_eq!(
+            ReaderError::new(usize::MAX, ReaderErrorKind::Eof).position(),
+            u32::MAX as usize
+        );
     }
 
     #[cfg(feature = "serde")]

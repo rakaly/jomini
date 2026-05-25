@@ -1,13 +1,10 @@
 use super::Operator;
 use crate::{
-    ParserError, ParserSource, Scalar,
+    ParserError, ParserSource, ReaderError, ReaderErrorKind, Scalar,
     data::is_boundary,
     util::{contains_zero_byte, count_chunk, leading_whitespace, repeat_byte},
 };
-use std::{
-    io::{self, Read},
-    mem::MaybeUninit,
-};
+use std::io::{self, Read};
 
 /// Text token, the raw form of [TextToken](crate::text::TextToken)
 ///
@@ -224,7 +221,12 @@ impl<'a> TokenReader<'a> {
     #[cold]
     #[inline(always)]
     fn parser_error(&self, e: ParserError) -> ReaderError {
-        ReaderError::new(self.position(), ReaderErrorKind::from(e))
+        let kind = match e {
+            ParserError::Io(io::ErrorKind::UnexpectedEof) => ReaderErrorKind::Eof,
+            ParserError::BufferTooSmall => ReaderErrorKind::BufferTooSmall,
+            ParserError::Io(kind) => ReaderErrorKind::Read(kind),
+        };
+        ReaderError::new(self.position(), kind)
     }
 
     unsafe fn next_kind_refill(
@@ -896,109 +898,6 @@ impl<'a> TokenReader<'a> {
     }
 }
 
-/// The specific text reader error type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReaderErrorKind {
-    /// An underlying error from a [Read]er
-    Read(std::io::ErrorKind),
-
-    /// The internal buffer does not have enough room to store data for the next
-    /// token
-    BufferTooSmall,
-
-    /// An early end of the data encountered
-    Eof,
-}
-
-impl From<ParserError> for ReaderErrorKind {
-    #[inline]
-    fn from(value: ParserError) -> Self {
-        match value {
-            ParserError::Io(io::ErrorKind::UnexpectedEof) => ReaderErrorKind::Eof,
-            ParserError::BufferTooSmall => ReaderErrorKind::BufferTooSmall,
-            ParserError::Io(kind) => ReaderErrorKind::Read(kind),
-        }
-    }
-}
-
-/// An text lexing error over a `Read` implementation
-pub struct ReaderError {
-    // MaybeUninit strips all inhabited niches from ReaderErrorKind, preventing
-    // niche-optimization on Result<Option<TokenKind>, ReaderError>. Without it,
-    // the compiler produces a niche-encoded 8-byte Result that requires extra
-    // bit manipulation in hot loops (~2x instruction count regression).
-    kind: MaybeUninit<ReaderErrorKind>,
-    position: u32,
-}
-
-impl std::fmt::Debug for ReaderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReaderError")
-            .field("kind", &self.kind())
-            .field("position", &self.position)
-            .finish()
-    }
-}
-
-impl std::fmt::Display for ReaderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.kind() {
-            ReaderErrorKind::Read(kind) => {
-                write!(
-                    f,
-                    "failed to read past position: {}: {}",
-                    self.position(),
-                    kind
-                )
-            }
-            ReaderErrorKind::BufferTooSmall => {
-                write!(
-                    f,
-                    "token exceeds buffer capacity at position: {}",
-                    self.position()
-                )
-            }
-            ReaderErrorKind::Eof => {
-                write!(f, "unexpected end of file at position: {}", self.position())
-            }
-        }
-    }
-}
-
-impl std::error::Error for ReaderError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
-    }
-}
-
-impl ReaderError {
-    #[inline]
-    fn new(position: usize, kind: ReaderErrorKind) -> Self {
-        ReaderError {
-            kind: MaybeUninit::new(kind),
-            position: position.min(u32::MAX as usize) as u32,
-        }
-    }
-
-    /// Return the byte position where the error occurred
-    pub fn position(&self) -> usize {
-        self.position as usize
-    }
-
-    /// Return the error kind
-    pub fn kind(&self) -> ReaderErrorKind {
-        // SAFETY: kind is always initialized via new()
-        unsafe { self.kind.assume_init() }
-    }
-
-    /// Consume self and return the error kind
-    #[must_use]
-    pub fn into_kind(self) -> ReaderErrorKind {
-        // SAFETY: kind is always initialized via new()
-        unsafe { self.kind.assume_init() }
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1326,19 +1225,5 @@ mod test {
     fn test_crash_regression(#[case] input: &[u8]) {
         let mut reader = TokenReader::new(input);
         while let Ok(Some(_)) = reader.next() {}
-    }
-
-    #[test]
-    fn reader_error_size() {
-        assert_eq!(std::mem::size_of::<ReaderError>(), 8);
-        assert_eq!(
-            ReaderError::new(123, ReaderErrorKind::Read(std::io::ErrorKind::WouldBlock)).kind(),
-            ReaderErrorKind::Read(std::io::ErrorKind::WouldBlock)
-        );
-        // Verify large positions saturate safely
-        assert_eq!(
-            ReaderError::new(usize::MAX, ReaderErrorKind::Eof).position(),
-            u32::MAX as usize
-        );
     }
 }
