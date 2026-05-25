@@ -72,12 +72,20 @@ pub mod de;
 pub use self::de::{BinaryDeserializer, BinaryDeserializerBuilder};
 
 mod flavor;
+#[cfg(feature = "serde")]
+mod format;
+#[cfg(feature = "serde")]
+mod format_de;
 mod lexer;
 mod reader;
 mod resolver;
 mod rgb;
 
 pub use self::flavor::BinaryFlavor;
+#[cfg(feature = "serde")]
+pub use self::format::{BinaryFormat, PdxVisitor};
+#[cfg(feature = "serde")]
+pub use self::format_de::{BinaryFormatContext, BinaryFormatDeserializer};
 pub use self::lexer::{LexError, LexemeId, Lexer, LexerError, Token, TokenKind};
 pub use self::reader::TokenReader;
 pub use self::resolver::{BasicTokenResolver, FailedResolveStrategy, TokenResolver};
