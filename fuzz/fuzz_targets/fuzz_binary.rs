@@ -74,13 +74,16 @@ fuzz_target!(|data: &[u8]| {
                 break;
             }
             (Ok(Some(t1)), Ok(Some(t2))) => assert_eq!(t1, t2),
-            (Err(e1), Err(e2)) => match e2.kind() {
-                jomini::binary::ReaderErrorKind::Lexer(e) => {
-                    assert_eq!(e1.kind(), &e);
-                    break;
-                }
-                _ => panic!("different errors"),
-            },
+            (Err(e1), Err(e2)) => {
+                let expected = match e1.kind() {
+                    jomini::binary::LexError::Eof => jomini::binary::ReaderErrorKind::Eof,
+                    jomini::binary::LexError::InvalidRgb => {
+                        jomini::binary::ReaderErrorKind::InvalidRgb
+                    }
+                };
+                assert_eq!(e2.kind(), expected);
+                break;
+            }
             (x, y) => panic!("{:?} {:?}", x, y),
         }
     }

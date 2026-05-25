@@ -1,14 +1,10 @@
 use super::{LexError, LexemeId, LexerError, ParserError, ParserSource, Token, lexer::read_rgb};
 use crate::{
-    Scalar,
+    ReaderError, ReaderErrorKind, Scalar,
     binary::{Rgb, lexer::TokenKind},
     util::get_split,
 };
-use std::{
-    fmt,
-    io::{self, Read},
-    mem::MaybeUninit,
-};
+use std::io::{self, Read};
 
 /// [Lexer](crate::binary::Lexer) that works over a [Read] implementation
 ///
@@ -122,13 +118,13 @@ impl<'a> TokenReader<'a> {
     /// The internal buffer must be large enough to accommodate all bytes.
     ///
     /// ```
-    /// use jomini::binary::{LexError, ReaderErrorKind, TokenReader};
+    /// use jomini::binary::{ReaderErrorKind, TokenReader};
     ///
     /// let mut reader = TokenReader::new(&b"EU4bin"[..]);
     /// assert_eq!(reader.read_bytes(6).unwrap(), &b"EU4bin"[..]);
     /// assert!(matches!(
     ///     reader.read_bytes(1).unwrap_err().kind(),
-    ///     ReaderErrorKind::Lexer(LexError::Eof),
+    ///     ReaderErrorKind::Eof,
     /// ));
     /// ```
     #[inline]
@@ -177,7 +173,7 @@ impl<'a> TokenReader<'a> {
     /// to decode a token.
     ///
     /// ```
-    /// use jomini::binary::{LexError, ReaderErrorKind, Token, TokenReader};
+    /// use jomini::binary::{ReaderErrorKind, Token, TokenReader};
     ///
     /// let mut reader = TokenReader::new(&[
     ///     0xd2, 0x28, 0x01, 0x00, 0x03, 0x00, 0x04, 0x00,
@@ -188,7 +184,7 @@ impl<'a> TokenReader<'a> {
     /// assert_eq!(reader.read().unwrap(), Token::Close);
     /// assert!(matches!(
     ///     reader.read().unwrap_err().kind(),
-    ///     ReaderErrorKind::Lexer(LexError::Eof),
+    ///     ReaderErrorKind::Eof,
     /// ));
     /// ```
     #[inline]
@@ -583,13 +579,12 @@ impl<'a> TokenReader<'a> {
     #[cold]
     #[inline(never)]
     fn parser_error(&self, e: ParserError) -> ReaderError {
-        match e {
-            ParserError::Io(io::ErrorKind::UnexpectedEof) => self.lex_error(LexError::Eof),
-            ParserError::BufferTooSmall => {
-                ReaderError::new(self.position(), ReaderErrorKind::BufferTooSmall)
-            }
-            ParserError::Io(kind) => ReaderError::new(self.position(), ReaderErrorKind::Read(kind)),
-        }
+        let kind = match e {
+            ParserError::Io(io::ErrorKind::UnexpectedEof) => ReaderErrorKind::Eof,
+            ParserError::BufferTooSmall => ReaderErrorKind::BufferTooSmall,
+            ParserError::Io(kind) => ReaderErrorKind::Read(kind),
+        };
+        ReaderError::new(self.position(), kind)
     }
 
     #[cold]
@@ -599,101 +594,14 @@ impl<'a> TokenReader<'a> {
     }
 }
 
-/// The specific binary reader error type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReaderErrorKind {
-    /// An underlying error from a [Read]er
-    Read(std::io::ErrorKind),
-
-    /// The internal buffer does not have enough room to store data for the next
-    /// token
-    BufferTooSmall,
-
-    /// The data is corrupted
-    Lexer(LexError),
-}
-
-/// An binary lexing error over a `Read` implementation
-pub struct ReaderError {
-    // MaybeUninit strips all niche optimizations on Result<Option<TokenKind>,
-    // ReaderError>. Without it, the compiler produces a niche-encoded 8-byte
-    // Result that requires extra bit manipulation in hot loops (~2x instruction
-    // count regression).
-    kind: MaybeUninit<ReaderErrorKind>,
-    position: u32,
-}
-
-impl ReaderError {
-    #[inline]
-    fn new(position: usize, kind: ReaderErrorKind) -> Self {
-        ReaderError {
-            kind: MaybeUninit::new(kind),
-            position: position.min(u32::MAX as usize) as u32,
-        }
-    }
-
-    /// Return the byte position where the error occurred
-    pub fn position(&self) -> usize {
-        self.position as usize
-    }
-
-    /// Return the error kind
-    pub fn kind(&self) -> ReaderErrorKind {
-        // SAFETY: kind is always initialized via new()
-        unsafe { self.kind.assume_init() }
-    }
-
-    /// Consume self and return the error kind
-    #[must_use]
-    pub fn into_kind(self) -> ReaderErrorKind {
-        // SAFETY: kind is always initialized via new()
-        unsafe { self.kind.assume_init() }
-    }
-}
-
-impl std::fmt::Debug for ReaderError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("ReaderError")
-            .field("kind", &self.kind())
-            .field("position", &self.position)
-            .finish()
-    }
-}
-
-impl std::error::Error for ReaderError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
-    }
-}
-
-impl std::fmt::Display for ReaderError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self.kind() {
-            ReaderErrorKind::Read(kind) => {
-                write!(
-                    f,
-                    "failed to read past position: {}: {}",
-                    self.position(),
-                    kind
-                )
-            }
-            ReaderErrorKind::BufferTooSmall => {
-                write!(
-                    f,
-                    "token exceeds buffer capacity at position: {}",
-                    self.position()
-                )
-            }
-            ReaderErrorKind::Lexer(cause) => {
-                write!(f, "{} at position: {}", cause, self.position())
-            }
-        }
-    }
-}
-
 impl From<LexerError> for ReaderError {
     fn from(value: LexerError) -> Self {
-        ReaderError::new(value.position(), ReaderErrorKind::Lexer(value.into_kind()))
+        let pos = value.position();
+        let kind = match value.into_kind() {
+            LexError::Eof => ReaderErrorKind::Eof,
+            LexError::InvalidRgb => ReaderErrorKind::InvalidRgb,
+        };
+        ReaderError::new(pos, kind)
     }
 }
 
@@ -819,16 +727,7 @@ mod tests {
         let mut reader = TokenReader::new(&[0x43][..]);
         assert!(matches!(
             reader.read().unwrap_err().kind(),
-            ReaderErrorKind::Lexer(LexError::Eof)
+            ReaderErrorKind::Eof
         ));
-    }
-
-    #[test]
-    fn reader_error_is_eight_bytes() {
-        assert_eq!(std::mem::size_of::<ReaderError>(), 8);
-        assert_eq!(
-            ReaderError::new(123, ReaderErrorKind::Read(std::io::ErrorKind::Interrupted)).kind(),
-            ReaderErrorKind::Read(std::io::ErrorKind::Interrupted)
-        );
     }
 }
