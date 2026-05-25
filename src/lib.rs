@@ -324,7 +324,6 @@ capabilities.
 */
 #![warn(missing_docs)]
 pub mod binary;
-pub(crate) mod buffer;
 pub mod common;
 mod data;
 #[cfg(feature = "serde")]
@@ -334,12 +333,14 @@ mod errors;
 #[cfg(feature = "json")]
 pub mod json;
 mod scalar;
+mod source;
 pub mod text;
 pub(crate) mod util;
 
 pub use self::encoding::*;
 pub use self::errors::*;
 pub use self::scalar::{Scalar, ScalarError};
+pub use self::source::{BinarySourceExt, ParserError, ParserSource};
 #[doc(inline)]
 pub use self::text::{TextTape, TextToken, TextWriter, TextWriterBuilder};
 

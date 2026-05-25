@@ -40,4 +40,4 @@ pub use self::dom::{
 pub use self::operator::*;
 pub use self::tape::{TextTape, TextTapeParser, TextToken};
 pub use self::writer::*;
-pub use reader::{ReaderError, ReaderErrorKind, Token, TokenReader, TokenReaderBuilder};
+pub use reader::{ReaderError, ReaderErrorKind, Token, TokenKind, TokenReader};
