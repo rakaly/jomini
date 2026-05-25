@@ -9,50 +9,33 @@ const DEFAULT_CAPACITY: usize = 32 * 1024;
 /// Error returned by [`ParserSource`] operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParserError {
-    /// The source ended before the requested bytes were available.
-    Eof,
-
     /// The streaming refill buffer is too small to hold the requested block.
     BufferTooSmall,
 
-    /// An underlying reader returned an IO error.
-    Io,
+    /// An underlying reader returned an IO error, including
+    /// [`io::ErrorKind::UnexpectedEof`] when the source ended prematurely.
+    Io(io::ErrorKind),
 }
 
 impl ParserError {
-    /// Constructs a [`ParserError`] representing a clean unexpected end-of-stream.
+    /// Constructs a [`ParserError`] representing unexpected end-of-stream.
     #[inline]
     pub fn eof() -> Self {
-        ParserError::Eof
+        ParserError::Io(io::ErrorKind::UnexpectedEof)
     }
 
-    /// Returns true if this error is an unexpected EOF.
+    /// Returns true if this error indicates unexpected end-of-stream.
     #[inline]
     pub fn is_eof(&self) -> bool {
-        matches!(self, ParserError::Eof)
-    }
-
-    /// Constructs a [`ParserError`] indicating the streaming refill buffer is
-    /// too small to hold the requested block.
-    #[inline]
-    pub fn buffer_too_small() -> Self {
-        ParserError::BufferTooSmall
-    }
-
-    /// Returns true if this error indicates the refill buffer was too small
-    /// to hold the requested block.
-    #[inline]
-    pub fn is_buffer_too_small(&self) -> bool {
-        matches!(self, ParserError::BufferTooSmall)
+        matches!(self, ParserError::Io(io::ErrorKind::UnexpectedEof))
     }
 }
 
 impl std::fmt::Display for ParserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParserError::Eof => write!(f, "unexpected end of file"),
             ParserError::BufferTooSmall => write!(f, "requested read exceeds buffer capacity"),
-            ParserError::Io => write!(f, "io error"),
+            ParserError::Io(kind) => write!(f, "io error: {}", kind),
         }
     }
 }
@@ -64,18 +47,8 @@ impl std::error::Error for ParserError {
 }
 
 impl From<io::Error> for ParserError {
-    fn from(_: io::Error) -> Self {
-        ParserError::Io
-    }
-}
-
-impl From<ParserError> for io::Error {
-    fn from(err: ParserError) -> Self {
-        match err {
-            ParserError::Eof => io::Error::from(io::ErrorKind::UnexpectedEof),
-            ParserError::BufferTooSmall => io::Error::from(io::ErrorKind::InvalidInput),
-            ParserError::Io => io::Error::other("parser source io error"),
-        }
+    fn from(value: io::Error) -> Self {
+        ParserError::Io(value.kind())
     }
 }
 
@@ -107,15 +80,15 @@ enum Backing<'a> {
 /// # Example
 ///
 /// A typical pull loop: keep reading fixed-size records until the parser
-/// reports EOF. The same code works for both slice and streaming inputs.
+/// reaches a clean EOF. The same code works for both slice and streaming
+/// inputs.
 ///
 /// ```
 /// use jomini::{ParserError, ParserSource};
 ///
 /// fn sum_u32_records(parser: &mut ParserSource<'_>) -> Result<u64, ParserError> {
 ///     let mut total = 0u64;
-///     while !parser.is_eof()? {
-///         let bytes = parser.take_array::<4>()?;
+///     while let Some(bytes) = parser.try_take::<4>()? {
 ///         total += u32::from_le_bytes(*bytes) as u64;
 ///     }
 ///     Ok(total)
@@ -140,7 +113,7 @@ pub struct ParserSource<'a> {
 impl std::fmt::Debug for ParserSource<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParserSource")
-            .field("remaining", &self.remaining())
+            .field("remaining", &self.window_len())
             .field("position", &self.position())
             .field("streaming", &self.streaming.is_some())
             .finish()
@@ -167,7 +140,7 @@ impl<'a> ParserSource<'a> {
     /// use jomini::ParserSource;
     ///
     /// let mut parser = ParserSource::from_owned(vec![1u8, 2, 3, 4]);
-    /// assert_eq!(parser.take_array::<4>().unwrap(), &[1u8, 2, 3, 4]);
+    /// assert_eq!(parser.take::<4>().unwrap(), &[1u8, 2, 3, 4]);
     /// ```
     pub fn from_owned<T: AsRef<[u8]> + 'a>(owner: T) -> Self {
         let boxed: Box<dyn AsRef<[u8]> + 'a> = Box::new(owner);
@@ -225,15 +198,6 @@ impl<'a> ParserSource<'a> {
         }
     }
 
-    /// Check if the parser is at the end of the input.
-    #[inline(always)]
-    pub fn is_eof(&mut self) -> Result<bool, ParserError> {
-        if self.ptr != self.end {
-            return Ok(false);
-        }
-        self.refill_and_check_empty()
-    }
-
     /// Guarantees the required bytes are present in the current window, refilling as necessary.
     #[inline(always)]
     pub fn ensure_bytes(&mut self, required: usize) -> Result<(), ParserError> {
@@ -255,7 +219,7 @@ impl<'a> ParserSource<'a> {
     ///
     /// # Safety
     ///
-    /// The caller must ensure `bytes <= self.remaining()`; typically by first
+    /// The caller must ensure `bytes <= self.window_len()`; typically by first
     /// calling [`ensure_bytes`](Self::ensure_bytes).
     #[inline(always)]
     pub unsafe fn advance_unchecked(&mut self, bytes: usize) {
@@ -267,7 +231,7 @@ impl<'a> ParserSource<'a> {
     /// Returns `false` if `bytes` exceeds the current contiguous unread window.
     #[inline(always)]
     pub fn advance(&mut self, bytes: usize) -> bool {
-        if bytes <= self.remaining() {
+        if bytes <= self.window_len() {
             unsafe {
                 self.advance_unchecked(bytes);
             }
@@ -277,28 +241,28 @@ impl<'a> ParserSource<'a> {
         }
     }
 
-    /// Returns a slice of the next `len` bytes without bounds checking or
-    /// advancing the cursor.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure `len <= self.remaining()`; typically by first
-    /// calling [`ensure_bytes`](Self::ensure_bytes).
-    #[inline(always)]
-    pub unsafe fn get_slice_unchecked(&self, len: usize) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.ptr, len) }
-    }
-
     /// Current window length (no refill).
     #[inline(always)]
-    pub fn remaining(&self) -> usize {
+    pub fn window_len(&self) -> usize {
         unsafe { self.end.offset_from_unsigned(self.ptr) }
     }
 
     /// Returns the current unread window without refilling.
     #[inline(always)]
-    pub fn as_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.remaining()) }
+    pub fn window(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.window_len()) }
+    }
+
+    /// Returns a slice of the next `len` bytes without bounds checking or
+    /// advancing the cursor.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `len <= self.window_len()`; typically by first
+    /// calling [`ensure_bytes`](Self::ensure_bytes).
+    #[inline(always)]
+    pub unsafe fn get_window_unchecked(&self, len: usize) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, len) }
     }
 
     /// Refills the current window from the underlying reader.
@@ -316,7 +280,7 @@ impl<'a> ParserSource<'a> {
 
         let unparsed_len = unsafe { self.end.offset_from_unsigned(self.ptr) };
         if unparsed_len >= buffer.len() {
-            return Err(ParserError::buffer_too_small());
+            return Err(ParserError::BufferTooSmall);
         }
 
         let consumed_in_window = unsafe { self.ptr.offset_from_unsigned(self.base_ptr) };
@@ -339,11 +303,12 @@ impl<'a> ParserSource<'a> {
 
     /// Peek at the next `N` bytes without advancing.
     ///
-    /// Returns `Ok(None)` only at clean EOF with fewer than `N` bytes left
-    /// and no more available from the stream. Refills internally as needed.
+    /// Returns `Ok(None)` only at clean EOF when there are no bytes available
+    /// for the next item. If a partial item is present, returns
+    /// [`ParserError::eof`]. Refills internally as needed.
     #[inline(always)]
     pub fn peek<const N: usize>(&mut self) -> Result<Option<&[u8; N]>, ParserError> {
-        if self.remaining() >= N {
+        if self.window_len() >= N {
             unsafe { return Ok(Some(&*self.ptr.cast::<[u8; N]>())) };
         }
         self.peek_slow::<N>()
@@ -353,7 +318,9 @@ impl<'a> ParserSource<'a> {
     fn peek_slow<const N: usize>(&mut self) -> Result<Option<&[u8; N]>, ParserError> {
         match self.ensure_bytes(N) {
             Ok(()) => unsafe { Ok(Some(&*self.ptr.cast::<[u8; N]>())) },
-            Err(e) if e.is_eof() => Ok(None),
+            Err(ParserError::Io(io::ErrorKind::UnexpectedEof)) if self.window_len() == 0 => {
+                Ok(None)
+            }
             Err(e) => Err(e),
         }
     }
@@ -363,7 +330,7 @@ impl<'a> ParserSource<'a> {
     /// Returns [`ParserError::eof`] if fewer than `N` bytes remain even after
     /// refilling.
     #[inline(always)]
-    pub fn take_array<const N: usize>(&mut self) -> Result<&[u8; N], ParserError> {
+    pub fn take<const N: usize>(&mut self) -> Result<&[u8; N], ParserError> {
         self.ensure_bytes(N)?;
         unsafe {
             let array_ref = &*self.ptr.cast::<[u8; N]>();
@@ -372,12 +339,44 @@ impl<'a> ParserSource<'a> {
         }
     }
 
+    /// Attempts to read the next `N` bytes as a fixed-size array.
+    ///
+    /// Returns `Ok(None)` only at clean EOF when there are no bytes available
+    /// for the next item. If a partial item is present, returns
+    /// [`ParserError::eof`].
+    #[inline(always)]
+    pub fn try_take<const N: usize>(&mut self) -> Result<Option<&[u8; N]>, ParserError> {
+        if self.window_len() >= N {
+            unsafe {
+                let array_ref = &*self.ptr.cast::<[u8; N]>();
+                self.advance_unchecked(N);
+                return Ok(Some(array_ref));
+            }
+        }
+        self.try_take_slow::<N>()
+    }
+
+    #[inline(never)]
+    fn try_take_slow<const N: usize>(&mut self) -> Result<Option<&[u8; N]>, ParserError> {
+        match self.ensure_bytes(N) {
+            Ok(()) => unsafe {
+                let array_ref = &*self.ptr.cast::<[u8; N]>();
+                self.advance_unchecked(N);
+                Ok(Some(array_ref))
+            },
+            Err(ParserError::Io(io::ErrorKind::UnexpectedEof)) if self.window_len() == 0 => {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Reads the next `n` bytes as a slice, advancing the cursor.
     ///
     /// Returns [`ParserError::eof`] if fewer than `n` bytes remain even after
     /// refilling.
     #[inline(always)]
-    pub fn take(&mut self, n: usize) -> Result<&[u8], ParserError> {
+    pub fn take_bytes(&mut self, n: usize) -> Result<&[u8], ParserError> {
         self.ensure_bytes(n)?;
         unsafe {
             let slice = std::slice::from_raw_parts(self.ptr, n);
@@ -386,28 +385,36 @@ impl<'a> ParserSource<'a> {
         }
     }
 
-    #[inline(never)]
-    fn refill_and_check_empty(&mut self) -> Result<bool, ParserError> {
-        let (buffer, source) = match self.streaming.as_deref_mut() {
-            None => return Ok(true),
-            Some(Backing::Owned { .. }) => return Ok(true),
-            Some(Backing::Stream { buffer, source }) => (buffer, source),
-        };
-
-        self.total_bytes_parsed += unsafe { self.ptr.offset_from_unsigned(self.base_ptr) };
-
-        let internal_buffer_start = buffer.as_mut_ptr();
-        self.ptr = internal_buffer_start;
-        self.end = internal_buffer_start;
-        // self.base_ptr remains fully immutable pointing to the vec start.
-
-        let bytes_written = source.read(&mut buffer[..])?;
-        if bytes_written == 0 {
-            return Ok(true);
+    /// Attempts to read the next `n` bytes as a slice.
+    ///
+    /// Returns `Ok(None)` only at clean EOF when there are no bytes available
+    /// for the next item. If a partial item is present, returns
+    /// [`ParserError::eof`].
+    #[inline(always)]
+    pub fn try_take_bytes(&mut self, n: usize) -> Result<Option<&[u8]>, ParserError> {
+        if self.window_len() >= n {
+            unsafe {
+                let slice = std::slice::from_raw_parts(self.ptr, n);
+                self.advance_unchecked(n);
+                return Ok(Some(slice));
+            }
         }
+        self.try_take_bytes_slow(n)
+    }
 
-        self.end = unsafe { internal_buffer_start.add(bytes_written) };
-        Ok(false)
+    #[inline(never)]
+    fn try_take_bytes_slow(&mut self, n: usize) -> Result<Option<&[u8]>, ParserError> {
+        match self.ensure_bytes(n) {
+            Ok(()) => unsafe {
+                let slice = std::slice::from_raw_parts(self.ptr, n);
+                self.advance_unchecked(n);
+                Ok(Some(slice))
+            },
+            Err(ParserError::Io(io::ErrorKind::UnexpectedEof)) if self.window_len() == 0 => {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     #[inline(never)]
@@ -422,7 +429,7 @@ impl<'a> ParserSource<'a> {
         };
 
         if required > buffer.len() {
-            return Err(ParserError::buffer_too_small());
+            return Err(ParserError::BufferTooSmall);
         }
 
         // 1. Commit metrics before transforming pointer arrays
@@ -501,7 +508,7 @@ impl BinarySourceExt for ParserSource<'_> {
 
     #[inline]
     fn read_lexeme_id(&mut self) -> Result<LexemeId, ParserError> {
-        Ok(LexemeId::new(u16::from_le_bytes(*self.take_array::<2>()?)))
+        Ok(LexemeId::new(u16::from_le_bytes(*self.take::<2>()?)))
     }
 
     #[inline]
@@ -574,36 +581,34 @@ mod tests {
     fn parser_error_classifies_io_error() {
         use std::error::Error as _;
 
-        let err = ParserError::from(io::Error::other("boom"));
-        assert_eq!(err, ParserError::Io);
-        assert_eq!(err.to_string(), "io error");
-        assert!(err.source().is_none());
+        assert!(std::mem::size_of::<ParserError>() <= 2);
 
-        let parser_err = ParserError::from(io::Error::new(io::ErrorKind::InvalidData, "bad"));
-        let io_err: io::Error = parser_err.into();
-        assert_eq!(io_err.kind(), io::ErrorKind::Other);
+        let err = ParserError::from(io::Error::other("boom"));
+        assert_eq!(err, ParserError::Io(io::ErrorKind::Other));
+        assert_eq!(err.to_string(), "io error: other error");
+        assert!(err.source().is_none());
     }
 
     #[test]
     fn empty_input_is_immediately_eof() {
         let mut s = ParserSource::from_slice(&[]);
-        assert!(s.is_eof().unwrap());
+        assert!(s.try_take::<1>().unwrap().is_none());
 
         let mut r = ParserSource::from_reader_with_buf(ChunkedReader::new(vec![], 1), vec![0; 16]);
-        assert!(r.is_eof().unwrap());
+        assert!(r.try_take::<1>().unwrap().is_none());
     }
 
     #[test]
-    fn is_eof_is_false_when_window_has_remaining_bytes() {
+    fn try_take_returns_some_when_window_has_remaining_bytes() {
         let mut parser = ParserSource::from_slice(&[1, 2, 3]);
-        assert!(!parser.is_eof().unwrap());
+        assert_eq!(parser.try_take::<1>().unwrap(), Some(&[1]));
     }
 
     #[test]
-    fn slice_ensure_bytes_past_end_is_eof() {
+    fn slice_ensure_bytes_past_end_returns_eof() {
         let mut s = ParserSource::from_slice(&[1, 2, 3]);
         let err = s.ensure_bytes(4).unwrap_err();
-        assert!(err.is_eof());
+        assert_eq!(err, ParserError::Io(io::ErrorKind::UnexpectedEof));
     }
 
     #[test]
@@ -612,13 +617,13 @@ mod tests {
         let (mut slice, mut stream) = parsers(&data, 1, 16);
 
         for _ in 0..10 {
-            let a = *slice.take_array::<5>().unwrap();
-            let b = *stream.take_array::<5>().unwrap();
+            let a = *slice.take::<5>().unwrap();
+            let b = *stream.take::<5>().unwrap();
             assert_eq!(a, b);
             assert_eq!(slice.position(), stream.position());
         }
-        assert!(slice.is_eof().unwrap());
-        assert!(stream.is_eof().unwrap());
+        assert!(slice.try_take::<1>().unwrap().is_none());
+        assert!(stream.try_take::<1>().unwrap().is_none());
     }
 
     #[test]
@@ -633,8 +638,8 @@ mod tests {
         assert_eq!(slice.position(), 0);
         assert_eq!(stream.position(), 0);
 
-        let rs = *slice.take_array::<4>().unwrap();
-        let rr = *stream.take_array::<4>().unwrap();
+        let rs = *slice.take::<4>().unwrap();
+        let rr = *stream.take::<4>().unwrap();
         assert_eq!(ps, rs);
         assert_eq!(pr, rr);
     }
@@ -644,18 +649,57 @@ mod tests {
         let mut parser = ParserSource::from_reader_with_buf(FailingReader, vec![0; 8]);
         let err = parser.peek::<1>().unwrap_err();
 
-        assert!(!err.is_eof());
-        assert_eq!(err, ParserError::Io);
+        assert_ne!(err, ParserError::Io(io::ErrorKind::UnexpectedEof));
+        assert_eq!(err, ParserError::Io(io::ErrorKind::InvalidData));
     }
 
     #[test]
     fn peek_at_eof_returns_none() {
         let data = [1u8, 2, 3];
         let (mut slice, mut stream) = parsers(&data, 1, 8);
-        slice.take_array::<3>().unwrap();
-        stream.take_array::<3>().unwrap();
+        slice.take::<3>().unwrap();
+        stream.take::<3>().unwrap();
         assert!(slice.peek::<4>().unwrap().is_none());
         assert!(stream.peek::<4>().unwrap().is_none());
+    }
+
+    #[test]
+    fn peek_errors_on_partial_item() {
+        let data = [1u8, 2, 3];
+        let (mut slice, mut stream) = parsers(&data, 1, 8);
+
+        let slice_err = slice.peek::<4>().unwrap_err();
+        let stream_err = stream.peek::<4>().unwrap_err();
+        assert_eq!(slice_err, ParserError::Io(io::ErrorKind::UnexpectedEof));
+        assert_eq!(stream_err, ParserError::Io(io::ErrorKind::UnexpectedEof));
+        assert_eq!(slice.window(), &[1, 2, 3]);
+        assert_eq!(stream.window(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn try_take_returns_none_only_at_clean_eof() {
+        let data = [1u8, 2, 3, 4];
+        let (mut slice, mut stream) = parsers(&data, 1, 8);
+
+        assert_eq!(slice.try_take::<2>().unwrap(), Some(&[1, 2]));
+        assert_eq!(stream.try_take::<2>().unwrap(), Some(&[1, 2]));
+        assert_eq!(slice.try_take_bytes(2).unwrap(), Some(&[3, 4][..]));
+        assert_eq!(stream.try_take_bytes(2).unwrap(), Some(&[3, 4][..]));
+        assert!(slice.try_take::<1>().unwrap().is_none());
+        assert!(stream.try_take::<1>().unwrap().is_none());
+    }
+
+    #[test]
+    fn try_take_errors_on_partial_item() {
+        let data = [1u8, 2, 3];
+        let (mut slice, mut stream) = parsers(&data, 1, 8);
+
+        let slice_err = slice.try_take::<4>().unwrap_err();
+        let stream_err = stream.try_take::<4>().unwrap_err();
+        assert_eq!(slice_err, ParserError::Io(io::ErrorKind::UnexpectedEof));
+        assert_eq!(stream_err, ParserError::Io(io::ErrorKind::UnexpectedEof));
+        assert_eq!(slice.window(), &[1, 2, 3]);
+        assert_eq!(stream.window(), &[1, 2, 3]);
     }
 
     #[test]
@@ -678,8 +722,8 @@ mod tests {
             assert_eq!(a, expected);
             assert_eq!(b, expected);
         }
-        assert!(slice.is_eof().unwrap());
-        assert!(stream.is_eof().unwrap());
+        assert!(slice.try_take::<1>().unwrap().is_none());
+        assert!(stream.try_take::<1>().unwrap().is_none());
     }
 
     #[test]
@@ -693,7 +737,7 @@ mod tests {
             ParserSource::from_reader_with_buf(ChunkedReader::new(data.clone(), 1), vec![0; 32]);
 
         let err = stream.read_bstr().unwrap_err();
-        assert!(err.is_eof());
+        assert_eq!(err, ParserError::Io(io::ErrorKind::UnexpectedEof));
 
         // The contract: cursor remains intact, so the length prefix is still
         // visible to a subsequent peek.
@@ -708,8 +752,7 @@ mod tests {
             ParserSource::from_reader_with_buf(ChunkedReader::new(data.clone(), 1), vec![0; 8]);
 
         let mut consumed = 0usize;
-        while !stream.is_eof().unwrap() {
-            let _ = stream.take_array::<1>().unwrap();
+        while stream.try_take::<1>().unwrap().is_some() {
             consumed += 1;
             assert_eq!(stream.position(), consumed);
         }
@@ -717,24 +760,24 @@ mod tests {
     }
 
     #[test]
-    fn as_slice_and_remaining_reflect_window() {
+    fn window_and_window_len_reflect_consumed_bytes() {
         let data = [1u8, 2, 3, 4, 5];
         let mut slice = ParserSource::from_slice(&data);
-        assert_eq!(slice.remaining(), 5);
-        assert_eq!(slice.as_slice(), &data);
-        slice.take_array::<2>().unwrap();
-        assert_eq!(slice.remaining(), 3);
-        assert_eq!(slice.as_slice(), &[3, 4, 5]);
+        assert_eq!(slice.window_len(), 5);
+        assert_eq!(slice.window(), &data);
+        slice.take::<2>().unwrap();
+        assert_eq!(slice.window_len(), 3);
+        assert_eq!(slice.window(), &[3, 4, 5]);
     }
 
     #[test]
     fn advance_within_window_moves_cursor_and_subsequent_reads_follow() {
         let mut parser = ParserSource::from_slice(&[10, 20, 30, 40, 50]);
         assert!(parser.advance(2));
-        assert_eq!(parser.remaining(), 3);
+        assert_eq!(parser.window_len(), 3);
         assert_eq!(parser.position(), 2);
-        assert_eq!(*parser.take_array::<2>().unwrap(), [30, 40]);
-        assert_eq!(parser.as_slice(), &[50]);
+        assert_eq!(*parser.take::<2>().unwrap(), [30, 40]);
+        assert_eq!(parser.window(), &[50]);
     }
 
     #[test]
@@ -744,13 +787,13 @@ mod tests {
             ParserSource::from_reader_with_buf(ChunkedReader::new(data, 3), vec![0; 8]);
 
         assert_eq!(parser.refill().unwrap(), 3);
-        assert_eq!(parser.as_slice(), &[0, 1, 2]);
+        assert_eq!(parser.window(), &[0, 1, 2]);
         assert!(parser.advance(2));
         assert_eq!(parser.position(), 2);
 
         assert_eq!(parser.refill().unwrap(), 3);
         assert_eq!(parser.position(), 2);
-        assert_eq!(parser.as_slice(), &[2, 3, 4, 5]);
+        assert_eq!(parser.window(), &[2, 3, 4, 5]);
     }
 
     #[test]
@@ -759,10 +802,10 @@ mod tests {
             ParserSource::from_reader_with_buf(ChunkedReader::new(vec![1, 2], 8), vec![0; 8]);
 
         assert_eq!(parser.refill().unwrap(), 2);
-        assert_eq!(parser.take_array::<2>().unwrap(), &[1, 2]);
+        assert_eq!(parser.take::<2>().unwrap(), &[1, 2]);
         assert_eq!(parser.refill().unwrap(), 0);
         assert_eq!(parser.position(), 2);
-        assert_eq!(parser.remaining(), 0);
+        assert_eq!(parser.window_len(), 0);
     }
 
     #[test]
@@ -771,9 +814,9 @@ mod tests {
         let mut owned = ParserSource::from_owned(vec![1u8, 2, 3]);
 
         assert_eq!(slice.refill().unwrap(), 0);
-        assert_eq!(slice.as_slice(), &[1, 2, 3]);
+        assert_eq!(slice.window(), &[1, 2, 3]);
         assert_eq!(owned.refill().unwrap(), 0);
-        assert_eq!(owned.as_slice(), &[1, 2, 3]);
+        assert_eq!(owned.window(), &[1, 2, 3]);
     }
 
     #[test]
@@ -783,8 +826,8 @@ mod tests {
 
         assert_eq!(parser.refill().unwrap(), 4);
         let err = parser.refill().unwrap_err();
-        assert!(err.is_buffer_too_small());
-        assert_eq!(parser.as_slice(), &[1, 2, 3, 4]);
+        assert_eq!(err, ParserError::BufferTooSmall);
+        assert_eq!(parser.window(), &[1, 2, 3, 4]);
         assert_eq!(parser.position(), 0);
     }
 
@@ -792,8 +835,8 @@ mod tests {
     fn advance_past_window_returns_false_and_does_not_move() {
         let mut parser = ParserSource::from_slice(&[1, 2, 3]);
         assert!(!parser.advance(4));
-        assert_eq!(parser.remaining(), 3);
-        assert_eq!(parser.as_slice(), &[1, 2, 3]);
+        assert_eq!(parser.window_len(), 3);
+        assert_eq!(parser.window(), &[1, 2, 3]);
         assert_eq!(parser.position(), 0);
     }
 
@@ -805,11 +848,11 @@ mod tests {
         let data: Vec<u8> = (0..10u8).collect();
         let mut stream =
             ParserSource::from_reader_with_buf(ChunkedReader::new(data, 1), vec![0; 8]);
-        assert_eq!(stream.remaining(), 0);
+        assert_eq!(stream.window_len(), 0);
         assert!(!stream.advance(1));
 
         stream.ensure_bytes(4).unwrap();
-        let window = stream.remaining();
+        let window = stream.window_len();
         assert!(!stream.advance(window + 1));
         assert!(stream.advance(window));
         assert_eq!(stream.position(), window);
@@ -820,7 +863,7 @@ mod tests {
         let mut parser = ParserSource::from_slice(&[1, 2, 3, 4]);
         parser.ensure_bytes(3).unwrap();
 
-        let slice = unsafe { parser.get_slice_unchecked(3) };
+        let slice = unsafe { parser.get_window_unchecked(3) };
         assert_eq!(slice, &[1, 2, 3]);
         assert_eq!(parser.position(), 0);
     }
@@ -830,7 +873,7 @@ mod tests {
         let mut stream =
             ParserSource::from_reader_with_buf(ChunkedReader::new(vec![0u8; 32], 1), vec![0; 8]);
         let err = stream.ensure_bytes(16).unwrap_err();
-        assert!(err.is_buffer_too_small());
+        assert_eq!(err, ParserError::BufferTooSmall);
     }
 
     #[test]
@@ -840,13 +883,13 @@ mod tests {
         let mut owned = ParserSource::from_owned(data.clone());
 
         for _ in 0..10 {
-            let a = *slice.take_array::<5>().unwrap();
-            let b = *owned.take_array::<5>().unwrap();
+            let a = *slice.take::<5>().unwrap();
+            let b = *owned.take::<5>().unwrap();
             assert_eq!(a, b);
             assert_eq!(slice.position(), owned.position());
         }
-        assert!(slice.is_eof().unwrap());
-        assert!(owned.is_eof().unwrap());
+        assert!(slice.try_take::<1>().unwrap().is_none());
+        assert!(owned.try_take::<1>().unwrap().is_none());
     }
 
     #[test]
@@ -857,8 +900,8 @@ mod tests {
         let owned = ParserSource::from_owned([1u8, 2, 3, 4]);
         requires_static(&owned);
         let mut owned = owned;
-        assert_eq!(*owned.take_array::<4>().unwrap(), [1, 2, 3, 4]);
-        assert!(owned.is_eof().unwrap());
+        assert_eq!(*owned.take::<4>().unwrap(), [1, 2, 3, 4]);
+        assert!(owned.try_take::<1>().unwrap().is_none());
     }
 
     #[test]
@@ -867,32 +910,32 @@ mod tests {
         let arc: Arc<[u8]> = Arc::from(vec![10u8, 20, 30, 40, 50].into_boxed_slice());
         let mut owned = ParserSource::from_owned(Arc::clone(&arc));
         drop(arc); // owner inside ParserSource must keep allocation alive
-        assert_eq!(*owned.take_array::<5>().unwrap(), [10, 20, 30, 40, 50]);
-        assert!(owned.is_eof().unwrap());
+        assert_eq!(*owned.take::<5>().unwrap(), [10, 20, 30, 40, 50]);
+        assert!(owned.try_take::<1>().unwrap().is_none());
     }
 
     #[test]
-    fn from_owned_ensure_bytes_past_end_is_eof_without_slide() {
+    fn from_owned_ensure_bytes_past_end_returns_eof_without_slide() {
         // After consuming a prefix, requesting more than remains must return
         // EOF without disturbing the cursor: the tail of the owner's slice
         // should still be visible via as_slice().
         let mut owned = ParserSource::from_owned(vec![1u8, 2, 3, 4, 5]);
-        owned.take_array::<2>().unwrap();
-        let tail_ptr_before = owned.as_slice().as_ptr();
+        owned.take::<2>().unwrap();
+        let tail_ptr_before = owned.window().as_ptr();
         let err = owned.ensure_bytes(10).unwrap_err();
-        assert!(err.is_eof());
-        assert_eq!(owned.as_slice(), &[3, 4, 5]);
+        assert_eq!(err, ParserError::Io(io::ErrorKind::UnexpectedEof));
+        assert_eq!(owned.window(), &[3, 4, 5]);
         // No slide: the slice still points into the original owner allocation.
-        assert_eq!(owned.as_slice().as_ptr(), tail_ptr_before);
+        assert_eq!(owned.window().as_ptr(), tail_ptr_before);
     }
 
     #[test]
     fn from_owned_static_bytes() {
         static DATA: &[u8] = b"hello world";
         let mut owned = ParserSource::from_owned(DATA);
-        assert_eq!(*owned.take_array::<5>().unwrap(), *b"hello");
-        owned.take_array::<1>().unwrap();
-        assert_eq!(*owned.take_array::<5>().unwrap(), *b"world");
-        assert!(owned.is_eof().unwrap());
+        assert_eq!(*owned.take::<5>().unwrap(), *b"hello");
+        owned.take::<1>().unwrap();
+        assert_eq!(*owned.take::<5>().unwrap(), *b"world");
+        assert!(owned.try_take::<1>().unwrap().is_none());
     }
 }

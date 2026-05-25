@@ -165,9 +165,9 @@ impl From<BinReaderError> for Error {
     fn from(value: BinReaderError) -> Self {
         let pos = value.position();
         match value.into_kind() {
-            crate::binary::ReaderErrorKind::Read => Error::new(ErrorKind::Io(
-                std::io::Error::other("binary reader io error"),
-            )),
+            crate::binary::ReaderErrorKind::Read(kind) => {
+                Error::new(ErrorKind::Io(std::io::Error::from(kind)))
+            }
             crate::binary::ReaderErrorKind::BufferTooSmall => Error::new(ErrorKind::BufferTooSmall),
             crate::binary::ReaderErrorKind::Lexer(LexError::Eof) => Error::eof(),
             crate::binary::ReaderErrorKind::Lexer(LexError::InvalidRgb) => {
@@ -180,9 +180,9 @@ impl From<BinReaderError> for Error {
 impl From<TextReaderError> for Error {
     fn from(value: TextReaderError) -> Self {
         match value.into_kind() {
-            crate::text::ReaderErrorKind::Read => Error::new(ErrorKind::Io(std::io::Error::other(
-                "parser source io error",
-            ))),
+            crate::text::ReaderErrorKind::Read(kind) => {
+                Error::new(ErrorKind::Io(std::io::Error::from(kind)))
+            }
             crate::text::ReaderErrorKind::BufferTooSmall => Error::new(ErrorKind::BufferTooSmall),
             crate::text::ReaderErrorKind::Eof => Error::eof(),
         }

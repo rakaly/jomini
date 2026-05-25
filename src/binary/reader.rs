@@ -4,7 +4,11 @@ use crate::{
     binary::{Rgb, lexer::TokenKind},
     util::get_split,
 };
-use std::{fmt, io::Read};
+use std::{
+    fmt,
+    io::{self, Read},
+    mem::MaybeUninit,
+};
 
 /// [Lexer](crate::binary::Lexer) that works over a [Read] implementation
 ///
@@ -132,7 +136,7 @@ impl<'a> TokenReader<'a> {
         // SAFETY: the source borrow ends with `take` on the error path
         let s = std::ptr::addr_of!(self);
         self.source
-            .take(bytes)
+            .take_bytes(bytes)
             .map_err(|e| unsafe { s.read().parser_error(e) })
     }
 
@@ -255,7 +259,7 @@ impl<'a> TokenReader<'a> {
     #[inline]
     pub unsafe fn scalar_data(&self) -> Scalar<'_> {
         let len = u16::from_le_bytes([self.data[0], self.data[1]]) as usize;
-        let data = unsafe { self.source.as_slice().as_ptr().byte_sub(len) };
+        let data = unsafe { self.source.window().as_ptr().byte_sub(len) };
         Scalar::new(unsafe { std::slice::from_raw_parts(data, len) })
     }
 
@@ -316,7 +320,7 @@ impl<'a> TokenReader<'a> {
     #[inline]
     pub fn rgb_data(&self) -> Rgb {
         let size = self.data[0] as usize;
-        let data = unsafe { self.source.as_slice().as_ptr().byte_sub(size) };
+        let data = unsafe { self.source.window().as_ptr().byte_sub(size) };
         let data = unsafe { std::slice::from_raw_parts(data, size) };
         let (result, _data) = read_rgb(data).expect("valid rgb data");
         result
@@ -442,7 +446,7 @@ impl<'a> TokenReader<'a> {
             }
             LexemeId::U32 | LexemeId::I32 | LexemeId::F32 => {
                 self.ensure_bytes(6)?;
-                let data = unsafe { self.source.get_slice_unchecked(6) };
+                let data = unsafe { self.source.get_window_unchecked(6) };
                 self.data[..4].copy_from_slice(&data[2..6]);
                 self.source.advance(6);
                 if lexeme == LexemeId::F32 {
@@ -455,7 +459,7 @@ impl<'a> TokenReader<'a> {
             }
             LexemeId::U64 | LexemeId::I64 | LexemeId::F64 => {
                 self.ensure_bytes(10)?;
-                let data = unsafe { self.source.get_slice_unchecked(10) };
+                let data = unsafe { self.source.get_window_unchecked(10) };
                 self.data[..8].copy_from_slice(&data[2..10]);
                 self.source.advance(10);
                 if lexeme == LexemeId::F64 {
@@ -468,14 +472,14 @@ impl<'a> TokenReader<'a> {
             }
             LexemeId::BOOL => {
                 self.ensure_bytes(3)?;
-                let data = unsafe { self.source.get_slice_unchecked(3) };
+                let data = unsafe { self.source.get_window_unchecked(3) };
                 self.data[0] = data[2];
                 self.source.advance(3);
                 TokenKind::Bool
             }
             LexemeId::QUOTED | LexemeId::UNQUOTED => {
                 self.ensure_bytes(4)?;
-                let data = unsafe { self.source.get_slice_unchecked(4) };
+                let data = unsafe { self.source.get_window_unchecked(4) };
                 let len_data = [data[2], data[3]];
                 let len = u16::from_le_bytes(len_data) as usize;
                 self.ensure_bytes(4 + len)?;
@@ -489,7 +493,7 @@ impl<'a> TokenReader<'a> {
             }
             LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
                 self.ensure_bytes(3)?;
-                let data = unsafe { self.source.get_slice_unchecked(3) };
+                let data = unsafe { self.source.get_window_unchecked(3) };
                 self.data = [0; 8];
                 self.data[0] = data[2];
                 self.source.advance(3);
@@ -497,7 +501,7 @@ impl<'a> TokenReader<'a> {
             }
             LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
                 self.ensure_bytes(4)?;
-                let data = unsafe { self.source.get_slice_unchecked(4) };
+                let data = unsafe { self.source.get_window_unchecked(4) };
                 self.data = [0; 8];
                 self.data[0..2].copy_from_slice(&data[2..4]);
                 self.source.advance(4);
@@ -505,7 +509,7 @@ impl<'a> TokenReader<'a> {
             }
             LexemeId::LOOKUP_U24 => {
                 self.ensure_bytes(5)?;
-                let data = unsafe { self.source.get_slice_unchecked(5) };
+                let data = unsafe { self.source.get_window_unchecked(5) };
                 self.data = [0; 8];
                 self.data[0..3].copy_from_slice(&data[2..5]);
                 self.source.advance(5);
@@ -513,7 +517,7 @@ impl<'a> TokenReader<'a> {
             }
             LexemeId::RGB => {
                 self.ensure_bytes(24)?;
-                let data = self.source.as_slice();
+                let data = self.source.window();
                 match read_rgb(&data[2..]) {
                     Ok((_rgb, rest)) => {
                         let size = rest.as_ptr() as usize - data[2..].as_ptr() as usize;
@@ -523,7 +527,7 @@ impl<'a> TokenReader<'a> {
                     }
                     Err(LexError::Eof) => {
                         self.ensure_bytes(30)?;
-                        let data = self.source.as_slice();
+                        let data = self.source.window();
                         let (_rgb, rest) = read_rgb(&data[2..]).map_err(|e| self.lex_error(e))?;
                         let size = rest.as_ptr() as usize - data[2..].as_ptr() as usize;
                         self.data[0] = size as u8;
@@ -538,7 +542,7 @@ impl<'a> TokenReader<'a> {
                 let is_negative = offset > 7;
                 let byte_count = offset - (is_negative as u16 * 7);
                 self.ensure_bytes(2 + byte_count as usize)?;
-                let data = unsafe { self.source.get_slice_unchecked(2 + byte_count as usize) };
+                let data = unsafe { self.source.get_window_unchecked(2 + byte_count as usize) };
                 let mut buf = [0u8; 8];
                 buf[..byte_count as usize].copy_from_slice(&data[2..]);
                 let sign = 1i64 - (is_negative as i64) * 2;
@@ -561,7 +565,7 @@ impl<'a> TokenReader<'a> {
     pub fn next_token(&mut self) -> Result<Option<TokenKind>, ReaderError> {
         // The raw-pointer reborrow side-steps the borrow checker. This is safe
         // as long as the "next_token_fast" doesn't cause a refill.
-        let window = self.source.as_slice();
+        let window = self.source.window();
         if window.len() >= 16
             && let Some(kind) = self.next_token_fast(unsafe { &*(window as *const [u8]) })
         {
@@ -570,14 +574,7 @@ impl<'a> TokenReader<'a> {
 
         let id = match self.source.peek::<2>() {
             Ok(Some(id)) => *id,
-            Ok(None) => {
-                return if self.source.remaining() == 0 {
-                    Ok(None)
-                } else {
-                    Err(self.lex_error(LexError::Eof))
-                };
-            }
-            Err(e) if e.is_eof() => return Ok(None),
+            Ok(None) => return Ok(None),
             Err(e) => return Err(self.parser_error(e)),
         };
         self.next_token_slow(id).map(Some)
@@ -586,16 +583,12 @@ impl<'a> TokenReader<'a> {
     #[cold]
     #[inline(never)]
     fn parser_error(&self, e: ParserError) -> ReaderError {
-        if e.is_eof() {
-            self.lex_error(LexError::Eof)
-        } else if e.is_buffer_too_small() {
-            ReaderError {
-                packed: ReaderError::pack(self.position(), ReaderErrorKind::BufferTooSmall),
+        match e {
+            ParserError::Io(io::ErrorKind::UnexpectedEof) => self.lex_error(LexError::Eof),
+            ParserError::BufferTooSmall => {
+                ReaderError::new(self.position(), ReaderErrorKind::BufferTooSmall)
             }
-        } else {
-            ReaderError {
-                packed: ReaderError::pack(self.position(), ReaderErrorKind::Read),
-            }
+            ParserError::Io(kind) => ReaderError::new(self.position(), ReaderErrorKind::Read(kind)),
         }
     }
 
@@ -610,7 +603,7 @@ impl<'a> TokenReader<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReaderErrorKind {
     /// An underlying error from a [Read]er
-    Read,
+    Read(std::io::ErrorKind),
 
     /// The internal buffer does not have enough room to store data for the next
     /// token
@@ -621,37 +614,49 @@ pub enum ReaderErrorKind {
 }
 
 /// An binary lexing error over a `Read` implementation
-#[derive(Debug)]
 pub struct ReaderError {
-    // Keep ReaderError to one word to minimize the impact of error handling on
-    // hot paths. The top byte stores ReaderErrorKind and the lower 56 bits
-    // store position.
-    packed: u64,
+    // MaybeUninit strips all niche optimizations on Result<Option<TokenKind>,
+    // ReaderError>. Without it, the compiler produces a niche-encoded 8-byte
+    // Result that requires extra bit manipulation in hot loops (~2x instruction
+    // count regression).
+    kind: MaybeUninit<ReaderErrorKind>,
+    position: u32,
 }
 
 impl ReaderError {
-    const KIND_SHIFT: u64 = 56;
-    const POSITION_MASK: u64 = (1 << Self::KIND_SHIFT) - 1;
-
     #[inline]
-    fn pack(position: usize, kind: ReaderErrorKind) -> u64 {
-        ((kind.tag() as u64) << Self::KIND_SHIFT) | ((position as u64) & Self::POSITION_MASK)
+    fn new(position: usize, kind: ReaderErrorKind) -> Self {
+        ReaderError {
+            kind: MaybeUninit::new(kind),
+            position: position.min(u32::MAX as usize) as u32,
+        }
     }
 
     /// Return the byte position where the error occurred
     pub fn position(&self) -> usize {
-        (self.packed & Self::POSITION_MASK) as usize
+        self.position as usize
     }
 
     /// Return the error kind
     pub fn kind(&self) -> ReaderErrorKind {
-        ReaderErrorKind::from_tag((self.packed >> Self::KIND_SHIFT) as u8)
+        // SAFETY: kind is always initialized via new()
+        unsafe { self.kind.assume_init() }
     }
 
     /// Consume self and return the error kind
     #[must_use]
     pub fn into_kind(self) -> ReaderErrorKind {
-        self.kind()
+        // SAFETY: kind is always initialized via new()
+        unsafe { self.kind.assume_init() }
+    }
+}
+
+impl std::fmt::Debug for ReaderError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("ReaderError")
+            .field("kind", &self.kind())
+            .field("position", &self.position)
+            .finish()
     }
 }
 
@@ -664,8 +669,13 @@ impl std::error::Error for ReaderError {
 impl std::fmt::Display for ReaderError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.kind() {
-            ReaderErrorKind::Read => {
-                write!(f, "failed to read past position: {}", self.position())
+            ReaderErrorKind::Read(kind) => {
+                write!(
+                    f,
+                    "failed to read past position: {}: {}",
+                    self.position(),
+                    kind
+                )
             }
             ReaderErrorKind::BufferTooSmall => {
                 write!(
@@ -683,32 +693,7 @@ impl std::fmt::Display for ReaderError {
 
 impl From<LexerError> for ReaderError {
     fn from(value: LexerError) -> Self {
-        ReaderError {
-            packed: ReaderError::pack(value.position(), ReaderErrorKind::Lexer(value.into_kind())),
-        }
-    }
-}
-
-impl ReaderErrorKind {
-    #[inline]
-    const fn tag(self) -> u8 {
-        match self {
-            ReaderErrorKind::Read => 0,
-            ReaderErrorKind::BufferTooSmall => 1,
-            ReaderErrorKind::Lexer(LexError::Eof) => 2,
-            ReaderErrorKind::Lexer(LexError::InvalidRgb) => 3,
-        }
-    }
-
-    #[inline]
-    const fn from_tag(tag: u8) -> Self {
-        match tag {
-            0 => ReaderErrorKind::Read,
-            1 => ReaderErrorKind::BufferTooSmall,
-            2 => ReaderErrorKind::Lexer(LexError::Eof),
-            3 => ReaderErrorKind::Lexer(LexError::InvalidRgb),
-            _ => unreachable!(),
-        }
+        ReaderError::new(value.position(), ReaderErrorKind::Lexer(value.into_kind()))
     }
 }
 
@@ -841,5 +826,9 @@ mod tests {
     #[test]
     fn reader_error_is_eight_bytes() {
         assert_eq!(std::mem::size_of::<ReaderError>(), 8);
+        assert_eq!(
+            ReaderError::new(123, ReaderErrorKind::Read(std::io::ErrorKind::Interrupted)).kind(),
+            ReaderErrorKind::Read(std::io::ErrorKind::Interrupted)
+        );
     }
 }
