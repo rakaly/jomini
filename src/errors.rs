@@ -1,5 +1,5 @@
 use crate::{
-    ScalarError,
+    ParserError, ScalarError,
     binary::{LexError, LexerError},
 };
 use std::{fmt, mem::MaybeUninit};
@@ -256,6 +256,16 @@ impl fmt::Display for ReaderError {
 impl std::error::Error for ReaderError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         None
+    }
+}
+
+impl From<ParserError> for Error {
+    fn from(value: ParserError) -> Self {
+        match value {
+            ParserError::Io(std::io::ErrorKind::UnexpectedEof) => Error::eof(),
+            ParserError::BufferTooSmall => Error::new(ErrorKind::BufferTooSmall),
+            ParserError::Io(kind) => Error::new(ErrorKind::Io(std::io::Error::from(kind))),
+        }
     }
 }
 
