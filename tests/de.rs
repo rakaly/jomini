@@ -65,6 +65,78 @@ fn unified_rgb_deserializer() {
             color: [110, 27, 27]
         }
     );
+
+    // Reader path decodes RGB too.
+    let reader_out: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &map)
+        .unwrap();
+    assert_eq!(reader_out, bin_out);
+}
+
+/// Guards RGB decoding via `deserialize_any` (the catch-all arm) rather than the
+/// `deserialize_seq` path a typed `[u8; 3]` field uses, on slice and reader.
+#[test]
+fn unified_rgb_deserializer_any_path() {
+    // Forces `deserialize_any`, collecting the sequence the deserializer returns.
+    #[derive(Debug, PartialEq)]
+    struct AnyColor(Vec<u32>);
+
+    impl<'de> Deserialize<'de> for AnyColor {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            struct ColorVisitor;
+
+            impl<'de> de::Visitor<'de> for ColorVisitor {
+                type Value = AnyColor;
+
+                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    f.write_str("an rgb sequence")
+                }
+
+                fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+                where
+                    A: de::SeqAccess<'de>,
+                {
+                    let mut out = Vec::new();
+                    while let Some(component) = seq.next_element::<u32>()? {
+                        out.push(component);
+                    }
+                    Ok(AnyColor(out))
+                }
+            }
+
+            deserializer.deserialize_any(ColorVisitor)
+        }
+    }
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct MyStruct {
+        color: AnyColor,
+    }
+
+    let bin_data = [
+        0x3a, 0x05, 0x01, 0x00, 0x43, 0x02, 0x03, 0x00, 0x14, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x14,
+        0x00, 0x1b, 0x00, 0x00, 0x00, 0x14, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x04, 0x00,
+    ];
+
+    let mut map = HashMap::new();
+    map.insert(0x053a, "color");
+
+    let expected = MyStruct {
+        color: AnyColor(vec![110, 27, 27]),
+    };
+
+    let slice_out: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice(&bin_data[..], &map)
+        .unwrap();
+    assert_eq!(slice_out, expected);
+
+    let reader_out: MyStruct = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &map)
+        .unwrap();
+    assert_eq!(reader_out, expected);
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -453,6 +525,11 @@ fn test_lookup_u8_to_string() {
         .deserialize_slice(&bin_data[..], &resolver)
         .unwrap();
     assert_eq!(result.culture, "french");
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture, "french");
 }
 
 #[test]
@@ -477,6 +554,11 @@ fn test_lookup_u16_to_string() {
 
     let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
         .deserialize_slice(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture, "prussian");
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &resolver)
         .unwrap();
     assert_eq!(result.culture, "prussian");
 }
@@ -528,6 +610,11 @@ fn test_lookup_u8_raw_index() {
         .deserialize_slice(&bin_data[..], &tokens)
         .unwrap();
     assert_eq!(result.culture.0, 42);
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &tokens)
+        .unwrap();
+    assert_eq!(result.culture.0, 42);
 }
 
 #[test]
@@ -550,6 +637,11 @@ fn test_lookup_u16_raw_index() {
 
     let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
         .deserialize_slice(&bin_data[..], &tokens)
+        .unwrap();
+    assert_eq!(result.culture.0, 300);
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &tokens)
         .unwrap();
     assert_eq!(result.culture.0, 300);
 }
@@ -578,6 +670,11 @@ fn test_lookup_u24_to_string() {
         .deserialize_slice(&bin_data[..], &resolver)
         .unwrap();
     assert_eq!(result.culture, "imperial");
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture, "imperial");
 }
 
 #[test]
@@ -601,6 +698,11 @@ fn test_lookup_u24_raw_index() {
 
     let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
         .deserialize_slice(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture.0, 100000);
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &resolver)
         .unwrap();
     assert_eq!(result.culture.0, 100000);
 }
@@ -644,6 +746,12 @@ fn test_lookup_u24_in_nested_container() {
 
     let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
         .deserialize_slice(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.nested.culture, "byzantine");
+    assert_eq!(result.name, "test");
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &resolver)
         .unwrap();
     assert_eq!(result.nested.culture, "byzantine");
     assert_eq!(result.name, "test");
