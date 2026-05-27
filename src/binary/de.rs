@@ -184,7 +184,7 @@ where
                 self.de.reader.position(),
             )),
             TokenKind::Open => visitor.visit_seq(BinaryReaderSeq::new(self.de)),
-            TokenKind::Rgb => todo!(),
+            TokenKind::Rgb => visitor.visit_seq(ColorSequence::new(self.de.reader.rgb_data())),
             TokenKind::Lookup => {
                 let index = self.de.reader.lookup_data();
                 match self.de.config.resolver.lookup(index) {
@@ -780,6 +780,10 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor>
                         .visit_f64(self.de.parser.read_compact_f64(lexeme)?),
                 ),
             LexemeId::OPEN => visitor.visit_seq(OndemandSeq::new(self.de)),
+            LexemeId::RGB => {
+                let rgb = self.de.parser.read_rgb()?;
+                visitor.visit_seq(ColorSequence::new(rgb))
+            }
             LexemeId::CLOSE | LexemeId::EQUAL => Err(Error::invalid_syntax(
                 "unexpected token encountered",
                 self.de.parser.position(),
