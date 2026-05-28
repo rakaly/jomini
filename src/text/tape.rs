@@ -426,6 +426,13 @@ impl<'a> TextTape<'a> {
         TextTapeParser
     }
 
+    // Creates a TextTape from a vector of tokens.
+    pub fn from(tokens: Vec<TextToken>, has_bom: bool) -> TextTape<'_> {
+        TextTape {
+            utf8_bom: has_bom,
+            token_tape: tokens
+        }
+    }
     /// Return the parsed tokens
     pub fn tokens(&self) -> &[TextToken<'a>] {
         self.token_tape.as_slice()
