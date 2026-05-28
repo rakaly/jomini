@@ -139,6 +139,98 @@ fn unified_rgb_deserializer_any_path() {
     assert_eq!(reader_out, expected);
 }
 
+/// A self-contained [`BinaryFormat`](jomini::binary::BinaryFormat) implemented
+/// only with the crate's public API, proving external crates can plug in their
+/// own format and get serde deserialization for it.
+#[test]
+fn external_binary_format() {
+    use jomini::{
+        BinarySourceExt, ParserSource,
+        binary::{
+            BinaryFormat, BinaryFormatContext, BinaryFormatDeserializer, LexemeId, PdxVisitor,
+        },
+    };
+
+    struct PlainFormat;
+
+    impl PlainFormat {
+        fn read_value<'de, V: PdxVisitor<'de>>(
+            &self,
+            id: LexemeId,
+            source: &mut ParserSource<'de>,
+            visitor: V,
+        ) -> Result<V::Value, jomini::Error> {
+            match id {
+                LexemeId::U32 => visitor.visit_u32(u32::from_le_bytes(*source.take::<4>()?)),
+                LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                    match self.decode_scalar(source.read_bstr()?) {
+                        Cow::Borrowed(x) => visitor.visit_str(x),
+                        Cow::Owned(x) => visitor.visit_string(x),
+                    }
+                }
+                _ => Err(de::Error::custom("unexpected token")),
+            }
+        }
+    }
+
+    impl BinaryFormat for PlainFormat {
+        fn decode_scalar<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
+            Windows1252Encoding::decode(data)
+        }
+
+        fn skip_value(cx: &mut BinaryFormatContext<'_, '_, Self>) -> Result<(), jomini::Error> {
+            let source = cx.source();
+            match source.read_lexeme_id()? {
+                LexemeId::U32 => {
+                    source.take::<4>()?;
+                }
+                LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                    source.read_bstr()?;
+                }
+                _ => return Err(de::Error::custom("cannot skip token")),
+            }
+            Ok(())
+        }
+
+        fn deserialize_any<'de, V: PdxVisitor<'de>>(
+            cx: &mut BinaryFormatContext<'_, 'de, Self>,
+            visitor: V,
+        ) -> Result<V::Value, jomini::Error> {
+            let (format, source) = cx.parts();
+            let id = source.read_lexeme_id()?;
+            format.read_value(id, source, visitor)
+        }
+    }
+
+    #[derive(JominiDeserialize, PartialEq, Debug)]
+    struct PlainData {
+        #[jomini(token = 0x2d82)]
+        field1: u32,
+        #[jomini(token = 0x2d83)]
+        field2: String,
+    }
+
+    let data = [
+        0x82, 0x2d, 0x01, 0x00, 0x14, 0x00, 0x59, 0x00, 0x00, 0x00, // field1 = 89
+        0x83, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47, // field2 = "ENG"
+    ];
+
+    let expected = PlainData {
+        field1: 89,
+        field2: "ENG".to_string(),
+    };
+
+    let slice_out: PlainData = BinaryFormatDeserializer::from_slice(&data[..], PlainFormat)
+        .deserialize()
+        .unwrap();
+    assert_eq!(slice_out, expected);
+
+    let reader_out: PlainData = BinaryFormatDeserializer::from_reader(&data[..], PlainFormat)
+        .deserialize()
+        .unwrap();
+    assert_eq!(reader_out, expected);
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct SaveVersion(pub String);
 
