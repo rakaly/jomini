@@ -304,7 +304,9 @@ impl<'a> TokenReader<'a> {
     /// Returns lookup data for the most recently decoded token.
     #[inline]
     pub fn lookup_data(&self) -> u32 {
-        u32::from_le_bytes([self.data[0], self.data[1], self.data[2], 0])
+        // Narrower lookup widths zero the unused high bytes, so reading all
+        // four bytes is correct for u8/u16/u24/u32 lookup indices alike.
+        u32::from_le_bytes([self.data[0], self.data[1], self.data[2], self.data[3]])
     }
 
     /// Returns RGB data for the most recently decoded token.
@@ -397,10 +399,16 @@ impl<'a> TokenReader<'a> {
                 self.source.advance(4);
                 Some(TokenKind::Lookup)
             }
-            LexemeId::LOOKUP_U24 => {
+            LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
                 self.data = [0; 8];
                 self.data[0..3].copy_from_slice(&rest[..3]);
                 self.source.advance(5);
+                Some(TokenKind::Lookup)
+            }
+            LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+                self.data = [0; 8];
+                self.data[0..4].copy_from_slice(&rest[..4]);
+                self.source.advance(6);
                 Some(TokenKind::Lookup)
             }
             LexemeId::RGB => None,
@@ -517,12 +525,20 @@ impl<'a> TokenReader<'a> {
                 self.source.advance(4);
                 TokenKind::Lookup
             }
-            LexemeId::LOOKUP_U24 => {
+            LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
                 self.ensure_bytes(5)?;
                 let data = unsafe { self.source.get_window_unchecked(5) };
                 self.data = [0; 8];
                 self.data[0..3].copy_from_slice(&data[2..5]);
                 self.source.advance(5);
+                TokenKind::Lookup
+            }
+            LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+                self.ensure_bytes(6)?;
+                let data = unsafe { self.source.get_window_unchecked(6) };
+                self.data = [0; 8];
+                self.data[0..4].copy_from_slice(&data[2..6]);
+                self.source.advance(6);
                 TokenKind::Lookup
             }
             LexemeId::RGB => {
@@ -787,6 +803,58 @@ mod tests {
         assert_tokens(
             &[0x42, 0x0d, 0x41, 0x0d, 0x01, 0x00, 0x00],
             &[Token::Quoted(Scalar::new(b"")), Token::Lookup(1)],
+        );
+    }
+
+    #[test]
+    fn test_lookup_u32_tokens() {
+        // LOOKUP_U32 (0x0d3f): 4-byte little-endian index. The high byte (0x12)
+        // exercises the full 32-bit width.
+        assert_tokens(
+            &[0x3f, 0x0d, 0x78, 0x56, 0x34, 0x12],
+            &[Token::Lookup(0x1234_5678)],
+        );
+    }
+
+    #[test]
+    fn test_lookup_alt_tokens() {
+        // The alt lookup variants decode to the same value as their non-alt
+        // counterparts. LOOKUP_U24_ALT (0x0d45): 3 bytes, LOOKUP_U32_ALT
+        // (0x0d46): 4 bytes.
+        assert_tokens(
+            &[0x45, 0x0d, 0x56, 0x34, 0x12],
+            &[Token::Lookup(0x0012_3456)],
+        );
+        assert_tokens(
+            &[0x46, 0x0d, 0xdd, 0xcc, 0xbb, 0xaa],
+            &[Token::Lookup(0xaabb_ccdd)],
+        );
+    }
+
+    #[test]
+    fn test_lookup_widths_stay_aligned() {
+        // A run of every lookup width back-to-back must keep the reader aligned.
+        assert_tokens(
+            &[
+                0x40, 0x0d, 0x01, // LOOKUP_U8(1)
+                0x43, 0x0d, 0x02, // LOOKUP_U8_ALT(2)
+                0x3e, 0x0d, 0x03, 0x00, // LOOKUP_U16(3)
+                0x44, 0x0d, 0x04, 0x00, // LOOKUP_U16_ALT(4)
+                0x41, 0x0d, 0x05, 0x00, 0x00, // LOOKUP_U24(5)
+                0x45, 0x0d, 0x06, 0x00, 0x00, // LOOKUP_U24_ALT(6)
+                0x3f, 0x0d, 0x07, 0x00, 0x00, 0x00, // LOOKUP_U32(7)
+                0x46, 0x0d, 0x08, 0x00, 0x00, 0x00, // LOOKUP_U32_ALT(8)
+            ],
+            &[
+                Token::Lookup(1),
+                Token::Lookup(2),
+                Token::Lookup(3),
+                Token::Lookup(4),
+                Token::Lookup(5),
+                Token::Lookup(6),
+                Token::Lookup(7),
+                Token::Lookup(8),
+            ],
         );
     }
 }
