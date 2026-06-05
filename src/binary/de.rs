@@ -761,6 +761,8 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor>
                     Cow::Owned(x) => visitor.visit_string(x),
                 }
             }
+            // Zero-payload empty string: no length prefix to read.
+            LexemeId::EMPTY_STRING => visitor.visit_borrowed_str(""),
             LexemeId::U32 => visitor.visit_u32(self.de.parser.read_u32()?),
             LexemeId::I32 => visitor.visit_i32(self.de.parser.read_i32()?),
             LexemeId::U64 => visitor.visit_u64(self.de.parser.read_u64()?),
@@ -1534,6 +1536,54 @@ mod tests {
             actual,
             MyStruct {
                 field1: "ENG".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_empty_string_token() {
+        // EU5 game-rule lists begin with an empty-string element encoded as the
+        // zero-payload lexeme 0x0d42, followed by lookup-resolved strings. This
+        // previously failed with UnknownToken { token_id: 3394 }.
+        struct EmptyStringResolver;
+        impl TokenResolver for EmptyStringResolver {
+            fn resolve(&self, token: u16) -> Option<&str> {
+                match token {
+                    0x2d82 => Some("field1"),
+                    _ => None,
+                }
+            }
+
+            fn lookup(&self, index: u32) -> Option<&str> {
+                match index {
+                    1 => Some("hello"),
+                    _ => None,
+                }
+            }
+        }
+
+        // field1 = { "" <lookup 1> }
+        let data = [
+            0x82, 0x2d, // id 0x2d82 -> "field1"
+            0x01, 0x00, // EQUAL
+            0x03, 0x00, // OPEN
+            0x42, 0x0d, // EMPTY_STRING (no payload)
+            0x41, 0x0d, 0x01, 0x00, 0x00, // LOOKUP_U24(1) -> "hello"
+            0x04, 0x00, // CLOSE
+        ];
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: Vec<String>,
+        }
+
+        // eu5_owned exercises both the on-demand (slice) and reader deserializers
+        // and asserts they agree.
+        let actual: MyStruct = eu5_owned(&data[..], &EmptyStringResolver).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                field1: vec![String::new(), String::from("hello")],
             }
         );
     }
