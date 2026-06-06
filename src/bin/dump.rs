@@ -103,6 +103,9 @@ fn format_lexeme(
             buf.extend_from_slice(value.as_bytes());
             buf.push(b'\'');
         }
+        LexemeId::EMPTY_STRING => {
+            buf.extend_from_slice(b"''");
+        }
         LexemeId::UNQUOTED => {
             let value = lexer.read_string()?;
             buf.extend_from_slice(value.as_bytes());

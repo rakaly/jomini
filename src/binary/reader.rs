@@ -378,6 +378,13 @@ impl<'a> TokenReader<'a> {
                     Some(TokenKind::Quoted)
                 }
             }
+            LexemeId::EMPTY_STRING => {
+                // Zero-payload empty string: store length 0 so `scalar_data`
+                // yields an empty scalar, and advance past only the 2 id bytes.
+                self.data = [0; 8];
+                self.source.advance(2);
+                Some(TokenKind::Quoted)
+            }
             LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
                 self.data = [0; 8];
                 self.data[0] = rest[0];
@@ -486,6 +493,13 @@ impl<'a> TokenReader<'a> {
                 } else {
                     TokenKind::Quoted
                 }
+            }
+            LexemeId::EMPTY_STRING => {
+                // Zero-payload empty string: store length 0 so `scalar_data`
+                // yields an empty scalar, and advance past only the 2 id bytes.
+                self.data = [0; 8];
+                self.source.advance(2);
+                TokenKind::Quoted
             }
             LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
                 self.ensure_bytes(3)?;
@@ -729,5 +743,50 @@ mod tests {
             reader.read().unwrap_err().kind(),
             ReaderErrorKind::Eof
         ));
+    }
+
+    fn assert_tokens(data: &[u8], expected: &[Token]) {
+        // slice reader
+        let mut reader = TokenReader::new(data);
+        for (i, e) in expected.iter().enumerate() {
+            assert_eq!(reader.read().unwrap(), *e, "failure at token idx: {}", i);
+        }
+        reader.read().unwrap_err();
+        assert_eq!(reader.position(), data.len());
+
+        // from_slice reader
+        let mut reader = TokenReader::from_slice(data);
+        for (i, e) in expected.iter().enumerate() {
+            assert_eq!(reader.read().unwrap(), *e, "failure at token idx: {}", i);
+        }
+        reader.read().unwrap_err();
+        assert_eq!(reader.position(), data.len());
+
+        // buffered reader across a range of buffer sizes
+        for buf_size in 30..40 {
+            let mut reader = TokenReader::from_reader_with_buf(data, vec![0; buf_size]);
+            for (i, e) in expected.iter().enumerate() {
+                assert_eq!(reader.read().unwrap(), *e, "failure at token idx: {}", i);
+            }
+            reader.read().unwrap_err();
+            assert_eq!(reader.position(), data.len());
+        }
+    }
+
+    #[test]
+    fn test_empty_string_token() {
+        // The EU5 empty-string lexeme (0x0d42) carries no payload and decodes
+        // to an empty quoted scalar.
+        assert_tokens(&[0x42, 0x0d], &[Token::Quoted(Scalar::new(b""))]);
+    }
+
+    #[test]
+    fn test_empty_string_then_lookup_stays_aligned() {
+        // EMPTY_STRING (2 bytes, no payload) immediately followed by a
+        // LOOKUP_U24(1) must keep the reader aligned.
+        assert_tokens(
+            &[0x42, 0x0d, 0x41, 0x0d, 0x01, 0x00, 0x00],
+            &[Token::Quoted(Scalar::new(b"")), Token::Lookup(1)],
+        );
     }
 }

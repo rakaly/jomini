@@ -56,6 +56,10 @@ impl LexemeId {
     /// A binary 16-bit lookup index
     pub const LOOKUP_U16: LexemeId = LexemeId::new(0x0d3e);
 
+    /// Compact empty string/span - 0 bytes of payload (EU5 only)
+    /// Space efficient encoding of an empty quoted string (`""`)
+    pub const EMPTY_STRING: LexemeId = LexemeId::new(0x0d42);
+
     /// Compact 8-bit lookup index (alternative to LOOKUP_U8) (EU5 1.0.10+)
     /// Stores a u8 lookup table index in compact form
     pub const LOOKUP_U8_ALT: LexemeId = LexemeId::new(0x0d43);
@@ -155,6 +159,7 @@ impl LexemeId {
             LexemeId::I32 => TokenKind::I32,
             LexemeId::BOOL => TokenKind::Bool,
             LexemeId::QUOTED => TokenKind::Quoted,
+            LexemeId::EMPTY_STRING => TokenKind::Quoted,
             LexemeId::UNQUOTED => TokenKind::Unquoted,
             LexemeId::F32 => TokenKind::F32,
             LexemeId::F64 => TokenKind::F64,
@@ -509,6 +514,7 @@ pub(crate) fn read_token(data: &[u8]) -> Result<(Token<'_>, &[u8]), LexError> {
         LexemeId::I32 => read_i32(data).map(|(x, d)| (Token::I32(x), d)),
         LexemeId::BOOL => read_bool(data).map(|(x, d)| (Token::Bool(x), d)),
         LexemeId::QUOTED => read_string(data).map(|(x, d)| (Token::Quoted(x), d)),
+        LexemeId::EMPTY_STRING => Ok((Token::Quoted(Scalar::new(b"")), data)),
         LexemeId::UNQUOTED => read_string(data).map(|(x, d)| (Token::Unquoted(x), d)),
         LexemeId::F32 => read_f32(data).map(|(x, d)| (Token::F32(*x), d)),
         LexemeId::F64 => read_f64(data).map(|(x, d)| (Token::F64(*x), d)),
@@ -1022,6 +1028,8 @@ impl<'a> Lexer<'a> {
                 self.read_string()?;
                 Ok(())
             }
+            // Zero-payload empty string: nothing to skip
+            LexemeId::EMPTY_STRING => Ok(()),
             LexemeId::U32 => {
                 self.read_u32()?;
                 Ok(())
