@@ -2,7 +2,10 @@ use std::io::{self, Read};
 use std::marker::PhantomData;
 use std::ptr;
 
-use crate::binary::LexemeId;
+use crate::{
+    Error,
+    binary::{LexemeId, Rgb},
+};
 
 const DEFAULT_CAPACITY: usize = 32 * 1024;
 
@@ -490,6 +493,12 @@ pub trait BinarySourceExt {
 
     /// Peeks at the next two bytes as a Jomini binary lexeme id without advancing.
     fn peek_lexeme_id(&mut self) -> Result<Option<LexemeId>, ParserError>;
+
+    /// Reads an [`Rgb`] value following an `RGB` lexeme.
+    ///
+    /// Expects `{ u32 u32 u32 [u32] }`, where the optional fourth channel is the
+    /// alpha.
+    fn read_rgb(&mut self) -> Result<Rgb, Error>;
 }
 
 impl BinarySourceExt for ParserSource<'_> {
@@ -516,6 +525,40 @@ impl BinarySourceExt for ParserSource<'_> {
         Ok(self
             .peek::<2>()?
             .map(|x| LexemeId::new(u16::from_le_bytes(*x))))
+    }
+
+    fn read_rgb(&mut self) -> Result<Rgb, Error> {
+        fn channel(source: &mut ParserSource<'_>) -> Result<u32, Error> {
+            if source.read_lexeme_id()? != LexemeId::U32 {
+                return Err(Error::invalid_syntax("invalid rgb", source.position()));
+            }
+            Ok(u32::from_le_bytes(*source.take::<4>()?))
+        }
+
+        if self.read_lexeme_id()? != LexemeId::OPEN {
+            return Err(Error::invalid_syntax("invalid rgb", self.position()));
+        }
+        let r = channel(self)?;
+        let g = channel(self)?;
+        let b = channel(self)?;
+
+        match self.read_lexeme_id()? {
+            LexemeId::CLOSE => Ok(Rgb { r, g, b, a: None }),
+            LexemeId::U32 => {
+                let a = u32::from_le_bytes(*self.take::<4>()?);
+                if self.read_lexeme_id()? == LexemeId::CLOSE {
+                    Ok(Rgb {
+                        r,
+                        g,
+                        b,
+                        a: Some(a),
+                    })
+                } else {
+                    Err(Error::invalid_syntax("invalid rgb", self.position()))
+                }
+            }
+            _ => Err(Error::invalid_syntax("invalid rgb", self.position())),
+        }
     }
 }
 

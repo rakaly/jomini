@@ -139,6 +139,184 @@ fn unified_rgb_deserializer_any_path() {
     assert_eq!(reader_out, expected);
 }
 
+/// A self-contained [`BinaryFormat`](jomini::binary::BinaryFormat) implemented
+/// only with the crate's public API, proving external crates can plug in their
+/// own format and get serde deserialization for it.
+#[test]
+fn external_binary_format() {
+    use jomini::{
+        BinarySourceExt, ParserSource,
+        binary::{
+            BinaryFormat, BinaryFormatContext, BinaryFormatDeserializer, LexemeId, PdxVisitor,
+        },
+    };
+
+    struct PlainFormat;
+
+    impl PlainFormat {
+        fn read_value<'de, V: PdxVisitor<'de>>(
+            &self,
+            id: LexemeId,
+            source: &mut ParserSource<'de>,
+            visitor: V,
+        ) -> Result<V::Value, jomini::Error> {
+            match id {
+                LexemeId::U32 => visitor.visit_u32(u32::from_le_bytes(*source.take::<4>()?)),
+                LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                    match self.decode_scalar(source.read_bstr()?) {
+                        Cow::Borrowed(x) => visitor.visit_str(x),
+                        Cow::Owned(x) => visitor.visit_string(x),
+                    }
+                }
+                _ => Err(de::Error::custom("unexpected token")),
+            }
+        }
+    }
+
+    impl BinaryFormat for PlainFormat {
+        fn decode_scalar<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
+            Windows1252Encoding::decode(data)
+        }
+
+        fn skip_value(cx: &mut BinaryFormatContext<'_, '_, Self>) -> Result<(), jomini::Error> {
+            let source = cx.source();
+            match source.read_lexeme_id()? {
+                LexemeId::U32 => {
+                    source.take::<4>()?;
+                }
+                LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                    source.read_bstr()?;
+                }
+                _ => return Err(de::Error::custom("cannot skip token")),
+            }
+            Ok(())
+        }
+
+        fn deserialize_any<'de, V: PdxVisitor<'de>>(
+            cx: &mut BinaryFormatContext<'_, 'de, Self>,
+            visitor: V,
+        ) -> Result<V::Value, jomini::Error> {
+            let (format, source) = cx.parts();
+            let id = source.read_lexeme_id()?;
+            format.read_value(id, source, visitor)
+        }
+    }
+
+    #[derive(JominiDeserialize, PartialEq, Debug)]
+    struct PlainData {
+        #[jomini(token = 0x2d82)]
+        field1: u32,
+        #[jomini(token = 0x2d83)]
+        field2: String,
+    }
+
+    let data = [
+        0x82, 0x2d, 0x01, 0x00, 0x14, 0x00, 0x59, 0x00, 0x00, 0x00, // field1 = 89
+        0x83, 0x2d, 0x01, 0x00, 0x0f, 0x00, 0x03, 0x00, 0x45, 0x4e, 0x47, // field2 = "ENG"
+    ];
+
+    let expected = PlainData {
+        field1: 89,
+        field2: "ENG".to_string(),
+    };
+
+    let slice_out: PlainData = BinaryFormatDeserializer::from_slice(&data[..], PlainFormat)
+        .deserialize()
+        .unwrap();
+    assert_eq!(slice_out, expected);
+
+    let reader_out: PlainData = BinaryFormatDeserializer::from_reader(&data[..], PlainFormat)
+        .deserialize()
+        .unwrap();
+    assert_eq!(reader_out, expected);
+}
+
+/// A stateful [`BinaryFormat`](jomini::binary::BinaryFormat) that decodes a
+/// value differently depending on the key that preceded it, proving the
+/// [`on_key`](jomini::binary::BinaryFormat::on_key) hook lets a format act as a
+/// state machine even when the derive macro reads token keys via its `u16`
+/// fast path.
+#[test]
+fn stateful_binary_format_keys_off_previous_field() {
+    use jomini::{
+        BinarySourceExt,
+        binary::{
+            BinaryFormat, BinaryFormatContext, BinaryFormatDeserializer, LexemeId, PdxVisitor,
+        },
+    };
+
+    // The `scaled` field is stored at a coarser fixed-point precision, so its
+    // raw integer must be multiplied by 1000. Every other u32 is passed
+    // through unchanged. The format only knows which field it is decoding by
+    // remembering the previous key.
+    const SCALED_TOKEN: u16 = 0x2d90;
+
+    #[derive(Default)]
+    struct ScaledFormat {
+        last_key: u16,
+    }
+
+    impl BinaryFormat for ScaledFormat {
+        fn decode_scalar<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
+            Windows1252Encoding::decode(data)
+        }
+
+        fn on_key(&mut self, id: LexemeId) {
+            self.last_key = id.0;
+        }
+
+        fn skip_value(cx: &mut BinaryFormatContext<'_, '_, Self>) -> Result<(), jomini::Error> {
+            cx.source().take::<4>()?;
+            Ok(())
+        }
+
+        fn deserialize_any<'de, V: PdxVisitor<'de>>(
+            cx: &mut BinaryFormatContext<'_, 'de, Self>,
+            visitor: V,
+        ) -> Result<V::Value, jomini::Error> {
+            let scaled = cx.format().last_key == SCALED_TOKEN;
+            let source = cx.source();
+            match source.read_lexeme_id()? {
+                LexemeId::U32 => {
+                    let raw = u32::from_le_bytes(*source.take::<4>()?);
+                    visitor.visit_u32(if scaled { raw * 1000 } else { raw })
+                }
+                _ => Err(de::Error::custom("unexpected token")),
+            }
+        }
+    }
+
+    #[derive(JominiDeserialize, PartialEq, Debug)]
+    struct ScaledData {
+        #[jomini(token = 0x2d82)]
+        plain: u32,
+        #[jomini(token = 0x2d90)]
+        scaled: u32,
+    }
+
+    let data = [
+        0x82, 0x2d, 0x14, 0x00, 0x05, 0x00, 0x00, 0x00, // plain = 5
+        0x90, 0x2d, 0x14, 0x00, 0x07, 0x00, 0x00, 0x00, // scaled = 7 -> 7000
+    ];
+
+    let expected = ScaledData {
+        plain: 5,
+        scaled: 7000,
+    };
+
+    let slice_out: ScaledData =
+        BinaryFormatDeserializer::from_slice(&data[..], ScaledFormat::default())
+            .deserialize()
+            .unwrap();
+    assert_eq!(slice_out, expected);
+
+    let reader_out: ScaledData =
+        BinaryFormatDeserializer::from_reader(&data[..], ScaledFormat::default())
+            .deserialize()
+            .unwrap();
+    assert_eq!(reader_out, expected);
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct SaveVersion(pub String);
 
