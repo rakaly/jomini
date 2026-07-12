@@ -1,4 +1,38 @@
-## v0.34.1 - 2025-02-17
+## v0.35.0 - 2026-07-12
+
+### Breaking Changes
+
+- Replace the binary and text `TokenReaderBuilder` APIs with the new public
+  `ParserSource` abstraction. Token readers can now be constructed from borrowed
+  slices, owned buffers, readers, or an existing `ParserSource`, and expose the
+  source again with `into_source`.
+- Unify the binary and text `ReaderError` and `ReaderErrorKind` types. I/O errors
+  now retain their `std::io::ErrorKind` without a lossy conversion back to an
+  `io::Error`.
+
+### Added
+
+- Add the `BinaryFormat` extension point and `BinaryFormatDeserializer` for
+  stateful, game-specific binary decoding. Formats can customize scalar
+  interpretation, react to structural tokens, specialize Serde deserialization,
+  and share the same behavior between streaming and deserialization use cases.
+- Add `ParserSource`, `ParserError`, and `BinarySourceExt` as reusable low-level
+  parsing APIs over borrowed slices, owned data, and buffered readers.
+- Add `JominiZip::gamestate_verified` and `JominiZip::read_entry_verified`, along
+  with `SaveVerification` and `VerifyingReader`, to validate zip entry CRCs and
+  uncompressed sizes while reading envelope contents.
+- Add support for the remaining EU5 lookup token encodings, including 24-bit and
+  32-bit lookup indices and their alternate forms.
+
+### Fixed
+
+- Decode the EU5 empty-string token (`0x0d42`).
+- Decode binary RGB values through Serde `deserialize_any` paths.
+- Enable Serde's derive support when the `serde` feature is selected, fixing
+  types such as `Property<T>` under that feature configuration.
+- Avoid repeating the `deserialize error:` prefix at each Serde error boundary.
+
+## v0.34.1 - 2026-02-17
 
 - Fix: panic on parsing text version triplets as f64
 - Fix: remove header from envelope body when parsed from a slice
@@ -20,7 +54,7 @@ EU5 1.0.10 introduced several new binary lexemes:
 - 15 for a more compact f64 representation. Instead of always using 8 bytes for f64 data, there are now representations for 0 and 1-7 bytes of data for unsigned and signed representations
 - 2 that are altneratives to the 8 and 16 bit string index lookups.
 
-Since there are no new semantics associated with change, `binary::Token` remains unchanged. 
+Since there are no new semantics associated with change, `binary::Token` remains unchanged.
 
 ## v0.32.0 - 2025-11-28
 
@@ -96,6 +130,7 @@ Add the `envelope` feature which allows parsing the containing format of metadat
 ## v0.27.1 - 2024-11-19
 
 - Add support for `#[duplicated]` smallvec deserialization:
+
   ```rust
   #[derive(JominiDeserialize)]
   pub struct Model {
@@ -126,7 +161,9 @@ pub struct Manager<Of> {
     value: Of,
 }
 ```
+
 and
+
 ```rust
 pub struct Manager<Of> where Of: DeserializeOwned {
     #[jomini(deserialize_with = "maybe_option")]
@@ -143,6 +180,7 @@ where
     todo!()
 }
 ```
+
 Lots of edge cases still exist, but this should unlock downstream usages
 
 ## v0.25.4 - 2024-02-24
@@ -207,7 +245,7 @@ Lots of edge cases still exist, but this should unlock downstream usages
 
 - Add json type narrowing configuration
   
-  When converting to JSON, values are eagerly narrowed from strings to numbers or booleans. This is now configurable: 
+  When converting to JSON, values are eagerly narrowed from strings to numbers or booleans. This is now configurable:
   - All (default). Current behavior of type narrowing all values
   - Unquoted. Only type narrow values that aren't quoted
   - None. Never type narrow
@@ -341,11 +379,13 @@ A new feature flag has been added: `json`. When the json feature flag is
 enabled, the mid level text readers gains a new `json()` function that will
 assist in the conversion to json. There's several knobs to adjust, including how
 to handle duplicate keys and if to generate pretty printed json. See [PR
-#95](https://github.com/rakaly/jomini/pull/95) for more info.
+
+# 95](<https://github.com/rakaly/jomini/pull/95>) for more info
 
 The mid level text reader API sees a major overhaul. Iteration of containers
 (arrays and objects) are now decoupled from reading. See [PR
-#92](https://github.com/rakaly/jomini/pull/92) for more info.
+
+# 92](<https://github.com/rakaly/jomini/pull/92>) for more info
 
 The last breaking change is the organization of modules. Instead of clogging up
 the root namespace, `jomini::{binary,text}` now house secondary and
@@ -475,6 +515,7 @@ by up to a 10,000th.
 
 Remove cap on negative years in dates. With the release of leviathan we now
 have prehistoric monuments with large negative dates like:
+
 ```
 -2500.1.1
 ```
@@ -817,7 +858,6 @@ This release is all about performance:
 - Simplify text parser character classifications for 10% throughput improvement
 - On x86 platforms, use SIMD instructions greatly speedup parsing scalars (quoted and non-quoted). Up to 60% improvement in throughput.
 
-
 ## v0.7.1 - 2020-10-06
 
 The following data can now be parsed both in text and binary form.
@@ -835,18 +875,18 @@ This format can be seen in some EU4 saves. What causes this is unknown but now d
 
 ## v0.7.0 - 2020-10-02
 
-* Add `jomini::common::Date` structure for representing a game date -- a date
+- Add `jomini::common::Date` structure for representing a game date -- a date
   that doesn't factor in leap years. This date structure had been copied
   between eu4, ck3, and imperator implementations and has now been consolidated
   here.
-* Adds supports for parsing non-equal operators from text data to parse a wider
+- Adds supports for parsing non-equal operators from text data to parse a wider
   range of game files. This is done by pushing a `TextToken::Operator` into the
   tape. Note that this operator will only appear if an operator is present and
   is non-equal.
-* Expose hidden objects as `BinaryToken::HiddenObject` and
+- Expose hidden objects as `BinaryToken::HiddenObject` and
   `TextToken::HiddenObject`. They behave exactly like regular objects except
   that they denote the object is hidden (eg: `a = { 10 0=1 1=2 }`).
-* Add support for generic token headers (eg: `color = hsv { 0.58 1.00 0.72 }`)
+- Add support for generic token headers (eg: `color = hsv { 0.58 1.00 0.72 }`)
   via the `TextToken::Header("hsv")` token. This means that `TextToken::Rgb`
   has been removed in favor of `TextToken::Header("rgb")` followed by an array
   of 3 elements. `BinaryToken::Rgb` is still present.
@@ -877,7 +917,7 @@ Now there are a few main entry points for binary deserialization:
 - `BinaryDeserializer::ck3_builder`
 - `BinaryDeserializer::builder_flavor`
 
-While these are breaking changes, hopefully the correct path forward is clear. Since I'm unsure how ubiquitous each binary format is across multiple games, I've named the format after the game titles. Each format may apply to multiple titles. Do note that other titles like imperator and HOI4 can be parsed with any flavored of binary parser but their floating point and string encoding will need to be double checked to ensure accuracy. 
+While these are breaking changes, hopefully the correct path forward is clear. Since I'm unsure how ubiquitous each binary format is across multiple games, I've named the format after the game titles. Each format may apply to multiple titles. Do note that other titles like imperator and HOI4 can be parsed with any flavored of binary parser but their floating point and string encoding will need to be double checked to ensure accuracy.
 
 The good news here is that I've incorporated `Ck3Flavor` directly instead of pushing that to `ck3save` crate.
 
@@ -887,9 +927,9 @@ Having a user supplied `Encoding` allows for additional use case like deserializ
 
 Other changes:
 
- - Removed `Scalar::to_utf8` as a scalar does not know the encoding
- - `ScalarError` no longer owns the faulty string as the encoding is not known when performing scalar functions
- - Made the tape parsers more robust against malformed inputs
+- Removed `Scalar::to_utf8` as a scalar does not know the encoding
+- `ScalarError` no longer owns the faulty string as the encoding is not known when performing scalar functions
+- Made the tape parsers more robust against malformed inputs
 
 ## v0.4.2 - 2020-09-07
 
