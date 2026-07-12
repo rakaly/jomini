@@ -386,13 +386,7 @@ impl RawDate {
     fn _parse(s: &[u8]) -> Result<Self, DateError> {
         ExpandedRawDate::parse(s)
             .and_then(Self::from_expanded)
-            .and_then(|x| {
-                if to_i64_t(s).ok()?.1.is_empty() {
-                    None
-                } else {
-                    Some(x)
-                }
-            })
+            .filter(|_| to_i64_t(s).is_ok_and(|t| !t.1.is_empty()))
             .ok_or(DateError)
     }
 }
