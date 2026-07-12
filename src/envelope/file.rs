@@ -37,7 +37,7 @@ impl JominiFile<()> {
         // minimal as scanning up to 64KB from the end of the input is cheap.
         match rawzip::ZipArchive::with_max_search_space(64 * 1024).locate_in_slice(data) {
             Ok(archive) => {
-                let archive = archive.into_zip_archive();
+                let archive = archive.into_cursor_archive();
                 let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
                 let zip = JominiZip::try_from_archive(archive, &mut buf, header.clone())?;
                 Ok(JominiFile {
@@ -681,7 +681,7 @@ impl CompressedReader<()> {
     where
         R: ReaderAt,
     {
-        if compression != CompressionMethod::Deflate {
+        if compression != CompressionMethod::DEFLATE {
             return Err(EnvelopeErrorKind::ZipUnsupportedCompression.into());
         }
         let reader = zip_entry.reader();
