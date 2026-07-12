@@ -153,7 +153,6 @@ where
     F: FnOnce(
         &mut rawzip::ZipVerifier<
             flate2::read::DeflateDecoder<rawzip::ZipReader<&rawzip::FileReader>>,
-            &rawzip::FileReader,
         >,
     ) -> T,
 {
@@ -171,7 +170,7 @@ where
 
     assert_eq!(
         compression_method,
-        rawzip::CompressionMethod::Deflate,
+        rawzip::CompressionMethod::DEFLATE,
         "expected largest entry in {} to use deflate compression",
         archive.corpus
     );
