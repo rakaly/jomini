@@ -9,6 +9,11 @@ impl EnvelopeError {
     pub fn is_missing_entry(&self) -> bool {
         matches!(self.kind, EnvelopeErrorKind::ZipMissingEntry(_))
     }
+
+    /// Returns the specific kind of this error.
+    pub fn kind(&self) -> &EnvelopeErrorKind {
+        &self.kind
+    }
 }
 
 impl From<EnvelopeErrorKind> for EnvelopeError {
@@ -38,6 +43,20 @@ pub enum EnvelopeErrorKind {
     ZipMissingEntry(String),
     /// ZIP entry uses unsupported compression method
     ZipUnsupportedCompression,
+    /// Decompressed data did not match the expected CRC32 checksum
+    ChecksumMismatch {
+        /// Checksum recorded in the archive
+        expected: u32,
+        /// Checksum computed over the decompressed data
+        actual: u32,
+    },
+    /// Decompressed data did not match the expected uncompressed size
+    SizeMismatch {
+        /// Size recorded in the archive
+        expected: u64,
+        /// Number of bytes actually decompressed
+        actual: u64,
+    },
 }
 
 impl std::error::Error for EnvelopeError {
@@ -60,6 +79,16 @@ impl std::fmt::Display for EnvelopeError {
             EnvelopeErrorKind::ZipUnsupportedCompression => {
                 write!(f, "Zip unsupported compression method")
             }
+            EnvelopeErrorKind::ChecksumMismatch { expected, actual } => write!(
+                f,
+                "checksum mismatch: expected {:#010x}, computed {:#010x}",
+                expected, actual
+            ),
+            EnvelopeErrorKind::SizeMismatch { expected, actual } => write!(
+                f,
+                "size mismatch: expected {} bytes, decompressed {} bytes",
+                expected, actual
+            ),
         }
     }
 }

@@ -282,21 +282,44 @@ where
         }
     }
 
-    /// Returns the gamestate reader, decompressing if necessary
-    pub fn gamestate(&self) -> Result<SaveContentKind<ZipEntry<&R>>, EnvelopeError> {
+    /// Opens the gamestate entry, returning the decompressing reader alongside
+    /// the expected verification recorded in the archive.
+    fn gamestate_entry(&self) -> Result<(ZipEntry<&R>, SaveVerification), EnvelopeError> {
         let (compression, wayfinder) = &self.gamestate;
         let zip_entry = self
             .archive
             .get_entry(*wayfinder)
             .map_err(EnvelopeErrorKind::Zip)?;
+        let expected = SaveVerification::from_zip(zip_entry.reader().claim_verifier());
         let reader = CompressedReader::from_zip(*compression, zip_entry)?;
+        Ok((ZipEntry { reader }, expected))
+    }
+
+    /// Wraps a reader in the text/binary content kind dictated by the header.
+    fn wrap_content<T>(&self, reader: T) -> SaveContentKind<T> {
         if self.header.kind().is_text() {
-            Ok(SaveContentKind::Text(SaveContent::new(ZipEntry { reader })))
+            SaveContentKind::Text(SaveContent::new(reader))
         } else {
-            Ok(SaveContentKind::Binary(SaveContent::new(ZipEntry {
-                reader,
-            })))
+            SaveContentKind::Binary(SaveContent::new(reader))
         }
+    }
+
+    /// Returns the gamestate reader, decompressing if necessary
+    pub fn gamestate(&self) -> Result<SaveContentKind<ZipEntry<&R>>, EnvelopeError> {
+        let (entry, _) = self.gamestate_entry()?;
+        Ok(self.wrap_content(entry))
+    }
+
+    /// Returns a gamestate reader that verifies the decompressed data against
+    /// the CRC32 and size recorded in the archive.
+    ///
+    /// Verification runs when the reader is read to EOF, or on demand via
+    /// [`VerifyingReader::finish`]. See [`VerifyingReader`] for the details.
+    pub fn gamestate_verified(
+        &self,
+    ) -> Result<SaveContentKind<VerifyingReader<ZipEntry<&R>>>, EnvelopeError> {
+        let (entry, expected) = self.gamestate_entry()?;
+        Ok(self.wrap_content(VerifyingReader::new(entry, expected)))
     }
 
     /// Returns a reader for a file in the ZIP archive by path
@@ -319,6 +342,35 @@ where
                     .map_err(EnvelopeErrorKind::Zip)?;
 
                 return CompressedReader::from_zip(entry.compression_method(), zip_entry);
+            }
+        }
+
+        Err(EnvelopeErrorKind::ZipMissingEntry(path.to_string()).into())
+    }
+
+    /// Returns a reader for a file in the ZIP archive by path that verifies the
+    /// decompressed data against the CRC32 and size recorded in the archive.
+    ///
+    /// Like [`JominiZip::read_entry`], but the returned [`VerifyingReader`]
+    /// validates the entry when read to EOF or via [`VerifyingReader::finish`].
+    pub fn read_entry_verified(
+        &self,
+        path: &str,
+    ) -> Result<VerifyingReader<ZipEntry<&R>>, EnvelopeError> {
+        let path_bytes = path.as_bytes();
+        let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
+
+        let mut entries = self.archive.entries(&mut buf);
+        while let Some(entry) = entries.next_entry().map_err(EnvelopeErrorKind::Zip)? {
+            if entry.file_path().as_ref() == path_bytes {
+                let zip_entry = self
+                    .archive
+                    .get_entry(entry.wayfinder())
+                    .map_err(EnvelopeErrorKind::Zip)?;
+
+                let expected = SaveVerification::from_zip(zip_entry.reader().claim_verifier());
+                let reader = CompressedReader::from_zip(entry.compression_method(), zip_entry)?;
+                return Ok(VerifyingReader::new(ZipEntry { reader }, expected));
             }
         }
 
@@ -592,8 +644,12 @@ impl<R, E> SaveContent<E, R> {
         &self.reader
     }
 
-    /// Consumes this content and returns the inner reader
-    fn into_inner(self) -> R {
+    /// Consumes this content and returns the inner reader.
+    ///
+    /// Useful for recovering the underlying reader, e.g. to call
+    /// [`VerifyingReader::finish`] on the gamestate returned by
+    /// [`JominiZip::gamestate_verified`].
+    pub fn into_inner(self) -> R {
         self.reader
     }
 
@@ -696,6 +752,196 @@ where
 {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.reader.read(buf)
+    }
+}
+
+/// CRC32 engine selected per target.
+///
+/// On native platforms this uses flate2's `zlib-rs` backend, which has SIMD
+/// implementations on x86_64 and aarch64. On wasm, where `zlib-rs` has no SIMD
+/// path, it uses rawzip's table-based implementation instead.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug)]
+struct CrcEngine(flate2::Crc);
+
+#[cfg(not(target_family = "wasm"))]
+impl CrcEngine {
+    fn new() -> Self {
+        CrcEngine(flate2::Crc::new())
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+
+    fn checksum(&self) -> u32 {
+        self.0.sum()
+    }
+}
+
+#[cfg(target_family = "wasm")]
+#[derive(Debug)]
+struct CrcEngine(rawzip::Crc32);
+
+#[cfg(target_family = "wasm")]
+impl CrcEngine {
+    fn new() -> Self {
+        CrcEngine(rawzip::Crc32::new())
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+
+    fn checksum(&self) -> u32 {
+        self.0.checksum()
+    }
+}
+
+/// The expected CRC32 checksum and uncompressed size of a save entry.
+///
+/// These values are recorded in the ZIP central directory and are used by
+/// [`VerifyingReader`] to validate decompressed data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SaveVerification {
+    crc: u32,
+    uncompressed_size: u64,
+}
+
+impl SaveVerification {
+    /// Creates a verification from an expected checksum and uncompressed size.
+    ///
+    /// Useful for wrapping a decompressor in a [`VerifyingReader`] when the
+    /// expected values are known from another source.
+    pub fn new(crc: u32, uncompressed_size: u64) -> Self {
+        SaveVerification {
+            crc,
+            uncompressed_size,
+        }
+    }
+
+    /// The expected CRC32 checksum of the decompressed data.
+    pub fn crc(&self) -> u32 {
+        self.crc
+    }
+
+    /// The expected size of the decompressed data in bytes.
+    pub fn uncompressed_size(&self) -> u64 {
+        self.uncompressed_size
+    }
+
+    pub(crate) fn from_zip(value: rawzip::ZipVerification) -> Self {
+        SaveVerification {
+            crc: value.crc,
+            uncompressed_size: value.uncompressed_size,
+        }
+    }
+}
+
+/// A reader that verifies decompressed data against the checksum and size
+/// recorded in the archive.
+///
+/// The check runs once the underlying stream reaches EOF, so reading the entry
+/// to completion validates it automatically. A caller that would otherwise stop
+/// early can force the check by calling [`VerifyingReader::finish`]. Note that a
+/// partially-read reader that is simply dropped performs no verification.
+#[derive(Debug)]
+pub struct VerifyingReader<R> {
+    reader: R,
+    expected: SaveVerification,
+    crc: CrcEngine,
+    size: u64,
+}
+
+impl<R> VerifyingReader<R> {
+    /// Wraps a decompressed reader with the expected verification values.
+    pub fn new(reader: R, expected: SaveVerification) -> Self {
+        VerifyingReader {
+            reader,
+            expected,
+            crc: CrcEngine::new(),
+            size: 0,
+        }
+    }
+
+    /// Returns the expected checksum and size this reader validates against.
+    pub fn verification(&self) -> SaveVerification {
+        self.expected
+    }
+
+    /// Consumes this reader, returning the inner reader without verifying.
+    pub fn into_inner(self) -> R {
+        self.reader
+    }
+
+    fn verify(&self) -> Result<(), EnvelopeError> {
+        if self.size != self.expected.uncompressed_size {
+            return Err(EnvelopeErrorKind::SizeMismatch {
+                expected: self.expected.uncompressed_size,
+                actual: self.size,
+            }
+            .into());
+        }
+
+        let actual = self.crc.checksum();
+        if actual != self.expected.crc {
+            return Err(EnvelopeErrorKind::ChecksumMismatch {
+                expected: self.expected.crc,
+                actual,
+            }
+            .into());
+        }
+
+        Ok(())
+    }
+}
+
+impl<R: Read> VerifyingReader<R> {
+    /// Reads from the inner reader, accumulating the CRC and size but performing
+    /// no validation.
+    fn fill(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.reader.read(buf)?;
+        self.crc.update(&buf[..n]);
+        self.size += n as u64;
+        Ok(n)
+    }
+
+    /// Reads any remaining data, then verifies the checksum and size.
+    ///
+    /// Returns the inner reader on success so the decompressor can be recovered.
+    /// A checksum or size mismatch is returned as an [`EnvelopeError`].
+    pub fn finish(mut self) -> Result<R, EnvelopeError> {
+        // Drain through the accumulate-only view so a genuine IO error surfaces
+        // as `EnvelopeErrorKind::Io` while the check below yields the owned
+        // checksum/size error rather than an IO-wrapped one.
+        std::io::copy(&mut Accumulate(&mut self), &mut std::io::sink())?;
+        self.verify()?;
+        Ok(self.reader)
+    }
+}
+
+/// Accumulates CRC/size without triggering the inline end-of-stream validation,
+/// letting [`VerifyingReader::finish`] surface the owned error.
+struct Accumulate<'a, R>(&'a mut VerifyingReader<R>);
+
+impl<R: Read> Read for Accumulate<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.fill(buf)
+    }
+}
+
+impl<R: Read> Read for VerifyingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let n = self.fill(buf)?;
+        if n == 0 || self.size >= self.expected.uncompressed_size {
+            self.verify()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        }
+        Ok(n)
     }
 }
 
