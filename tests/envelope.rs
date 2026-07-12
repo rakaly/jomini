@@ -5,8 +5,8 @@ use jomini::{
         BinaryDeserializerBuilder, BinaryFlavor, Token, TokenResolver, de::BinaryReaderDeserializer,
     },
     envelope::{
-        BinaryEncoding, JominiFile, JominiFileKind, SaveContent, SaveContentKind, SaveData,
-        SaveDataKind, SaveHeaderKind, SaveMetadata, SaveMetadataKind,
+        BinaryEncoding, EnvelopeErrorKind, JominiFile, JominiFileKind, SaveContent,
+        SaveContentKind, SaveData, SaveDataKind, SaveHeaderKind, SaveMetadata, SaveMetadataKind,
     },
 };
 use rawzip::ReaderAt;
@@ -428,6 +428,129 @@ fn zip_eu5_sav02() {
         panic!("expected missing entry error");
     };
     assert!(err.is_missing_entry());
+}
+
+/// Returns the byte offset of the central-directory file header for `name`, so
+/// a test can deterministically corrupt its metadata.
+fn find_central_directory_header(data: &[u8], name: &[u8]) -> usize {
+    let archive = rawzip::ZipArchive::from_slice(data).unwrap();
+    let mut entries = archive.entries();
+    while let Some(entry) = entries.next_entry().unwrap() {
+        if entry.file_path().as_ref() == name {
+            return entry.central_directory_offset() as usize;
+        }
+    }
+    panic!("central directory header not found for {:?}", name);
+}
+
+#[test]
+fn zip_gamestate_verified_matches_plain() {
+    let data = std::fs::read("tests/fixtures/envelopes/text.zip").unwrap();
+    let file = JominiFile::from_slice(&data).unwrap();
+    let JominiFileKind::Zip(zip) = file.kind() else {
+        panic!("expected zip text envelope");
+    };
+
+    let mut verified = String::new();
+    zip.gamestate_verified()
+        .unwrap()
+        .read_to_string(&mut verified)
+        .unwrap();
+    assert_eq!(verified, EXPECTED_TEXT_GAMESTATE);
+
+    let mut plain = String::new();
+    zip.gamestate().unwrap().read_to_string(&mut plain).unwrap();
+    assert_eq!(verified, plain);
+
+    // The finish() path drains the reader, re-verifies, and hands back the
+    // inner reader on success.
+    let SaveContentKind::Text(content) = zip.gamestate_verified().unwrap() else {
+        panic!("expected text gamestate");
+    };
+    let mut reader = content.into_inner();
+    let copied = std::io::copy(&mut reader, &mut std::io::sink()).unwrap();
+    assert_eq!(copied as usize, EXPECTED_TEXT_GAMESTATE.len());
+    reader.finish().unwrap();
+}
+
+#[test]
+fn zip_gamestate_verified_detects_bad_crc() {
+    let mut data = std::fs::read("tests/fixtures/envelopes/text.zip").unwrap();
+    let cd = find_central_directory_header(&data, b"gamestate");
+    // Flip the central-directory CRC32 (bytes 16..20) to a guaranteed-wrong value.
+    let orig = u32::from_le_bytes(data[cd + 16..cd + 20].try_into().unwrap());
+    data[cd + 16..cd + 20].copy_from_slice(&(orig ^ 0xFFFF_FFFF).to_le_bytes());
+
+    let file = JominiFile::from_slice(&data).unwrap();
+    let JominiFileKind::Zip(zip) = file.kind() else {
+        panic!("expected zip text envelope");
+    };
+
+    // Unverified read still succeeds on the same bytes.
+    let mut plain = String::new();
+    zip.gamestate().unwrap().read_to_string(&mut plain).unwrap();
+    assert_eq!(plain, EXPECTED_TEXT_GAMESTATE);
+
+    // finish() surfaces the owned ChecksumMismatch.
+    let SaveContentKind::Text(content) = zip.gamestate_verified().unwrap() else {
+        panic!("expected text gamestate");
+    };
+    let err = content.into_inner().finish().unwrap_err();
+    assert!(
+        matches!(err.kind(), EnvelopeErrorKind::ChecksumMismatch { expected, .. } if *expected == (orig ^ 0xFFFF_FFFF)),
+        "unexpected error: {err:?}"
+    );
+
+    // The inline Read path also fails (as io::ErrorKind::InvalidData).
+    let mut buf = String::new();
+    let io_err = zip
+        .gamestate_verified()
+        .unwrap()
+        .read_to_string(&mut buf)
+        .unwrap_err();
+    assert_eq!(io_err.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn zip_read_entry_verified() {
+    let data = std::fs::read("tests/fixtures/envelopes/lookup.zip").unwrap();
+    let file = JominiFile::from_slice(&data).unwrap();
+    let JominiFileKind::Zip(zip) = file.kind() else {
+        panic!("expected zip binary envelope");
+    };
+
+    let mut lookup = String::new();
+    zip.read_entry_verified("string-lookup")
+        .unwrap()
+        .read_to_string(&mut lookup)
+        .unwrap();
+    assert_eq!(lookup, "hello-world");
+
+    let err = zip.read_entry_verified("nonexistent-file").unwrap_err();
+    assert!(err.is_missing_entry());
+}
+
+#[test]
+fn zip_gamestate_verified_detects_bad_size() {
+    let mut data = std::fs::read("tests/fixtures/envelopes/text.zip").unwrap();
+    let cd = find_central_directory_header(&data, b"gamestate");
+    // Inflate the central-directory uncompressed size (bytes 24..28) so the
+    // expectation exceeds the real decompressed length -> SizeMismatch at EOF.
+    let orig = u32::from_le_bytes(data[cd + 24..cd + 28].try_into().unwrap());
+    data[cd + 24..cd + 28].copy_from_slice(&(orig + 1000).to_le_bytes());
+
+    let file = JominiFile::from_slice(&data).unwrap();
+    let JominiFileKind::Zip(zip) = file.kind() else {
+        panic!("expected zip text envelope");
+    };
+    let SaveContentKind::Text(content) = zip.gamestate_verified().unwrap() else {
+        panic!("expected text gamestate");
+    };
+    let err = content.into_inner().finish().unwrap_err();
+    assert!(
+        matches!(err.kind(), EnvelopeErrorKind::SizeMismatch { expected, actual } if *expected == u64::from(orig) + 1000 && *actual == u64::from(orig)),
+        "unexpected error: {err:?}"
+    );
 }
 
 struct TestFlavor;
