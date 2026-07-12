@@ -142,6 +142,18 @@ fn format_lexeme(
             let value = lexer.read_lookup_u24()?;
             write!(buf, "lookup_u24:0x{:06x}", value)?;
         }
+        LexemeId::LOOKUP_U24_ALT => {
+            let value = lexer.read_lookup_u24()?;
+            write!(buf, "lookup_u24_alt:0x{:06x}", value)?;
+        }
+        LexemeId::LOOKUP_U32 => {
+            let value = lexer.read_lookup_u32()?;
+            write!(buf, "lookup_u32:0x{:08x}", value)?;
+        }
+        LexemeId::LOOKUP_U32_ALT => {
+            let value = lexer.read_lookup_u32()?;
+            write!(buf, "lookup_u32_alt:0x{:08x}", value)?;
+        }
         // Handle Fixed5 lexemes with special formatting
         lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
             let offset = lexeme.0 - LexemeId::FIXED5_ZERO.0;

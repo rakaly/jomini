@@ -8,23 +8,20 @@ use std::fmt;
 pub struct LexemeId(pub u16);
 
 impl LexemeId {
+    /// A binary '='
+    pub const EQUAL: LexemeId = LexemeId::new(0x0001);
+
     /// A binary '{' (open bracket)
     pub const OPEN: LexemeId = LexemeId::new(0x0003);
 
     /// A binary '}' (close bracket)
     pub const CLOSE: LexemeId = LexemeId::new(0x0004);
 
-    /// A binary '='
-    pub const EQUAL: LexemeId = LexemeId::new(0x0001);
-
-    /// A binary 32 bit unsigned integer
-    pub const U32: LexemeId = LexemeId::new(0x0014);
-
-    /// A binary 64 bit unsigned integer
-    pub const U64: LexemeId = LexemeId::new(0x029c);
-
     /// A binary 32 bit signed integer
     pub const I32: LexemeId = LexemeId::new(0x000c);
+
+    /// A binary 32 bit floating point
+    pub const F32: LexemeId = LexemeId::new(0x000d);
 
     /// A binary boolean
     pub const BOOL: LexemeId = LexemeId::new(0x000e);
@@ -32,11 +29,11 @@ impl LexemeId {
     /// A binary string that is typically quoted
     pub const QUOTED: LexemeId = LexemeId::new(0x000f);
 
+    /// A binary 32 bit unsigned integer
+    pub const U32: LexemeId = LexemeId::new(0x0014);
+
     /// A binary string that is typically without quotes
     pub const UNQUOTED: LexemeId = LexemeId::new(0x0017);
-
-    /// A binary 32 bit floating point
-    pub const F32: LexemeId = LexemeId::new(0x000d);
 
     /// A binary 64 bit floating point
     pub const F64: LexemeId = LexemeId::new(0x0167);
@@ -44,17 +41,23 @@ impl LexemeId {
     /// A binary RGB value
     pub const RGB: LexemeId = LexemeId::new(0x0243);
 
+    /// A binary 64 bit unsigned integer
+    pub const U64: LexemeId = LexemeId::new(0x029c);
+
     /// A binary 64 bit signed integer
     pub const I64: LexemeId = LexemeId::new(0x0317);
+
+    /// A binary 16-bit lookup index
+    pub const LOOKUP_U16: LexemeId = LexemeId::new(0x0d3e);
+
+    /// A binary 32-bit lookup index (EU5 only)
+    pub const LOOKUP_U32: LexemeId = LexemeId::new(0x0d3f);
 
     /// A binary 8-bit lookup index
     pub const LOOKUP_U8: LexemeId = LexemeId::new(0x0d40);
 
     /// A binary 24-bit lookup index
     pub const LOOKUP_U24: LexemeId = LexemeId::new(0x0d41);
-
-    /// A binary 16-bit lookup index
-    pub const LOOKUP_U16: LexemeId = LexemeId::new(0x0d3e);
 
     /// Compact empty string/span - 0 bytes of payload (EU5 only)
     /// Space efficient encoding of an empty quoted string (`""`)
@@ -67,6 +70,14 @@ impl LexemeId {
     /// Compact 16-bit lookup index (alternative to LOOKUP_U16) (EU5 1.0.10+)
     /// Stores a u16 lookup table index in compact form
     pub const LOOKUP_U16_ALT: LexemeId = LexemeId::new(0x0d44);
+
+    /// Compact 24-bit lookup index (alternative to LOOKUP_U24) (EU5 1.0.10+)
+    /// Stores a u24 lookup table index in compact form
+    pub const LOOKUP_U24_ALT: LexemeId = LexemeId::new(0x0d45);
+
+    /// Compact 32-bit lookup index (alternative to LOOKUP_U32) (EU5 1.0.10+)
+    /// Stores a u32 lookup table index in compact form
+    pub const LOOKUP_U32_ALT: LexemeId = LexemeId::new(0x0d46);
 
     /// Fixed-point zero constant - 0 bytes of data (EU5 1.0.10+)
     /// Space efficient encoding of the value 0.0
@@ -169,7 +180,10 @@ impl LexemeId {
             | LexemeId::LOOKUP_U8_ALT
             | LexemeId::LOOKUP_U16
             | LexemeId::LOOKUP_U16_ALT
-            | LexemeId::LOOKUP_U24 => TokenKind::Lookup,
+            | LexemeId::LOOKUP_U24
+            | LexemeId::LOOKUP_U24_ALT
+            | LexemeId::LOOKUP_U32
+            | LexemeId::LOOKUP_U32_ALT => TokenKind::Lookup,
             // Fixed5 lexemes are converted to F64 tokens
             LexemeId::FIXED5_ZERO
             | LexemeId::FIXED5_U8
@@ -321,6 +335,12 @@ pub(crate) fn read_lookup_u16(data: &[u8]) -> Result<(u16, &[u8]), LexError> {
 pub(crate) fn read_lookup_u24(data: &[u8]) -> Result<(u32, &[u8]), LexError> {
     let (head, rest) = get_split::<3>(data).ok_or(LexError::Eof)?;
     Ok((u32::from_le_bytes([head[0], head[1], head[2], 0]), rest))
+}
+
+#[inline]
+pub(crate) fn read_lookup_u32(data: &[u8]) -> Result<(u32, &[u8]), LexError> {
+    let (head, rest) = get_split::<4>(data).ok_or(LexError::Eof)?;
+    Ok((u32::from_le_bytes(*head), rest))
 }
 
 #[inline]
@@ -526,7 +546,12 @@ pub(crate) fn read_token(data: &[u8]) -> Result<(Token<'_>, &[u8]), LexError> {
         LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
             read_lookup_u16(data).map(|(x, d)| (Token::Lookup(x as u32), d))
         }
-        LexemeId::LOOKUP_U24 => read_lookup_u24(data).map(|(x, d)| (Token::Lookup(x), d)),
+        LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
+            read_lookup_u24(data).map(|(x, d)| (Token::Lookup(x), d))
+        }
+        LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+            read_lookup_u32(data).map(|(x, d)| (Token::Lookup(x), d))
+        }
         lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
             read_compact_f64(lexeme, data).map(|(x, d)| (Token::F64(x), d))
         }
@@ -884,6 +909,14 @@ impl<'a> Lexer<'a> {
         Ok(result)
     }
 
+    /// Advance the lexer through a 32-bit lookup index
+    #[inline]
+    pub fn read_lookup_u32(&mut self) -> Result<u32, LexerError> {
+        let (result, rest) = read_lookup_u32(self.data).map_err(|e| self.err_position(e))?;
+        self.data = rest;
+        Ok(result)
+    }
+
     /// Advance the lexer through unsigned little endian 32 bit integer
     ///
     /// ```rust
@@ -1071,8 +1104,12 @@ impl<'a> Lexer<'a> {
                 self.read_lookup_u16()?;
                 Ok(())
             }
-            LexemeId::LOOKUP_U24 => {
+            LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
                 self.read_lookup_u24()?;
+                Ok(())
+            }
+            LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+                self.read_lookup_u32()?;
                 Ok(())
             }
             lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
@@ -1118,8 +1155,11 @@ impl<'a> Lexer<'a> {
                 LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
                     self.read_lookup_u16()?;
                 }
-                LexemeId::LOOKUP_U24 => {
+                LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
                     self.read_lookup_u24()?;
+                }
+                LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+                    self.read_lookup_u32()?;
                 }
                 LexemeId::CLOSE => {
                     depth -= 1;

@@ -794,7 +794,10 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor>
             | LexemeId::LOOKUP_U8_ALT
             | LexemeId::LOOKUP_U16
             | LexemeId::LOOKUP_U16_ALT
-            | LexemeId::LOOKUP_U24 => {
+            | LexemeId::LOOKUP_U24
+            | LexemeId::LOOKUP_U24_ALT
+            | LexemeId::LOOKUP_U32
+            | LexemeId::LOOKUP_U32_ALT => {
                 let index = match self.token {
                     LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
                         self.de.parser.read_lookup_u8()? as u32
@@ -802,7 +805,12 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor>
                     LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
                         self.de.parser.read_lookup_u16()? as u32
                     }
-                    LexemeId::LOOKUP_U24 => self.de.parser.read_lookup_u24()?,
+                    LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
+                        self.de.parser.read_lookup_u24()?
+                    }
+                    LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+                        self.de.parser.read_lookup_u32()?
+                    }
                     _ => unreachable!(),
                 };
 
@@ -926,7 +934,12 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor> de::Deserializ
             LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
                 visitor.visit_u32(self.de.parser.read_lookup_u16()? as u32)
             }
-            LexemeId::LOOKUP_U24 => visitor.visit_u32(self.de.parser.read_lookup_u24()?),
+            LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
+                visitor.visit_u32(self.de.parser.read_lookup_u24()?)
+            }
+            LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+                visitor.visit_u32(self.de.parser.read_lookup_u32()?)
+            }
             _ => self.deser(visitor),
         }
     }
@@ -1584,6 +1597,54 @@ mod tests {
             actual,
             MyStruct {
                 field1: vec![String::new(), String::from("hello")],
+            }
+        );
+    }
+
+    #[test]
+    fn test_lookup_u32_and_alt_tokens() {
+        // EU5-only lookup widths: LOOKUP_U32 (0x0d3f), LOOKUP_U24_ALT (0x0d45),
+        // and LOOKUP_U32_ALT (0x0d46).
+        struct LookupResolver;
+        impl TokenResolver for LookupResolver {
+            fn resolve(&self, token: u16) -> Option<&str> {
+                match token {
+                    0x2d82 => Some("field1"),
+                    _ => None,
+                }
+            }
+
+            fn lookup(&self, index: u32) -> Option<&str> {
+                match index {
+                    1 => Some("a"),
+                    2 => Some("b"),
+                    3 => Some("c"),
+                    _ => None,
+                }
+            }
+        }
+
+        // field1 = { <u32 1> <u24_alt 2> <u32_alt 3> }
+        let data = [
+            0x82, 0x2d, // id 0x2d82 -> "field1"
+            0x01, 0x00, // EQUAL
+            0x03, 0x00, // OPEN
+            0x3f, 0x0d, 0x01, 0x00, 0x00, 0x00, // LOOKUP_U32(1) -> "a"
+            0x45, 0x0d, 0x02, 0x00, 0x00, // LOOKUP_U24_ALT(2) -> "b"
+            0x46, 0x0d, 0x03, 0x00, 0x00, 0x00, // LOOKUP_U32_ALT(3) -> "c"
+            0x04, 0x00, // CLOSE
+        ];
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            field1: Vec<String>,
+        }
+
+        let actual: MyStruct = eu5_owned(&data[..], &LookupResolver).unwrap();
+        assert_eq!(
+            actual,
+            MyStruct {
+                field1: vec![String::from("a"), String::from("b"), String::from("c")],
             }
         );
     }

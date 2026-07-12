@@ -756,3 +756,128 @@ fn test_lookup_u24_in_nested_container() {
     assert_eq!(result.nested.culture, "byzantine");
     assert_eq!(result.name, "test");
 }
+
+#[test]
+fn test_lookup_u32_to_string() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Data {
+        culture: String,
+    }
+
+    let mut tokens = HashMap::new();
+    tokens.insert(0x053a, "culture".to_string());
+    let mut lookups = HashMap::new();
+    // High byte set to exercise the full 32-bit width.
+    lookups.insert(0x1234_5678u32, "imperial".to_string());
+    let resolver = TestResolver { tokens, lookups };
+
+    let bin_data = [
+        0x3a, 0x05, // Id token for "culture"
+        0x01, 0x00, // EQUAL token
+        0x3f, 0x0d, // LOOKUP_U32 token (0x0d3f)
+        0x78, 0x56, 0x34, 0x12, // 0x12345678 in little-endian 32-bit
+    ];
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture, "imperial");
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture, "imperial");
+}
+
+#[test]
+fn test_lookup_u32_raw_index() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Data {
+        culture: InternedSymbol,
+    }
+
+    let mut tokens = HashMap::new();
+    tokens.insert(0x053a, "culture".to_string());
+    let lookups = HashMap::new();
+    let resolver = TestResolver { tokens, lookups };
+
+    let bin_data = [
+        0x3a, 0x05, // Id token for "culture"
+        0x01, 0x00, // EQUAL token
+        0x3f, 0x0d, // LOOKUP_U32 token
+        0x78, 0x56, 0x34, 0x12, // 0x12345678 in little-endian
+    ];
+
+    // Verifies the high byte is not dropped when decoding a 32-bit index.
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture.0, 0x1234_5678);
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture.0, 0x1234_5678);
+}
+
+#[test]
+fn test_lookup_u24_alt_to_string() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Data {
+        culture: String,
+    }
+
+    let mut tokens = HashMap::new();
+    tokens.insert(0x053a, "culture".to_string());
+    let mut lookups = HashMap::new();
+    lookups.insert(100000u32, "imperial".to_string());
+    let resolver = TestResolver { tokens, lookups };
+
+    let bin_data = [
+        0x3a, 0x05, // Id token for "culture"
+        0x01, 0x00, // EQUAL token
+        0x45, 0x0d, // LOOKUP_U24_ALT token (0x0d45)
+        0xa0, 0x86, 0x01, // 100000 in little-endian 24-bit
+    ];
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture, "imperial");
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture, "imperial");
+}
+
+#[test]
+fn test_lookup_u32_alt_to_string() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Data {
+        culture: String,
+    }
+
+    let mut tokens = HashMap::new();
+    tokens.insert(0x053a, "culture".to_string());
+    let mut lookups = HashMap::new();
+    lookups.insert(0x1234_5678u32, "imperial".to_string());
+    let resolver = TestResolver { tokens, lookups };
+
+    let bin_data = [
+        0x3a, 0x05, // Id token for "culture"
+        0x01, 0x00, // EQUAL token
+        0x46, 0x0d, // LOOKUP_U32_ALT token (0x0d46)
+        0x78, 0x56, 0x34, 0x12, // 0x12345678 in little-endian 32-bit
+    ];
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_slice(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture, "imperial");
+
+    let result: Data = BinaryDeserializer::builder_flavor(BinaryTestFlavor)
+        .deserialize_reader(&bin_data[..], &resolver)
+        .unwrap();
+    assert_eq!(result.culture, "imperial");
+}
