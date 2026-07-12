@@ -494,7 +494,7 @@ where
             _ => {
                 // this is a broken invariant, so we safely recover by saying the object
                 // has no more fields
-                debug_assert!(false, "All keys should be scalars, not {:?}", &token);
+                debug_assert!(false, "All keys should be scalars, not {:?}", token);
                 return None;
             }
         };
