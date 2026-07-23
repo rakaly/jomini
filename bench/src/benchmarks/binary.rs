@@ -1,9 +1,16 @@
 use crate::corpus::{self, Corpus, CorpusArchive, CorpusBytes, Game};
 use jomini::{
     Encoding, Windows1252Encoding,
-    binary::{BinaryFlavor, TokenResolver},
+    binary::{BasicTokenResolver, BinaryFlavor, TokenResolver},
 };
-use std::{borrow::Cow, hint::black_box};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fmt::Write,
+    hash::{BuildHasherDefault, Hasher},
+    hint::black_box,
+    io::BufRead,
+};
 
 const EU4_BINARY: Corpus = Corpus::binary(Game::Eu4);
 const CK3_BINARY: Corpus = Corpus::binary(Game::Ck3);
@@ -38,6 +45,67 @@ impl TokenResolver for MyBinaryResolver {
             None
         }
     }
+}
+
+#[derive(Default)]
+struct Mix13Hasher(u64);
+
+impl Hasher for Mix13Hasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, _bytes: &[u8]) {
+        unreachable!("Mix13Hasher only supports u16 keys")
+    }
+
+    fn write_u16(&mut self, value: u16) {
+        let mut value = u64::from(value);
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        self.0 = value ^ (value >> 31);
+    }
+}
+
+type Mix13Resolver = HashMap<u16, Box<str>, BuildHasherDefault<Mix13Hasher>>;
+
+fn resolver_fixture() -> (Vec<u8>, Vec<u16>, Vec<u16>) {
+    let all = (0..20_000)
+        .map(|x| (x as u16).wrapping_mul(40_503))
+        .collect::<Vec<_>>();
+    let mut data = String::new();
+    for &token in &all[..10_000] {
+        writeln!(data, "0x{token:04x} token_{token}").unwrap();
+    }
+
+    (
+        data.into_bytes(),
+        all[..10_000].to_vec(),
+        all[10_000..].to_vec(),
+    )
+}
+
+fn mix13_from_text_lines<T: BufRead>(mut reader: T) -> Mix13Resolver {
+    let mut resolver = Mix13Resolver::default();
+    let mut line = String::new();
+    while reader.read_line(&mut line).unwrap() != 0 {
+        let (num, text) = line.split_once(' ').unwrap();
+        let token = u16::from_str_radix(num.trim_start_matches("0x"), 16).unwrap();
+        resolver.insert(token, Box::from(text.trim_ascii_end()));
+        line.clear();
+    }
+    resolver
+}
+
+fn resolve_all<R: TokenResolver>(resolver: &R, tokens: &[u16]) -> usize {
+    tokens
+        .iter()
+        .map(|&token| {
+            resolver
+                .resolve(black_box(token))
+                .map_or(0, |value| value.len())
+        })
+        .sum()
 }
 
 #[derive(serde::Deserialize)]
@@ -214,11 +282,40 @@ pub mod criterion_benches {
         group.finish();
     }
 
+    pub fn token_resolver(c: &mut Criterion) {
+        let (data, hits, misses) = resolver_fixture();
+        let dense = BasicTokenResolver::from_text_lines(data.as_slice()).unwrap();
+        let mix13 = mix13_from_text_lines(data.as_slice());
+
+        let mut group = c.benchmark_group("binary/token-resolver/lookup");
+        group.throughput(Throughput::Elements(hits.len() as u64));
+        for (name, tokens) in [("hit", hits.as_slice()), ("miss", misses.as_slice())] {
+            group.bench_function(BenchmarkId::new("dense", name), |b| {
+                b.iter(|| resolve_all(&dense, tokens))
+            });
+            group.bench_function(BenchmarkId::new("mix13", name), |b| {
+                b.iter(|| resolve_all(&mix13, tokens))
+            });
+        }
+        group.finish();
+
+        let mut group = c.benchmark_group("binary/token-resolver/build");
+        group.throughput(Throughput::Bytes(data.len() as u64));
+        group.bench_function("dense", |b| {
+            b.iter(|| BasicTokenResolver::from_text_lines(black_box(data.as_slice())).unwrap())
+        });
+        group.bench_function("mix13", |b| {
+            b.iter(|| mix13_from_text_lines(black_box(data.as_slice())))
+        });
+        group.finish();
+    }
+
     criterion::criterion_group!(
         binary_benches,
         binary,
         binary_deserialize,
-        binary_compressed
+        binary_compressed,
+        token_resolver
     );
 }
 

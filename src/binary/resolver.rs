@@ -124,15 +124,41 @@ pub enum FailedResolveStrategy {
 /// A basic token resolver that facilitates loading tokens from an external
 /// source.
 ///
-/// This token resolver is geared towards testing use cases and iteration.
-///
-/// It is recommended to use a different implementation if performance is a
-/// concern.
+/// This token resolver is geared towards testing use cases and iteration. It
+/// uses a dense index for fast resolution at the cost of approximately 136 KiB
+/// of fixed indexing overhead.
 pub struct BasicTokenResolver {
-    lookup: HashMap<u16, String>,
+    /// Maps tokens to positions in `values`.
+    indices: Box<[u16]>,
+    /// Marks which entries in `indices` have been initialized.
+    occupied: Box<[u64]>,
+    values: Vec<Box<str>>,
 }
 
 impl BasicTokenResolver {
+    const TOKEN_COUNT: usize = 1 << u16::BITS;
+    const OCCUPIED_WORDS: usize = Self::TOKEN_COUNT / u64::BITS as usize;
+
+    #[inline]
+    fn location(token: u16) -> (usize, usize, u64) {
+        let slot = usize::from(token);
+        let word = slot / u64::BITS as usize;
+        let mask = 1 << (slot % u64::BITS as usize);
+        (slot, word, mask)
+    }
+
+    fn insert(&mut self, token: u16, value: Box<str>) {
+        let (slot, word, mask) = Self::location(token);
+
+        if self.occupied[word] & mask == 0 {
+            self.indices[slot] = self.values.len() as u16;
+            self.occupied[word] |= mask;
+            self.values.push(value);
+        } else {
+            self.values[self.indices[slot] as usize] = value;
+        }
+    }
+
     /// Create resolver from a `BufRead` implementation over a space delimited
     /// text format:
     ///
@@ -144,7 +170,11 @@ impl BasicTokenResolver {
     where
         T: BufRead,
     {
-        let mut lookup = HashMap::new();
+        let mut resolver = Self {
+            indices: vec![0; Self::TOKEN_COUNT].into_boxed_slice(),
+            occupied: vec![0; Self::OCCUPIED_WORDS].into_boxed_slice(),
+            values: Vec::new(),
+        };
         let mut line = String::new();
         let mut pos = 0;
         while reader.read_line(&mut line)? != 0 {
@@ -156,21 +186,28 @@ impl BasicTokenResolver {
                 .map_err(|_| Error::invalid_syntax("invalid ironman token", pos))?;
 
             pos += line.len();
-            lookup.insert(z, String::from(text.trim_ascii_end()));
+            resolver.insert(z, Box::from(text.trim_ascii_end()));
             line.clear();
         }
 
-        Ok(Self { lookup })
+        resolver.values.shrink_to_fit();
+        Ok(resolver)
     }
 }
 
 impl TokenResolver for BasicTokenResolver {
+    #[inline]
     fn resolve(&self, token: u16) -> Option<&str> {
-        self.lookup.get(&token).map(|x| x.as_str())
+        let (slot, word, mask) = Self::location(token);
+        if self.occupied[word] & mask == 0 {
+            return None;
+        }
+
+        Some(self.values[self.indices[slot] as usize].as_ref())
     }
 
     fn is_empty(&self) -> bool {
-        self.lookup.is_empty()
+        self.values.is_empty()
     }
 }
 
@@ -184,5 +221,21 @@ mod tests {
         let resolver = BasicTokenResolver::from_text_lines(&data[..]).unwrap();
         assert_eq!(resolver.resolve(0xffff), Some("my_test_token"));
         assert_eq!(resolver.resolve(0xeeee), Some("my_test_token2"));
+    }
+
+    #[test]
+    fn duplicate_token_uses_last_value() {
+        let data = b"0x1234 first\n0x1234 second";
+        let resolver = BasicTokenResolver::from_text_lines(&data[..]).unwrap();
+        assert_eq!(resolver.resolve(0x1234), Some("second"));
+    }
+
+    #[test]
+    fn supports_token_boundaries() {
+        let data = b"0x0000 first\n0xffff last";
+        let resolver = BasicTokenResolver::from_text_lines(&data[..]).unwrap();
+        assert_eq!(resolver.resolve(0x0000), Some("first"));
+        assert_eq!(resolver.resolve(0xffff), Some("last"));
+        assert_eq!(resolver.resolve(0x8000), None);
     }
 }
