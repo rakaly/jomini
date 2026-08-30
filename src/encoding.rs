@@ -159,10 +159,10 @@ pub(crate) fn decode_utf8(d: &[u8]) -> Cow<'_, str> {
     // Then we iterate through the data in 8 byte chunks and ensure that each chunk
     // has no escape characters
     let d = trim_ascii_end(d);
-    let mut chunk_iter = d.chunks_exact(8);
+    let (chunks, remainder) = d.as_chunks::<8>();
     let mut offset = 0;
     let mut is_ascii = true;
-    for n in &mut chunk_iter {
+    for n in chunks {
         let wide = le_u64(n);
         is_ascii &= wide & 0x8080_8080_8080_8080 == 0;
         if contains_zero_byte(wide ^ repeat_byte(b'\\')) {
@@ -173,7 +173,6 @@ pub(crate) fn decode_utf8(d: &[u8]) -> Cow<'_, str> {
     }
 
     // Same logic as before but instead of operating on 8 bytes at a time, work bytewise
-    let remainder = chunk_iter.remainder();
     for &byte in remainder {
         is_ascii &= byte.is_ascii();
         if byte == b'\\' {
