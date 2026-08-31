@@ -1,4 +1,4 @@
-#![cfg(feature = "envelope")]
+#![cfg(all(feature = "envelope", feature = "serde"))]
 use jomini::{
     Encoding, Utf8Encoding,
     binary::{

@@ -1,9 +1,10 @@
+use crate::envelope::{
+    SaveHeader,
+    errors::{EnvelopeError, EnvelopeErrorKind},
+};
+#[cfg(feature = "serde")]
 use crate::{
     TextDeserializer, Utf8Encoding,
-    envelope::{
-        SaveHeader,
-        errors::{EnvelopeError, EnvelopeErrorKind},
-    },
     text::{self, de::TextReaderDeserializer},
 };
 use rawzip::{
@@ -427,6 +428,7 @@ impl<E, R: ReaderAt> SaveData<E, R> {
     }
 }
 
+#[cfg(feature = "serde")]
 impl<R: ReaderAt> SaveData<TextEncoding, R> {
     /// Creates a text deserializer for this save data
     pub fn deserializer(&self) -> TextReaderDeserializer<'_, Utf8Encoding> {
@@ -563,6 +565,7 @@ impl<R: Read> Read for SaveMetadata<BinaryEncoding, R> {
     }
 }
 
+#[cfg(feature = "serde")]
 impl<R: Read> SaveMetadata<TextEncoding, R> {
     /// Creates a text deserializer for this metadata
     pub fn deserializer(&mut self) -> TextReaderDeserializer<'_, Utf8Encoding> {
@@ -682,6 +685,7 @@ impl<R: Read, E> Read for SaveContent<E, R> {
     }
 }
 
+#[cfg(feature = "serde")]
 impl<R: Read> SaveContent<TextEncoding, R> {
     /// Creates a text deserializer for this content
     pub fn deserializer(&mut self) -> TextReaderDeserializer<'_, Utf8Encoding> {
@@ -945,6 +949,7 @@ impl<R: Read> Read for VerifyingReader<R> {
     }
 }
 
+#[cfg(feature = "serde")]
 fn text_deserializer<'r, R: Read + 'r>(reader: R) -> TextReaderDeserializer<'r, Utf8Encoding> {
     TextDeserializer::from_utf8_reader(text::TokenReader::new(reader))
 }
