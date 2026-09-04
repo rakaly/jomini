@@ -78,6 +78,32 @@ fn ungroup(mut ty: &Type) -> &Type {
 /// Another attribute unique to jomini is `#[jomini(take_last)]` which will take the last occurence
 /// of a field. Helpful when a field is duplicated accidentally.
 ///
+/// ## Non-serde attributes
+/// The following are the extra attributes implemented by `JominiDeserialize`
+/// that do not map directly to serde attributes.
+///
+/// - `#[jomini(duplicated)]`
+///
+/// This attribute requires that the field be a `Vec<T>` field. Each appearance
+/// of this attribute will push a new entry onto the vector.
+///
+/// - `#[jomini(take_last)]`
+///
+/// This attribute will discard any prior value of the field when it is
+/// encountered. It is mutually exclusive with `#[jomini(duplicated)]`.
+///
+/// - `#[jomini(token=value)]`
+///
+/// Annoytating all fields with this enables the binary deserializer to map `u16` tokens directly to
+/// struct fields, bypassing intermediate string lookups and comparisons.
+///
+/// - `#[jomini(collect_with="path")]`
+///
+/// This method will call the given function for every unknown entry in the
+/// structure. The function should have signature
+/// `fn<A>(&mut T, &str, &mut A) -> Result<(), A::Error> where A: MapAccess`,
+/// where `T` is the type of the field.
+///
 /// ## The Why
 ///
 /// Serde's `Deserialize` implementation will raise an error if a field occurs more than once in
@@ -145,9 +171,12 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         take_last: bool,
         default: DefaultFallback,
         deserialize_with: Option<syn::ExprPath>,
+        collect_with: Option<syn::ExprPath>,
         token: Option<u16>,
         borrow: bool,
     }
+
+    let mut unknown_field = None;
 
     let mut field_attrs = Vec::new();
     for f in &named_fields.named {
@@ -162,6 +191,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         let mut take_last = false;
         let mut default = DefaultFallback::No;
         let mut deserialize_with = None;
+        let mut collect_with = None;
         let mut alias = None;
         let mut token = None;
         let mut borrow = false;
@@ -197,6 +227,9 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
                 } else if meta.path.is_ident("deserialize_with") {
                     let lit: LitStr = meta.value()?.parse()?;
                     deserialize_with = Some(lit.parse()?);
+                } else if meta.path.is_ident("collect_with") {
+                    let lit: LitStr = meta.value()?.parse()?;
+                    collect_with = Some(lit.parse()?);
                 } else if meta.path.is_ident("alias") {
                     let lit: LitStr = meta.value()?.parse()?;
                     alias = Some(lit.value());
@@ -226,6 +259,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
             take_last,
             default,
             deserialize_with,
+            collect_with,
             token,
             borrow,
         };
@@ -234,6 +268,13 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
             return Err(Error::new(
                 field_span,
                 "Cannot have both duplicated and take_last attributes on a field",
+            ));
+        }
+
+        if attr.deserialize_with.is_some() && attr.collect_with.is_some() {
+            return Err(Error::new(
+                field_span,
+                "Cannot have both deserialize_with and collect_with attributes on a field",
             ));
         }
 
@@ -255,6 +296,15 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
             }
         }
 
+        if attr.collect_with.is_some() {
+            if unknown_field.is_some() {
+                return Err(Error::new(
+                    field_span,
+                    "Only one collect_with field allowed per struct",
+                ));
+            }
+            unknown_field = Some(field_attrs.len());
+        }
         field_attrs.push(attr);
     }
 
@@ -367,7 +417,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
     let builder_init = field_attrs.iter().map(|f| {
         let name = &f.ident;
         let x = &f.typ;
-        if !f.duplicated {
+        if !f.duplicated && f.collect_with.is_none() {
             let field_name_opt = format_ident!("{}_opt", name);
             quote! { let mut #field_name_opt : ::std::option::Option<#x> = None }
         } else {
@@ -375,7 +425,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         }
     });
 
-    let builder_fields = field_attrs.iter().map(|f| {
+    let builder_fields = field_attrs.iter().filter(|f| f.collect_with.is_none()).map(|f| {
         let name = &f.ident;
         let x = &f.typ;
         let name_str = &f.display;
@@ -455,7 +505,25 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         }
     }).collect::<Result<Vec<_>>>()?;
 
-    let field_extract = field_attrs.iter().filter(|x| !x.duplicated).map(|f| {
+    let default_arm = if let Some(default_idx) = unknown_field {
+        let f = &field_attrs[default_idx];
+        let collector = f.collect_with.as_ref().unwrap();
+        let name = &f.ident;
+        quote! {
+            __Field::__unknown_str(s) => { #collector(&mut #name, s.as_ref(), &mut __map)?; },
+            _ => { ::serde::de::MapAccess::next_value::<::serde::de::IgnoredAny>(&mut __map)?; }
+        }
+    } else {
+        quote! { _ => { ::serde::de::MapAccess::next_value::<::serde::de::IgnoredAny>(&mut __map)?; } }
+    };
+
+    let unknown_owned_str = if unknown_field.is_some() {
+        quote! { Ok(__Field::__unknown_str(::std::borrow::Cow::Owned(__value.into()))) }
+    } else {
+        quote! { Ok(__Field::__ignore) }
+    };
+
+    let field_extract = field_attrs.iter().filter(|x| !x.duplicated && x.collect_with.is_none()).map(|f| {
         let name = &f.ident;
         let field_name_opt = format_ident!("{}_opt", name);
         let name_str = &f.display;
@@ -491,7 +559,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
         quote! {
             #match_arm => Ok(#field_ident)
         }
-    });
+    }).collect::<Vec<_>>();
 
     let field_enum_token_match = field_attrs.iter().filter_map(|f| {
         f.token.map(|token| {
@@ -538,14 +606,15 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
             fn deserialize<__D>(__deserializer: __D) -> ::std::result::Result<Self, __D::Error>
             where __D: ::serde::Deserializer<'de> {
                 #[allow(non_camel_case_types)]
-                enum __Field {
+                enum __Field<'de> {
                     #(#field_enums),* ,
+                    __unknown_str(::std::borrow::Cow<'de, str>),
                     __ignore,
                 };
 
                 struct __FieldVisitor;
                 impl<'de> ::serde::de::Visitor<'de> for __FieldVisitor {
-                    type Value = __Field;
+                    type Value = __Field<'de>;
                     fn expecting(
                         &self,
                         __formatter: &mut ::std::fmt::Formatter,
@@ -561,7 +630,19 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
                     {
                         match __value {
                             #(#field_enum_match),* ,
-                            _ => Ok(__Field::__ignore),
+                            _ => #unknown_owned_str,
+                        }
+                    }
+                    fn visit_borrowed_str<__E>(
+                        self,
+                        __value: &'de str,
+                    ) -> ::std::result::Result<Self::Value, __E>
+                    where
+                        __E: ::serde::de::Error,
+                    {
+                        match __value {
+                            #(#field_enum_match),* ,
+                            _ => Ok(__Field::__unknown_str(__value.into())),
                         }
                     }
                     fn visit_u16<__E>(
@@ -578,7 +659,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
                     }
                 }
 
-                impl<'de> serde::Deserialize<'de> for __Field {
+                impl<'de> serde::Deserialize<'de> for __Field<'de> {
                     #[inline]
                     fn deserialize<__D>(
                         __deserializer: __D,
@@ -614,7 +695,7 @@ fn derive_impl(dinput: DeriveInput) -> Result<TokenStream> {
                         while let Some(__key) = ::serde::de::MapAccess::next_key::<__Field>(&mut __map)? {
                             match __key {
                                 #(#builder_fields),* ,
-                                _ => { ::serde::de::MapAccess::next_value::<::serde::de::IgnoredAny>(&mut __map)?; }
+                                #default_arm
                             }
                         }
 
