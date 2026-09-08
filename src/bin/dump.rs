@@ -110,6 +110,10 @@ fn format_lexeme(
             let value = lexer.read_string()?;
             buf.extend_from_slice(value.as_bytes());
         }
+        LexemeId::STR_SAV03 => {
+            let value = lexer.read_string()?;
+            buf.extend_from_slice(value.as_bytes());
+        }
         LexemeId::F32 => {
             let bytes = lexer.read_f32()?;
             write!(buf, "f32:0x{:x}", u32::from_le_bytes(bytes))?;
@@ -153,6 +157,22 @@ fn format_lexeme(
         LexemeId::LOOKUP_U32_ALT => {
             let value = lexer.read_lookup_u32()?;
             write!(buf, "lookup_u32_alt:0x{:08x}", value)?;
+        }
+        LexemeId::LOOKUP_U8_SAV03 => {
+            let value = lexer.read_lookup_u8()?;
+            write!(buf, "lookup_u8_sav03:0x{:02x}", value)?;
+        }
+        LexemeId::LOOKUP_U16_SAV03 => {
+            let value = lexer.read_lookup_u16()?;
+            write!(buf, "lookup_u16_sav03:0x{:04x}", value)?;
+        }
+        LexemeId::LOOKUP_U24_SAV03 => {
+            let value = lexer.read_lookup_u24()?;
+            write!(buf, "lookup_u24_sav03:0x{:06x}", value)?;
+        }
+        LexemeId::LOOKUP_U32_SAV03 => {
+            let value = lexer.read_lookup_u32()?;
+            write!(buf, "lookup_u32_sav03:0x{:08x}", value)?;
         }
         // Handle Fixed5 lexemes with special formatting
         lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {

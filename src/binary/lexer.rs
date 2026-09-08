@@ -139,6 +139,21 @@ impl LexemeId {
     /// Value range: -72,057,594,037,927.935 to 0.0 | Formula: -(raw / 100,000)
     pub const FIXED5_I56: LexemeId = LexemeId::new(0x0d55);
 
+    /// Lookup token with an 8-bit payload (EU5 SAV03, ID 0x0d5a).
+    pub const LOOKUP_U8_SAV03: LexemeId = LexemeId::new(0x0d5a);
+
+    /// Lookup token with a 16-bit payload (EU5 SAV03, ID 0x0d5b).
+    pub const LOOKUP_U16_SAV03: LexemeId = LexemeId::new(0x0d5b);
+
+    /// Lookup token with a 24-bit payload (EU5 SAV03, ID 0x0d5c).
+    pub const LOOKUP_U24_SAV03: LexemeId = LexemeId::new(0x0d5c);
+
+    /// Lookup token with a 32-bit payload (EU5 SAV03, ID 0x0d5d).
+    pub const LOOKUP_U32_SAV03: LexemeId = LexemeId::new(0x0d5d);
+
+    /// Length-prefixed string (EU5 SAV03, ID 0x0d5e).
+    pub const STR_SAV03: LexemeId = LexemeId::new(0x0d5e);
+
     /// Construct a new [LexemeId] from a 16bit value
     #[inline]
     pub const fn new(x: u16) -> Self {
@@ -183,7 +198,11 @@ impl LexemeId {
             | LexemeId::LOOKUP_U24
             | LexemeId::LOOKUP_U24_ALT
             | LexemeId::LOOKUP_U32
-            | LexemeId::LOOKUP_U32_ALT => TokenKind::Lookup,
+            | LexemeId::LOOKUP_U32_ALT
+            | LexemeId::LOOKUP_U8_SAV03
+            | LexemeId::LOOKUP_U16_SAV03
+            | LexemeId::LOOKUP_U24_SAV03
+            | LexemeId::LOOKUP_U32_SAV03 => TokenKind::Lookup,
             // Fixed5 lexemes are converted to F64 tokens
             LexemeId::FIXED5_ZERO
             | LexemeId::FIXED5_U8
@@ -200,6 +219,7 @@ impl LexemeId {
             | LexemeId::FIXED5_I40
             | LexemeId::FIXED5_I48
             | LexemeId::FIXED5_I56 => TokenKind::F64,
+            LexemeId::STR_SAV03 => TokenKind::Unquoted,
             _ => TokenKind::Id,
         }
     }
@@ -535,21 +555,23 @@ pub(crate) fn read_token(data: &[u8]) -> Result<(Token<'_>, &[u8]), LexError> {
         LexemeId::BOOL => read_bool(data).map(|(x, d)| (Token::Bool(x), d)),
         LexemeId::QUOTED => read_string(data).map(|(x, d)| (Token::Quoted(x), d)),
         LexemeId::EMPTY_STRING => Ok((Token::Quoted(Scalar::new(b"")), data)),
-        LexemeId::UNQUOTED => read_string(data).map(|(x, d)| (Token::Unquoted(x), d)),
+        LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
+            read_string(data).map(|(x, d)| (Token::Unquoted(x), d))
+        }
         LexemeId::F32 => read_f32(data).map(|(x, d)| (Token::F32(*x), d)),
         LexemeId::F64 => read_f64(data).map(|(x, d)| (Token::F64(*x), d)),
         LexemeId::RGB => read_rgb(data).map(|(x, d)| (Token::Rgb(x), d)),
         LexemeId::I64 => read_i64(data).map(|(x, d)| (Token::I64(x), d)),
-        LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
+        LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT | LexemeId::LOOKUP_U8_SAV03 => {
             read_lookup_u8(data).map(|(x, d)| (Token::Lookup(x as u32), d))
         }
-        LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
+        LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT | LexemeId::LOOKUP_U16_SAV03 => {
             read_lookup_u16(data).map(|(x, d)| (Token::Lookup(x as u32), d))
         }
-        LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
+        LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT | LexemeId::LOOKUP_U24_SAV03 => {
             read_lookup_u24(data).map(|(x, d)| (Token::Lookup(x), d))
         }
-        LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+        LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT | LexemeId::LOOKUP_U32_SAV03 => {
             read_lookup_u32(data).map(|(x, d)| (Token::Lookup(x), d))
         }
         lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
@@ -1057,7 +1079,7 @@ impl<'a> Lexer<'a> {
     #[inline]
     pub fn skip_value(&mut self, id: LexemeId) -> Result<(), LexerError> {
         match id {
-            LexemeId::QUOTED | LexemeId::UNQUOTED => {
+            LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
                 self.read_string()?;
                 Ok(())
             }
@@ -1096,19 +1118,19 @@ impl<'a> Lexer<'a> {
                 self.read_rgb()?;
                 Ok(())
             }
-            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
+            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT | LexemeId::LOOKUP_U8_SAV03 => {
                 self.read_lookup_u8()?;
                 Ok(())
             }
-            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
+            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT | LexemeId::LOOKUP_U16_SAV03 => {
                 self.read_lookup_u16()?;
                 Ok(())
             }
-            LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
+            LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT | LexemeId::LOOKUP_U24_SAV03 => {
                 self.read_lookup_u24()?;
                 Ok(())
             }
-            LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+            LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT | LexemeId::LOOKUP_U32_SAV03 => {
                 self.read_lookup_u32()?;
                 Ok(())
             }
@@ -1125,7 +1147,7 @@ impl<'a> Lexer<'a> {
         let mut depth = 1;
         loop {
             match self.read_id()? {
-                LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
                     self.read_string()?;
                 }
                 LexemeId::U32 => {
@@ -1149,16 +1171,16 @@ impl<'a> Lexer<'a> {
                 LexemeId::F64 => {
                     self.read_f64()?;
                 }
-                LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
+                LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT | LexemeId::LOOKUP_U8_SAV03 => {
                     self.read_lookup_u8()?;
                 }
-                LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
+                LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT | LexemeId::LOOKUP_U16_SAV03 => {
                     self.read_lookup_u16()?;
                 }
-                LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
+                LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT | LexemeId::LOOKUP_U24_SAV03 => {
                     self.read_lookup_u24()?;
                 }
-                LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+                LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT | LexemeId::LOOKUP_U32_SAV03 => {
                     self.read_lookup_u32()?;
                 }
                 LexemeId::CLOSE => {
