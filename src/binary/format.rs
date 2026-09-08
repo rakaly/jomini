@@ -249,7 +249,7 @@ fn read_compact_f64(source: &mut ParserSource<'_>, lexeme: LexemeId) -> Result<[
 /// Skip the payload of a single non-structural lexeme.
 fn skip_payload(source: &mut ParserSource<'_>, id: LexemeId) -> Result<(), Error> {
     match id {
-        LexemeId::QUOTED | LexemeId::UNQUOTED => {
+        LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
             source.read_bstr()?;
         }
         LexemeId::U32 | LexemeId::I32 | LexemeId::F32 => {
@@ -264,16 +264,16 @@ fn skip_payload(source: &mut ParserSource<'_>, id: LexemeId) -> Result<(), Error
         LexemeId::RGB => {
             source.read_rgb()?;
         }
-        LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
+        LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT | LexemeId::LOOKUP_U8_SAV03 => {
             source.take::<1>()?;
         }
-        LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
+        LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT | LexemeId::LOOKUP_U16_SAV03 => {
             source.take::<2>()?;
         }
-        LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
+        LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT | LexemeId::LOOKUP_U24_SAV03 => {
             source.take::<3>()?;
         }
-        LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+        LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT | LexemeId::LOOKUP_U32_SAV03 => {
             source.take::<4>()?;
         }
         lexeme if (LexemeId::FIXED5_ZERO..=LexemeId::FIXED5_I56).contains(&lexeme) => {
@@ -343,15 +343,17 @@ where
 
     fn read_lookup(&self, source: &mut ParserSource<'_>, id: LexemeId) -> Result<u32, Error> {
         match id {
-            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => Ok(source.take::<1>()?[0] as u32),
-            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
+            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT | LexemeId::LOOKUP_U8_SAV03 => {
+                Ok(source.take::<1>()?[0] as u32)
+            }
+            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT | LexemeId::LOOKUP_U16_SAV03 => {
                 Ok(u16::from_le_bytes(*source.take::<2>()?) as u32)
             }
-            LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
+            LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT | LexemeId::LOOKUP_U24_SAV03 => {
                 let b = source.take::<3>()?;
                 Ok(u32::from_le_bytes([b[0], b[1], b[2], 0]))
             }
-            LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+            LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT | LexemeId::LOOKUP_U32_SAV03 => {
                 Ok(u32::from_le_bytes(*source.take::<4>()?))
             }
             _ => unreachable!("read_lookup called with non-lookup lexeme"),
@@ -369,7 +371,7 @@ where
         V: PdxVisitor<'de>,
     {
         match id {
-            LexemeId::QUOTED | LexemeId::UNQUOTED => {
+            LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
                 let (format, source) = cx.parts();
                 let data = source.read_bstr()?;
                 match format.flavor.decode(data) {
@@ -399,7 +401,11 @@ where
             | LexemeId::LOOKUP_U24
             | LexemeId::LOOKUP_U24_ALT
             | LexemeId::LOOKUP_U32
-            | LexemeId::LOOKUP_U32_ALT => {
+            | LexemeId::LOOKUP_U32_ALT
+            | LexemeId::LOOKUP_U8_SAV03
+            | LexemeId::LOOKUP_U16_SAV03
+            | LexemeId::LOOKUP_U24_SAV03
+            | LexemeId::LOOKUP_U32_SAV03 => {
                 let (format, source) = cx.parts();
                 let index = format.read_lookup(source, id)?;
                 format.resolve_lookup(index, visitor)
@@ -479,7 +485,11 @@ where
             | LexemeId::LOOKUP_U24
             | LexemeId::LOOKUP_U24_ALT
             | LexemeId::LOOKUP_U32
-            | LexemeId::LOOKUP_U32_ALT => visitor.visit_u32(format.read_lookup(source, id)?),
+            | LexemeId::LOOKUP_U32_ALT
+            | LexemeId::LOOKUP_U8_SAV03
+            | LexemeId::LOOKUP_U16_SAV03
+            | LexemeId::LOOKUP_U24_SAV03
+            | LexemeId::LOOKUP_U32_SAV03 => visitor.visit_u32(format.read_lookup(source, id)?),
             _ => Self::dispatch(cx, id, visitor),
         }
     }
@@ -602,7 +612,7 @@ where
         let (format, source) = cx.parts();
         let id = source.read_lexeme_id()?;
         match id {
-            LexemeId::QUOTED | LexemeId::UNQUOTED => {
+            LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
                 let data = source.read_bstr()?;
                 match format.flavor.decode(data) {
                     Cow::Borrowed(x) => visitor.visit_str(x),
@@ -624,7 +634,9 @@ where
         let source = cx.source();
         let id = source.read_lexeme_id()?;
         match id {
-            LexemeId::QUOTED | LexemeId::UNQUOTED => visitor.visit_bytes(source.read_bstr()?),
+            LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
+                visitor.visit_bytes(source.read_bstr()?)
+            }
             _ => Self::dispatch(cx, id, visitor),
         }
     }
@@ -644,8 +656,8 @@ where
 }
 
 fn skip_standard(source: &mut ParserSource<'_>) -> Result<(), Error> {
-    static PAYLOAD_SIZES: [u8; (LexemeId::FIXED5_I56.0 as usize) + 1] = {
-        let mut t = [0u8; (LexemeId::FIXED5_I56.0 as usize) + 1];
+    static PAYLOAD_SIZES: [u8; (LexemeId::STR_SAV03.0 as usize) + 1] = {
+        let mut t = [0u8; (LexemeId::STR_SAV03.0 as usize) + 1];
         t[LexemeId::U32.0 as usize] = 4;
         t[LexemeId::I32.0 as usize] = 4;
         t[LexemeId::F32.0 as usize] = 4;
@@ -661,6 +673,10 @@ fn skip_standard(source: &mut ParserSource<'_>) -> Result<(), Error> {
         t[LexemeId::LOOKUP_U24_ALT.0 as usize] = 3;
         t[LexemeId::LOOKUP_U32.0 as usize] = 4;
         t[LexemeId::LOOKUP_U32_ALT.0 as usize] = 4;
+        t[LexemeId::LOOKUP_U8_SAV03.0 as usize] = 1;
+        t[LexemeId::LOOKUP_U16_SAV03.0 as usize] = 2;
+        t[LexemeId::LOOKUP_U24_SAV03.0 as usize] = 3;
+        t[LexemeId::LOOKUP_U32_SAV03.0 as usize] = 4;
         t[LexemeId::FIXED5_ZERO.0 as usize] = 0;
         t[LexemeId::FIXED5_U8.0 as usize] = 1;
         t[LexemeId::FIXED5_U16.0 as usize] = 2;
@@ -691,7 +707,9 @@ fn skip_standard(source: &mut ParserSource<'_>) -> Result<(), Error> {
                 *depth -= 1;
                 Ok(())
             }
-            LexemeId::QUOTED | LexemeId::UNQUOTED => Ok(source.read_bstr().map(|_| ())?),
+            LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
+                Ok(source.read_bstr().map(|_| ())?)
+            }
             LexemeId::RGB => source.read_rgb().map(|_| ()),
             other => {
                 let entry = PAYLOAD_SIZES.get(other.0 as usize).copied().unwrap_or(0);
@@ -751,7 +769,7 @@ fn skip_standard(source: &mut ParserSource<'_>) -> Result<(), Error> {
                             return Ok(());
                         }
                     }
-                    LexemeId::QUOTED | LexemeId::UNQUOTED => {
+                    LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
                         // Layout: [id:2][len:2][bytes:len]. The length is in
                         // bounds via the margin; the bytes may not be, in which
                         // case we defer to the slow path. Skipping strings

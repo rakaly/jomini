@@ -368,13 +368,13 @@ impl<'a> TokenReader<'a> {
                 self.source.advance(3);
                 Some(TokenKind::Bool)
             }
-            LexemeId::QUOTED | LexemeId::UNQUOTED => {
+            LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
                 let (len_data, rest) = get_split::<2>(rest).unwrap();
                 let len = u16::from_le_bytes(*len_data) as usize;
                 rest.get(len..)?;
                 self.data[0..2].copy_from_slice(len_data);
                 self.source.advance(4 + len);
-                if lexeme == LexemeId::UNQUOTED {
+                if lexeme == LexemeId::UNQUOTED || lexeme == LexemeId::STR_SAV03 {
                     Some(TokenKind::Unquoted)
                 } else {
                     Some(TokenKind::Quoted)
@@ -387,25 +387,25 @@ impl<'a> TokenReader<'a> {
                 self.source.advance(2);
                 Some(TokenKind::Quoted)
             }
-            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
+            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT | LexemeId::LOOKUP_U8_SAV03 => {
                 self.data = [0; 8];
                 self.data[0] = rest[0];
                 self.source.advance(3);
                 Some(TokenKind::Lookup)
             }
-            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
+            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT | LexemeId::LOOKUP_U16_SAV03 => {
                 self.data = [0; 8];
                 self.data[0..2].copy_from_slice(&rest[..2]);
                 self.source.advance(4);
                 Some(TokenKind::Lookup)
             }
-            LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
+            LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT | LexemeId::LOOKUP_U24_SAV03 => {
                 self.data = [0; 8];
                 self.data[0..3].copy_from_slice(&rest[..3]);
                 self.source.advance(5);
                 Some(TokenKind::Lookup)
             }
-            LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+            LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT | LexemeId::LOOKUP_U32_SAV03 => {
                 self.data = [0; 8];
                 self.data[0..4].copy_from_slice(&rest[..4]);
                 self.source.advance(6);
@@ -488,7 +488,7 @@ impl<'a> TokenReader<'a> {
                 self.source.advance(3);
                 TokenKind::Bool
             }
-            LexemeId::QUOTED | LexemeId::UNQUOTED => {
+            LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
                 self.ensure_bytes(4)?;
                 let data = unsafe { self.source.get_window_unchecked(4) };
                 let len_data = [data[2], data[3]];
@@ -496,7 +496,7 @@ impl<'a> TokenReader<'a> {
                 self.ensure_bytes(4 + len)?;
                 self.data[0..2].copy_from_slice(&len_data);
                 self.source.advance(4 + len);
-                if lexeme == LexemeId::UNQUOTED {
+                if lexeme == LexemeId::UNQUOTED || lexeme == LexemeId::STR_SAV03 {
                     TokenKind::Unquoted
                 } else {
                     TokenKind::Quoted
@@ -509,7 +509,7 @@ impl<'a> TokenReader<'a> {
                 self.source.advance(2);
                 TokenKind::Quoted
             }
-            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT => {
+            LexemeId::LOOKUP_U8 | LexemeId::LOOKUP_U8_ALT | LexemeId::LOOKUP_U8_SAV03 => {
                 self.ensure_bytes(3)?;
                 let data = unsafe { self.source.get_window_unchecked(3) };
                 self.data = [0; 8];
@@ -517,7 +517,7 @@ impl<'a> TokenReader<'a> {
                 self.source.advance(3);
                 TokenKind::Lookup
             }
-            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT => {
+            LexemeId::LOOKUP_U16 | LexemeId::LOOKUP_U16_ALT | LexemeId::LOOKUP_U16_SAV03 => {
                 self.ensure_bytes(4)?;
                 let data = unsafe { self.source.get_window_unchecked(4) };
                 self.data = [0; 8];
@@ -525,7 +525,7 @@ impl<'a> TokenReader<'a> {
                 self.source.advance(4);
                 TokenKind::Lookup
             }
-            LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT => {
+            LexemeId::LOOKUP_U24 | LexemeId::LOOKUP_U24_ALT | LexemeId::LOOKUP_U24_SAV03 => {
                 self.ensure_bytes(5)?;
                 let data = unsafe { self.source.get_window_unchecked(5) };
                 self.data = [0; 8];
@@ -533,7 +533,7 @@ impl<'a> TokenReader<'a> {
                 self.source.advance(5);
                 TokenKind::Lookup
             }
-            LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT => {
+            LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT | LexemeId::LOOKUP_U32_SAV03 => {
                 self.ensure_bytes(6)?;
                 let data = unsafe { self.source.get_window_unchecked(6) };
                 self.data = [0; 8];
@@ -828,6 +828,28 @@ mod tests {
         assert_tokens(
             &[0x46, 0x0d, 0xdd, 0xcc, 0xbb, 0xaa],
             &[Token::Lookup(0xaabb_ccdd)],
+        );
+    }
+
+    #[test]
+    fn test_sav03_lookup_and_string_tokens() {
+        // SAV03 lookups use the same payload widths as the standard
+        // lookup tokens. STR_SAV03 uses a u16 length and raw bytes.
+        assert_tokens(
+            &[
+                0x5a, 0x0d, 0x01, // LOOKUP_U8_SAV03(1)
+                0x5b, 0x0d, 0x02, 0x00, // LOOKUP_U16_SAV03(2)
+                0x5c, 0x0d, 0x03, 0x00, 0x00, // LOOKUP_U24_SAV03(3)
+                0x5d, 0x0d, 0x04, 0x00, 0x00, 0x00, // LOOKUP_U32_SAV03(4)
+                0x5e, 0x0d, 0x07, 0x00, b'd', b'y', b'n', b'a', b'm', b'i', b'c',
+            ],
+            &[
+                Token::Lookup(1),
+                Token::Lookup(2),
+                Token::Lookup(3),
+                Token::Lookup(4),
+                Token::Unquoted(Scalar::new(b"dynamic")),
+            ],
         );
     }
 
