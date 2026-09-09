@@ -1,3 +1,15 @@
+## v0.36.0 - 2026-09-09
+
+### Added
+
+- Add support for SAV03 binary tokens, including aliases for 8-, 16-, 24-, and
+  32-bit lookup values and length-prefixed strings.
+- Improve `BasicTokenResolver` lookup performance with a dense index.
+
+### Fixed
+
+- Allow the `envelope` feature to compile without enabling `serde`.
+
 ## v0.35.0 - 2026-07-12
 
 ### Breaking Changes
