@@ -16,7 +16,7 @@ libfuzzer-sys = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 
 [dependencies.jomini]
-path = ".."
+path = "../crates/jomini"
 features = ["envelope"]
 
 # Prevent this from interfering with workspaces
