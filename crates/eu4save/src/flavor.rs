@@ -1,7 +1,12 @@
 use jomini::{binary::BinaryFlavor, Encoding, Windows1252Encoding};
 
-/// The eu4 binary flavor
-#[derive(Debug, Default)]
+/// The eu4 binary flavor and text encoding
+///
+/// Strings are Windows-1252, except for strings from the Japanese and Chinese
+/// localization mods (both built on EU4dll), which escape UCS-2 code points
+/// behind the control bytes `0x10` to `0x13`. Vanilla saves never contain
+/// these bytes, so each string is detected and decoded on its own.
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Eu4Flavor(Windows1252Encoding);
 
 impl Eu4Flavor {
@@ -13,13 +18,34 @@ impl Eu4Flavor {
 
 impl Encoding for Eu4Flavor {
     fn decode<'a>(&self, data: &'a [u8]) -> std::borrow::Cow<'a, str> {
-        // Heuristic to detect chinese escaped strings
-        if matches!(data.first(), Some(0x10..=0x13)) {
+        // Nearly all strings are plain ascii, so one branch-free pass finds
+        // the bytes that need more work: non-ascii, a backslash escape, or an
+        // EU4dll escape. The loop is written so that it vectorizes.
+        let mut plain = true;
+        for &b in data {
+            plain &= b.is_ascii() & (b != b'\\') & !is_eu4dll_escape(b);
+        }
+
+        if plain {
+            let trimmed = data.trim_ascii_end();
+            debug_assert!(std::str::from_utf8(trimmed).is_ok());
+            // SAFETY: every byte is ascii, and ascii is a subset of utf-8
+            let s = unsafe { std::str::from_utf8_unchecked(trimmed) };
+            std::borrow::Cow::Borrowed(s)
+        } else if data.iter().any(|&b| is_eu4dll_escape(b)) {
+            // EU4dll escapes can start anywhere in a string, such as a Latin
+            // family name followed by a localized suffix
             std::borrow::Cow::Owned(decode_eu4_escaped_text(data))
         } else {
             self.0.decode(data)
         }
     }
+}
+
+/// Returns true for the control bytes that start an EU4dll escape sequence
+#[inline]
+fn is_eu4dll_escape(b: u8) -> bool {
+    b & 0xFC == 0x10
 }
 
 impl BinaryFlavor for Eu4Flavor {
@@ -36,7 +62,7 @@ impl BinaryFlavor for Eu4Flavor {
     }
 }
 
-/// Converts the EU4 chinese encoding into a utf-8 string
+/// Converts the EU4dll escaped encoding (Japanese and Chinese mods) into a utf-8 string
 ///
 /// This function was converted from the original C++ code:
 /// https://github.com/matanki-saito/EU4dll/blob/4b5e5e16ec09c6977f1c96dabc7e6bab16590b02/Plugin64/escape_tool.cpp
@@ -74,13 +100,22 @@ pub fn decode_eu4_escaped_text(mut input: &[u8]) -> String {
                     }
                 }
             }
+            // Backslash escapes are dropped like in the Windows-1252 decoder
+            b'\\' => continue,
             _ => cp1252_to_ucs2(cp),
         };
 
         wide_chars.push(code_point as u16);
     }
 
-    String::from_utf16_lossy(&wide_chars)
+    // Trailing whitespace is trimmed after the decode, as the last byte of
+    // an escape payload can be an ascii whitespace byte
+    let mut result = String::from_utf16_lossy(&wide_chars);
+    let trimmed_len = result
+        .trim_end_matches(|c: char| c.is_ascii_whitespace())
+        .len();
+    result.truncate(trimmed_len);
+    result
 }
 
 /// Converts a CP1252 byte to its UCS-2 equivalent
@@ -130,5 +165,22 @@ mod tests {
         let data: [u8; 8] = [210, 63, 1, 0, 0, 0, 0, 0];
         let actual = flavor.visit_f64(data);
         assert_eq!(actual, 2.49860);
+    }
+
+    #[test]
+    fn eu4_escaped_text_drops_backslashes() {
+        // A latin name in quotes with a localized suffix: `"Foo" 隊`
+        let data = b"\\\"Foo\\\" \x10\x8A\x96";
+        let flavor = Eu4Flavor::new();
+        assert_eq!(flavor.decode(data), "\"Foo\" 隊");
+    }
+
+    #[test]
+    fn eu4_escaped_text_trims_trailing_whitespace() {
+        let flavor = Eu4Flavor::new();
+        assert_eq!(flavor.decode(b"\x10\x8A\x96 \n"), "隊");
+
+        // The trailing space is the high byte of the em dash escape
+        assert_eq!(flavor.decode(b"a\x10\x14\x20"), "a\u{2014}");
     }
 }

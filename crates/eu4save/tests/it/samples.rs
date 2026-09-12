@@ -387,3 +387,32 @@ fn fix_crash_on_long_country_tag_debug_mode() {
     let file = Eu4File::from_file(file).unwrap();
     let _save = file.parse_save(&SegmentedResolver::empty());
 }
+
+#[test]
+fn test_eu4_japanese_text() -> Result<(), Box<dyn Error>> {
+    let data = utils::request_file("mp_shift.eu4");
+    let file = Eu4File::from_file(data)?;
+    let save = file.parse_save(&SegmentedResolver::empty())?;
+    assert_eq!(file.encoding(), Encoding::TextZip);
+    assert_eq!(save.meta.player, "TRE");
+    assert_eq!(save.meta.displayed_country_name, "トレビゾンド");
+    assert_eq!(save.game.players_countries[0], "くまねこ");
+
+    // A Latin family name with a localized suffix: the escape does not start
+    // the string
+    let tre = &save
+        .game
+        .countries
+        .iter()
+        .find(|(tag, _)| tag.as_str() == "TRE")
+        .unwrap()
+        .1;
+    let regiment = tre
+        .armies
+        .iter()
+        .flat_map(|a| a.regiments.iter())
+        .find(|r| r.name.starts_with("Choniades"))
+        .unwrap();
+    assert_eq!(regiment.name, "Choniadesの1st 傭兵歩兵");
+    Ok(())
+}

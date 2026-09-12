@@ -15,6 +15,7 @@ kandy2.bin.eu4
 losses.eu4
 modded.eu4
 mp_Uesugi.eu4
+mp_shift.eu4
 no-dlc.eu4
 non-ironman-binary.eu4
 nor_lev.eu4
