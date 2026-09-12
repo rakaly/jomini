@@ -1,0 +1,6 @@
+error: Only one variant can have the `other` attribute
+ --> tests/ui/enum_two_other.rs:7:5
+  |
+7 | /     #[arena(other)]
+8 | |     Second,
+  | |__________^

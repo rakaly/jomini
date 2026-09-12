@@ -33,11 +33,11 @@ jobs:
         toolchain: stable
         components: clippy
     - name: Run clippy
-      run: cargo clippy -p jomini -p jomini_derive --all-features --all-targets -- -D warnings
+      run: cargo clippy -p jomini -p jomini_derive -p arena-serde -p arena-serde-derive --all-features --all-targets -- -D warnings
     # Game crates carry wasm-only features (tsify), so they are checked with
     # default features.
     - name: Run clippy (game crates)
-      run: cargo clippy --workspace --exclude jomini --exclude jomini_derive --all-targets -- -D warnings
+      run: cargo clippy --workspace --exclude jomini --exclude jomini_derive --exclude arena-serde --exclude arena-serde-derive --all-targets -- -D warnings
 
   testbench:
     name: testbench
@@ -81,8 +81,7 @@ jobs:
         toolchain: nightly
         components: miri
     - name: Run miri
-      # trybuild in jomini_derive cannot run under Miri
-      run: cargo miri test -p jomini
+      run: cargo miri test -p jomini -p jomini_derive -p arena-serde
       env:
         MIRIFLAGS: -Zmiri-tree-borrows
 
@@ -179,9 +178,9 @@ jobs:
     env:
       CARGO: cargo
       TARGET:
-      # The cross-compile and miri legs run only the published crates. Game
-      # crates get their own linux-only job.
-      PKGS: -p jomini -p jomini_derive
+      # The cross-compile legs run only the library crates. Game crates get
+      # their own linux-only job.
+      PKGS: -p jomini -p jomini_derive -p arena-serde -p arena-serde-derive
     strategy:
       matrix:
         build:

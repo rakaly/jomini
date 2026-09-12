@@ -1,0 +1,18 @@
+[package]
+name = "arena-serde-derive"
+version = "0.1.0"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition = "2024"
+publish = false
+description = "Implementation of `#[derive(ArenaDeserialize)]` for arena-serde"
+keywords = ["serde", "deserialization", "arena"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0.50", features = ["derive"] }
+quote = "1.0.34"
+proc-macro2 = "1.0"

@@ -1,0 +1,21 @@
+[package]
+name = "arena-serde"
+version = "0.1.0"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition = "2024"
+publish = false
+readme = "README.md"
+description = "Serde deserialization into an arena allocator"
+keywords = ["serde", "deserialization", "arena", "bumpalo"]
+categories = ["encoding"]
+
+[dependencies]
+arena-serde-derive = { path = "../arena-serde-derive", version = "^0.1.0" }
+bumpalo = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1.0.114"
+trybuild = { version = "1.0.104", features = ["diff"] }
