@@ -89,6 +89,9 @@ jobs:
       matrix:
         include:
         - { crate: eu4save, game: eu4 }
+        - { crate: ck3save, game: ck3 }
+        - { crate: hoi4save, game: hoi4 }
+        - { crate: imperator-save, game: imperator }
     steps:
     - uses: actions/checkout@v7
     - name: Install Rust
@@ -150,6 +153,9 @@ jobs:
       matrix:
         include:
         - { crate: eu4save, game: eu4 }
+        - { crate: ck3save, game: ck3 }
+        - { crate: hoi4save, game: hoi4 }
+        - { crate: imperator-save, game: imperator }
     env:
       PDX_TOKENS_DIR: ${{ github.workspace }}/.tokens/tokens
     steps:

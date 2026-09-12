@@ -1,0 +1,26 @@
+[package]
+name = "ck3save"
+version = "0.4.3"
+authors.workspace = true
+edition = "2021"
+exclude = ["/assets/*", "/fuzz/*"]
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Ergonomically work with all CK3 saves (regular and ironman)"
+keywords = ["ck3", "ironman"]
+categories = ["parsing"]
+
+[features]
+serialize = []
+
+[dependencies]
+jomini = { workspace = true, features = ["envelope", "json"] }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+pdx-fixtures = { workspace = true }
+flate2 = { workspace = true }
+highway = { workspace = true }
+memchr = { workspace = true }
