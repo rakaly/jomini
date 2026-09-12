@@ -1,0 +1,52 @@
+[package]
+name = "jomini"
+version = "0.36.0"
+authors.workspace = true
+license.workspace = true
+readme = "../../README.md"
+edition = "2024"
+repository.workspace = true
+categories = ["parsing"]
+description = "Low level, performance oriented parser for save and game files from EU4, CK3, HOI4, Vic3, Imperator, and other PDS titles"
+keywords = ["eu4", "ck3", "ironman", "clausewitz"]
+
+# Keep the historical `vX.Y.Z` tag scheme now that this is not the root package.
+[package.metadata.release]
+tag-prefix = ""
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+flate2 = { workspace = true, optional = true }
+itoa = { version = "1.0", optional = true }
+jomini_derive = { path = "../jomini_derive", version = "^0.4.0", optional = true }
+rawzip = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { version = "1.0.114", optional = true }
+
+[features]
+default = ["derive", "faster_writer"]
+derive = ["serde", "jomini_derive"]
+envelope = ["dep:rawzip", "dep:flate2"]
+faster_writer = ["dep:itoa"]
+json = ["serde", "serde_json"]
+serde = ["dep:serde", "serde/derive"]
+
+[dev-dependencies]
+attohttpc = { workspace = true }
+encoding_rs = "0.8"
+flate2 = { workspace = true }
+quickcheck = "1"
+quickcheck_macros = "1"
+rawzip = { workspace = true }
+rstest = "0.26.1"
+serde_with = "3.8.1"
+
+[[bin]]
+name = "json"
+required-features = ["json"]
+
+[[bin]]
+name = "envelope"
+required-features = ["envelope"]

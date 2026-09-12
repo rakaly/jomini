@@ -2,7 +2,7 @@ use crate::corpus::{self, Corpus, CorpusArchive, CorpusBytes, Game};
 use jomini::TextTape;
 use std::hint::black_box;
 
-const METADATA_TXT: &[u8] = include_bytes!("../../../tests/fixtures/meta.txt");
+const METADATA_TXT: &[u8] = include_bytes!("../../../crates/jomini/tests/fixtures/meta.txt");
 const EU4_TEXT: Corpus = Corpus::text(Game::Eu4);
 const CK3_TEXT: Corpus = Corpus::text(Game::Ck3);
 

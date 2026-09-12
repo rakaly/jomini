@@ -59,12 +59,31 @@ jobs:
     - name: Build benchmark (gungraun, json)
       run: cargo bench --manifest-path bench/Cargo.toml --features json --bench jomini-bench-gungraun --no-run
 
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly
+        components: miri
+    - name: Run miri
+      # trybuild in jomini_derive cannot run under Miri
+      run: cargo miri test -p jomini
+      env:
+        MIRIFLAGS: -Zmiri-tree-borrows
+
   test:
     name: test
     runs-on: ${{ matrix.os }}
     env:
       CARGO: cargo
       TARGET:
+      # The cross-compile and miri legs run only the published crates. Game
+      # crates get their own linux-only job.
+      PKGS: -p jomini -p jomini_derive
     strategy:
       matrix:
         build:
@@ -101,7 +120,7 @@ jobs:
           target: i686-unknown-linux-gnu
     steps:
     - uses: actions/checkout@v7
-      
+
     - name: Install Rust
       uses: dtolnay/rust-toolchain@master
       with:
@@ -114,26 +133,19 @@ jobs:
         echo "CARGO=cross" >> $GITHUB_ENV
         echo "TARGET=--target ${{ matrix.target }}" >> $GITHUB_ENV
     - name: Build
-      run: ${{ env.CARGO }} build --all --verbose $TARGET
+      run: ${{ env.CARGO }} build ${{ env.PKGS }} --verbose ${{ env.TARGET }}
     - name: Run default features tests
-      run: ${{ env.CARGO }} test --all --verbose $TARGET
+      run: ${{ env.CARGO }} test ${{ env.PKGS }} --verbose ${{ env.TARGET }}
     - name: Run no-default-feature tests
-      run: ${{ env.CARGO }} test --no-default-features --all --verbose $TARGET
+      run: ${{ env.CARGO }} test --no-default-features ${{ env.PKGS }} --verbose ${{ env.TARGET }}
     - name: Run json tests
-      run: ${{ env.CARGO }} test --features json --all --verbose $TARGET
+      run: ${{ env.CARGO }} test --features json ${{ env.PKGS }} --verbose ${{ env.TARGET }}
     - name: Run envelope tests
-      run: ${{ env.CARGO }} test --features envelope --all --verbose $TARGET
+      run: ${{ env.CARGO }} test --features envelope ${{ env.PKGS }} --verbose ${{ env.TARGET }}
     - name: Run all-features tests
-      run: ${{ env.CARGO }} test --all-features --all --verbose $TARGET
+      run: ${{ env.CARGO }} test --all-features ${{ env.PKGS }} --verbose ${{ env.TARGET }}
     - name: Run serde-only tests (no derive macros)
-      run: ${{ env.CARGO }} test --no-default-features --features serde --all --verbose $TARGET
-
-    - name: Run miri
-      if: matrix.build == 'nightly'
-      run: |
-        rustup toolchain install nightly --component miri
-        cargo miri setup
-        MIRIFLAGS="-Zmiri-tree-borrows" cargo miri test
+      run: ${{ env.CARGO }} test --no-default-features --features serde ${{ env.PKGS }} --verbose ${{ env.TARGET }}
 
     - name: Compile fuzz
       if: matrix.build == 'nightly'

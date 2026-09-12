@@ -1,3 +1,0 @@
-tag-message = "Release {{version}}"
-pre-release-commit-message = "Release {{version}}"
-consolidate-commits = false

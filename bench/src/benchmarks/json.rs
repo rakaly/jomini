@@ -3,8 +3,8 @@ use jomini::{
     json::{DuplicateKeyMode, JsonOptions},
 };
 
-const METADATA_TXT: &[u8] = include_bytes!("../../../tests/fixtures/meta.txt");
-const CK3_TXT: &[u8] = include_bytes!("../../../tests/fixtures/ck3-header.txt");
+const METADATA_TXT: &[u8] = include_bytes!("../../../crates/jomini/tests/fixtures/meta.txt");
+const CK3_TXT: &[u8] = include_bytes!("../../../crates/jomini/tests/fixtures/ck3-header.txt");
 
 #[derive(Clone, Copy)]
 enum JsonMode {
