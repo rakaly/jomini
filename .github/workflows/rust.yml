@@ -6,6 +6,7 @@ on:
     - master
   schedule:
   - cron: '00 01 * * *'
+  workflow_dispatch:
 
 jobs:
   rustfmt:
@@ -32,7 +33,11 @@ jobs:
         toolchain: stable
         components: clippy
     - name: Run clippy
-      run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+      run: cargo clippy -p jomini -p jomini_derive --all-features --all-targets -- -D warnings
+    # Game crates carry wasm-only features (tsify), so they are checked with
+    # default features.
+    - name: Run clippy (game crates)
+      run: cargo clippy --workspace --exclude jomini --exclude jomini_derive --all-targets -- -D warnings
 
   testbench:
     name: testbench
@@ -74,6 +79,109 @@ jobs:
       run: cargo miri test -p jomini
       env:
         MIRIFLAGS: -Zmiri-tree-borrows
+
+  # One job per game crate so that fixture caches and failures stay separate.
+  games:
+    name: games (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { crate: eu4save, game: eu4 }
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+    # Save fixtures are fetched from a CDN on first use. The cache key hashes
+    # the set of fixture names the tests reference, so it changes only when a
+    # fixture is added, removed, or renamed, not on every test edit.
+    #
+    # This job only restores. The ironman job fetches a superset of the
+    # fixtures and is the one that saves the cache, so there is one cache per
+    # game and it always holds the full set.
+    - name: Fixture set
+      id: fixtures
+      run: |
+        hash=$(grep -rhoE '"[A-Za-z0-9_.-]+\.(eu4|ck3|hoi4|rome|v3|eu5)"' crates/${{ matrix.crate }}/tests \
+          | sort -u | sha256sum | cut -c1-16)
+        echo "hash=$hash" >> "$GITHUB_OUTPUT"
+    - name: Restore save fixtures
+      uses: actions/cache/restore@v6
+      with:
+        path: assets/saves/${{ matrix.game }}
+        key: saves-${{ matrix.game }}-${{ steps.fixtures.outputs.hash }}
+        restore-keys: saves-${{ matrix.game }}-
+    - name: Check jomini resolves from the workspace
+      run: cargo tree -p ${{ matrix.crate }} -i jomini -e normal --depth 0 | grep -q 'crates/jomini'
+    - name: Run tests
+      run: cargo test -p ${{ matrix.crate }}
+
+  # Runs the ironman tests with the private token files. Tokens never reach a
+  # runner that executes code from a fork:
+  #
+  # - The job runs on pushes to master, on the schedule, and on pull requests
+  #   from branches in this repository. GitHub withholds secrets from fork
+  #   pull requests, and the condition below skips them so the token clone
+  #   does not fail with an empty token. Dependabot pull requests also run
+  #   without secrets and are skipped for the same reason.
+  # - The `ironman` environment holds GH_PAT, a fine-grained token with
+  #   read-only access to pdx-tools/tokens. The tests find the token files
+  #   through PDX_TOKENS_DIR (see crates/pdx-fixtures).
+  # - The fixture cache path never includes the tokens directory. A cache
+  #   written here is restorable by fork pull requests.
+  # - Test output is captured, and the token checkout is removed afterwards
+  #   so no later step can upload it.
+  #
+  # The ironman tests fetch a superset of the fixtures the token-less job
+  # touches, so this is the job that saves the fixture cache.
+  ironman:
+    name: ironman (${{ matrix.crate }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    environment: ironman
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { crate: eu4save, game: eu4 }
+    env:
+      PDX_TOKENS_DIR: ${{ github.workspace }}/.tokens/tokens
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+    - name: Fixture set
+      id: fixtures
+      run: |
+        hash=$(grep -rhoE '"[A-Za-z0-9_.-]+\.(eu4|ck3|hoi4|rome|v3|eu5)"' crates/${{ matrix.crate }}/tests \
+          | sort -u | sha256sum | cut -c1-16)
+        echo "hash=$hash" >> "$GITHUB_OUTPUT"
+    - name: Cache save fixtures
+      uses: actions/cache@v6
+      with:
+        path: assets/saves/${{ matrix.game }} # never the tokens directory
+        key: saves-${{ matrix.game }}-${{ steps.fixtures.outputs.hash }}
+        restore-keys: saves-${{ matrix.game }}-
+    - name: Clone tokens
+      uses: actions/checkout@v7
+      with:
+        repository: pdx-tools/tokens
+        token: ${{ secrets.GH_PAT }}
+        path: .tokens
+        persist-credentials: false
+    - name: Run tests
+      run: cargo test -p ${{ matrix.crate }}
+    - name: Remove tokens
+      if: always()
+      run: rm -rf .tokens
 
   test:
     name: test

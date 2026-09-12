@@ -1,0 +1,12 @@
+[package]
+name = "pdx-fixtures"
+version = "0.1.0"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition = "2024"
+publish = false
+description = "Test support for the game crates: token files and save fixtures"
+
+[dependencies]
+attohttpc = { workspace = true }

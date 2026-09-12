@@ -1,0 +1,41 @@
+[package]
+name = "eu4save"
+version = "0.8.2"
+authors.workspace = true
+edition = "2021"
+exclude = ["/assets/*", "/fuzz/*"]
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Ergonomically work with all EU4 saves (ironman and multiplayer)"
+keywords = ["eu4", "ironman"]
+categories = ["parsing"]
+
+[features]
+default = []
+zstd_c = [
+  "dep:zstd",
+] # faster but can't be compiled for wasm on windows (preferred)
+zstd_rust = ["dep:ruzstd"] # slower but more compatible
+serialize = []
+tsify = ["dep:tsify", "dep:wasm-bindgen"]
+specta = ["dep:specta"]
+
+[dependencies]
+jomini = { workspace = true, features = ["json"] }
+serde = { workspace = true }
+thiserror = { workspace = true }
+zstd = { version = "0.13", default-features = false, optional = true }
+ruzstd = { version = "0.8", optional = true }
+tsify = { version = "0.5.5", default-features = false, optional = true }
+wasm-bindgen = { version = "0.2", default-features = false, optional = true }
+specta = { version = "1.0.4", optional = true }
+flate2 = { workspace = true }
+rawzip = { workspace = true }
+
+[dev-dependencies]
+pdx-fixtures = { workspace = true }
+paste = "1"
+memchr = { workspace = true }
+highway = { workspace = true }
+insta = "1.42.1"
