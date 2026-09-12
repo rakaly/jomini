@@ -851,6 +851,20 @@ impl TextDeserializer<'_, '_, Utf8Encoding> {
     }
 }
 
+impl<E: Encoding> TextDeserializer<'_, '_, E> {
+    /// (**Experimental**) Create a text deserializer over a reader that decodes
+    /// quoted strings with the given encoding
+    ///
+    /// Considered experimental as it uses a [TokenReader] under the hood, which
+    /// uses a different parsing routine geared toward save files.
+    pub fn from_encoded_reader<'r>(
+        reader: TokenReader<'r>,
+        encoding: E,
+    ) -> TextReaderDeserializer<'r, E> {
+        TextReaderDeserializer { reader, encoding }
+    }
+}
+
 impl<'a, 'b> TextDeserializer<'a, 'b, Windows1252Encoding> {
     /// Convenience method for parsing the given text data and deserializing as windows1252 encoded.
     pub fn from_windows1252_slice(

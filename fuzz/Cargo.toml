@@ -106,3 +106,6 @@ name = "fuzz_eu5"
 path = "fuzz_targets/fuzz_eu5.rs"
 test = false
 doc = false
+
+[patch.crates-io]
+jomini = { path = "../crates/jomini" }
