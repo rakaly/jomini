@@ -13,6 +13,9 @@ name = "pdx"
 path = "src/main.rs"
 
 [dependencies]
+ck3save = { path = "../ck3save" }
 eu4save = { path = "../eu4save" }
+hoi4save = { path = "../hoi4save" }
+imperator-save = { path = "../imperator-save" }
 jomini = { workspace = true, features = ["envelope", "json"] }
 pdx-fixtures = { workspace = true }
