@@ -51,8 +51,20 @@ pub struct Metadata<'bump> {
     pub compatibility: Compatibility<'bump>,
     pub date: Eu5Date,
     pub playthrough_id: BStr<'bump>,
-    pub playthrough_name: BStr<'bump>,
+    #[arena(default)]
+    pub playthrough_name: Option<BStr<'bump>>,
+    #[arena(default)]
+    pub save_label: Option<BStr<'bump>>,
     pub version: GameVersion,
+}
+
+impl Metadata<'_> {
+    pub fn name(&self) -> Option<&str> {
+        self.playthrough_name
+            .as_ref()
+            .or(self.save_label.as_ref())
+            .map(BStr::to_str)
+    }
 }
 
 #[derive(Debug, ArenaDeserialize)]
@@ -289,10 +301,77 @@ impl<'bump> Gamestate<'bump> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jomini::TextDeserializer;
 
     #[test]
     fn test_gamestate_is_send_sync() {
         fn assert_send<T: Send + Sync>() {}
         assert_send::<Gamestate>();
+    }
+
+    fn assert_metadata(
+        data: &str,
+        expected_name: Option<&str>,
+        expected_playthrough_name: Option<&str>,
+        expected_save_label: Option<&str>,
+    ) {
+        #[derive(ArenaDeserialize)]
+        struct Wrapper<'bump> {
+            metadata: Metadata<'bump>,
+        }
+
+        let allocator = arena_serde::Arena::new();
+        let mut deserializer =
+            TextDeserializer::from_utf8_reader(jomini::text::TokenReader::new(data.as_bytes()));
+        let metadata = Wrapper::deserialize_in_arena(&mut deserializer, &allocator)
+            .expect("metadata deserializes")
+            .metadata;
+
+        assert_eq!(metadata.name(), expected_name);
+        assert_eq!(
+            metadata.playthrough_name.as_ref().map(BStr::to_str),
+            expected_playthrough_name
+        );
+        assert_eq!(
+            metadata.save_label.as_ref().map(BStr::to_str),
+            expected_save_label
+        );
+    }
+
+    #[test]
+    fn metadata_accepts_save_label() {
+        assert_metadata(
+            r#"
+                metadata={
+                    date=1346.4.1
+                    playthrough_id="2068958e-18a3-43e1-9fa5-99eb1ff77064"
+                    save_label="Autosave"
+                    version="1.3.99"
+                    compatibility={ locations={} }
+                }
+            "#,
+            Some("Autosave"),
+            None,
+            Some("Autosave"),
+        );
+    }
+
+    #[test]
+    fn metadata_prefers_playthrough_name() {
+        assert_metadata(
+            r#"
+                metadata={
+                    date=1346.4.1
+                    playthrough_id="2068958e-18a3-43e1-9fa5-99eb1ff77064"
+                    playthrough_name="Playthrough"
+                    save_label="Autosave"
+                    version="1.3.99"
+                    compatibility={ locations={} }
+                }
+            "#,
+            Some("Playthrough"),
+            Some("Playthrough"),
+            Some("Autosave"),
+        );
     }
 }
