@@ -19,7 +19,10 @@ use std::{
     time::Instant,
 };
 
+mod ck3;
 mod eu4;
+mod hoi4;
+mod imperator;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -78,6 +81,9 @@ fn game(path: &Path) -> Result<Box<dyn Game>> {
     let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
     let game: Box<dyn Game> = match ext {
         "eu4" => Box::new(eu4::Eu4::open(path)?),
+        "ck3" => Box::new(ck3::Ck3::open(path)?),
+        "hoi4" => Box::new(hoi4::Hoi4::open(path)?),
+        "rome" => Box::new(imperator::Imperator::open(path)?),
         _ => return Err(format!("unknown save extension: {}", path.display()).into()),
     };
     Ok(game)

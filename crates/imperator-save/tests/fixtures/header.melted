@@ -1,0 +1,44 @@
+SAV0100c18f0de80000020a
+save_game_version=34840
+version="1.5.3"
+date=450.10.1
+ironman=yes
+meta_player_name="Suionia"
+enabled_dlcs={
+	"The Punic Wars"
+}
+play_time=646
+iron=yes
+enabled_mods={ }
+sync_ai_tasks={
+	ai_task={
+		mode=sync_ai_tasks
+		interval=1
+		count=0
+		next=0
+	}
+	ai_task={
+		mode=sync_ai_tasks
+		interval=1
+		count=0
+		next=0
+	}
+	ai_task={
+		mode=sync_ai_tasks
+		interval=1
+		count=0
+		next=0
+	}
+	ai_task={
+		mode=sync_ai_tasks
+		interval=5
+		count=0
+		next=0
+	}
+	ai_task={
+		mode=sync_ai_tasks
+		interval=31
+		count=0
+		next=0
+	}
+}
