@@ -22,6 +22,12 @@ features = ["envelope"]
 [dependencies.eu4save]
 path = "../crates/eu4save"
 
+[dependencies.eu5save]
+path = "../crates/eu5save"
+
+[dependencies.arena-serde]
+path = "../crates/arena-serde"
+
 [dependencies.ck3save]
 path = "../crates/ck3save"
 
@@ -92,5 +98,11 @@ doc = false
 [[bin]]
 name = "fuzz_vic3"
 path = "fuzz_targets/fuzz_vic3.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_eu5"
+path = "fuzz_targets/fuzz_eu5.rs"
 test = false
 doc = false

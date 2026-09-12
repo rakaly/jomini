@@ -99,6 +99,7 @@ jobs:
         - { crate: hoi4save, game: hoi4 }
         - { crate: imperator-save, game: imperator }
         - { crate: vic3save, game: vic3 }
+        - { crate: eu5save, game: eu5 }
     steps:
     - uses: actions/checkout@v7
     - name: Install Rust
@@ -142,6 +143,7 @@ jobs:
         - { crate: hoi4save, game: hoi4 }
         - { crate: imperator-save, game: imperator }
         - { crate: vic3save, game: vic3 }
+        - { crate: eu5save, game: eu5 }
     env:
       PDX_TOKENS_DIR: ${{ github.workspace }}/.tokens/tokens
       PDX_FIXTURES_LOG: ${{ github.workspace }}/fixtures.log
@@ -258,3 +260,4 @@ jobs:
         cargo fuzz build fuzz_hoi4
         cargo fuzz build fuzz_imperator
         cargo fuzz build fuzz_vic3
+        cargo fuzz build fuzz_eu5

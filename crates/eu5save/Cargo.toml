@@ -1,0 +1,28 @@
+[package]
+name = "eu5save"
+version = "0.1.0"
+authors.workspace = true
+edition = "2024"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+publish = false
+description = "Ergonomically work with Europa Universalis V saves (debug and ironman)"
+keywords = ["eu5", "ironman"]
+categories = ["parsing"]
+
+[dependencies]
+arena-serde = { path = "../arena-serde" }
+bumpalo = { workspace = true }
+jomini = { workspace = true, features = ["envelope"] }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+tsify = { version = "0.5.6", default-features = false, features = ["js"] }
+wasm-bindgen = { version = "0.2.118", default-features = false }
+
+[dev-dependencies]
+pdx-fixtures = { workspace = true }
+highway = { workspace = true }
+rstest = "0.26.1"
