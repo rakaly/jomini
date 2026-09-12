@@ -21,6 +21,7 @@ use std::{
 
 mod ck3;
 mod eu4;
+mod eu5;
 mod hoi4;
 mod imperator;
 mod vic3;
@@ -82,6 +83,7 @@ fn game(path: &Path) -> Result<Box<dyn Game>> {
     let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
     let game: Box<dyn Game> = match ext {
         "eu4" => Box::new(eu4::Eu4::open(path)?),
+        "eu5" => Box::new(eu5::Eu5::open(path)?),
         "ck3" => Box::new(ck3::Ck3::open(path)?),
         "hoi4" => Box::new(hoi4::Hoi4::open(path)?),
         "rome" => Box::new(imperator::Imperator::open(path)?),

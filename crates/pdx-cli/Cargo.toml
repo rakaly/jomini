@@ -13,8 +13,10 @@ name = "pdx"
 path = "src/main.rs"
 
 [dependencies]
+arena-serde = { path = "../arena-serde" }
 ck3save = { path = "../ck3save" }
 eu4save = { path = "../eu4save" }
+eu5save = { path = "../eu5save" }
 hoi4save = { path = "../hoi4save" }
 imperator-save = { path = "../imperator-save" }
 jomini = { workspace = true, features = ["envelope", "json"] }
