@@ -1,0 +1,5 @@
+error: ArenaDeserialize supports only unit variants in enums. Implement ArenaDeserialize by hand for enums that carry data.
+ --> tests/ui/enum_with_data.rs:6:5
+  |
+6 |     Label(&'bump str),
+  |     ^^^^^^^^^^^^^^^^^

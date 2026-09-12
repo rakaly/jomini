@@ -1,8 +1,7 @@
 // trybuild runs cargo, which Miri cannot do.
 #[test]
 #[cfg_attr(miri, ignore)]
-fn tests() {
+fn ui() {
     let t = trybuild::TestCases::new();
-    t.pass("tests/01-parse.rs");
-    t.compile_fail("tests/compile-fail/*.rs");
+    t.compile_fail("tests/ui/*.rs");
 }
