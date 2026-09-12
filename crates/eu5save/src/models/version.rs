@@ -2,7 +2,7 @@ use arena_serde::ArenaDeserialize;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Eq, PartialOrd, Ord)]
-#[cfg_attr(target_family = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 pub struct GameVersion {
     pub major: u32,
     pub minor: u32,

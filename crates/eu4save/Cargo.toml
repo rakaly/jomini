@@ -27,8 +27,8 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 zstd = { version = "0.13", default-features = false, optional = true }
 ruzstd = { version = "0.8", optional = true }
-tsify = { version = "0.5.5", default-features = false, optional = true }
-wasm-bindgen = { version = "0.2", default-features = false, optional = true }
+tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
 specta = { version = "1.0.4", optional = true }
 flate2 = { workspace = true }
 rawzip = { workspace = true }
