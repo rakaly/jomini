@@ -1,3 +1,15 @@
+## v0.36.1 - 2026-09-12
+
+### Added
+
+- Add `TextDeserializer::from_encoded_reader` for streaming text
+  deserialization with a custom string encoding.
+
+### Changed
+
+- Promote the streaming text APIs from experimental status
+- The jomini repo is now home to the save file implementations.
+
 ## v0.36.0 - 2026-09-09
 
 ### Added
