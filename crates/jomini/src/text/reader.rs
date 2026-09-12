@@ -104,14 +104,10 @@ enum ParseState {
 /// construct higher level parsers and deserializers that operate over a stream
 /// of data.
 ///
-/// The [TokenReader] is considered **experimental**, as it uses a different
-/// parsing algorithm geared towards parsing large save files. Ergonomic
-/// equivalents for more esoteric game syntax (like parameter definitions) have
-/// not yet been finalized. Game files can still be parsed with the experimental
-/// APIs, but these APIs may change in the future based on feedback. Since the
-/// binary format is not used for game files, the
-/// [binary::TokenReader](crate::binary::TokenReader) is not considered
-/// experimental)
+/// `TokenReader` uses a low-level parsing model that is optimized for large
+/// save files. It returns raw tokens and does not provide all of [`TextTape`]'s
+/// normalization. For example, it does not skip ghost objects, pair open and
+/// close tokens, or identify container types.
 ///
 /// [TokenReader] operates over a fixed size buffer, so using a
 /// [BufRead](std::io::BufRead) affords no benefits. An error will be returned
