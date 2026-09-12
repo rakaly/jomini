@@ -1,7 +1,8 @@
 use jomini_bench::benchmarks::{
     binary::gungraun_benches::binary_benches, date::gungraun_benches::date_benches,
-    encoding::gungraun_benches::encoding_benches, scalar::gungraun_benches::scalar_benches,
-    text::gungraun_benches::text_benches,
+    encoding::gungraun_benches::encoding_benches,
+    eu4::parse_save::gungraun_benches::parse_save_benches,
+    scalar::gungraun_benches::scalar_benches, text::gungraun_benches::text_benches,
 };
 
 #[cfg(not(feature = "json"))]
@@ -10,7 +11,8 @@ gungraun::main!(
     binary_benches,
     text_benches,
     scalar_benches,
-    date_benches
+    date_benches,
+    parse_save_benches
 );
 
 #[cfg(feature = "json")]
@@ -23,5 +25,6 @@ gungraun::main!(
     text_benches,
     scalar_benches,
     date_benches,
+    parse_save_benches,
     json_benches
 );

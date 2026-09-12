@@ -6,6 +6,7 @@ on:
     - master
   schedule:
   - cron: '00 01 * * *'
+  workflow_dispatch:
 
 jobs:
   rustfmt:
@@ -32,7 +33,11 @@ jobs:
         toolchain: stable
         components: clippy
     - name: Run clippy
-      run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+      run: cargo clippy -p jomini -p jomini_derive --all-features --all-targets -- -D warnings
+    # Game crates carry wasm-only features (tsify), so they are checked with
+    # default features.
+    - name: Run clippy (game crates)
+      run: cargo clippy --workspace --exclude jomini --exclude jomini_derive --all-targets -- -D warnings
 
   testbench:
     name: testbench
@@ -44,6 +49,12 @@ jobs:
       with:
         toolchain: stable
         components: rustfmt, clippy
+    - name: Restore save fixtures
+      uses: actions/cache/restore@v6
+      with:
+        path: assets/saves/eu4
+        key: saves-eu4-${{ hashFiles('crates/eu4save/tests/fixtures.txt') }}
+        restore-keys: saves-eu4-
     - name: Check formatting
       run: cargo fmt --manifest-path bench/Cargo.toml --all -- --check
     - name: Run clippy
@@ -74,6 +85,85 @@ jobs:
       run: cargo miri test -p jomini
       env:
         MIRIFLAGS: -Zmiri-tree-borrows
+
+  games:
+    name: games (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    env:
+      PDX_FIXTURES_LOG: ${{ github.workspace }}/fixtures.log
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { crate: eu4save, game: eu4 }
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+    # Only the ironman job saves the cache: it fetches a superset of the
+    # fixtures, so one cache per game holds the full set.
+    - name: Restore save fixtures
+      uses: actions/cache/restore@v6
+      with:
+        path: assets/saves/${{ matrix.game }}
+        key: saves-${{ matrix.game }}-${{ hashFiles(format('crates/{0}/tests/fixtures.txt', matrix.crate)) }}
+        restore-keys: saves-${{ matrix.game }}-
+    - name: Check jomini resolves from the workspace
+      run: cargo tree -p ${{ matrix.crate }} -i jomini -e normal --depth 0 | grep -q 'crates/jomini'
+    - name: Run tests
+      run: cargo test -p ${{ matrix.crate }}
+    - name: Check fixture list
+      run: '! sort -u "$PDX_FIXTURES_LOG" | grep -vxFf crates/${{ matrix.crate }}/tests/fixtures.txt'
+
+  # Runs the tests that need the private token files. GH_PAT is a
+  # fine-grained repository secret with read access to pdx-tools/tokens (a
+  # repository secret, not an environment one, as an environment marks every
+  # run as a deployment). Fork and Dependabot pull requests get no secrets,
+  # so the condition skips them. The saved cache must never include the
+  # tokens directory: fork pull requests can restore it.
+  ironman:
+    name: ironman (${{ matrix.crate }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { crate: eu4save, game: eu4 }
+    env:
+      PDX_TOKENS_DIR: ${{ github.workspace }}/.tokens/tokens
+      PDX_FIXTURES_LOG: ${{ github.workspace }}/fixtures.log
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+    - name: Cache save fixtures
+      uses: actions/cache@v6
+      with:
+        path: assets/saves/${{ matrix.game }} # never the tokens directory
+        key: saves-${{ matrix.game }}-${{ hashFiles(format('crates/{0}/tests/fixtures.txt', matrix.crate)) }}
+        restore-keys: saves-${{ matrix.game }}-
+    - name: Clone tokens
+      uses: actions/checkout@v7
+      with:
+        repository: pdx-tools/tokens
+        token: ${{ secrets.GH_PAT }}
+        path: .tokens
+        persist-credentials: false
+    - name: Run tests
+      run: cargo test -p ${{ matrix.crate }}
+    - name: Remove tokens
+      if: always()
+      run: rm -rf .tokens
+    - name: Check fixture list
+      run: '! sort -u "$PDX_FIXTURES_LOG" | grep -vxFf crates/${{ matrix.crate }}/tests/fixtures.txt'
 
   test:
     name: test
@@ -156,3 +246,4 @@ jobs:
         cargo fuzz build fuzz_text
         cargo fuzz build fuzz_date
         cargo fuzz build fuzz_envelope
+        cargo fuzz build fuzz_eu4
