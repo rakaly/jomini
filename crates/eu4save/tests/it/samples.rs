@@ -396,6 +396,10 @@ fn test_eu4_japanese_text() -> Result<(), Box<dyn Error>> {
     assert_eq!(file.encoding(), Encoding::TextZip);
     assert_eq!(save.meta.player, "TRE");
     assert_eq!(save.meta.displayed_country_name, "トレビゾンド");
+
+    // The save name comes from the OS file name, so it is utf-8 instead of
+    // EU4dll escaped
+    assert_eq!(save.meta.save_game, "mp_グーラカーン1633_09_07.eu4");
     assert_eq!(save.game.players_countries[0], "くまねこ");
 
     // A Latin family name with a localized suffix: the escape does not start

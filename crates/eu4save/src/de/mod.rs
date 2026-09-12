@@ -10,6 +10,7 @@ mod province_event_value;
 mod province_history;
 mod token_bool;
 mod trade_node;
+mod utf8_string;
 mod vec_pair;
 mod war_history;
 mod yes_map;
@@ -20,6 +21,7 @@ pub(crate) use list_overflow_byte::*;
 pub(crate) use map_capacity::*;
 pub(crate) use map_pair::*;
 pub(crate) use token_bool::*;
+pub(crate) use utf8_string::*;
 pub use vec_pair::*;
 pub(crate) use yes_map::*;
 
