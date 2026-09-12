@@ -1,3 +1,4 @@
+pub mod arena;
 pub mod binary;
 pub mod date;
 pub mod encoding;
