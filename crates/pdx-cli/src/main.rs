@@ -23,6 +23,7 @@ mod ck3;
 mod eu4;
 mod hoi4;
 mod imperator;
+mod vic3;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -84,6 +85,7 @@ fn game(path: &Path) -> Result<Box<dyn Game>> {
         "ck3" => Box::new(ck3::Ck3::open(path)?),
         "hoi4" => Box::new(hoi4::Hoi4::open(path)?),
         "rome" => Box::new(imperator::Imperator::open(path)?),
+        "v3" => Box::new(vic3::Vic3::open(path)?),
         _ => return Err(format!("unknown save extension: {}", path.display()).into()),
     };
     Ok(game)
