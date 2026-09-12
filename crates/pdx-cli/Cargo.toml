@@ -19,3 +19,4 @@ hoi4save = { path = "../hoi4save" }
 imperator-save = { path = "../imperator-save" }
 jomini = { workspace = true, features = ["envelope", "json"] }
 pdx-fixtures = { workspace = true }
+vic3save = { path = "../vic3save" }

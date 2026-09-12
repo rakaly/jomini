@@ -31,6 +31,9 @@ path = "../crates/hoi4save"
 [dependencies.imperator-save]
 path = "../crates/imperator-save"
 
+[dependencies.vic3save]
+path = "../crates/vic3save"
+
 [dependencies.pdx-fixtures]
 path = "../crates/pdx-fixtures"
 
@@ -83,5 +86,11 @@ doc = false
 [[bin]]
 name = "fuzz_imperator"
 path = "fuzz_targets/fuzz_imperator.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_vic3"
+path = "fuzz_targets/fuzz_vic3.rs"
 test = false
 doc = false

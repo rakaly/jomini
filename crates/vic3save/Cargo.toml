@@ -1,0 +1,26 @@
+[package]
+name = "vic3save"
+version = "0.1.0"
+authors.workspace = true
+edition = "2024"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+publish = false
+description = "Ergonomically work with Victoria 3 saves (debug and ironman)"
+keywords = ["vic3", "ironman"]
+categories = ["parsing"]
+
+[dependencies]
+jomini = { workspace = true, features = ["envelope", "json"] }
+serde = { workspace = true }
+thiserror = { workspace = true }
+mathru = "0.16.2"
+
+# mathru pulls in rand, which needs a getrandom backend on wasm.
+[target.'cfg(target_family = "wasm")'.dependencies]
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
+
+[dev-dependencies]
+pdx-fixtures = { workspace = true }
+highway = { workspace = true }
