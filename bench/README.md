@@ -1,6 +1,8 @@
 # Jomini Benchmarks
 
 Large save fixtures are downloaded on first use into `assets/saves/jomini`.
+The `twitter.json` corpus of the arena benchmarks is downloaded on first use
+into `assets/twitter.json`.
 
 Run wall-clock benchmarks:
 

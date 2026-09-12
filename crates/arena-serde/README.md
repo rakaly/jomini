@@ -15,6 +15,24 @@ Arenas and deserialization are a natural fit:
 
 This crate is experimental and is not published on crates.io.
 
+## Benchmarks
+
+Deserializing `twitter.json` corpus:
+
+- Json: 961 µs → 798 µs (-17%)
+- Binary: 447 µs → 326 µs (-27%)
+
+Deserializing with `Drop`
+
+- Json: 1025 µs → 791 µs (-23%)
+- Binary: 515 µs → 324 µs (-37%)
+
+
+```bash
+cargo bench --manifest-path bench/Cargo.toml --bench jomini-bench-criterion -- arena
+cargo bench --manifest-path bench/Cargo.toml --bench jomini-bench-gungraun -- 'jomini_bench_gungraun::arena_benches::*'
+```
+
 ## Quick example
 
 ```rust
