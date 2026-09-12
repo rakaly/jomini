@@ -11,16 +11,18 @@ description = "Ergonomically work with Europa Universalis V saves (debug and iro
 keywords = ["eu5", "ironman"]
 categories = ["parsing"]
 
+[features]
+default = []
+tsify = ["dep:tsify", "dep:wasm-bindgen"]
+
 [dependencies]
 arena-serde = { path = "../arena-serde" }
 bumpalo = { workspace = true }
 jomini = { workspace = true, features = ["envelope"] }
 serde = { workspace = true }
 thiserror = { workspace = true }
-
-[target.'cfg(target_family = "wasm")'.dependencies]
-tsify = { version = "0.5.6", default-features = false, features = ["js"] }
-wasm-bindgen = { version = "0.2.118", default-features = false }
+tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
 
 [dev-dependencies]
 pdx-fixtures = { workspace = true }

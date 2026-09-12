@@ -39,6 +39,20 @@ jobs:
     - name: Run clippy (game crates)
       run: cargo clippy --workspace --exclude jomini --exclude jomini_derive --exclude arena-serde --exclude arena-serde-derive --all-targets -- -D warnings
 
+  wasm:
+    name: wasm
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+        targets: wasm32-unknown-unknown
+        components: clippy
+    - name: Run clippy
+      run: cargo clippy --target wasm32-unknown-unknown -p jomini -p eu4save -p ck3save -p hoi4save -p imperator-save -p vic3save -p eu5save --features eu4save/tsify,eu5save/tsify -- -D warnings
+
   testbench:
     name: testbench
     runs-on: ubuntu-latest

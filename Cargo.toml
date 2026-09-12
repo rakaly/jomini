@@ -18,6 +18,8 @@ pdx-fixtures = { path = "crates/pdx-fixtures" }
 rawzip = "0.5"
 serde = { version = "1.0.195", features = ["derive"] }
 thiserror = "2.0.0"
+tsify = { version = "0.5.6", default-features = false, features = ["js"] }
+wasm-bindgen = { version = "0.2.118", default-features = false }
 
 [workspace.metadata.release]
 tag-message = "Release {{version}}"
