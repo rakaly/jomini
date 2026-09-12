@@ -8,6 +8,7 @@ use std::collections::HashMap;
 #[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 pub struct Meta {
     pub campaign_id: String,
+    #[jomini(deserialize_with = "deserialize_utf8_string")]
     pub save_game: String,
     pub player: CountryTag,
     pub displayed_country_name: String,
@@ -57,6 +58,7 @@ impl<'de> Deserialize<'de> for Eu4Save {
         #[derive(Debug, JominiDeserialize)]
         struct Eu4SaveFlatten {
             pub campaign_id: String,
+            #[jomini(deserialize_with = "deserialize_utf8_string")]
             pub save_game: String,
             pub player: CountryTag,
             pub displayed_country_name: String,
