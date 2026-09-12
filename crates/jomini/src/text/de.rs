@@ -127,10 +127,9 @@ where
     TextDeserializer::from_windows1252_slice(data)?.deserialize()
 }
 
-/// (**Experimental**) Create a Windows1252 text value from a reader
+/// Create a Windows1252 text value from a reader.
 ///
-/// Considered experimental as it uses a [TokenReader] under the hood, which
-/// uses a different parsing routine geared toward save files.
+/// This uses the streaming parser described by [`TokenReader`].
 pub fn from_windows1252_reader<T, R>(reader: R) -> Result<T, Error>
 where
     T: DeserializeOwned,
@@ -140,6 +139,8 @@ where
 }
 
 /// Convenience method for deserializing streaming utf8 data into a Rust value
+///
+/// This uses the streaming parser described by [`TokenReader`].
 pub fn from_utf8_reader<T, R>(reader: R) -> Result<T, Error>
 where
     T: DeserializeOwned,
@@ -825,10 +826,9 @@ enum TextDeserializerKind<'a, 'b, E> {
 }
 
 impl TextDeserializer<'_, '_, Windows1252Encoding> {
-    /// (**Experimental**) Create a Windows1252 text deserializer over a reader
+    /// Create a Windows1252 text deserializer over a reader.
     ///
-    /// Considered experimental as it uses a [TokenReader] under the hood, which
-    /// uses a different parsing routine geared toward save files.
+    /// This uses the streaming parser described by [`TokenReader`].
     pub fn from_windows1252_reader<'r>(
         reader: TokenReader<'r>,
     ) -> TextReaderDeserializer<'r, Windows1252Encoding> {
@@ -841,6 +841,8 @@ impl TextDeserializer<'_, '_, Windows1252Encoding> {
 
 impl TextDeserializer<'_, '_, Utf8Encoding> {
     /// Create a UTF8 text deserializer over a reader
+    ///
+    /// This uses the streaming parser described by [`TokenReader`].
     pub fn from_utf8_reader<'r>(
         reader: TokenReader<'r>,
     ) -> TextReaderDeserializer<'r, Utf8Encoding> {
@@ -852,11 +854,10 @@ impl TextDeserializer<'_, '_, Utf8Encoding> {
 }
 
 impl<E: Encoding> TextDeserializer<'_, '_, E> {
-    /// (**Experimental**) Create a text deserializer over a reader that decodes
-    /// quoted strings with the given encoding
+    /// Create a text deserializer over a reader.
     ///
-    /// Considered experimental as it uses a [TokenReader] under the hood, which
-    /// uses a different parsing routine geared toward save files.
+    /// The deserializer decodes quoted strings with the given encoding.
+    /// It uses the streaming parser described by [`TokenReader`].
     pub fn from_encoded_reader<'r>(
         reader: TokenReader<'r>,
         encoding: E,
