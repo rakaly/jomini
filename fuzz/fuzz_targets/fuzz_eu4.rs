@@ -1,10 +1,10 @@
 #![no_main]
-use eu4save::{file::Eu4ParsedText, SegmentedResolver, SegmentedResolverBuilder};
+use eu4save::{SegmentedResolver, SegmentedResolverBuilder, file::Eu4ParsedText};
 use libfuzzer_sys::fuzz_target;
 use std::sync::LazyLock;
 
 static TOKENS: LazyLock<SegmentedResolverBuilder> = LazyLock::new(|| {
-    let file_data = std::fs::read("assets/eu4.txt").unwrap_or_default();
+    let file_data = pdx_fixtures::tokens("eu4");
     SegmentedResolver::parse(file_data.as_slice()).unwrap()
 });
 

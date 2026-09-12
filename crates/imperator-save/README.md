@@ -1,4 +1,4 @@
-![ci](https://github.com/rakaly/imperator-save/workflows/ci/badge.svg) [![](https://docs.rs/imperator-save/badge.svg)](https://docs.rs/imperator-save) [![Version](https://img.shields.io/crates/v/imperator-save.svg?style=flat-square)](https://crates.io/crates/imperator-save)
+![ci](https://github.com/rakaly/jomini/workflows/ci/badge.svg) [![](https://docs.rs/imperator-save/badge.svg)](https://docs.rs/imperator-save) [![Version](https://img.shields.io/crates/v/imperator-save.svg?style=flat-square)](https://crates.io/crates/imperator-save)
 
 # Imperator Save
 

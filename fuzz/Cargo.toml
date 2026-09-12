@@ -19,6 +19,21 @@ serde = { version = "1.0", features = ["derive"] }
 path = "../crates/jomini"
 features = ["envelope"]
 
+[dependencies.eu4save]
+path = "../crates/eu4save"
+
+[dependencies.ck3save]
+path = "../crates/ck3save"
+
+[dependencies.hoi4save]
+path = "../crates/hoi4save"
+
+[dependencies.imperator-save]
+path = "../crates/imperator-save"
+
+[dependencies.pdx-fixtures]
+path = "../crates/pdx-fixtures"
+
 # Prevent this from interfering with workspaces
 [workspace]
 members = ["."]
@@ -44,5 +59,29 @@ doc = false
 [[bin]]
 name = "fuzz_envelope"
 path = "fuzz_targets/fuzz_envelope.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_eu4"
+path = "fuzz_targets/fuzz_eu4.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ck3"
+path = "fuzz_targets/fuzz_ck3.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_hoi4"
+path = "fuzz_targets/fuzz_hoi4.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_imperator"
+path = "fuzz_targets/fuzz_imperator.rs"
 test = false
 doc = false

@@ -1,10 +1,10 @@
 pub mod criterion_benches {
     use criterion::{Criterion, Throughput};
-    use eu4save::{file::Eu4Modeller, Encoding};
+    use eu4save::{Encoding, file::Eu4Modeller};
     use jomini::JominiDeserialize;
     use serde::{
-        de::{self, SeqAccess},
         Deserialize, Deserializer,
+        de::{self, SeqAccess},
     };
     use std::{collections::HashMap, fmt};
 
@@ -168,7 +168,7 @@ pub mod criterion_benches {
 			last_months_recurring_expense1=409.644
 "#;
 
-        let binary_data = include_bytes!("../../../assets/ledger.bin");
+        let binary_data = include_bytes!("../../../../crates/eu4save/assets/ledger.bin");
 
         group.throughput(Throughput::Bytes(data.len() as u64));
 

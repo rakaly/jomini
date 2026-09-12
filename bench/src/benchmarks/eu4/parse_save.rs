@@ -4,7 +4,7 @@ pub mod criterion_benches {
     fn parse_save(c: &mut Criterion) {
         let mut group = c.benchmark_group("parse_save");
 
-        let data = std::fs::read("../assets/saves/mp_Uesugi.eu4").unwrap();
+        let data = super::super::save("mp_Uesugi.eu4");
         let zip = rawzip::ZipArchive::from_slice(&data).unwrap();
         let mut entries = zip.entries();
         let mut total_size = 0;
@@ -12,7 +12,7 @@ pub mod criterion_benches {
             total_size += entry.uncompressed_size_hint();
         }
 
-        let file_data = std::fs::read("../assets/eu4.txt").unwrap_or_default();
+        let file_data = pdx_fixtures::tokens("eu4");
         let segments = eu4save::SegmentedResolver::parse(file_data.as_slice()).unwrap();
 
         group.throughput(Throughput::Bytes(total_size));
@@ -23,7 +23,7 @@ pub mod criterion_benches {
             })
         });
 
-        let data = std::fs::read("../assets/saves/kandy2.bin.eu4").unwrap();
+        let data = super::super::save("kandy2.bin.eu4");
         let zip = rawzip::ZipArchive::from_slice(&data).unwrap();
         let mut entries = zip.entries();
         let mut total_size = 0;
@@ -75,15 +75,15 @@ pub mod gungraun_benches {
     use gungraun::{library_benchmark, library_benchmark_group};
 
     fn setup_text() -> (Vec<u8>, eu4save::SegmentedResolverBuilder) {
-        let data = std::fs::read("../assets/saves/mp_Uesugi.eu4").unwrap();
-        let file_data = std::fs::read("../assets/eu4.txt").unwrap_or_default();
+        let data = super::super::save("mp_Uesugi.eu4");
+        let file_data = pdx_fixtures::tokens("eu4");
         let segments = eu4save::SegmentedResolver::parse(file_data.as_slice()).unwrap();
         (data, segments)
     }
 
     fn setup_binary() -> (Vec<u8>, eu4save::SegmentedResolverBuilder) {
-        let data = std::fs::read("../assets/saves/kandy2.bin.eu4").unwrap();
-        let file_data = std::fs::read("../assets/eu4.txt").unwrap_or_default();
+        let data = super::super::save("kandy2.bin.eu4");
+        let file_data = pdx_fixtures::tokens("eu4");
         let segments = eu4save::SegmentedResolver::parse(file_data.as_slice()).unwrap();
         (data, segments)
     }

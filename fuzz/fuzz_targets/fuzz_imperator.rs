@@ -1,13 +1,13 @@
 #![no_main]
 use imperator_save::{
-    models::Save, BasicTokenResolver, DeserializeImperator, ImperatorFile, ImperatorMelt,
-    JominiFileKind, MeltOptions, SaveDataKind,
+    BasicTokenResolver, DeserializeImperator, ImperatorFile, ImperatorMelt, JominiFileKind,
+    MeltOptions, SaveDataKind, models::Save,
 };
 use libfuzzer_sys::fuzz_target;
 use std::sync::LazyLock;
 
 static TOKENS: LazyLock<BasicTokenResolver> = LazyLock::new(|| {
-    let file_data = std::fs::read("assets/imperator.txt").unwrap();
+    let file_data = pdx_fixtures::tokens("imperator");
     BasicTokenResolver::from_text_lines(file_data.as_slice()).unwrap()
 });
 

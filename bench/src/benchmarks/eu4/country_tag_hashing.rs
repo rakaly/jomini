@@ -37,8 +37,8 @@ pub mod criterion_benches {
     pub fn country_tag_hashing(c: &mut Criterion) {
         let mut group = c.benchmark_group("country_tag_hashing");
 
-        let data = std::fs::read("../assets/saves/mp_Uesugi.eu4").unwrap();
-        let file_data = std::fs::read("../assets/eu4.txt").unwrap_or_default();
+        let data = super::super::save("mp_Uesugi.eu4");
+        let file_data = pdx_fixtures::tokens("eu4");
         let segments = eu4save::SegmentedResolver::parse(file_data.as_slice()).unwrap();
         let file = eu4save::Eu4File::from_slice(&data).unwrap();
         let save = file.parse_save(segments.resolver()).unwrap();

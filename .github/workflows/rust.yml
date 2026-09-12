@@ -270,3 +270,7 @@ jobs:
         cargo fuzz build fuzz_text
         cargo fuzz build fuzz_date
         cargo fuzz build fuzz_envelope
+        cargo fuzz build fuzz_eu4
+        cargo fuzz build fuzz_ck3
+        cargo fuzz build fuzz_hoi4
+        cargo fuzz build fuzz_imperator

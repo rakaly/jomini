@@ -1,4 +1,4 @@
-![ci](https://github.com/rakaly/hoi4save/workflows/ci/badge.svg) [![](https://docs.rs/hoi4save/badge.svg)](https://docs.rs/hoi4save) [![Version](https://img.shields.io/crates/v/hoi4save.svg?style=flat-square)](https://crates.io/crates/hoi4save)
+![ci](https://github.com/rakaly/jomini/workflows/ci/badge.svg) [![](https://docs.rs/hoi4save/badge.svg)](https://docs.rs/hoi4save) [![Version](https://img.shields.io/crates/v/hoi4save.svg?style=flat-square)](https://crates.io/crates/hoi4save)
 
 # HOI4 Save
 

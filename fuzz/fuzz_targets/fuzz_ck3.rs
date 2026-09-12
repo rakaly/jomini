@@ -1,10 +1,10 @@
 #![no_main]
-use ck3save::{models::Gamestate, BasicTokenResolver, Ck3Melt, DeserializeCk3};
+use ck3save::{BasicTokenResolver, Ck3Melt, DeserializeCk3, models::Gamestate};
 use libfuzzer_sys::fuzz_target;
 use std::sync::LazyLock;
 
 static TOKENS: LazyLock<BasicTokenResolver> = LazyLock::new(|| {
-    let file_data = std::fs::read("assets/ck3.txt").unwrap();
+    let file_data = pdx_fixtures::tokens("ck3");
     BasicTokenResolver::from_text_lines(file_data.as_slice()).unwrap()
 });
 
