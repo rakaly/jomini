@@ -11,11 +11,13 @@ repository = "https://github.com/rakaly/jomini"
 jomini = "0.36"
 attohttpc = { version = "0.30.1", features = ["tls-vendored"] }
 flate2 = { version = "1.1.5", default-features = false, features = ["zlib-rs"] }
+highway = "1.3"
+memchr = "2.7"
+pdx-fixtures = { path = "crates/pdx-fixtures" }
 rawzip = "0.5"
 serde = { version = "1.0.195", features = ["derive"] }
+thiserror = "2.0.0"
 
-# cargo-release settings. `cargo release -p jomini` is the only release that
-# runs from this workspace.
 [workspace.metadata.release]
 tag-message = "Release {{version}}"
 pre-release-commit-message = "Release {{version}}"

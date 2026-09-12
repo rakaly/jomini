@@ -1,0 +1,18 @@
+[package]
+name = "pdx-cli"
+version = "0.1.0"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition = "2024"
+publish = false
+description = "Development CLI for the game save crates"
+
+[[bin]]
+name = "pdx"
+path = "src/main.rs"
+
+[dependencies]
+eu4save = { path = "../eu4save" }
+jomini = { workspace = true, features = ["envelope", "json"] }
+pdx-fixtures = { workspace = true }
