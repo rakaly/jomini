@@ -35,9 +35,9 @@
 //! ([`Value::to_f64`]). A [`format`](fn@format) pass reprints the tree in a
 //! normalized house style, preserving every comment and significant token.
 //!
-//! This is a Phase-1 module: `[[param]]` blocks are not yet given dedicated
-//! structure (they round-trip losslessly as loose tokens, surfaced as
-//! [`Item::Other`]). The internals of `@[calc]` *are* parsed into a real
+//! Parameter blocks are parsed into dedicated nodes. The parser keeps their
+//! complete body lossless and parses ordinary fields and blocks inside it. The
+//! internals of `@[calc]` *are* parsed into a real
 //! expression subtree ([`SyntaxKind::Calc`] / [`SyntaxKind::BinaryExpr`] /
 //! [`SyntaxKind::UnaryExpr`] / [`SyntaxKind::ParenExpr`]). A depth guard caps
 //! recursion on pathological nesting (see [`SyntaxError`]).
@@ -115,6 +115,14 @@ pub enum SyntaxKind {
     HeaderedBlock,
     /// A `@[ ... ]` parse-time calculation wrapping an arithmetic expression.
     Calc,
+    /// An EU4 conditional parameter block, `[[name] ... ]`.
+    Parameter,
+    /// An EU4 undefined conditional parameter block, `[[!name] ... ]`.
+    UndefinedParameter,
+    /// An EU5 code payload, `code [[ ... ]]`.
+    Code,
+    /// A single-bracket interpolation, such as `[ROOT.GetName]`.
+    Interpolation,
     /// A binary arithmetic expression `lhs <op> rhs` inside a [`SyntaxKind::Calc`].
     BinaryExpr,
     /// A prefix `-`/`+` expression inside a [`SyntaxKind::Calc`].
@@ -158,6 +166,10 @@ impl SyntaxKind {
                 | SyntaxKind::Block
                 | SyntaxKind::HeaderedBlock
                 | SyntaxKind::Calc
+                | SyntaxKind::Parameter
+                | SyntaxKind::UndefinedParameter
+                | SyntaxKind::Code
+                | SyntaxKind::Interpolation
                 | SyntaxKind::BinaryExpr
                 | SyntaxKind::UnaryExpr
                 | SyntaxKind::ParenExpr
@@ -589,11 +601,15 @@ pub fn parse_with(source: &[u8], flavor: Flavor) -> GreenTree<'_> {
     let tokens = lex(source, flavor);
     let builder = Builder::with_capacity(tokens.len());
     let mut p = Parser {
+        source,
         tokens: &tokens,
         pos: 0,
         builder,
         errors: Vec::new(),
         depth: 0,
+        parameter_depth: 0,
+        bracket_depth: 0,
+        code_depth: 0,
     };
     p.builder.start_node(SyntaxKind::Root);
     p.parse_items(false);
@@ -811,15 +827,22 @@ impl Builder {
 const MAX_DEPTH: u32 = 256;
 
 struct Parser<'t> {
+    source: &'t [u8],
     tokens: &'t [Tok],
     pos: usize,
     builder: Builder,
     errors: Vec<SyntaxError>,
     /// Current block-nesting depth, compared against [`MAX_DEPTH`].
     depth: u32,
+    /// Current EU4 parameter nesting depth.
+    parameter_depth: u32,
+    /// Unclosed ordinary square brackets inside the current parameter body.
+    bracket_depth: u32,
+    /// Current EU5 code-payload nesting depth.
+    code_depth: u32,
 }
 
-impl Parser<'_> {
+impl<'t> Parser<'t> {
     fn peek(&self) -> Option<SyntaxKind> {
         self.tokens.get(self.pos).map(|t| t.kind)
     }
@@ -836,18 +859,47 @@ impl Parser<'_> {
         }
     }
 
-    /// Kind of the first non-trivia token at or after `from`.
-    fn next_significant(&self, from: usize) -> Option<SyntaxKind> {
+    fn previous_significant(&self, from: usize) -> Option<usize> {
+        (0..from).rev().find(|&i| !self.tokens[i].kind.is_trivia())
+    }
+
+    fn next_significant_index(&self, from: usize) -> Option<usize> {
         self.tokens[from..]
             .iter()
-            .map(|t| t.kind)
-            .find(|k| !k.is_trivia())
+            .position(|t| !t.kind.is_trivia())
+            .map(|offset| from + offset)
+    }
+
+    /// Kind of the first non-trivia token at or after `from`.
+    fn next_significant(&self, from: usize) -> Option<SyntaxKind> {
+        self.next_significant_index(from)
+            .map(|index| self.tokens[index].kind)
+    }
+
+    fn is_code_close(&self, index: usize) -> bool {
+        self.tokens.get(index).map(|t| t.kind) == Some(SyntaxKind::CloseBracket)
+            && self.tokens.get(index + 1).map(|t| t.kind) == Some(SyntaxKind::CloseBracket)
     }
 
     fn parse_items(&mut self, in_block: bool) {
         loop {
             match self.peek() {
                 None => break,
+                Some(SyntaxKind::CloseBracket)
+                    if self.parameter_depth > 0 && self.bracket_depth == 0 =>
+                {
+                    break;
+                }
+                Some(SyntaxKind::CloseBracket)
+                    if self.code_depth > 0 && self.is_code_close(self.pos) =>
+                {
+                    break;
+                }
+                Some(SyntaxKind::CloseBrace)
+                    if in_block && self.parameter_depth > 0 && self.bracket_depth > 0 =>
+                {
+                    self.parse_item()
+                }
                 Some(SyntaxKind::CloseBrace) if in_block => break, // caller eats `}`
                 Some(SyntaxKind::CloseBrace) => {
                     // Unmatched `}` at the top level: record and wrap in Bogus.
@@ -869,7 +921,9 @@ impl Parser<'_> {
     fn parse_item(&mut self) {
         match self.peek() {
             Some(k) if k.is_scalar() => {
-                if self.next_significant(self.pos + 1) == Some(SyntaxKind::Operator) {
+                if self.is_code_statement() {
+                    self.parse_code_statement();
+                } else if self.next_significant(self.pos + 1) == Some(SyntaxKind::Operator) {
                     // key <op> value
                     self.builder.start_node(SyntaxKind::Field);
                     self.bump(); // key
@@ -885,7 +939,12 @@ impl Parser<'_> {
             }
             Some(SyntaxKind::OpenBrace) => self.parse_block(),
             Some(SyntaxKind::CalcOpen) => self.parse_calc(),
-            // Operators, brackets, bang, macros in item position: keep verbatim.
+            Some(SyntaxKind::OpenBracket) => self.parse_open_bracket(),
+            Some(SyntaxKind::CloseBracket) if self.parameter_depth > 0 => {
+                self.bump();
+                self.bracket_depth = self.bracket_depth.saturating_sub(1);
+            }
+            // Operators, bang, and macros in item position: keep verbatim.
             Some(_) => self.bump(),
             None => {}
         }
@@ -895,6 +954,8 @@ impl Parser<'_> {
         match self.peek() {
             Some(SyntaxKind::OpenBrace) => self.parse_block(),
             Some(SyntaxKind::CalcOpen) => self.parse_calc(),
+            Some(SyntaxKind::OpenBracket) => self.parse_open_bracket(),
+            Some(SyntaxKind::Unquoted) if self.is_code_statement() => self.parse_code_statement(),
             Some(SyntaxKind::Unquoted)
                 if self.next_significant(self.pos + 1) == Some(SyntaxKind::OpenBrace) =>
             {
@@ -909,6 +970,339 @@ impl Parser<'_> {
             // missing value (e.g. `a =` at EOF, or `a = }`): emit nothing.
             _ => {}
         }
+    }
+
+    /// Return the EU4 parameter node kind at the current token position.
+    ///
+    /// EU5 uses `code [[ ... ]]` for a different payload format. The EU4 form
+    /// has a compact header with a name immediately before its first `]`.
+    fn parameter_kind(&self) -> Option<SyntaxKind> {
+        let open = self.pos;
+        if self.code_depth > 0 {
+            return None;
+        }
+        if self.tokens.get(open)?.kind != SyntaxKind::OpenBracket
+            || self.tokens.get(open + 1)?.kind != SyntaxKind::OpenBracket
+        {
+            return None;
+        }
+
+        let mut name = open + 2;
+        let kind = if self.tokens.get(name)?.kind == SyntaxKind::Bang {
+            name += 1;
+            SyntaxKind::UndefinedParameter
+        } else {
+            SyntaxKind::Parameter
+        };
+
+        let name_token = self.tokens.get(name)?;
+        if name_token.kind != SyntaxKind::Unquoted
+            || self.tokens.get(name + 1)?.kind != SyntaxKind::CloseBracket
+        {
+            return None;
+        }
+
+        // Keep the EU5 `code [[...]]` payload out of the EU4 node grammar even
+        // when a compact payload happens to resemble a parameter header.
+        if self.preceded_by_code(open) {
+            return None;
+        }
+
+        Some(kind)
+    }
+
+    fn code_payload_start(&self, open: usize) -> bool {
+        matches!(
+            (self.tokens.get(open), self.tokens.get(open + 1)),
+            (Some(first), Some(second))
+                if first.kind == SyntaxKind::OpenBracket
+                    && second.kind == SyntaxKind::OpenBracket
+                    && self.preceded_by_code(open)
+        )
+    }
+
+    fn is_code_statement(&self) -> bool {
+        if self.peek() != Some(SyntaxKind::Unquoted) || self.token_text(self.pos) != b"code" {
+            return false;
+        }
+        let Some(open) = self.next_significant_index(self.pos + 1) else {
+            return false;
+        };
+        self.code_payload_start(open)
+    }
+
+    fn code_statement_open(&self, index: usize) -> Option<usize> {
+        if self.tokens.get(index)?.kind != SyntaxKind::Unquoted || self.token_text(index) != b"code"
+        {
+            return None;
+        }
+
+        let mut next = self.next_significant_index(index + 1)?;
+        if self.tokens[next].kind == SyntaxKind::Operator && self.token_text(next) == b"=" {
+            next = self.next_significant_index(next + 1)?;
+        }
+        self.code_payload_start(next).then_some(next)
+    }
+
+    fn token_text(&self, index: usize) -> &'t [u8] {
+        let token = self.tokens[index];
+        &self.source[token.start as usize..(token.start + token.len) as usize]
+    }
+
+    fn preceded_by_code(&self, open: usize) -> bool {
+        let Some(previous) = self.previous_significant(open) else {
+            return false;
+        };
+        if self.tokens[previous].kind == SyntaxKind::Unquoted
+            && self.token_text(previous) == b"code"
+        {
+            return true;
+        }
+        if self.tokens[previous].kind != SyntaxKind::Operator || self.token_text(previous) != b"=" {
+            return false;
+        }
+        let Some(code) = self.previous_significant(previous) else {
+            return false;
+        };
+        self.tokens[code].kind == SyntaxKind::Unquoted && self.token_text(code) == b"code"
+    }
+
+    fn parse_open_bracket(&mut self) {
+        if self.code_payload_start(self.pos) {
+            self.parse_code_payload();
+        } else if let Some(kind) = self.parameter_kind() {
+            if self.parameter_depth >= MAX_DEPTH {
+                let token = self.tokens[self.pos];
+                self.errors.push(SyntaxError {
+                    message: "maximum parameter nesting depth exceeded; structure flattened".into(),
+                    range: (token.start, token.start + token.len),
+                });
+                self.bump();
+                self.bracket_depth += 1;
+            } else {
+                self.parse_parameter(kind);
+            }
+        } else if self.is_interpolation_start() {
+            self.parse_interpolation();
+        } else {
+            self.bump();
+            if self.parameter_depth > 0 {
+                self.bracket_depth += 1;
+            }
+        }
+    }
+
+    fn is_interpolation_start(&self) -> bool {
+        if self.peek() != Some(SyntaxKind::OpenBracket)
+            || self.next_significant(self.pos + 1) == Some(SyntaxKind::OpenBracket)
+        {
+            return false;
+        }
+
+        let mut bracket_depth = 1u32;
+        for token in &self.tokens[self.pos + 1..] {
+            match token.kind {
+                SyntaxKind::OpenBracket => bracket_depth += 1,
+                SyntaxKind::CloseBracket => {
+                    bracket_depth -= 1;
+                    if bracket_depth == 0 {
+                        return true;
+                    }
+                }
+                SyntaxKind::CloseBrace if bracket_depth == 1 => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn parse_interpolation(&mut self) {
+        let open = self.tokens[self.pos];
+        self.builder.start_node(SyntaxKind::Interpolation);
+        self.bump(); // `[`
+
+        let mut bracket_depth = 1u32;
+        let mut closed = false;
+        loop {
+            match self.peek() {
+                Some(SyntaxKind::OpenBracket) => {
+                    bracket_depth += 1;
+                    self.bump();
+                }
+                Some(SyntaxKind::CloseBracket) => {
+                    bracket_depth -= 1;
+                    self.bump();
+                    if bracket_depth == 0 {
+                        closed = true;
+                        break;
+                    }
+                }
+                Some(SyntaxKind::CloseBrace) if bracket_depth == 1 => break,
+                None => break,
+                Some(_) => self.bump(),
+            }
+        }
+
+        if !closed {
+            self.errors.push(SyntaxError {
+                message: "unclosed bracket interpolation".into(),
+                range: (open.start, open.start + open.len),
+            });
+        }
+        self.builder.finish_node();
+    }
+
+    fn parse_code_statement(&mut self) {
+        self.builder.start_node(SyntaxKind::Code);
+        self.bump(); // `code`
+        self.bump_trivia();
+        self.parse_code_payload_body();
+        self.builder.finish_node();
+    }
+
+    fn parse_code_payload(&mut self) {
+        self.builder.start_node(SyntaxKind::Code);
+        self.parse_code_payload_body();
+        self.builder.finish_node();
+    }
+
+    fn parse_code_payload_body(&mut self) {
+        let open = self.tokens[self.pos];
+        self.bump(); // first `[`
+        self.bump(); // second `[`
+
+        self.code_depth += 1;
+        if self.code_depth >= MAX_DEPTH {
+            self.errors.push(SyntaxError {
+                message: "maximum code nesting depth exceeded; structure flattened".into(),
+                range: (open.start, open.start + open.len),
+            });
+            let closed = self.flatten_to_code_close();
+            self.code_depth -= 1;
+            if !closed {
+                self.errors.push(SyntaxError {
+                    message: "unclosed code payload".into(),
+                    range: (open.start, open.start + open.len),
+                });
+            }
+            return;
+        }
+
+        let mut closed = false;
+        loop {
+            match self.peek() {
+                Some(SyntaxKind::CloseBracket) if self.is_code_close(self.pos) => {
+                    self.bump();
+                    self.bump();
+                    closed = true;
+                    break;
+                }
+                Some(SyntaxKind::CloseBrace) => {
+                    // Keep an outer block delimiter available when the payload
+                    // is incomplete. A brace directly before `]]` is payload.
+                    let Some(next) = self.next_significant_index(self.pos + 1) else {
+                        break;
+                    };
+                    if !self.is_code_close(next) {
+                        break;
+                    }
+                    self.bump();
+                }
+                None => break,
+                Some(k) if k.is_trivia() => self.bump(),
+                Some(_) => self.parse_item(),
+            }
+        }
+        self.code_depth -= 1;
+
+        if !closed {
+            self.errors.push(SyntaxError {
+                message: "unclosed code payload".into(),
+                range: (open.start, open.start + open.len),
+            });
+        }
+    }
+
+    /// Consume a code payload without recursing into nested code statements.
+    fn flatten_to_code_close(&mut self) -> bool {
+        let mut payload_depth = 1u32;
+        while let Some(kind) = self.peek() {
+            if self.is_code_close(self.pos) {
+                self.bump();
+                self.bump();
+                payload_depth -= 1;
+                if payload_depth == 0 {
+                    return true;
+                }
+                continue;
+            }
+
+            if kind == SyntaxKind::Unquoted && self.code_statement_open(self.pos).is_some() {
+                payload_depth += 1;
+            }
+
+            if kind == SyntaxKind::CloseBrace {
+                let Some(next) = self.next_significant_index(self.pos + 1) else {
+                    break;
+                };
+                if !self.is_code_close(next) {
+                    break;
+                }
+            }
+            self.bump();
+        }
+        false
+    }
+
+    /// Parse an EU4 conditional parameter and its complete body.
+    fn parse_parameter(&mut self, kind: SyntaxKind) {
+        let open = self.tokens[self.pos];
+        self.builder.start_node(kind);
+        self.bump(); // first `[`
+        self.bump(); // second `[`
+        if kind == SyntaxKind::UndefinedParameter {
+            self.bump(); // `!`
+        }
+        self.bump(); // parameter name
+        self.bump(); // header `]`
+
+        self.parameter_depth += 1;
+        let outer_bracket_depth = self.bracket_depth;
+        self.bracket_depth = 0;
+        let mut closed = false;
+        loop {
+            match self.peek() {
+                Some(SyntaxKind::CloseBracket) if self.bracket_depth == 0 => {
+                    self.bump();
+                    closed = true;
+                    break;
+                }
+                Some(SyntaxKind::CloseBrace) if self.bracket_depth == 0 => {
+                    // EU4 parameter bodies can carry a brace across two
+                    // parameter blocks, as in `... = { ]` followed by
+                    // `[[name] } ]`. Keep that brace in the body when its
+                    // parameter close follows it.
+                    if self.next_significant(self.pos + 1) == Some(SyntaxKind::CloseBracket) {
+                        self.bump();
+                        continue;
+                    }
+                    break;
+                }
+                None => break,
+                Some(k) if k.is_trivia() => self.bump(),
+                Some(_) => self.parse_item(),
+            }
+        }
+        self.parameter_depth -= 1;
+        self.bracket_depth = outer_bracket_depth;
+
+        if !closed {
+            self.errors.push(SyntaxError {
+                message: "unclosed parameter block".into(),
+                range: (open.start, open.start + open.len),
+            });
+        }
+        self.builder.finish_node();
     }
 
     fn parse_block(&mut self) {
@@ -930,6 +1324,12 @@ impl Parser<'_> {
             self.parse_items(true);
             if self.peek() == Some(SyntaxKind::CloseBrace) {
                 self.bump(); // `}`
+            } else if self.peek() == Some(SyntaxKind::CloseBracket)
+                && self.parameter_depth > 0
+                && self.bracket_depth == 0
+            {
+                // The parameter delimiter can close a block body that is
+                // intentionally continued by a later parameter block.
             } else {
                 self.errors.push(SyntaxError {
                     message: "unclosed '{'".into(),
@@ -1480,6 +1880,15 @@ ast_nodes! {
     HeaderedBlock => HeaderedBlock,
     /// A `@[ ... ]` parse-time calculation ([`SyntaxKind::Calc`]).
     Calc => Calc,
+    /// An EU4 conditional parameter block ([`SyntaxKind::Parameter`]).
+    Parameter => Parameter,
+    /// An EU4 undefined conditional parameter block
+    /// ([`SyntaxKind::UndefinedParameter`]).
+    UndefinedParameter => UndefinedParameter,
+    /// An EU5 code payload ([`SyntaxKind::Code`]).
+    Code => Code,
+    /// A single-bracket interpolation ([`SyntaxKind::Interpolation`]).
+    Interpolation => Interpolation,
     /// A binary arithmetic expression inside a [`Calc`] ([`SyntaxKind::BinaryExpr`]).
     BinaryExpr => BinaryExpr,
     /// A prefix `-`/`+` expression inside a [`Calc`] ([`SyntaxKind::UnaryExpr`]).
@@ -1493,11 +1902,19 @@ ast_nodes! {
 pub enum Item<'t, 'a> {
     /// A `key <op> value` field.
     Field(Field<'t, 'a>),
+    /// An EU4 conditional parameter block.
+    Parameter(Parameter<'t, 'a>),
+    /// An EU4 undefined conditional parameter block.
+    UndefinedParameter(UndefinedParameter<'t, 'a>),
+    /// An EU5 code payload.
+    Code(Code<'t, 'a>),
+    /// A single-bracket interpolation.
+    Interpolation(Interpolation<'t, 'a>),
     /// A bare value: an array element or a loose value.
     Value(Value<'t, 'a>),
     /// A significant element that is neither a field nor a value — e.g. a stray
-    /// operator/bracket, a [`SyntaxKind::Bogus`] node, or the still-ungrouped
-    /// tokens of a `[[param]]` block. Surfaced so the typed view drops nothing.
+    /// operator/bracket or a [`SyntaxKind::Bogus`] node. Surfaced so the typed
+    /// view drops nothing.
     Other(SyntaxElement<'t, 'a>),
 }
 
@@ -1513,6 +1930,14 @@ pub enum Value<'t, 'a> {
     Headered(HeaderedBlock<'t, 'a>),
     /// A `@[ ... ]` calculation.
     Calc(Calc<'t, 'a>),
+    /// An EU4 conditional parameter block.
+    Parameter(Parameter<'t, 'a>),
+    /// An EU4 undefined conditional parameter block.
+    UndefinedParameter(UndefinedParameter<'t, 'a>),
+    /// An EU5 code payload.
+    Code(Code<'t, 'a>),
+    /// A single-bracket interpolation.
+    Interpolation(Interpolation<'t, 'a>),
 }
 
 /// An arithmetic expression inside a [`Calc`].
@@ -1556,19 +1981,113 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
 /// First significant child element of `node` after skipping leading trivia and
 /// (for blocks) the delimiting braces — used to classify entries.
 fn child_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Item<'t, 'a>> + 't {
-    node.children().filter_map(|el| {
-        let kind = el.kind();
-        if kind.is_trivia() || matches!(kind, SyntaxKind::OpenBrace | SyntaxKind::CloseBrace) {
+    node.children().filter_map(item_from_element)
+}
+
+fn item_from_element<'t, 'a>(el: SyntaxElement<'t, 'a>) -> Option<Item<'t, 'a>> {
+    let kind = el.kind();
+    if kind.is_trivia() || matches!(kind, SyntaxKind::OpenBrace | SyntaxKind::CloseBrace) {
+        return None;
+    }
+    match el {
+        SyntaxElement::Node(n) => match n.kind() {
+            SyntaxKind::Field => Field::cast(n).map(Item::Field),
+            SyntaxKind::Parameter => Parameter::cast(n).map(Item::Parameter),
+            SyntaxKind::UndefinedParameter => {
+                UndefinedParameter::cast(n).map(Item::UndefinedParameter)
+            }
+            SyntaxKind::Code => Code::cast(n).map(Item::Code),
+            SyntaxKind::Interpolation => Interpolation::cast(n).map(Item::Interpolation),
+            _ => Value::cast_element(el)
+                .map(Item::Value)
+                .or(Some(Item::Other(el))),
+        },
+        _ => Value::cast_element(el)
+            .map(Item::Value)
+            .or(Some(Item::Other(el))),
+    }
+}
+
+fn parameter_name<'t, 'a>(node: SyntaxNode<'t, 'a>) -> Option<SyntaxToken<'t, 'a>> {
+    let mut open_brackets = 0;
+    node.children().find_map(|el| match el {
+        SyntaxElement::Token(token) if token.kind() == SyntaxKind::OpenBracket => {
+            open_brackets += 1;
+            None
+        }
+        SyntaxElement::Token(token) if open_brackets >= 2 && token.kind().is_scalar() => {
+            Some(token)
+        }
+        _ => None,
+    })
+}
+
+fn parameter_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+    let mut header_done = false;
+    let mut body_done = false;
+    node.children().filter_map(move |el| {
+        if body_done {
             return None;
         }
-        match el {
-            SyntaxElement::Node(n) if kind == SyntaxKind::Field => Field::cast(n).map(Item::Field),
-            _ => Some(match Value::cast_element(el) {
-                Some(v) => Item::Value(v),
-                None => Item::Other(el),
-            }),
+        if !header_done {
+            if el.kind() == SyntaxKind::CloseBracket {
+                header_done = true;
+            }
+            return None;
         }
+        if el.kind() == SyntaxKind::CloseBracket {
+            body_done = true;
+            return None;
+        }
+        parameter_body_item(el)
     })
+}
+
+fn parameter_body_item<'t, 'a>(el: SyntaxElement<'t, 'a>) -> Option<Item<'t, 'a>> {
+    if el.kind().is_trivia() || el.kind() == SyntaxKind::OpenBrace {
+        return None;
+    }
+    match el {
+        SyntaxElement::Node(n) => match n.kind() {
+            SyntaxKind::Field => Field::cast(n).map(Item::Field),
+            SyntaxKind::Parameter => Parameter::cast(n).map(Item::Parameter),
+            SyntaxKind::UndefinedParameter => {
+                UndefinedParameter::cast(n).map(Item::UndefinedParameter)
+            }
+            SyntaxKind::Code => Code::cast(n).map(Item::Code),
+            SyntaxKind::Interpolation => Interpolation::cast(n).map(Item::Interpolation),
+            _ => Value::cast_element(el)
+                .map(Item::Value)
+                .or(Some(Item::Other(el))),
+        },
+        _ => Value::cast_element(el)
+            .map(Item::Value)
+            .or(Some(Item::Other(el))),
+    }
+}
+
+fn code_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+    let children: Vec<_> = node.children().collect();
+    let payload_start = children
+        .windows(2)
+        .position(|pair| {
+            pair[0].kind() == SyntaxKind::OpenBracket && pair[1].kind() == SyntaxKind::OpenBracket
+        })
+        .map(|index| index + 2)
+        .unwrap_or(children.len());
+    let payload_end = children[payload_start..]
+        .windows(2)
+        .position(|pair| {
+            pair[0].kind() == SyntaxKind::CloseBracket && pair[1].kind() == SyntaxKind::CloseBracket
+        })
+        .map(|index| payload_start + index)
+        .unwrap_or(children.len());
+
+    children
+        .into_iter()
+        .skip(payload_start)
+        .take(payload_end.saturating_sub(payload_start))
+        .filter_map(parameter_body_item)
 }
 
 impl<'t, 'a> Root<'t, 'a> {
@@ -1637,6 +2156,93 @@ impl<'t, 'a> Block<'t, 'a> {
     /// Whether the block has no entries (only braces, whitespace, comments).
     pub fn is_empty(&self) -> bool {
         self.entries().next().is_none()
+    }
+}
+
+impl<'t, 'a> Parameter<'t, 'a> {
+    /// The parameter name in `[[name] ... ]`.
+    pub fn name(&self) -> Option<SyntaxToken<'t, 'a>> {
+        parameter_name(self.syntax())
+    }
+
+    /// The entries in the parameter body.
+    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+        parameter_items(self.syntax())
+    }
+
+    /// The fields directly inside the parameter body.
+    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + 't {
+        self.entries().filter_map(Item::into_field)
+    }
+
+    /// The bare values directly inside the parameter body.
+    pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + 't {
+        self.entries().filter_map(Item::into_value)
+    }
+}
+
+impl<'t, 'a> UndefinedParameter<'t, 'a> {
+    /// The parameter name in `[[!name] ... ]`.
+    pub fn name(&self) -> Option<SyntaxToken<'t, 'a>> {
+        parameter_name(self.syntax())
+    }
+
+    /// The entries in the parameter body.
+    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+        parameter_items(self.syntax())
+    }
+
+    /// The fields directly inside the parameter body.
+    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + 't {
+        self.entries().filter_map(Item::into_field)
+    }
+
+    /// The bare values directly inside the parameter body.
+    pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + 't {
+        self.entries().filter_map(Item::into_value)
+    }
+}
+
+impl<'t, 'a> Code<'t, 'a> {
+    /// The `code` keyword, when this node includes the no-equals form.
+    pub fn keyword(&self) -> Option<SyntaxToken<'t, 'a>> {
+        self.syntax()
+            .child_tokens()
+            .find(|token| token.kind() == SyntaxKind::Unquoted && token.text() == b"code")
+    }
+
+    /// The optional operator in `code = [[ ... ]]`.
+    pub fn op_token(&self) -> Option<SyntaxToken<'t, 'a>> {
+        self.syntax()
+            .child_tokens()
+            .find(|token| token.kind() == SyntaxKind::Operator)
+    }
+
+    /// The entries in the code payload.
+    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+        code_items(self.syntax())
+    }
+
+    /// The fields directly inside the code payload.
+    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + 't {
+        self.entries().filter_map(Item::into_field)
+    }
+
+    /// The bare values directly inside the code payload.
+    pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + 't {
+        self.entries().filter_map(Item::into_value)
+    }
+}
+
+impl<'t, 'a> Interpolation<'t, 'a> {
+    /// The elements between the interpolation brackets.
+    pub fn body(&self) -> impl Iterator<Item = SyntaxElement<'t, 'a>> + 't {
+        self.syntax().children().filter(|element| {
+            !matches!(
+                element.kind(),
+                SyntaxKind::OpenBracket | SyntaxKind::CloseBracket
+            )
+        })
     }
 }
 
@@ -1714,6 +2320,38 @@ impl<'t, 'a> Item<'t, 'a> {
         }
     }
 
+    /// The [`Parameter`] if this entry is one.
+    pub fn into_parameter(self) -> Option<Parameter<'t, 'a>> {
+        match self {
+            Item::Parameter(parameter) => Some(parameter),
+            _ => None,
+        }
+    }
+
+    /// The [`UndefinedParameter`] if this entry is one.
+    pub fn into_undefined_parameter(self) -> Option<UndefinedParameter<'t, 'a>> {
+        match self {
+            Item::UndefinedParameter(parameter) => Some(parameter),
+            _ => None,
+        }
+    }
+
+    /// The [`Code`] if this entry is one.
+    pub fn into_code(self) -> Option<Code<'t, 'a>> {
+        match self {
+            Item::Code(code) => Some(code),
+            _ => None,
+        }
+    }
+
+    /// The [`Interpolation`] if this entry is one.
+    pub fn into_interpolation(self) -> Option<Interpolation<'t, 'a>> {
+        match self {
+            Item::Interpolation(interpolation) => Some(interpolation),
+            _ => None,
+        }
+    }
+
     /// The [`Value`] if this entry is a bare value.
     pub fn into_value(self) -> Option<Value<'t, 'a>> {
         match self {
@@ -1733,6 +2371,12 @@ impl<'t, 'a> Value<'t, 'a> {
                 SyntaxKind::Block => Block::cast(n).map(Value::Block),
                 SyntaxKind::HeaderedBlock => HeaderedBlock::cast(n).map(Value::Headered),
                 SyntaxKind::Calc => Calc::cast(n).map(Value::Calc),
+                SyntaxKind::Parameter => Parameter::cast(n).map(Value::Parameter),
+                SyntaxKind::UndefinedParameter => {
+                    UndefinedParameter::cast(n).map(Value::UndefinedParameter)
+                }
+                SyntaxKind::Code => Code::cast(n).map(Value::Code),
+                SyntaxKind::Interpolation => Interpolation::cast(n).map(Value::Interpolation),
                 _ => None,
             },
         }
@@ -1766,6 +2410,38 @@ impl<'t, 'a> Value<'t, 'a> {
     pub fn as_calc(&self) -> Option<Calc<'t, 'a>> {
         match self {
             Value::Calc(c) => Some(*c),
+            _ => None,
+        }
+    }
+
+    /// The parameter, if this is [`Value::Parameter`].
+    pub fn as_parameter(&self) -> Option<Parameter<'t, 'a>> {
+        match self {
+            Value::Parameter(parameter) => Some(*parameter),
+            _ => None,
+        }
+    }
+
+    /// The undefined parameter, if this is [`Value::UndefinedParameter`].
+    pub fn as_undefined_parameter(&self) -> Option<UndefinedParameter<'t, 'a>> {
+        match self {
+            Value::UndefinedParameter(parameter) => Some(*parameter),
+            _ => None,
+        }
+    }
+
+    /// The code payload, if this is [`Value::Code`].
+    pub fn as_code(&self) -> Option<Code<'t, 'a>> {
+        match self {
+            Value::Code(code) => Some(*code),
+            _ => None,
+        }
+    }
+
+    /// The interpolation, if this is [`Value::Interpolation`].
+    pub fn as_interpolation(&self) -> Option<Interpolation<'t, 'a>> {
+        match self {
+            Value::Interpolation(interpolation) => Some(*interpolation),
             _ => None,
         }
     }
@@ -1834,10 +2510,11 @@ impl<'a> GreenTree<'a> {
 //     (collapsed to a single blank line);
 //   * the document ends in exactly one newline.
 //
-// Constructs the parser does not yet structure (`[[param]]` blocks, `Bogus`
-// recovery nodes, calc internals) are reflowed conservatively: calc and Bogus
-// nodes are reprinted verbatim, and loose tokens land one per line. Content is
-// always preserved; only the layout of those rare constructs is rough.
+// Constructs the parser does not yet structure (`Bogus` recovery nodes and
+// some calc internals) are reflowed conservatively: parameter, code, calc, and
+// Bogus nodes are reprinted verbatim, and loose tokens land one per line.
+// Content is always preserved; only the layout of those rare constructs is
+// rough.
 // ---------------------------------------------------------------------------
 
 /// Configuration for [`GreenTree::format`].
@@ -2725,18 +3402,324 @@ mod tests {
     }
 
     #[test]
-    fn ast_item_other_preserves_loose_tokens() {
-        // `[[param]]` tokens are not yet grouped, so they surface as Item::Other
-        // rather than being silently dropped from the typed entry view.
-        let tree = parse(b"[[scaled_skill] body ]");
-        let others = tree
+    fn ast_parameter_nodes_preserve_body() {
+        let source = b"generate_advisor = { [[scaled_skill] a = { b = c } ] }";
+        let tree = parse(source);
+        assert!(tree.errors().is_empty());
+        assert_eq!(tree.reconstruct(), source);
+
+        let block = tree
+            .ast()
+            .fields()
+            .next()
+            .unwrap()
+            .value()
+            .unwrap()
+            .as_block()
+            .unwrap();
+        let entries = block.entries().collect::<Vec<_>>();
+        let [Item::Parameter(parameter)] = entries.as_slice() else {
+            panic!("expected one parameter entry");
+        };
+        assert_eq!(parameter.syntax().kind(), SyntaxKind::Parameter);
+        assert_eq!(
+            parameter.syntax().text(),
+            b"[[scaled_skill] a = { b = c } ]"
+        );
+        assert_eq!(parameter.name().unwrap().text(), b"scaled_skill");
+        assert_eq!(parameter.fields().count(), 1);
+        assert_eq!(
+            parameter.fields().next().unwrap().key().unwrap().text(),
+            b"a"
+        );
+    }
+
+    #[test]
+    fn ast_undefined_parameter_node_is_distinct() {
+        let source = b"[[!scaled_skill] a = b ]";
+        let tree = parse(source);
+        assert!(tree.errors().is_empty());
+        assert_eq!(tree.reconstruct(), source);
+
+        let entries = tree.ast().items().collect::<Vec<_>>();
+        let [Item::UndefinedParameter(parameter)] = entries.as_slice() else {
+            panic!("expected one undefined parameter entry");
+        };
+        assert_eq!(parameter.syntax().kind(), SyntaxKind::UndefinedParameter);
+        assert_eq!(parameter.name().unwrap().text(), b"scaled_skill");
+        assert_eq!(
+            parameter.fields().next().unwrap().key().unwrap().text(),
+            b"a"
+        );
+    }
+
+    #[test]
+    fn ast_empty_parameter_node_is_valid() {
+        let source = b"[[dip_reward]\n]";
+        let tree = parse(source);
+        assert!(tree.errors().is_empty());
+        assert_eq!(tree.reconstruct(), source);
+
+        let entries = tree.ast().items().collect::<Vec<_>>();
+        let [Item::Parameter(parameter)] = entries.as_slice() else {
+            panic!("expected one empty parameter entry");
+        };
+        assert_eq!(parameter.name().unwrap().text(), b"dip_reward");
+        assert_eq!(parameter.entries().count(), 0);
+    }
+
+    #[test]
+    fn interpolation_nodes_are_distinct_from_parameters() {
+        let source = b"text = [PdxAccount.GetLastLinkErrorLocalized]\nname = [ROOT.GetName]\n";
+        let tree = parse(source);
+        assert!(tree.errors().is_empty());
+        assert_eq!(tree.reconstruct(), source);
+
+        let fields = tree.ast().fields().collect::<Vec<_>>();
+        let first = fields[0].value().unwrap().as_interpolation().unwrap();
+        assert_eq!(first.syntax().kind(), SyntaxKind::Interpolation);
+        assert_eq!(
+            first.syntax().text(),
+            b"[PdxAccount.GetLastLinkErrorLocalized]"
+        );
+        assert_eq!(first.body().count(), 1);
+
+        let second = fields[1].value().unwrap().as_interpolation().unwrap();
+        assert_eq!(second.syntax().text(), b"[ROOT.GetName]");
+    }
+
+    #[test]
+    fn eu5_code_payload_is_not_a_parameter() {
+        let source = b"template example { code [[\n\tvalue = { name = wall }\n]] }";
+        let tree = parse(source);
+        assert!(tree.errors().is_empty());
+        assert_eq!(tree.reconstruct(), source);
+
+        let block = tree
             .ast()
             .items()
-            .filter(|i| matches!(i, Item::Other(_)))
-            .count();
+            .find_map(|item| match item {
+                Item::Value(value) => value.as_block(),
+                _ => None,
+            })
+            .unwrap();
+        let entries = block.entries().collect::<Vec<_>>();
+        let [Item::Code(code)] = entries.as_slice() else {
+            panic!("expected one code payload");
+        };
+        assert_eq!(code.syntax().kind(), SyntaxKind::Code);
+        assert_eq!(code.keyword().unwrap().text(), b"code");
+        assert_eq!(
+            code.syntax().text(),
+            b"code [[\n\tvalue = { name = wall }\n]]"
+        );
+        assert_eq!(
+            code.fields().next().unwrap().key().unwrap().text(),
+            b"value"
+        );
         assert!(
-            others >= 1,
-            "loose bracket tokens should appear as Item::Other"
+            code.fields()
+                .next()
+                .unwrap()
+                .value()
+                .unwrap()
+                .as_block()
+                .is_some()
+        );
+
+        let compact = parse(b"template example { code = [[name] body ]] }");
+        assert!(compact.errors().is_empty());
+        let compact_block = compact
+            .ast()
+            .items()
+            .find_map(|item| match item {
+                Item::Value(value) => value.as_block(),
+                _ => None,
+            })
+            .unwrap();
+        let code = compact_block.fields().next().unwrap();
+        assert_eq!(code.key().unwrap().text(), b"code");
+        assert_eq!(code.op(), Some(Operator::Equal));
+        let payload = code.value().unwrap().as_code().unwrap();
+        assert!(payload.keyword().is_none());
+        assert!(payload.op_token().is_none());
+        assert_eq!(payload.fields().count(), 0);
+    }
+
+    #[test]
+    fn eu5_code_payload_allows_empty_bodies() {
+        for source in [b"code [[]]".as_slice(), b"code [[ ]]".as_slice()] {
+            let tree = parse(source);
+            assert!(tree.errors().is_empty());
+            assert_eq!(tree.reconstruct(), source);
+            let entries = tree.ast().items().collect::<Vec<_>>();
+            let [Item::Code(code)] = entries.as_slice() else {
+                panic!("expected a code payload");
+            };
+            assert_eq!(code.entries().count(), 0);
+        }
+
+        for source in [b"code = [[]]".as_slice(), b"code = [[ ]]".as_slice()] {
+            let tree = parse(source);
+            assert!(tree.errors().is_empty());
+            assert_eq!(tree.reconstruct(), source);
+            let field = tree.ast().fields().next().unwrap();
+            assert_eq!(
+                field.value().unwrap().as_code().unwrap().entries().count(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn eu5_code_payload_handles_nested_braces_and_brackets() {
+        let source = b"code [[ value = { nested = { link = [ROOT.GetName] } } ]]";
+        let tree = parse(source);
+        assert!(tree.errors().is_empty());
+        assert_eq!(tree.reconstruct(), source);
+
+        let entries = tree.ast().items().collect::<Vec<_>>();
+        let [Item::Code(code)] = entries.as_slice() else {
+            panic!("expected a code payload");
+        };
+        let nested = code
+            .fields()
+            .next()
+            .unwrap()
+            .value()
+            .unwrap()
+            .as_block()
+            .unwrap()
+            .fields()
+            .next()
+            .unwrap()
+            .value()
+            .unwrap()
+            .as_block()
+            .unwrap();
+        let interpolation = nested
+            .fields()
+            .next()
+            .unwrap()
+            .value()
+            .unwrap()
+            .as_interpolation()
+            .unwrap();
+        assert_eq!(interpolation.syntax().text(), b"[ROOT.GetName]");
+    }
+
+    #[test]
+    fn eu5_code_payload_recovery_keeps_following_block_delimiter() {
+        let source = b"outer = { code [[value = yes }";
+        let tree = parse(source);
+        assert_eq!(tree.reconstruct(), source);
+        assert!(
+            tree.errors()
+                .iter()
+                .any(|error| error.message.contains("unclosed code payload"))
+        );
+        let outer = tree
+            .ast()
+            .fields()
+            .next()
+            .unwrap()
+            .value()
+            .unwrap()
+            .as_block()
+            .unwrap();
+        assert!(
+            outer
+                .syntax()
+                .child_tokens()
+                .any(|token| token.kind() == SyntaxKind::CloseBrace)
+        );
+    }
+
+    #[test]
+    fn eu5_code_payload_recovery_handles_eof() {
+        let sources = [
+            b"code [[value = yes".as_slice(),
+            b"code = [[value = yes".as_slice(),
+        ];
+        for source in sources {
+            let tree = parse(source);
+            assert_eq!(tree.reconstruct(), source);
+            assert!(
+                tree.errors()
+                    .iter()
+                    .any(|error| error.message.contains("unclosed code payload"))
+            );
+        }
+    }
+
+    #[test]
+    fn deeply_nested_code_payloads_do_not_overflow() {
+        let depth = MAX_DEPTH as usize + 16;
+        let mut source = Vec::new();
+        for _ in 0..depth {
+            source.extend_from_slice(b"code [[");
+        }
+        for _ in 0..depth {
+            source.extend_from_slice(b"]]");
+        }
+
+        let tree = parse(&source);
+        assert_eq!(tree.reconstruct(), source);
+        assert!(tree.errors().iter().any(|error| {
+            error
+                .message
+                .contains("maximum code nesting depth exceeded")
+        }));
+    }
+
+    #[test]
+    fn parameter_recovery_keeps_following_block_delimiter() {
+        let source = b"outer = { [[name] value = yes }";
+        let tree = parse(source);
+        assert_eq!(tree.reconstruct(), source);
+        assert!(
+            tree.errors()
+                .iter()
+                .any(|error| error.message.contains("unclosed parameter block"))
+        );
+        let outer = tree
+            .ast()
+            .fields()
+            .next()
+            .unwrap()
+            .value()
+            .unwrap()
+            .as_block()
+            .unwrap();
+        assert!(
+            outer
+                .syntax()
+                .child_tokens()
+                .any(|token| token.kind() == SyntaxKind::CloseBrace)
+        );
+    }
+
+    #[test]
+    fn parameter_body_can_continue_a_brace_across_parameters() {
+        let source = b"outer = { [[tooltip] tooltip = { ] [[tooltip] } ] }";
+        let tree = parse(source);
+        assert!(tree.errors().is_empty());
+        assert_eq!(tree.reconstruct(), source);
+        let outer = tree
+            .ast()
+            .fields()
+            .next()
+            .unwrap()
+            .value()
+            .unwrap()
+            .as_block()
+            .unwrap();
+        assert_eq!(
+            outer
+                .entries()
+                .filter(|entry| matches!(entry, Item::Parameter(_)))
+                .count(),
+            2
         );
     }
 
