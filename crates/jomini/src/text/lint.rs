@@ -35,7 +35,7 @@
 
 #![allow(missing_docs)] // experimental surface; docs land as the API stabilizes
 
-use crate::text::syntax::{self, AstNode, Field, Flavor, SyntaxKind, SyntaxNode, Value};
+use crate::text::syntax::{self, Applicability, AstNode, Field, Flavor, SyntaxNode, Value};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -262,7 +262,16 @@ pub struct FileSummary {
     pub file: FileId,
     pub defs: Vec<DefItem>,
     pub refs: Vec<RefItem>,
-    pub syntax_errors: Vec<(String, (u32, u32))>,
+    pub syntax_errors: Vec<SyntaxDiagnosticSummary>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SyntaxDiagnosticSummary {
+    pub message: String,
+    pub range: (u32, u32),
+    pub opening_range: Option<(u32, u32)>,
+    pub applicability: Option<Applicability>,
+    pub fix: Option<Fix>,
 }
 
 fn decode(s: crate::Scalar) -> String {
@@ -279,10 +288,13 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
 
     let mut defs = Vec::new();
     // Top-level keys define entities only when the file lives in a known
-    // definition directory.
+    // definition directory. Do not index a definition from a recovered field:
+    // references in the same error subtree are suppressed for the same reason.
     if let Some(kind) = schema.definition_kind(fileset.path(file)) {
         for field in tree.ast().fields() {
-            if let Some(key) = field.key() {
+            if !field.syntax().has_error()
+                && let Some(key) = field.key()
+            {
                 defs.push(DefItem {
                     kind: kind.clone(),
                     name: decode(key.as_scalar()),
@@ -296,10 +308,27 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
     let mut refs = Vec::new();
     collect_refs(tree.root(), schema, false, &mut refs);
 
+    let repair_fixes = tree.repair_fixes();
     let syntax_errors = tree
         .errors()
         .iter()
-        .map(|e| (e.message.clone(), e.range))
+        .map(|e| {
+            let recovery = e.recovery.as_ref();
+            let fix = recovery
+                .filter(|r| r.order == 0)
+                .and_then(|r| repair_fixes.iter().find(|f| f.range == r.insertion_range))
+                .map(|f| Fix {
+                    range: f.range,
+                    replacement: f.replacement.clone(),
+                });
+            SyntaxDiagnosticSummary {
+                message: e.message.clone(),
+                range: e.range,
+                opening_range: recovery.map(|r| r.opening_range),
+                applicability: recovery.map(|r| r.applicability),
+                fix,
+            }
+        })
         .collect();
 
     FileSummary {
@@ -315,17 +344,7 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
 /// a broken block is recorded as suppressible. The O(1) [`SyntaxNode::has_error`]
 /// check means we learn this without re-walking the subtree.
 fn collect_refs(node: SyntaxNode<'_, '_>, schema: &Schema, in_error: bool, out: &mut Vec<RefItem>) {
-    // A reference is "in an error subtree" when the parser had trouble here:
-    // either an explicit recovery element (the O(1) HAS_ERROR flag covers stray
-    // `}` Bogus nodes), or an *unclosed* block — which is only ever a diagnostic,
-    // creating no error element, so it must be detected structurally (no
-    // `CloseBrace` child). Everything inside such a region is suspect, so a
-    // failed name lookup there is suppressed rather than reported as a hard miss.
-    let unclosed_block = node.kind() == SyntaxKind::Block
-        && !node
-            .child_tokens()
-            .any(|t| t.kind() == SyntaxKind::CloseBrace);
-    let in_error = in_error || node.has_error() || unclosed_block;
+    let in_error = in_error || node.has_error();
 
     if let Some(field) = Field::cast(node)
         && let (Some(key), Some(value)) = (field.key(), field.value())
@@ -695,16 +714,22 @@ impl Linter {
         // reverse use-site map that find-references reads.
         let mut refs_by_name: HashMap<Key, Vec<(FileId, u32)>> = HashMap::new();
         for s in &summaries {
-            for (message, range) in &s.syntax_errors {
+            for error in &s.syntax_errors {
                 diags.push(Diagnostic {
                     id: lints::SYNTAX_ERROR,
                     severity: Severity::Error,
                     confidence: Confidence::Strong,
                     file: s.file,
-                    range: *range,
-                    message: message.clone(),
-                    help: None,
-                    fix: None,
+                    range: error.range,
+                    message: error.message.clone(),
+                    help: error.applicability.map(|applicability| {
+                        if applicability.is_machine_applicable() {
+                            "insert the missing trailing delimiter".into()
+                        } else {
+                            "the missing trailing delimiter has no safe automatic repair".into()
+                        }
+                    }),
+                    fix: error.fix.clone(),
                 });
             }
             for (ref_index, r) in s.refs.iter().enumerate() {
@@ -1023,22 +1048,21 @@ pub fn render(diag: &Diagnostic, fileset: &Fileset, color: bool) -> String {
 // ---------------------------------------------------------------------------
 
 /// Apply [`Fix`]es to `source`, returning the rewritten bytes. Fixes are sorted
-/// by position and applied left-to-right; any fix that **overlaps** one already
-/// applied is skipped (a fix-all must never emit conflicting edits). The result
-/// is plain text that reparses cleanly — run [`format`](syntax::format) over it
-/// if you also want the house style ("splice, then reprint").
+/// by position and applied left-to-right. Equal zero-width edits keep their
+/// input order. Any fix that overlaps one already applied is skipped. The
+/// result is plain text; run [`format`](syntax::format) for house style.
 ///
 /// This is the deliberately simple, robust form of tree rewriting: because each
 /// fix targets a single element's byte range (e.g. a reference token), splicing
 /// text is equivalent to rebuilding the green subtree but needs no width
 /// recomputation — and it is exactly the LSP `TextEdit` model.
 pub fn apply_fixes(source: &[u8], fixes: &[Fix]) -> Vec<u8> {
-    let mut sorted: Vec<&Fix> = fixes.iter().collect();
-    sorted.sort_by_key(|f| (f.range.0, f.range.1));
+    let mut sorted: Vec<(usize, &Fix)> = fixes.iter().enumerate().collect();
+    sorted.sort_by_key(|(index, fix)| (fix.range.0, fix.range.1, *index));
 
     let mut out = Vec::with_capacity(source.len());
     let mut cursor = 0u32; // bytes of `source` already copied
-    for fix in sorted {
+    for (_, fix) in sorted {
         let (start, end) = fix.range;
         // Skip an out-of-order/overlapping or inverted edit rather than corrupt
         // the output.
@@ -1168,6 +1192,22 @@ mod tests {
             ],
         );
         assert_eq!(out, b"Xdef");
+
+        // Equal zero-width edits keep their input order.
+        let out = apply_fixes(
+            b"abc",
+            &[
+                Fix {
+                    range: (3, 3),
+                    replacement: "]".into(),
+                },
+                Fix {
+                    range: (3, 3),
+                    replacement: "}".into(),
+                },
+            ],
+        );
+        assert_eq!(out, b"abc]}");
     }
 
     #[test]
@@ -1222,6 +1262,53 @@ mod tests {
         );
         // And the underlying syntax error is still surfaced.
         assert!(diags.iter().any(|d| d.id == lints::SYNTAX_ERROR));
+    }
+
+    #[test]
+    fn suppresses_definition_in_recovered_field() {
+        let mut fs = Fileset::new();
+        fs.add(
+            "vanilla/common/buildings/broken.txt",
+            FileKind::Vanilla,
+            b"broken = { cost = 1".to_vec(),
+        );
+        let mut schema = Schema::new();
+        schema.define_dir("buildings", "building");
+
+        let summary = summarize(&fs, &schema, FileId(0));
+        assert!(summary.defs.is_empty());
+        assert!(
+            summary
+                .syntax_errors
+                .iter()
+                .any(|error| error.fix.is_some())
+        );
+    }
+
+    #[test]
+    fn syntax_summary_and_diagnostic_retain_repair_metadata() {
+        let (fs, schema) = demo();
+        let analysis = Linter::new(schema).analyze(&fs);
+        let summary = analysis.summary(FileId(3)).unwrap();
+        let error = summary.syntax_errors.first().unwrap();
+        assert_eq!(
+            error.range,
+            (
+                fs.source(FileId(3)).len() as u32,
+                fs.source(FileId(3)).len() as u32
+            )
+        );
+        assert_eq!(error.opening_range, Some((9, 10)));
+        assert_eq!(error.applicability, Some(Applicability::MachineApplicable));
+        assert_eq!(error.fix.as_ref().unwrap().replacement, "}");
+
+        let diagnostic = analysis
+            .diagnostics()
+            .iter()
+            .find(|diagnostic| diagnostic.id == lints::SYNTAX_ERROR)
+            .unwrap();
+        assert_eq!(diagnostic.range, error.range);
+        assert_eq!(diagnostic.fix.as_ref().unwrap().replacement, "}");
     }
 
     #[test]

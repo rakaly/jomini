@@ -81,12 +81,20 @@ pub enum SyntaxKind {
     /// Reserved for explicit error tokens (the current lexer classifies every
     /// byte, worst case as [`SyntaxKind::Unquoted`], so it is not emitted yet).
     Error,
+    /// A synthetic, zero-width `}` inserted after an unclosed block at EOF.
+    MissingCloseBrace,
+    /// A synthetic, zero-width `]` inserted after an unclosed bracket construct.
+    /// Code payloads use two consecutive tokens because their `]]` delimiter
+    /// consists of two source tokens.
+    MissingCloseBracket,
 
     // ===== calc tokens (interior of `@[ ... ]`) =====
     /// `@[`, opening a parse-time calculation.
     CalcOpen,
     /// `]`, closing a parse-time calculation.
     CalcClose,
+    /// A synthetic, zero-width `]` inserted after an unclosed calculation.
+    MissingCalcClose,
     /// `+` inside a calc.
     Plus,
     /// `-` inside a calc.
@@ -99,6 +107,8 @@ pub enum SyntaxKind {
     OpenParen,
     /// `)` inside a calc.
     CloseParen,
+    /// A synthetic, zero-width `)` inserted after an unclosed calc expression.
+    MissingCloseParen,
     /// A numeric literal inside a calc (e.g. `1`, `10.0`, `10.0f`).
     Number,
     /// An operand identifier inside a calc (e.g. `tier`, `leopard_x`, `@var`).
@@ -134,6 +144,45 @@ pub enum SyntaxKind {
 }
 
 impl SyntaxKind {
+    /// Return `true` for a synthetic recovery token.
+    pub fn is_missing(self) -> bool {
+        matches!(
+            self,
+            Self::MissingCloseBrace
+                | Self::MissingCloseBracket
+                | Self::MissingCalcClose
+                | Self::MissingCloseParen
+        )
+    }
+
+    /// Return the physical token that a missing token represents.
+    pub fn expected_kind(self) -> Option<SyntaxKind> {
+        Some(match self {
+            Self::MissingCloseBrace => Self::CloseBrace,
+            Self::MissingCloseBracket => Self::CloseBracket,
+            Self::MissingCalcClose => Self::CalcClose,
+            Self::MissingCloseParen => Self::CloseParen,
+            _ => return None,
+        })
+    }
+
+    /// Return the source spelling for a missing token.
+    pub fn missing_text(self) -> Option<&'static str> {
+        Some(match self {
+            Self::MissingCloseBrace => "}",
+            Self::MissingCloseBracket | Self::MissingCalcClose => "]",
+            Self::MissingCloseParen => ")",
+            _ => return None,
+        })
+    }
+
+    /// Return `true` when this kind is a physical closing delimiter.
+    pub fn is_physical_close(self) -> bool {
+        matches!(
+            self,
+            Self::CloseBrace | Self::CloseBracket | Self::CalcClose | Self::CloseParen
+        )
+    }
     /// Whitespace, comments, and the BOM — insignificant to structure but
     /// preserved for losslessness.
     pub fn is_trivia(self) -> bool {
@@ -382,13 +431,14 @@ fn lex(source: &[u8], flavor: Flavor) -> Vec<Tok> {
     out
 }
 
-/// A byte that ends a calc operand identifier or number: whitespace, an
-/// arithmetic operator, a parenthesis, or the closing `]`. A bare `[` is *not* a
-/// stop, so a stray one (only seen in malformed input) is absorbed rather than
-/// stalling the lexer; a real calc never contains one.
+/// A byte that ends a calc operand identifier or number.
 #[inline]
 fn is_calc_stop(b: u8) -> bool {
-    is_ws(b) || matches!(b, b'(' | b')' | b'+' | b'-' | b'*' | b'/' | b']')
+    is_ws(b)
+        || matches!(
+            b,
+            b'(' | b')' | b'+' | b'-' | b'*' | b'/' | b'[' | b']' | b'{' | b'}'
+        )
 }
 
 /// Scan a calc numeric literal beginning at `i` (`source[i]` is a digit or a `.`
@@ -438,6 +488,10 @@ fn lex_calc(source: &[u8], mut i: usize, out: &mut Vec<Tok>) -> usize {
                 len: 1,
             });
             return i; // leave calc mode
+        } else if matches!(b, b'{' | b'}') {
+            // A brace belongs to the surrounding Clausewitz construct. Keep it
+            // outside the calc so a mismatched brace cannot receive a fix.
+            return i;
         } else if is_ws(b) {
             i += 1;
             while i < n && is_ws(source[i]) {
@@ -497,6 +551,56 @@ pub struct SyntaxError {
     pub message: String,
     /// The half-open byte range the problem covers.
     pub range: (u32, u32),
+    /// Structured information for a missing trailing delimiter.
+    pub recovery: Option<MissingDelimiter>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryConstruct {
+    Block,
+    Interpolation,
+    Parameter,
+    Calculation,
+    CodePayload,
+    ParenthesizedCalculation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Applicability {
+    MachineApplicable,
+    Unsafe,
+}
+
+impl Applicability {
+    /// Return `true` when a client may apply the repair automatically.
+    pub fn is_machine_applicable(self) -> bool {
+        matches!(self, Self::MachineApplicable)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingDelimiter {
+    pub expected: SyntaxKind,
+    pub missing: SyntaxKind,
+    pub construct: RecoveryConstruct,
+    pub opening_range: (u32, u32),
+    pub insertion_range: (u32, u32),
+    pub repair_text: String,
+    pub applicability: Applicability,
+    pub order: u32,
+}
+
+impl MissingDelimiter {
+    /// Return `true` when the repair passed parser validation.
+    pub fn is_machine_applicable(&self) -> bool {
+        self.applicability.is_machine_applicable()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Repair {
+    pub range: (u32, u32),
+    pub replacement: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -546,8 +650,7 @@ pub struct NodeFlags(u8);
 impl NodeFlags {
     /// The subtree contains at least one [`SyntaxKind::Comment`].
     pub const HAS_COMMENT: NodeFlags = NodeFlags(1 << 0);
-    /// The subtree contains an error-recovery [`SyntaxKind::Bogus`] node or an
-    /// explicit [`SyntaxKind::Error`] token.
+    /// The subtree contains a syntax error or recovery element.
     pub const HAS_ERROR: NodeFlags = NodeFlags(1 << 1);
     /// The subtree contains a `@[ ... ]` [`SyntaxKind::Calc`].
     pub const HAS_CALC: NodeFlags = NodeFlags(1 << 2);
@@ -570,6 +673,7 @@ fn own_flag_bits(kind: SyntaxKind) -> NodeFlags {
     match kind {
         SyntaxKind::Comment => NodeFlags::HAS_COMMENT,
         SyntaxKind::Error | SyntaxKind::Bogus => NodeFlags::HAS_ERROR,
+        kind if kind.is_missing() => NodeFlags::HAS_ERROR,
         // The `Calc` node covers a well-formed calc; `CalcOpen` covers the rare
         // flattened case where the depth guard tripped before the node formed.
         SyntaxKind::Calc | SyntaxKind::CalcOpen => NodeFlags::HAS_CALC,
@@ -598,6 +702,12 @@ pub fn parse(source: &[u8]) -> GreenTree<'_> {
 
 /// Parse `source` into a lossless [`GreenTree`] with a specific [`Flavor`].
 pub fn parse_with(source: &[u8], flavor: Flavor) -> GreenTree<'_> {
+    let mut tree = parse_raw_with(source, flavor);
+    validate_repairs(&mut tree, flavor);
+    tree
+}
+
+fn parse_raw_with(source: &[u8], flavor: Flavor) -> GreenTree<'_> {
     let tokens = lex(source, flavor);
     let builder = Builder::with_capacity(tokens.len());
     let mut p = Parser {
@@ -610,6 +720,7 @@ pub fn parse_with(source: &[u8], flavor: Flavor) -> GreenTree<'_> {
         parameter_depth: 0,
         bracket_depth: 0,
         code_depth: 0,
+        recovery_barrier: 0,
     };
     p.builder.start_node(SyntaxKind::Root);
     p.parse_items(false);
@@ -618,6 +729,26 @@ pub fn parse_with(source: &[u8], flavor: Flavor) -> GreenTree<'_> {
         builder, errors, ..
     } = p;
     builder.finish(source, errors)
+}
+
+/// Mark a repair as safe only when the repaired source parses without a
+/// missing-delimiter diagnostic.
+fn validate_repairs(tree: &mut GreenTree<'_>, flavor: Flavor) {
+    let candidate = tree.repair_candidate();
+    if candidate == tree.source {
+        return;
+    }
+
+    let reparsed = parse_raw_with(&candidate, flavor);
+    if reparsed.errors.iter().any(|error| error.recovery.is_some()) {
+        for error in &mut tree.errors {
+            if let Some(recovery) = &mut error.recovery
+                && recovery.applicability == Applicability::MachineApplicable
+            {
+                recovery.applicability = Applicability::Unsafe;
+            }
+        }
+    }
 }
 
 impl<'a> GreenTree<'a> {
@@ -634,6 +765,67 @@ impl<'a> GreenTree<'a> {
     /// Recoverable problems found during parsing (empty for clean input).
     pub fn errors(&self) -> &[SyntaxError] {
         &self.errors
+    }
+
+    /// Coalesced, machine-applicable delimiter insertions in source order.
+    pub fn repair_fixes(&self) -> Vec<Repair> {
+        let records: Vec<&MissingDelimiter> = self
+            .errors
+            .iter()
+            .filter_map(|e| e.recovery.as_ref())
+            .filter(|r| r.applicability == Applicability::MachineApplicable)
+            .collect();
+        Self::coalesce_repairs(records)
+    }
+
+    fn repair_candidate(&self) -> Vec<u8> {
+        let records: Vec<&MissingDelimiter> = self
+            .errors
+            .iter()
+            .filter_map(|e| e.recovery.as_ref())
+            .filter(|r| r.applicability == Applicability::MachineApplicable)
+            .collect();
+        let fixes = Self::coalesce_repairs(records);
+        let mut out = self.source.to_vec();
+        for fix in fixes.into_iter().rev() {
+            out.splice(
+                fix.range.0 as usize..fix.range.1 as usize,
+                fix.replacement.bytes(),
+            );
+        }
+        out
+    }
+
+    fn coalesce_repairs(mut records: Vec<&MissingDelimiter>) -> Vec<Repair> {
+        records.sort_by_key(|r| (r.insertion_range.0, r.order));
+        let mut fixes: Vec<Repair> = Vec::new();
+        for record in records {
+            if let Some(last) = fixes
+                .last_mut()
+                .filter(|f| f.range == record.insertion_range)
+            {
+                last.replacement.push_str(&record.repair_text);
+            } else {
+                fixes.push(Repair {
+                    range: record.insertion_range,
+                    replacement: record.repair_text.clone(),
+                });
+            }
+        }
+        fixes
+    }
+
+    /// Apply all safe virtual delimiter repairs without changing other bytes.
+    pub fn repair(&self) -> Vec<u8> {
+        let fixes = self.repair_fixes();
+        let mut out = self.source.to_vec();
+        for fix in fixes.into_iter().rev() {
+            out.splice(
+                fix.range.0 as usize..fix.range.1 as usize,
+                fix.replacement.bytes(),
+            );
+        }
+        out
     }
 
     /// Every leaf [`SyntaxToken`] in document order.
@@ -792,13 +984,27 @@ impl Builder {
             }
         }
 
-        // Per-subtree flag bits. Seed each element with its own bits, then fold
-        // each element's flags into its parent. Pre-order means every descendant
-        // has a higher index than its ancestors, so iterating high→low finalizes
-        // a node's flags (all descendants already folded in) before it folds into
-        // its own parent — one linear pass, no extra tree walk. (The root at
-        // index 0 has no parent, so the range starts at 1.)
+        // Per-subtree flag bits. Seed each element with its own bits and with
+        // any non-recoverable diagnostic whose range it contains. The latter
+        // keeps refused recovery regions visible to semantic consumers even
+        // when no virtual token was inserted. Then fold each element's flags
+        // into its parent. Pre-order means every descendant has a higher index
+        // than its ancestors, so iterating high→low finalizes a node's flags
+        // before it folds into its own parent — one linear pass, no extra tree
+        // walk. (The root at index 0 has no parent, so the range starts at 1.)
         let mut flags: Vec<NodeFlags> = tape.iter().map(|g| own_flag_bits(g.kind())).collect();
+        for error in &errors {
+            if error.range.0 == error.range.1 {
+                continue;
+            }
+            for (index, element) in tape.iter().enumerate() {
+                let start = offsets[index];
+                let end = start + element.len();
+                if error.range.0 >= start && error.range.1 <= end {
+                    flags[index].insert(NodeFlags::HAS_ERROR);
+                }
+            }
+        }
         for i in (1..tape.len()).rev() {
             let p = parents[i];
             if p != u32::MAX {
@@ -840,9 +1046,70 @@ struct Parser<'t> {
     bracket_depth: u32,
     /// Current EU5 code-payload nesting depth.
     code_depth: u32,
+    /// Number of non-recoverable interruptions seen below this parser.
+    recovery_barrier: u32,
 }
 
 impl<'t> Parser<'t> {
+    fn missing(
+        &mut self,
+        open: Tok,
+        missing: SyntaxKind,
+        construct: RecoveryConstruct,
+        message: &str,
+    ) {
+        let at = self.source.len() as u32;
+        let order = self
+            .errors
+            .iter()
+            .filter(|e| {
+                e.recovery
+                    .as_ref()
+                    .is_some_and(|r| r.insertion_range == (at, at))
+            })
+            .count() as u32;
+        let mut repair_text = missing.missing_text().unwrap().to_owned();
+        // A delimiter appended to an unterminated line comment remains comment
+        // text. Start a new line and preserve the file's established ending.
+        if order == 0
+            && self
+                .tokens
+                .last()
+                .is_some_and(|t| t.kind == SyntaxKind::Comment)
+            && !self.source.ends_with(b"\n")
+            && !self.source.ends_with(b"\r")
+        {
+            let newline = if self.source.windows(2).any(|w| w == b"\r\n") {
+                "\r\n"
+            } else {
+                "\n"
+            };
+            repair_text.insert_str(0, newline);
+        }
+        let unsafe_quote = self.tokens.last().is_some_and(|t| {
+            t.kind == SyntaxKind::Quoted && !quote_is_closed(self.token_text(self.tokens.len() - 1))
+        });
+        self.builder.token(missing, 0);
+        self.errors.push(SyntaxError {
+            message: message.into(),
+            range: (at, at),
+            recovery: Some(MissingDelimiter {
+                expected: missing.expected_kind().unwrap(),
+                missing,
+                construct,
+                opening_range: (open.start, open.start + open.len),
+                insertion_range: (at, at),
+                repair_text,
+                applicability: if unsafe_quote {
+                    Applicability::Unsafe
+                } else {
+                    Applicability::MachineApplicable
+                },
+                order,
+            }),
+        });
+    }
+
     fn peek(&self) -> Option<SyntaxKind> {
         self.tokens.get(self.pos).map(|t| t.kind)
     }
@@ -890,6 +1157,11 @@ impl<'t> Parser<'t> {
                 {
                     break;
                 }
+                Some(SyntaxKind::CloseBracket) if in_block && self.parameter_depth == 0 => {
+                    // A raw `]` interrupts an ordinary block. Leave it for the
+                    // enclosing parser and refuse a virtual `}` for this block.
+                    break;
+                }
                 Some(SyntaxKind::CloseBracket)
                     if self.code_depth > 0 && self.is_code_close(self.pos) =>
                 {
@@ -907,6 +1179,7 @@ impl<'t> Parser<'t> {
                     self.errors.push(SyntaxError {
                         message: "unmatched '}'".into(),
                         range: (t.start, t.start + t.len),
+                        recovery: None,
                     });
                     self.builder.start_node(SyntaxKind::Bogus);
                     self.bump();
@@ -996,9 +1269,16 @@ impl<'t> Parser<'t> {
         };
 
         let name_token = self.tokens.get(name)?;
-        if name_token.kind != SyntaxKind::Unquoted
-            || self.tokens.get(name + 1)?.kind != SyntaxKind::CloseBracket
-        {
+        if name_token.kind != SyntaxKind::Unquoted {
+            return None;
+        }
+
+        let header_close = self.tokens.get(name + 1).map(|token| token.kind);
+        let incomplete_header = header_close.is_none()
+            || self.tokens[name + 1..]
+                .iter()
+                .all(|token| token.kind.is_trivia());
+        if header_close != Some(SyntaxKind::CloseBracket) && !incomplete_header {
             return None;
         }
 
@@ -1073,9 +1353,11 @@ impl<'t> Parser<'t> {
         } else if let Some(kind) = self.parameter_kind() {
             if self.parameter_depth >= MAX_DEPTH {
                 let token = self.tokens[self.pos];
+                self.recovery_barrier += 1;
                 self.errors.push(SyntaxError {
                     message: "maximum parameter nesting depth exceeded; structure flattened".into(),
                     range: (token.start, token.start + token.len),
+                    recovery: None,
                 });
                 self.bump();
                 self.bracket_depth += 1;
@@ -1088,6 +1370,10 @@ impl<'t> Parser<'t> {
             self.bump();
             if self.parameter_depth > 0 {
                 self.bracket_depth += 1;
+            } else {
+                // A bare `[` has no clear construct at this position. Do not
+                // let an outer EOF repair hide that ambiguity.
+                self.recovery_barrier += 1;
             }
         }
     }
@@ -1113,7 +1399,9 @@ impl<'t> Parser<'t> {
                 _ => {}
             }
         }
-        false
+        // At EOF, a single bracket followed by content is an unambiguous
+        // trailing interpolation. A bare final `[` remains a physical token.
+        self.pos + 1 < self.tokens.len()
     }
 
     fn parse_interpolation(&mut self) {
@@ -1137,17 +1425,30 @@ impl<'t> Parser<'t> {
                         break;
                     }
                 }
-                Some(SyntaxKind::CloseBrace) if bracket_depth == 1 => break,
+                Some(SyntaxKind::CloseBrace) if bracket_depth == 1 => {
+                    self.recovery_barrier += 1;
+                    break;
+                }
                 None => break,
                 Some(_) => self.bump(),
             }
         }
 
         if !closed {
-            self.errors.push(SyntaxError {
-                message: "unclosed bracket interpolation".into(),
-                range: (open.start, open.start + open.len),
-            });
+            if self.peek().is_none() {
+                self.missing(
+                    open,
+                    SyntaxKind::MissingCloseBracket,
+                    RecoveryConstruct::Interpolation,
+                    "unclosed bracket interpolation",
+                );
+            } else {
+                self.errors.push(SyntaxError {
+                    message: "unclosed bracket interpolation".into(),
+                    range: (open.start, open.start + open.len),
+                    recovery: None,
+                });
+            }
         }
         self.builder.finish_node();
     }
@@ -1168,23 +1469,21 @@ impl<'t> Parser<'t> {
 
     fn parse_code_payload_body(&mut self) {
         let open = self.tokens[self.pos];
+        let barrier = self.recovery_barrier;
         self.bump(); // first `[`
         self.bump(); // second `[`
 
         self.code_depth += 1;
         if self.code_depth >= MAX_DEPTH {
+            self.recovery_barrier += 1;
             self.errors.push(SyntaxError {
                 message: "maximum code nesting depth exceeded; structure flattened".into(),
                 range: (open.start, open.start + open.len),
+                recovery: None,
             });
-            let closed = self.flatten_to_code_close();
+            self.flatten_to_code_close();
             self.code_depth -= 1;
-            if !closed {
-                self.errors.push(SyntaxError {
-                    message: "unclosed code payload".into(),
-                    range: (open.start, open.start + open.len),
-                });
-            }
+            // The depth diagnostic owns this flattened region.
             return;
         }
 
@@ -1204,6 +1503,7 @@ impl<'t> Parser<'t> {
                         break;
                     };
                     if !self.is_code_close(next) {
+                        self.recovery_barrier += 1;
                         break;
                     }
                     self.bump();
@@ -1216,10 +1516,38 @@ impl<'t> Parser<'t> {
         self.code_depth -= 1;
 
         if !closed {
-            self.errors.push(SyntaxError {
-                message: "unclosed code payload".into(),
-                range: (open.start, open.start + open.len),
-            });
+            if self.peek().is_none() && self.recovery_barrier == barrier {
+                let missing_count = if self.previous_significant(self.pos).is_some_and(|index| {
+                    let token = self.tokens[index];
+                    token.kind == SyntaxKind::CloseBracket
+                        && token.start + token.len == self.source.len() as u32
+                }) {
+                    1
+                } else {
+                    2
+                };
+                for index in 0..missing_count {
+                    let message = if missing_count == 1 {
+                        "unclosed code payload (missing second ']')"
+                    } else if index == 0 {
+                        "unclosed code payload (missing first ']')"
+                    } else {
+                        "unclosed code payload (missing second ']')"
+                    };
+                    self.missing(
+                        open,
+                        SyntaxKind::MissingCloseBracket,
+                        RecoveryConstruct::CodePayload,
+                        message,
+                    );
+                }
+            } else {
+                self.errors.push(SyntaxError {
+                    message: "unclosed code payload".into(),
+                    range: (open.start, open.start + open.len),
+                    recovery: None,
+                });
+            }
         }
     }
 
@@ -1257,6 +1585,7 @@ impl<'t> Parser<'t> {
     /// Parse an EU4 conditional parameter and its complete body.
     fn parse_parameter(&mut self, kind: SyntaxKind) {
         let open = self.tokens[self.pos];
+        let barrier = self.recovery_barrier;
         self.builder.start_node(kind);
         self.bump(); // first `[`
         self.bump(); // second `[`
@@ -1264,7 +1593,17 @@ impl<'t> Parser<'t> {
             self.bump(); // `!`
         }
         self.bump(); // parameter name
-        self.bump(); // header `]`
+        if self.peek() == Some(SyntaxKind::CloseBracket) {
+            self.bump(); // header `]`
+        } else {
+            self.bump_trivia();
+            self.missing(
+                open,
+                SyntaxKind::MissingCloseBracket,
+                RecoveryConstruct::Parameter,
+                "unclosed parameter header",
+            );
+        }
 
         self.parameter_depth += 1;
         let outer_bracket_depth = self.bracket_depth;
@@ -1286,6 +1625,7 @@ impl<'t> Parser<'t> {
                         self.bump();
                         continue;
                     }
+                    self.recovery_barrier += 1;
                     break;
                 }
                 None => break,
@@ -1297,20 +1637,32 @@ impl<'t> Parser<'t> {
         self.bracket_depth = outer_bracket_depth;
 
         if !closed {
-            self.errors.push(SyntaxError {
-                message: "unclosed parameter block".into(),
-                range: (open.start, open.start + open.len),
-            });
+            if self.peek().is_none() && self.recovery_barrier == barrier {
+                self.missing(
+                    open,
+                    SyntaxKind::MissingCloseBracket,
+                    RecoveryConstruct::Parameter,
+                    "unclosed parameter block",
+                );
+            } else {
+                self.errors.push(SyntaxError {
+                    message: "unclosed parameter block".into(),
+                    range: (open.start, open.start + open.len),
+                    recovery: None,
+                });
+            }
         }
         self.builder.finish_node();
     }
 
     fn parse_block(&mut self) {
         let open = self.tokens[self.pos];
+        let barrier = self.recovery_barrier;
         self.builder.start_node(SyntaxKind::Block);
         self.bump(); // `{`
         self.depth += 1;
         if self.depth >= MAX_DEPTH {
+            self.recovery_barrier += 1;
             // Pathologically deep nesting. Rather than recurse (and risk a
             // stack overflow), consume the rest of this block — including
             // everything nested inside it — as flat leaf tokens. The tree
@@ -1318,6 +1670,7 @@ impl<'t> Parser<'t> {
             self.errors.push(SyntaxError {
                 message: "maximum nesting depth exceeded; structure flattened".into(),
                 range: (open.start, open.start + open.len),
+                recovery: None,
             });
             self.flatten_to_block_close();
         } else {
@@ -1330,10 +1683,25 @@ impl<'t> Parser<'t> {
             {
                 // The parameter delimiter can close a block body that is
                 // intentionally continued by a later parameter block.
+            } else if self.peek() == Some(SyntaxKind::CloseBracket) {
+                self.recovery_barrier += 1;
+                self.errors.push(SyntaxError {
+                    message: "unclosed '{'".into(),
+                    range: (open.start, open.start + open.len),
+                    recovery: None,
+                });
+            } else if self.peek().is_none() && self.recovery_barrier == barrier {
+                self.missing(
+                    open,
+                    SyntaxKind::MissingCloseBrace,
+                    RecoveryConstruct::Block,
+                    "unclosed '{'",
+                );
             } else {
                 self.errors.push(SyntaxError {
                     message: "unclosed '{'".into(),
                     range: (open.start, open.start + open.len),
+                    recovery: None,
                 });
             }
         }
@@ -1380,26 +1748,74 @@ impl<'t> Parser<'t> {
         // only ever emits calc tokens between a CalcOpen and its CalcClose, so
         // no calc token can leak past this slice into the outer parser.
         let from = self.pos;
-        while !matches!(self.peek(), Some(SyntaxKind::CalcClose) | None) {
+        while !matches!(
+            self.peek(),
+            Some(SyntaxKind::CalcClose | SyntaxKind::OpenBrace | SyntaxKind::CloseBrace) | None
+        ) {
             self.pos += 1;
         }
-        let (elems, overflowed) = parse_calc_interior(&self.tokens[from..self.pos]);
+        let at_eof = self.peek().is_none();
+        let (elems, overflowed, missing_parens) =
+            parse_calc_interior(&self.tokens[from..self.pos], at_eof);
         for el in &elems {
             emit_calc(&mut self.builder, el);
         }
+        if !at_eof && !missing_parens.is_empty() {
+            self.recovery_barrier += 1;
+        }
+        if at_eof && !overflowed {
+            for paren_open in missing_parens {
+                // The zero-width leaf was emitted inside its ParenExpr above.
+                let at = self.source.len() as u32;
+                let order = self
+                    .errors
+                    .iter()
+                    .filter(|e| {
+                        e.recovery
+                            .as_ref()
+                            .is_some_and(|r| r.insertion_range == (at, at))
+                    })
+                    .count() as u32;
+                self.errors.push(SyntaxError {
+                    message: "unclosed parenthesized calculation".into(),
+                    range: (at, at),
+                    recovery: Some(MissingDelimiter {
+                        expected: SyntaxKind::CloseParen,
+                        missing: SyntaxKind::MissingCloseParen,
+                        construct: RecoveryConstruct::ParenthesizedCalculation,
+                        opening_range: (paren_open.start, paren_open.start + paren_open.len),
+                        insertion_range: (at, at),
+                        repair_text: ")".into(),
+                        applicability: Applicability::MachineApplicable,
+                        order,
+                    }),
+                });
+            }
+        }
         if overflowed {
+            self.recovery_barrier += 1;
             self.errors.push(SyntaxError {
                 message: "maximum calc nesting depth exceeded; structure flattened".into(),
                 range: (open.start, open.start + open.len),
+                recovery: None,
             });
         }
 
         if self.peek() == Some(SyntaxKind::CalcClose) {
             self.bump(); // `]`
-        } else {
+        } else if at_eof && !overflowed {
+            self.missing(
+                open,
+                SyntaxKind::MissingCalcClose,
+                RecoveryConstruct::Calculation,
+                "unclosed '@['",
+            );
+        } else if !at_eof && self.peek() != Some(SyntaxKind::CalcClose) {
+            self.recovery_barrier += 1;
             self.errors.push(SyntaxError {
                 message: "unclosed '@['".into(),
                 range: (open.start, open.start + open.len),
+                recovery: None,
             });
         }
         self.builder.finish_node();
@@ -1459,12 +1875,17 @@ fn infix_bp(kind: SyntaxKind) -> Option<(u8, u8)> {
 /// returned bool is `true` if the [`MAX_DEPTH`] guard tripped (pathologically
 /// deep parens/unary), in which case parsing stopped descending but every token
 /// is still emitted as a flat leaf.
-fn parse_calc_interior(toks: &[Tok]) -> (Vec<CalcElem>, bool) {
+fn parse_calc_interior(
+    toks: &[Tok],
+    insert_missing_parens: bool,
+) -> (Vec<CalcElem>, bool, Vec<Tok>) {
     let mut c = CalcCursor {
         toks,
         pos: 0,
         depth: 0,
         overflowed: false,
+        missing_parens: Vec::new(),
+        insert_missing_parens,
     };
     let mut out = Vec::new();
     c.eat_trivia(&mut out);
@@ -1477,7 +1898,7 @@ fn parse_calc_interior(toks: &[Tok]) -> (Vec<CalcElem>, bool) {
     while c.has_more() {
         out.push(c.leaf());
     }
-    (out, c.overflowed)
+    (out, c.overflowed, c.missing_parens)
 }
 
 /// A cursor over a calc's interior tokens used by [`parse_calc_interior`].
@@ -1488,6 +1909,8 @@ struct CalcCursor<'t> {
     depth: u32,
     /// Set once the depth guard trips (see [`CalcCursor::parse_operand`]).
     overflowed: bool,
+    missing_parens: Vec<Tok>,
+    insert_missing_parens: bool,
 }
 
 impl CalcCursor<'_> {
@@ -1550,6 +1973,7 @@ impl CalcCursor<'_> {
                 }
             }
             Some(SyntaxKind::OpenParen) => {
+                let open = self.toks[self.pos];
                 let mut children = vec![self.leaf()]; // `(`
                 self.eat_trivia(&mut children);
                 if self.has_more() && self.peek() != Some(SyntaxKind::CloseParen) {
@@ -1558,6 +1982,14 @@ impl CalcCursor<'_> {
                 self.eat_trivia(&mut children);
                 if self.peek() == Some(SyntaxKind::CloseParen) {
                     children.push(self.leaf()); // `)`
+                } else if self.insert_missing_parens {
+                    children.push(CalcElem::Leaf {
+                        kind: SyntaxKind::MissingCloseParen,
+                        len: 0,
+                    });
+                    self.missing_parens.push(open);
+                } else {
+                    self.missing_parens.push(open);
                 }
                 CalcElem::Node {
                     kind: SyntaxKind::ParenExpr,
@@ -1679,9 +2111,8 @@ impl<'t, 'a> SyntaxNode<'t, 'a> {
         self.tree.flags[self.idx as usize]
     }
 
-    /// Whether this subtree contains a [`SyntaxKind::Bogus`]/[`SyntaxKind::Error`]
-    /// recovery element. Lets a linter cheaply skip — or downgrade — semantic
-    /// checks over a region the parser already flagged as malformed.
+    /// Whether this subtree contains a syntax error or recovery element. Lets
+    /// a linter cheaply skip or downgrade checks over malformed input.
     pub fn has_error(&self) -> bool {
         self.flags().contains(NodeFlags::HAS_ERROR)
     }
@@ -1731,6 +2162,21 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
         self.tree.tape[self.idx as usize].kind()
     }
 
+    /// Whether this is a zero-width parser recovery token.
+    pub fn is_missing(&self) -> bool {
+        self.kind().is_missing()
+    }
+
+    /// Return the flags for this token.
+    pub fn flags(&self) -> NodeFlags {
+        self.tree.flags[self.idx as usize]
+    }
+
+    /// Return `true` when this token has a syntax error.
+    pub fn has_error(&self) -> bool {
+        self.flags().contains(NodeFlags::HAS_ERROR)
+    }
+
     /// The half-open byte range this token spans in the source.
     pub fn text_range(&self) -> (u32, u32) {
         let start = self.tree.offsets[self.idx as usize];
@@ -1778,6 +2224,11 @@ impl<'t, 'a> SyntaxElement<'t, 'a> {
             SyntaxElement::Node(n) => n.kind(),
             SyntaxElement::Token(t) => t.kind(),
         }
+    }
+
+    /// Return `true` for a synthetic recovery token.
+    pub fn is_missing(&self) -> bool {
+        matches!(self, Self::Token(token) if token.is_missing())
     }
 
     /// The source bytes this element spans (its subtree, for a node).
@@ -1986,7 +2437,10 @@ fn child_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Item<'t
 
 fn item_from_element<'t, 'a>(el: SyntaxElement<'t, 'a>) -> Option<Item<'t, 'a>> {
     let kind = el.kind();
-    if kind.is_trivia() || matches!(kind, SyntaxKind::OpenBrace | SyntaxKind::CloseBrace) {
+    if kind.is_trivia()
+        || kind.is_missing()
+        || matches!(kind, SyntaxKind::OpenBrace | SyntaxKind::CloseBrace)
+    {
         return None;
     }
     match el {
@@ -2035,7 +2489,10 @@ fn parameter_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Ite
             }
             return None;
         }
-        if el.kind() == SyntaxKind::CloseBracket {
+        if matches!(
+            el.kind(),
+            SyntaxKind::CloseBracket | SyntaxKind::MissingCloseBracket
+        ) {
             body_done = true;
             return None;
         }
@@ -2044,7 +2501,7 @@ fn parameter_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Ite
 }
 
 fn parameter_body_item<'t, 'a>(el: SyntaxElement<'t, 'a>) -> Option<Item<'t, 'a>> {
-    if el.kind().is_trivia() || el.kind() == SyntaxKind::OpenBrace {
+    if el.kind().is_trivia() || el.kind().is_missing() || el.kind() == SyntaxKind::OpenBrace {
         return None;
     }
     match el {
@@ -2157,6 +2614,18 @@ impl<'t, 'a> Block<'t, 'a> {
     pub fn is_empty(&self) -> bool {
         self.entries().next().is_none()
     }
+
+    /// Return the physical closing brace, if the source contains one.
+    pub fn close_brace(&self) -> Option<SyntaxToken<'t, 'a>> {
+        self.syntax()
+            .child_tokens()
+            .find(|token| token.kind() == SyntaxKind::CloseBrace)
+    }
+
+    /// Return `true` when the block has a physical closing brace.
+    pub fn is_closed_in_source(&self) -> bool {
+        self.close_brace().is_some()
+    }
 }
 
 impl<'t, 'a> Parameter<'t, 'a> {
@@ -2179,6 +2648,20 @@ impl<'t, 'a> Parameter<'t, 'a> {
     pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + 't {
         self.entries().filter_map(Item::into_value)
     }
+
+    /// Return the physical body closing bracket, if the source contains one.
+    pub fn close_bracket(&self) -> Option<SyntaxToken<'t, 'a>> {
+        self.syntax()
+            .child_tokens()
+            .filter(|token| token.kind() == SyntaxKind::CloseBracket)
+            .skip(1)
+            .last()
+    }
+
+    /// Return `true` when the parameter body has a physical closing bracket.
+    pub fn is_closed_in_source(&self) -> bool {
+        self.close_bracket().is_some()
+    }
 }
 
 impl<'t, 'a> UndefinedParameter<'t, 'a> {
@@ -2200,6 +2683,20 @@ impl<'t, 'a> UndefinedParameter<'t, 'a> {
     /// The bare values directly inside the parameter body.
     pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + 't {
         self.entries().filter_map(Item::into_value)
+    }
+
+    /// Return the physical body closing bracket, if the source contains one.
+    pub fn close_bracket(&self) -> Option<SyntaxToken<'t, 'a>> {
+        self.syntax()
+            .child_tokens()
+            .filter(|token| token.kind() == SyntaxKind::CloseBracket)
+            .skip(1)
+            .last()
+    }
+
+    /// Return `true` when the parameter body has a physical closing bracket.
+    pub fn is_closed_in_source(&self) -> bool {
+        self.close_bracket().is_some()
     }
 }
 
@@ -2232,6 +2729,18 @@ impl<'t, 'a> Code<'t, 'a> {
     pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + 't {
         self.entries().filter_map(Item::into_value)
     }
+
+    /// Return `true` when the payload has two physical closing brackets.
+    pub fn is_closed_in_source(&self) -> bool {
+        let closes: Vec<_> = self
+            .syntax()
+            .child_tokens()
+            .filter(|token| token.kind() == SyntaxKind::CloseBracket)
+            .collect();
+        closes
+            .windows(2)
+            .any(|pair| pair[0].text_range().1 == pair[1].text_range().0)
+    }
 }
 
 impl<'t, 'a> Interpolation<'t, 'a> {
@@ -2240,9 +2749,18 @@ impl<'t, 'a> Interpolation<'t, 'a> {
         self.syntax().children().filter(|element| {
             !matches!(
                 element.kind(),
-                SyntaxKind::OpenBracket | SyntaxKind::CloseBracket
+                SyntaxKind::OpenBracket
+                    | SyntaxKind::CloseBracket
+                    | SyntaxKind::MissingCloseBracket
             )
         })
+    }
+
+    /// Return `true` when the interpolation has a physical closing bracket.
+    pub fn is_closed_in_source(&self) -> bool {
+        self.syntax()
+            .child_tokens()
+            .any(|token| token.kind() == SyntaxKind::CloseBracket)
     }
 }
 
@@ -2653,10 +3171,31 @@ impl Fmt<'_> {
         self.comment_open = true;
     }
 
+    fn emit_node_text(&mut self, node: SyntaxNode<'_, '_>) {
+        self.push(node.text());
+        if let Some(last) = node
+            .tree
+            .tokens()
+            .filter(|t| {
+                let (start, end) = t.text_range();
+                let (node_start, node_end) = node.text_range();
+                start >= node_start && end <= node_end && !t.is_missing()
+            })
+            .last()
+        {
+            self.comment_open = last.kind() == SyntaxKind::Comment
+                && !last.text().ends_with(b"\n")
+                && !last.text().ends_with(b"\r");
+            self.quote_open = last.kind() == SyntaxKind::Quoted && !quote_is_closed(last.text());
+        }
+    }
+
     /// Emit a newline (two for a preserved blank line), reopening the line.
     fn line_break(&mut self, blank: bool) {
-        self.out.push(b'\n');
-        if blank {
+        if self.out.last() != Some(&b'\n') {
+            self.out.push(b'\n');
+        }
+        if blank && !self.out.ends_with(b"\n\n") {
             self.out.push(b'\n');
         }
         self.comment_open = false;
@@ -2693,6 +3232,7 @@ impl Fmt<'_> {
 
         for &el in items {
             match el.kind() {
+                kind if kind.is_missing() => {}
                 SyntaxKind::Whitespace => {
                     let nls = count_newlines(el.text());
                     ws_had_newline = nls >= 1;
@@ -2764,7 +3304,7 @@ impl Fmt<'_> {
                 SyntaxKind::Block => self.fmt_block(n, indent),
                 // A calc is a self-contained expression and a Bogus node wraps
                 // unstructured bytes — reprint either verbatim.
-                _ => self.emit_text(n.text()),
+                _ => self.emit_node_text(n),
             },
             // A loose scalar / operator / bracket / bang token: verbatim.
             SyntaxElement::Token(t) => self.emit_text(t.text()),
@@ -2780,6 +3320,7 @@ impl Fmt<'_> {
         let mut first = true;
         for el in node.children() {
             match el.kind() {
+                kind if kind.is_missing() => {}
                 SyntaxKind::Whitespace | SyntaxKind::Bom | SyntaxKind::Comment => {}
                 _ => {
                     if !first {
@@ -2812,7 +3353,7 @@ impl Fmt<'_> {
         let sig: Vec<SyntaxElement<'_, '_>> = inner
             .iter()
             .copied()
-            .filter(|el| !el.kind().is_trivia())
+            .filter(|el| !el.kind().is_trivia() && !el.kind().is_missing())
             .collect();
 
         if sig.is_empty() && !has_comment {
@@ -3076,6 +3617,268 @@ mod tests {
         let tree = parse(b"a = { b");
         assert!(tree.errors().iter().any(|e| e.message.contains("unclosed")));
         assert_eq!(tree.reconstruct(), b"a = { b"); // still lossless
+    }
+
+    #[test]
+    fn missing_block_is_zero_width_and_repairable() {
+        let source = b"a = { b";
+        let tree = parse(source);
+        let error = tree
+            .errors()
+            .iter()
+            .find(|error| error.recovery.is_some())
+            .unwrap();
+        let recovery = error.recovery.as_ref().unwrap();
+        assert_eq!(recovery.expected, SyntaxKind::CloseBrace);
+        assert_eq!(recovery.missing, SyntaxKind::MissingCloseBrace);
+        assert_eq!(recovery.opening_range, (4, 5));
+        assert_eq!(
+            recovery.insertion_range,
+            (source.len() as u32, source.len() as u32)
+        );
+
+        let missing = tree.tokens().find(|token| token.is_missing()).unwrap();
+        assert_eq!(missing.kind(), SyntaxKind::MissingCloseBrace);
+        assert_eq!(missing.text(), b"");
+        assert_eq!(
+            missing.text_range(),
+            (source.len() as u32, source.len() as u32)
+        );
+        assert!(missing.has_error());
+        assert_eq!(missing.parent().unwrap().kind(), SyntaxKind::Block);
+        assert!(missing.parent().unwrap().has_error());
+        assert!(tree.root().has_error());
+
+        let block = tree
+            .ast()
+            .fields()
+            .next()
+            .unwrap()
+            .value()
+            .unwrap()
+            .as_block()
+            .unwrap();
+        assert!(!block.is_closed_in_source());
+        assert!(block.close_brace().is_none());
+        assert_eq!(
+            tree.repair_fixes(),
+            [Repair {
+                range: (7, 7),
+                replacement: "}".into()
+            }]
+        );
+        assert_eq!(tree.repair(), b"a = { b}");
+        assert!(parse(&tree.repair()).errors().is_empty());
+        assert_eq!(tree.reconstruct(), source);
+        assert!(!format(source).contains(&b'}'));
+    }
+
+    #[test]
+    fn nested_repairs_are_inside_out_and_keep_siblings_clean() {
+        let source = b"outer = { clean = {} bad = { value";
+        let tree = parse(source);
+        let missing: Vec<_> = tree
+            .tokens()
+            .filter(|token| token.is_missing())
+            .map(|token| token.kind())
+            .collect();
+        assert_eq!(
+            missing,
+            [SyntaxKind::MissingCloseBrace, SyntaxKind::MissingCloseBrace]
+        );
+        assert_eq!(tree.repair_fixes()[0].replacement, "}}".to_string());
+        assert_eq!(tree.repair(), b"outer = { clean = {} bad = { value}}");
+        assert!(parse(&tree.repair()).errors().is_empty());
+
+        let outer = tree
+            .ast()
+            .fields()
+            .next()
+            .unwrap()
+            .value()
+            .unwrap()
+            .as_block()
+            .unwrap();
+        let blocks: Vec<_> = outer
+            .syntax()
+            .child_nodes()
+            .filter(|node| node.kind() == SyntaxKind::Field)
+            .filter_map(|field| Field::cast(field)?.value()?.as_block())
+            .collect();
+        assert_eq!(blocks.len(), 2);
+        assert!(!blocks[0].syntax().has_error());
+        assert!(blocks[1].syntax().has_error());
+    }
+
+    #[test]
+    fn recovery_refuses_mismatches_and_interrupted_constructs() {
+        for source in [b"a = { b ]".as_slice(), b"a = { b = @[ (1]".as_slice()] {
+            let tree = parse(source);
+            assert!(
+                tree.errors()
+                    .iter()
+                    .any(|error| error.message.contains("unclosed"))
+            );
+            assert!(
+                tree.repair_fixes().is_empty(),
+                "unexpected fix for {source:?}"
+            );
+            assert!(tree.errors().iter().all(|error| {
+                error
+                    .recovery
+                    .as_ref()
+                    .is_none_or(|recovery| !recovery.is_machine_applicable())
+            }));
+        }
+
+        let mismatched_block = parse(b"a = { b ]");
+        let block = mismatched_block
+            .ast()
+            .fields()
+            .next()
+            .and_then(|field| field.value())
+            .and_then(|value| value.as_block())
+            .unwrap();
+        assert!(block.syntax().has_error());
+
+        let interrupted_calc = parse(b"a = { b = @[1 }");
+        let calc = interrupted_calc
+            .ast()
+            .fields()
+            .next()
+            .and_then(|field| field.value())
+            .and_then(|value| value.as_block())
+            .and_then(|block| block.fields().next())
+            .and_then(|field| field.value())
+            .and_then(|value| value.as_calc())
+            .unwrap();
+        assert!(calc.syntax().has_error());
+        assert!(
+            interrupted_calc
+                .errors()
+                .iter()
+                .any(|error| error.message.contains("unclosed '@['"))
+        );
+        assert!(interrupted_calc.repair_fixes().is_empty());
+
+        let ambiguous_bracket = parse(b"a = { [");
+        assert!(ambiguous_bracket.repair_fixes().is_empty());
+    }
+
+    #[test]
+    fn trailing_comments_and_line_endings_get_safe_repairs() {
+        let cases = [
+            (b"a = { x # tail".as_slice(), b"\n}".as_slice()),
+            (b"a = { x # tail\n".as_slice(), b"}".as_slice()),
+            (b"a = {\r\n x # tail".as_slice(), b"\r\n}".as_slice()),
+            (b"a = { x\r\n".as_slice(), b"}".as_slice()),
+        ];
+        for (source, replacement) in cases {
+            let tree = parse(source);
+            assert_eq!(tree.repair_fixes()[0].replacement.as_bytes(), replacement);
+            assert!(
+                parse(&tree.repair()).errors().is_empty(),
+                "source={source:?}"
+            );
+        }
+
+        for source in [
+            b"a = { \"unterminated".as_slice(),
+            b"a = { \"escaped\\\"".as_slice(),
+        ] {
+            let tree = parse(source);
+            assert!(tree.repair_fixes().is_empty());
+            assert!(tree.errors().iter().any(|error| {
+                error
+                    .recovery
+                    .as_ref()
+                    .is_some_and(|recovery| recovery.applicability == Applicability::Unsafe)
+            }));
+        }
+    }
+
+    #[test]
+    fn incomplete_parameters_and_code_payloads_preserve_typed_content() {
+        let parameter = parse(b"[[name] value");
+        let parameter_node = parameter
+            .ast()
+            .items()
+            .find_map(|item| match item {
+                Item::Parameter(value) => Some(value),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(parameter_node.values().count(), 1);
+        assert!(parameter_node.close_bracket().is_none());
+        assert_eq!(parameter.repair_fixes()[0].replacement, "]");
+        assert!(parse(&parameter.repair()).errors().is_empty());
+
+        let header = parse(b"[[name");
+        assert!(
+            header
+                .ast()
+                .items()
+                .any(|item| matches!(item, Item::Parameter(_)))
+        );
+        assert_eq!(header.repair_fixes()[0].replacement, "]]".to_string());
+        assert!(parse(&header.repair()).errors().is_empty());
+
+        let one = parse(b"code [[value]");
+        assert_eq!(one.repair_fixes()[0].replacement, "]");
+        assert_eq!(one.tokens().filter(|token| token.is_missing()).count(), 1);
+        assert!(parse(&one.repair()).errors().is_empty());
+
+        let both = parse(b"code [[value");
+        assert_eq!(both.repair_fixes()[0].replacement, "]]".to_string());
+        assert_eq!(both.tokens().filter(|token| token.is_missing()).count(), 2);
+        assert!(parse(&both.repair()).errors().is_empty());
+    }
+
+    #[test]
+    fn nested_calc_repairs_include_parentheses_and_calc_close() {
+        let source = b"a = { x = @[ (1";
+        let tree = parse(source);
+        let kinds: Vec<_> = tree
+            .tokens()
+            .filter(|token| token.is_missing())
+            .map(|token| token.kind())
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                SyntaxKind::MissingCloseParen,
+                SyntaxKind::MissingCalcClose,
+                SyntaxKind::MissingCloseBrace
+            ]
+        );
+        assert_eq!(tree.repair_fixes()[0].replacement, ")]}");
+        assert!(parse(&tree.repair()).errors().is_empty());
+        assert_eq!(tree.reconstruct(), source);
+    }
+
+    #[test]
+    fn interpolation_recovery_is_typed_and_lossless() {
+        let source = b"value = [ROOT.GetName";
+        let tree = parse(source);
+        let interpolation = tree
+            .ast()
+            .fields()
+            .next()
+            .and_then(|field| field.value())
+            .and_then(|value| value.as_interpolation())
+            .unwrap();
+
+        assert!(interpolation.syntax().has_error());
+        assert!(!interpolation.is_closed_in_source());
+        assert_eq!(interpolation.syntax().text(), b"[ROOT.GetName");
+        assert!(
+            interpolation
+                .body()
+                .any(|element| element.kind() == SyntaxKind::Unquoted)
+        );
+        assert_eq!(tree.repair_fixes()[0].replacement, "]");
+        assert_eq!(tree.repair(), b"value = [ROOT.GetName]");
+        assert!(parse(&tree.repair()).errors().is_empty());
     }
 
     #[test]
@@ -3734,7 +4537,10 @@ mod tests {
     fn significant(src: &[u8]) -> Vec<(SyntaxKind, Vec<u8>)> {
         parse(src)
             .tokens()
-            .filter(|t| !matches!(t.kind(), SyntaxKind::Whitespace | SyntaxKind::Comment))
+            .filter(|t| {
+                !t.kind().is_missing()
+                    && !matches!(t.kind(), SyntaxKind::Whitespace | SyntaxKind::Comment)
+            })
             .map(|t| (t.kind(), t.text().to_vec()))
             .collect()
     }
@@ -3850,6 +4656,14 @@ mod tests {
         assert_eq!(out.matches('}').count(), 0);
     }
 
+    #[test]
+    fn fmt_interrupted_calc_keeps_physical_tokens() {
+        let source = b"@[{";
+        let formatted = format(source);
+        assert_eq!(significant(source), significant(&formatted));
+        assert_eq!(format(&formatted), formatted);
+    }
+
     #[quickcheck]
     fn prop_format_idempotent(data: Vec<u8>) -> bool {
         let once = format(&data);
@@ -3935,11 +4749,10 @@ mod tests {
         assert!(calc_block.contains_calc() && !calc_block.has_comment());
 
         // A `Bogus` recovery node sets HAS_ERROR all the way to the root.
-        // (An unclosed `{`, by contrast, is only a diagnostic — it creates no
-        // error element — so it deliberately does not set the bit.)
+        // Virtual missing delimiters also set HAS_ERROR through their ancestors.
         let stray = parse(b"x } y");
         assert!(stray.root().has_error(), "the Bogus node sets HAS_ERROR");
-        assert!(!parse(b"a = { b").root().has_error());
+        assert!(parse(b"a = { b").root().has_error());
     }
 
     #[test]
@@ -4143,6 +4956,9 @@ mod tests {
             calc.child_nodes()
                 .any(|n| n.kind() == SyntaxKind::BinaryExpr)
         );
+        assert_eq!(tree.repair_fixes()[0].replacement, "]");
+        assert!(calc.has_error());
+        assert!(parse(&tree.repair()).errors().is_empty());
     }
 
     #[test]
