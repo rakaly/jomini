@@ -1,0 +1,18 @@
+# The mod layer. Loaded after vanilla, so same-named entities override it.
+
+# Overrides the vanilla temple (mod wins) — the linter notes the override.
+temple = {
+	cost = 80
+}
+
+# A new building. Its upgrades_from points at a *vanilla* building, defined in
+# a different file in a different layer — a cross-file, cross-layer reference.
+fortress = {
+	cost = 400
+	upgrades_from = castle
+}
+
+# Oops: fortress is defined twice in the same layer — a duplicate definition.
+fortress = {
+	cost = 401
+}
