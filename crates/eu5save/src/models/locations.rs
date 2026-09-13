@@ -277,14 +277,34 @@ impl<'bump> LocationEntry<'bump> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LocationIndexedVec<T> {
     data: Vec<T>,
 }
 
 impl<T> LocationIndexedVec<T> {
+    /// A vector with `len` copies of `value`. Prefer
+    /// [`Locations::create_index`] when the locations are at hand; this
+    /// constructor serves tests and callers that only know the count.
+    pub fn filled(len: usize, value: T) -> Self
+    where
+        T: Clone,
+    {
+        Self {
+            data: vec![value; len],
+        }
+    }
+
     pub fn iter(&self) -> std::slice::Iter<'_, T> {
         self.data.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
     }
 }
 
