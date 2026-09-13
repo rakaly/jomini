@@ -1,0 +1,9 @@
+# Base game events. Every building referenced here is defined in vanilla.
+court_event = {
+	trigger = {
+		has_building = castle
+	}
+	effect = {
+		add_building = temple
+	}
+}
