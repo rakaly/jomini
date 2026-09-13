@@ -9,7 +9,7 @@
 use crate::convert;
 use crate::line_index::{LineIndex, PositionEncoding};
 use crossbeam_channel::Sender;
-use jomini::text::lint::{Analysis, FileId, FileKind, Fileset, Linter, Schema};
+use jomini::text::lint::{Analysis, FileId, FileKind, Fileset, Linter, Schema, lints};
 use jomini::text::syntax::{self, FormatOptions};
 use lsp_server::{Message, Notification, Request, RequestId, Response, ResponseError};
 use lsp_types::notification::Notification as NotificationTrait;
@@ -435,7 +435,13 @@ impl Server {
     fn code_action(&mut self, params: CodeActionParams) -> Option<CodeActionResponse> {
         let id = self.file_for_url(&params.text_document.uri)?;
         let uri = params.text_document.uri.clone();
-        let li = LineIndex::new(self.fileset.source(id), self.encoding);
+        let source = self.fileset.source(id);
+        // A byte edit cannot be mapped to a text position with confidence when
+        // the open document is not UTF-8. The Rust lint API still exposes it.
+        if std::str::from_utf8(source).is_err() {
+            return Some(Vec::new());
+        }
+        let li = LineIndex::new(source, self.encoding);
         let sel_start = li.offset(params.range.start);
         let sel_end = li.offset(params.range.end);
 
@@ -469,6 +475,52 @@ impl Server {
                     ..Default::default()
                 }),
                 is_preferred: Some(true),
+                ..Default::default()
+            }));
+        }
+
+        let syntax_diagnostics: Vec<_> = self
+            .analysis
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.file == id
+                    && diagnostic.id == lints::SYNTAX_ERROR
+                    && diagnostic.fix.is_some()
+            })
+            .collect();
+        if !syntax_diagnostics.is_empty() {
+            let mut edits: Vec<_> = syntax_diagnostics
+                .iter()
+                .filter_map(|diagnostic| diagnostic.fix.as_ref())
+                .map(|fix| TextEdit {
+                    range: convert::to_range(&li, fix.range),
+                    new_text: fix.replacement.clone(),
+                })
+                .collect();
+            edits.sort_by_key(|edit| {
+                (
+                    edit.range.start.line,
+                    edit.range.start.character,
+                    edit.range.end.line,
+                    edit.range.end.character,
+                )
+            });
+            edits.dedup();
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Apply all safe syntax repairs".into(),
+                kind: Some(CodeActionKind::SOURCE_FIX_ALL),
+                diagnostics: Some(
+                    syntax_diagnostics
+                        .iter()
+                        .map(|diagnostic| convert::to_lsp_diagnostic(&li, diagnostic))
+                        .collect(),
+                ),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(HashMap::from([(uri, edits)])),
+                    ..Default::default()
+                }),
+                is_preferred: Some(false),
                 ..Default::default()
             }));
         }

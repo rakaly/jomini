@@ -261,6 +261,48 @@ fn server_serves_the_mod_demo_project() {
     });
     assert!(has_fix, "a quick fix offering `barracks`: {actions}");
 
+    // --- syntax repair: the broken event gets an EOF quick fix and a fix-all.
+    let broken = mod_dir.join("events/broken_events.txt");
+    let broken_text = std::fs::read_to_string(&broken).unwrap();
+    let broken_line = broken_text.matches('\n').count() as u64;
+    let broken_character = broken_text
+        .rsplit('\n')
+        .next()
+        .unwrap()
+        .encode_utf16()
+        .count() as u64;
+    let broken_end = json!({
+        "line": broken_line,
+        "character": broken_character
+    });
+    let repair_actions = client.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": file_uri(&broken) },
+            "range": { "start": broken_end, "end": broken_end },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    assert!(
+        repair_actions.as_array().unwrap().iter().any(|action| {
+            action["edit"]["changes"] != Value::Null
+                && action["edit"]["changes"]
+                    .as_object()
+                    .and_then(|changes| changes.values().next())
+                    .and_then(Value::as_array)
+                    .and_then(|edits| edits.first())
+                    .is_some_and(|edit| edit["newText"] == json!("}"))
+        }),
+        "an EOF syntax repair: {repair_actions}"
+    );
+    assert!(
+        repair_actions.as_array().unwrap().iter().any(|action| {
+            action["kind"] == json!("source.fixAll")
+                && action["title"] == json!("Apply all safe syntax repairs")
+        }),
+        "a syntax fix-all action: {repair_actions}"
+    );
+
     // --- formatting: returns an edit list (possibly empty) without erroring.
     let fmt = client.request(
         "textDocument/formatting",
