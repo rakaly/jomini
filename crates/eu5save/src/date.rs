@@ -120,6 +120,78 @@ impl Eu5Date {
         self.raw.hour() / 2 + 8
     }
 
+    /// Create a date at 08:00 from its year, month, and day.
+    ///
+    /// Returns `None` if the date does not exist. Years have no leap day.
+    ///
+    /// ```
+    /// use eu5save::Eu5Date;
+    /// use jomini::common::PdsDate;
+    ///
+    /// let date = Eu5Date::from_ymd_opt(1337, 4, 1).unwrap();
+    /// assert_eq!(date.game_fmt().to_string(), "1337.4.1");
+    /// assert!(Eu5Date::from_ymd_opt(1337, 2, 29).is_none());
+    /// assert!(Eu5Date::from_ymd_opt(1337, 13, 1).is_none());
+    /// ```
+    #[inline]
+    pub fn from_ymd_opt(year: i16, month: u8, day: u8) -> Option<Self> {
+        if month == 0 || month > 12 || day == 0 {
+            return None;
+        }
+        Self::from_raw(RawDate::from_ymdh(year, month, day, 0))
+    }
+
+    /// The same date with the hour set to 08:00.
+    ///
+    /// Two events on the same day compare equal after this, so a timeline can
+    /// step by whole days.
+    #[inline]
+    pub fn start_of_day(&self) -> Self {
+        Self {
+            raw: RawDate::from_ymdh(self.raw.year(), self.raw.month(), self.raw.day(), 0),
+        }
+    }
+
+    /// The number of days from this date to `other`. Negative if `other` is
+    /// earlier. The hour is ignored.
+    ///
+    /// ```
+    /// use eu5save::Eu5Date;
+    ///
+    /// let start = Eu5Date::from_ymd_opt(1337, 4, 1).unwrap();
+    /// let later = Eu5Date::from_ymd_opt(1338, 4, 1).unwrap();
+    /// assert_eq!(start.days_until(&later), 365);
+    /// assert_eq!(later.days_until(&start), -365);
+    /// ```
+    #[inline]
+    pub fn days_until(&self, other: &Self) -> i32 {
+        self.day_number().days_until(&other.day_number())
+    }
+
+    /// The date that is `days` after this date, at 08:00. A negative count
+    /// gives an earlier date.
+    ///
+    /// ```
+    /// use eu5save::Eu5Date;
+    /// use jomini::common::PdsDate;
+    ///
+    /// let date = Eu5Date::from_ymd_opt(1337, 12, 31).unwrap();
+    /// assert_eq!(date.add_days(1).game_fmt().to_string(), "1338.1.1");
+    /// assert_eq!(date.add_days(-31).game_fmt().to_string(), "1337.11.30");
+    /// ```
+    #[inline]
+    pub fn add_days(&self, days: i32) -> Self {
+        let date = self.day_number().add_days(days);
+        Self::from_ymd_opt(date.year(), date.month(), date.day())
+            .expect("a jomini date is a valid EU5 date")
+    }
+
+    /// The date as a plain jomini date, which owns the day arithmetic.
+    #[inline]
+    fn day_number(&self) -> jomini::common::Date {
+        jomini::common::Date::from_ymd(self.raw.year(), self.raw.month(), self.raw.day())
+    }
+
     /// Format only the date components (year, month, day) without hour
     pub fn date_fmt(&self) -> PdsDateFormatter {
         let date_only_raw =
