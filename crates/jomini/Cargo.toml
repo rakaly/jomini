@@ -26,6 +26,7 @@ serde = { workspace = true, optional = true }
 serde_json = { version = "1.0.114", optional = true }
 zstd = { version = "0.14", default-features = false, optional = true }
 ruzstd = { version = "0.9", optional = true }
+smallvec = { workspace = true }
 
 [features]
 default = ["derive", "faster_writer"]

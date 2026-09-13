@@ -1,0 +1,8 @@
+# This file has a syntax error: the outer block is never closed. The reference
+# to `ghost_building` is undefined, but because it sits in a malformed subtree
+# the linter SUPPRESSES the undefined-reference (and surfaces the syntax error
+# instead) rather than piling a cascade of semantic noise on top of it.
+broken_event = {
+	effect = {
+		add_building = ghost_building
+	}
