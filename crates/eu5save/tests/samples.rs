@@ -333,6 +333,7 @@ fn can_deserialize_gamestate(file: &Eu5File<impl ReaderAt>) {
 #[case("Clandeboye.eu5")]
 #[case("mp_cas_1374_03_06.eu5")]
 #[case("SP_ironman_95ff2d32-01d9-446a-98bb-9eec434606a5.eu5")]
+#[case("SP_ironman_aa80180a-6b96-4666-a3f2-5d4587b0751e.eu5")]
 fn deserialization_regression_test(#[case] filename: &str) {
     let file = utils::request_file(filename);
     let save = Eu5File::from_file(file).unwrap();

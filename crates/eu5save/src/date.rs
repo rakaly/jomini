@@ -81,9 +81,12 @@ impl Eu5Date {
             return None;
         }
 
-        if raw.hour() > 22 {
-            return None;
-        }
+        // Modded saves can contain hour 23. This seems non-sensical, so we just clamp it.
+        let raw = match raw.hour() {
+            23 => RawDate::from_ymdh(raw.year(), raw.month(), raw.day(), 22),
+            0..=22 => raw,
+            _ => return None,
+        };
 
         Some(Self { raw })
     }
@@ -345,5 +348,14 @@ mod tests {
             // game_fmt should preserve original format
             assert_eq!(game_full, expected_game_fmt);
         }
+    }
+
+    #[test]
+    fn test_date_clamps_obsolete_hour() {
+        let date = Eu5Date::from_binary(58223375).unwrap();
+        assert_eq!(date.game_fmt().to_string(), "1646.7.3.22");
+
+        let invalid = RawDate::from_ymdh(1646, 7, 3, 24);
+        assert!(Eu5Date::from_raw(invalid).is_none());
     }
 }
