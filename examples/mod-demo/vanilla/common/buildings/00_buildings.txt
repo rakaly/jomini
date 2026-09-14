@@ -1,0 +1,18 @@
+# Base game buildings (the "vanilla" layer).
+temple = {
+	cost = 100
+	desc = "A place of worship"
+}
+
+castle = {
+	cost = 250
+	desc = "A fortified keep"
+}
+
+city = {
+	cost = 500
+}
+
+barracks = {
+	cost = 150
+}
