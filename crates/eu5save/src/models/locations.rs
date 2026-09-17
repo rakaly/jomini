@@ -170,6 +170,46 @@ pub enum LocationRank {
 pub struct LocationPopulation<'bump> {
     #[arena(default)]
     pub pops: &'bump [models::PopId],
+    /// What the last population tick changed. The game shows these as
+    /// "Last month change".
+    #[arena(default)]
+    pub changes: PopulationChanges<'bump>,
+}
+
+/// The population changes of the last tick, grouped by cause. The save keeps
+/// the changes of only the last tick, so this is a record of what happened,
+/// not a prediction of the next tick.
+#[derive(Debug, Default, ArenaDeserialize)]
+pub struct PopulationChanges<'bump> {
+    /// People who were born.
+    #[arena(default, alias = "Reproduction")]
+    pub reproduction: PopulationChange<'bump>,
+}
+
+/// One cause of population change, with one entry for each pop it changed.
+#[derive(Debug, Default, ArenaDeserialize)]
+pub struct PopulationChange<'bump> {
+    #[arena(default)]
+    pub data: &'bump [PopulationChangeEntry],
+}
+
+impl PopulationChange<'_> {
+    /// The sum of the change over all pops, in the same unit as
+    /// [`models::Population::size`].
+    pub fn total(&self) -> f64 {
+        self.data.iter().map(|entry| entry.change).sum()
+    }
+}
+
+/// The change of one pop.
+#[derive(Debug, Clone, Copy, PartialEq, ArenaDeserialize)]
+pub struct PopulationChangeEntry {
+    /// The pop that changed.
+    #[arena(default)]
+    pub owner: models::PopId,
+    /// The change in size, in the same unit as [`models::Population::size`].
+    #[arena(default)]
+    pub change: f64,
 }
 
 #[inline]
@@ -405,6 +445,101 @@ mod tests {
         assert_eq!(history[0].owner, CountryId::new(606));
         assert!(history[1].owner.is_dummy());
         assert_eq!(history[1].date.game_fmt().to_string(), "1352.3.1");
+    }
+
+    #[test]
+    fn population_changes() {
+        #[derive(ArenaDeserialize)]
+        struct Wrapper<'bump> {
+            location: Location<'bump>,
+        }
+
+        let data = r#"location={
+            population={
+                changes={
+                    MigrationIn={
+                        data={ {
+                                owner=4
+                                change=0.044
+                            } }
+                    }
+                    Reproduction={
+                        data={ {
+                                owner=3
+                                change=0.00507
+                            } {
+                                owner=5
+                                change=0.001
+                            } }
+                    }
+                }
+                pops={ 3 4 5 }
+            }
+        }"#;
+
+        let allocator = arena_serde::Arena::new();
+        let deserializer =
+            TextDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
+        let location = Wrapper::deserialize_in_arena(&deserializer, &allocator)
+            .expect("location deserializes")
+            .location;
+
+        let reproduction = &location.population.changes.reproduction;
+        assert_eq!(reproduction.data.len(), 2);
+        assert_eq!(reproduction.data[0].owner, models::PopId::new(3));
+        assert_eq!(reproduction.data[0].change, 0.00507);
+        assert!((reproduction.total() - 0.00607).abs() < 1e-9);
+    }
+
+    /// The keys of `changes` are strings in binary saves, so a melted save
+    /// has them quoted.
+    #[test]
+    fn population_changes_from_melted_save() {
+        #[derive(ArenaDeserialize)]
+        struct Wrapper<'bump> {
+            location: Location<'bump>,
+        }
+
+        let data = r#"location={
+            population={
+                changes={
+                    "Reproduction"={
+                        data={ {
+                                owner=906033435
+                                change=0.01106
+                            } }
+                    }
+                }
+            }
+        }"#;
+
+        let allocator = arena_serde::Arena::new();
+        let deserializer =
+            TextDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
+        let location = Wrapper::deserialize_in_arena(&deserializer, &allocator)
+            .expect("location deserializes")
+            .location;
+
+        assert_eq!(location.population.changes.reproduction.total(), 0.01106);
+    }
+
+    #[test]
+    fn population_changes_are_optional() {
+        #[derive(ArenaDeserialize)]
+        struct Wrapper<'bump> {
+            location: Location<'bump>,
+        }
+
+        let allocator = arena_serde::Arena::new();
+        let deserializer =
+            TextDeserializer::from_utf8_slice(b"location={ population={ pops={ 3 } } }")
+                .expect("valid text data");
+        let location = Wrapper::deserialize_in_arena(&deserializer, &allocator)
+            .expect("location deserializes")
+            .location;
+
+        assert!(location.population.changes.reproduction.data.is_empty());
+        assert_eq!(location.population.changes.reproduction.total(), 0.0);
     }
 
     #[test]
