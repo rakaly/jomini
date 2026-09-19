@@ -430,6 +430,199 @@ fn zip_eu5_sav02() {
     assert!(err.is_missing_entry());
 }
 
+#[cfg(any(feature = "zstd_c", feature = "zstd_rust"))]
+/// The decompressed gamestate of `big_zstd.zip`. The content is large enough
+/// that a decoder must return it across many `read` calls.
+fn big_zstd_gamestate() -> String {
+    let mut big = String::from("meta=yes\n");
+    for i in 0..20_000u32 {
+        big.push_str(&format!("entry_{i}={{ id={i} name=\"unit {i}\" }}\n"));
+    }
+    big
+}
+
+#[cfg(any(feature = "zstd_c", feature = "zstd_rust"))]
+/// A reader that returns at most `limit` bytes for each `read` call. This
+/// exercises how a decoder handles a caller with a small buffer.
+struct ChunkedReader<R> {
+    inner: R,
+    limit: usize,
+}
+
+#[cfg(any(feature = "zstd_c", feature = "zstd_rust"))]
+impl<R: Read> Read for ChunkedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = buf.len().min(self.limit);
+        self.inner.read(&mut buf[..n])
+    }
+}
+
+#[cfg(any(feature = "zstd_c", feature = "zstd_rust"))]
+#[test]
+fn zip_zstd_txt() {
+    // Same layout as text.zip, but the gamestate entry is zstd compressed
+    let file = std::fs::File::open("tests/fixtures/envelopes/text_zstd.zip").unwrap();
+    let file = JominiFile::from_file(file).unwrap();
+    assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedText);
+    zip_text_assertions(file);
+
+    let file = std::fs::read("tests/fixtures/envelopes/text_zstd.zip").unwrap();
+    let file = JominiFile::from_slice(&file).unwrap();
+    assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedText);
+    zip_text_assertions(file);
+}
+
+#[cfg(any(feature = "zstd_c", feature = "zstd_rust"))]
+#[test]
+fn zip_zstd_verified() {
+    let data = std::fs::read("tests/fixtures/envelopes/text_zstd.zip").unwrap();
+    let file = JominiFile::from_slice(&data).unwrap();
+    let JominiFileKind::Zip(zip) = file.kind() else {
+        panic!("expected zip text envelope");
+    };
+
+    let mut verified = String::new();
+    zip.gamestate_verified()
+        .unwrap()
+        .read_to_string(&mut verified)
+        .unwrap();
+    assert_eq!(verified, EXPECTED_TEXT_GAMESTATE);
+
+    let SaveContentKind::Text(content) = zip.gamestate_verified().unwrap() else {
+        panic!("expected text gamestate");
+    };
+    let mut reader = content.into_inner();
+    let copied = std::io::copy(&mut reader, &mut std::io::sink()).unwrap();
+    assert_eq!(copied as usize, EXPECTED_TEXT_GAMESTATE.len());
+    reader.finish().unwrap();
+}
+
+#[cfg(any(feature = "zstd_c", feature = "zstd_rust"))]
+#[test]
+fn zip_zstd_verified_detects_bad_crc() {
+    let mut data = std::fs::read("tests/fixtures/envelopes/text_zstd.zip").unwrap();
+    let cd = find_central_directory_header(&data, b"gamestate");
+    let orig = u32::from_le_bytes(data[cd + 16..cd + 20].try_into().unwrap());
+    data[cd + 16..cd + 20].copy_from_slice(&(orig ^ 0xFFFF_FFFF).to_le_bytes());
+
+    let file = JominiFile::from_slice(&data).unwrap();
+    let JominiFileKind::Zip(zip) = file.kind() else {
+        panic!("expected zip text envelope");
+    };
+
+    // The unverified read does not check the CRC
+    let mut plain = String::new();
+    zip.gamestate().unwrap().read_to_string(&mut plain).unwrap();
+    assert_eq!(plain, EXPECTED_TEXT_GAMESTATE);
+
+    let SaveContentKind::Text(content) = zip.gamestate_verified().unwrap() else {
+        panic!("expected text gamestate");
+    };
+    let err = content.into_inner().finish().unwrap_err();
+    assert!(
+        matches!(err.kind(), EnvelopeErrorKind::ChecksumMismatch { expected, .. } if *expected == (orig ^ 0xFFFF_FFFF)),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[cfg(any(feature = "zstd_c", feature = "zstd_rust"))]
+#[test]
+fn zip_zstd_verified_detects_bad_size() {
+    let mut data = std::fs::read("tests/fixtures/envelopes/text_zstd.zip").unwrap();
+    let cd = find_central_directory_header(&data, b"gamestate");
+    let orig = u32::from_le_bytes(data[cd + 24..cd + 28].try_into().unwrap());
+    data[cd + 24..cd + 28].copy_from_slice(&(orig + 1000).to_le_bytes());
+
+    let file = JominiFile::from_slice(&data).unwrap();
+    let JominiFileKind::Zip(zip) = file.kind() else {
+        panic!("expected zip text envelope");
+    };
+    let SaveContentKind::Text(content) = zip.gamestate_verified().unwrap() else {
+        panic!("expected text gamestate");
+    };
+    let err = content.into_inner().finish().unwrap_err();
+    assert!(
+        matches!(err.kind(), EnvelopeErrorKind::SizeMismatch { expected, actual } if *expected == u64::from(orig) + 1000 && *actual == u64::from(orig)),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[cfg(any(feature = "zstd_c", feature = "zstd_rust"))]
+#[test]
+fn zip_zstd_big() {
+    let expected = big_zstd_gamestate();
+    let data = std::fs::read("tests/fixtures/envelopes/big_zstd.zip").unwrap();
+    let file = JominiFile::from_slice(&data).unwrap();
+    let JominiFileKind::Zip(zip) = file.kind() else {
+        panic!("expected zip text envelope");
+    };
+
+    // Read with a large buffer
+    let mut actual = Vec::new();
+    zip.gamestate().unwrap().read_to_end(&mut actual).unwrap();
+    assert_eq!(actual, expected.as_bytes());
+
+    // Read with small buffers that cut zstd blocks at arbitrary points
+    for limit in [7, 4096] {
+        let mut actual = Vec::new();
+        let mut reader = ChunkedReader {
+            inner: zip.gamestate().unwrap(),
+            limit,
+        };
+        reader.read_to_end(&mut actual).unwrap();
+        assert_eq!(actual, expected.as_bytes(), "limit {limit}");
+    }
+
+    // The verified read agrees with the central directory
+    let SaveContentKind::Text(content) = zip.gamestate_verified().unwrap() else {
+        panic!("expected text gamestate");
+    };
+    let mut reader = content.into_inner();
+    let mut actual = Vec::new();
+    reader.read_to_end(&mut actual).unwrap();
+    assert_eq!(actual, expected.as_bytes());
+    reader.finish().unwrap();
+
+    // And the parser can consume the stream
+    let SaveContentKind::Text(mut gamestate) = zip.gamestate().unwrap() else {
+        panic!("expected text gamestate");
+    };
+    let actual: HashMap<String, serde::de::IgnoredAny> =
+        gamestate.deserializer().deserialize().unwrap();
+    assert_eq!(actual.len(), 20_001);
+}
+
+#[cfg(not(any(feature = "zstd_c", feature = "zstd_rust")))]
+#[test]
+fn zip_zstd_unsupported() {
+    // Without a zstd backend, the envelope is still readable but the entry is
+    // reported as unsupported instead of returning garbage or panicking
+    let data = std::fs::read("tests/fixtures/envelopes/text_zstd.zip").unwrap();
+    let file = JominiFile::from_slice(&data).unwrap();
+    assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedText);
+    let JominiFileKind::Zip(zip) = file.kind() else {
+        panic!("expected zip text envelope");
+    };
+
+    let err = zip.gamestate().unwrap_err();
+    assert!(
+        matches!(err.kind(), EnvelopeErrorKind::ZipUnsupportedCompression),
+        "unexpected error: {err:?}"
+    );
+    let err = zip.gamestate_verified().unwrap_err();
+    assert!(
+        matches!(err.kind(), EnvelopeErrorKind::ZipUnsupportedCompression),
+        "unexpected error: {err:?}"
+    );
+    let Err(err) = file.gamestate() else {
+        panic!("expected unsupported compression error");
+    };
+    assert!(
+        matches!(err.kind(), EnvelopeErrorKind::ZipUnsupportedCompression),
+        "unexpected error: {err:?}"
+    );
+}
+
 /// Returns the byte offset of the central-directory file header for `name`, so
 /// a test can deterministically corrupt its metadata.
 fn find_central_directory_header(data: &[u8], name: &[u8]) -> usize {

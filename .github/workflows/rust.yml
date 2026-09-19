@@ -255,6 +255,10 @@ jobs:
       run: ${{ env.CARGO }} test --features json ${{ env.PKGS }} --verbose ${{ env.TARGET }}
     - name: Run envelope tests
       run: ${{ env.CARGO }} test --features envelope ${{ env.PKGS }} --verbose ${{ env.TARGET }}
+    # All-features selects the C zstd backend, so the pure-Rust backend needs
+    # its own run.
+    - name: Run envelope tests (pure-Rust zstd)
+      run: ${{ env.CARGO }} test --features zstd_rust,serde -p jomini --verbose ${{ env.TARGET }}
     - name: Run all-features tests
       run: ${{ env.CARGO }} test --all-features ${{ env.PKGS }} --verbose ${{ env.TARGET }}
     - name: Run serde-only tests (no derive macros)
