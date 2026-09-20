@@ -25,8 +25,8 @@ specta = ["dep:specta"]
 jomini = { workspace = true, features = ["json"] }
 serde = { workspace = true }
 thiserror = { workspace = true }
-zstd = { version = "0.13", default-features = false, optional = true }
-ruzstd = { version = "0.8", optional = true }
+zstd = { version = "0.14", default-features = false, optional = true }
+ruzstd = { version = "0.9", optional = true }
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 specta = { version = "1.0.4", optional = true }

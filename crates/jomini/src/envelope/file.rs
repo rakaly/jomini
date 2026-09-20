@@ -16,6 +16,12 @@ use std::{
     ops::Range,
 };
 
+#[cfg(feature = "zstd_c")]
+use std::io::BufReader;
+
+#[cfg(all(feature = "zstd_rust", not(feature = "zstd_c")))]
+use ruzstd::decoding::{FrameDecoder, StreamingDecoder};
+
 /// Read modern Paradox save files from memory or from the file system
 #[derive(Debug, Clone)]
 pub struct JominiFile<R> {
@@ -727,10 +733,23 @@ impl<'a, R: ReaderAt> Read for ReaderAtCursor<'a, R> {
     }
 }
 
-/// Wrapper that decompresses deflate-encoded data from a ZIP entry
-#[derive(Debug)]
+/// Wrapper that decompresses data from a ZIP entry.
 pub struct CompressedReader<R> {
-    reader: flate2::read::DeflateDecoder<R>,
+    reader: CompressedReaderKind<R>,
+}
+
+enum CompressedReaderKind<R> {
+    Deflate(flate2::read::DeflateDecoder<R>),
+    #[cfg(feature = "zstd_c")]
+    ZstdC(zstd::stream::Decoder<'static, BufReader<R>>),
+    #[cfg(all(feature = "zstd_rust", not(feature = "zstd_c")))]
+    ZstdRust(Box<StreamingDecoder<ReadAdapter<R>, FrameDecoder>>),
+}
+
+impl<R> std::fmt::Debug for CompressedReader<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompressedReader").finish()
+    }
 }
 
 impl CompressedReader<()> {
@@ -741,11 +760,28 @@ impl CompressedReader<()> {
     where
         R: ReaderAt,
     {
-        if compression != CompressionMethod::DEFLATE {
-            return Err(EnvelopeErrorKind::ZipUnsupportedCompression.into());
-        }
-        let reader = zip_entry.reader();
-        let reader = flate2::read::DeflateDecoder::new(reader);
+        let reader = match compression {
+            CompressionMethod::DEFLATE => {
+                CompressedReaderKind::Deflate(flate2::read::DeflateDecoder::new(zip_entry.reader()))
+            }
+            #[cfg(any(feature = "zstd_c", feature = "zstd_rust"))]
+            CompressionMethod::ZSTD => {
+                #[cfg(feature = "zstd_c")]
+                {
+                    let reader = zstd::stream::Decoder::new(zip_entry.reader())?;
+                    CompressedReaderKind::ZstdC(reader)
+                }
+                #[cfg(all(feature = "zstd_rust", not(feature = "zstd_c")))]
+                {
+                    let reader = StreamingDecoder::new(ReadAdapter::new(zip_entry.reader()))
+                        .map_err(|error| {
+                            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+                        })?;
+                    CompressedReaderKind::ZstdRust(Box::new(reader))
+                }
+            }
+            _ => return Err(EnvelopeErrorKind::ZipUnsupportedCompression.into()),
+        };
         Ok(CompressedReader { reader })
     }
 }
@@ -755,7 +791,43 @@ where
     R: Read,
 {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.reader.read(buf)
+        match &mut self.reader {
+            CompressedReaderKind::Deflate(reader) => reader.read(buf),
+            #[cfg(feature = "zstd_c")]
+            CompressedReaderKind::ZstdC(reader) => reader.read(buf),
+            #[cfg(all(feature = "zstd_rust", not(feature = "zstd_c")))]
+            CompressedReaderKind::ZstdRust(reader) => reader.read(buf),
+        }
+    }
+}
+
+#[cfg(all(feature = "zstd_rust", not(feature = "zstd_c")))]
+struct ReadAdapter<R> {
+    reader: R,
+    read: fn(&mut R, &mut [u8]) -> std::io::Result<usize>,
+}
+
+#[cfg(all(feature = "zstd_rust", not(feature = "zstd_c")))]
+impl<R> ReadAdapter<R> {
+    fn new(reader: R) -> Self
+    where
+        R: Read,
+    {
+        fn read_from<R: Read>(reader: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
+            reader.read(buf)
+        }
+
+        ReadAdapter {
+            reader,
+            read: read_from::<R>,
+        }
+    }
+}
+
+#[cfg(all(feature = "zstd_rust", not(feature = "zstd_c")))]
+impl<R> Read for ReadAdapter<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        (self.read)(&mut self.reader, buf)
     }
 }
 

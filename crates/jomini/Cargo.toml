@@ -24,6 +24,8 @@ jomini_derive = { path = "../jomini_derive", version = "^0.4.0", optional = true
 rawzip = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { version = "1.0.114", optional = true }
+zstd = { version = "0.14", default-features = false, optional = true }
+ruzstd = { version = "0.9", optional = true }
 
 [features]
 default = ["derive", "faster_writer"]
@@ -32,6 +34,8 @@ envelope = ["dep:rawzip", "dep:flate2"]
 faster_writer = ["dep:itoa"]
 json = ["serde", "serde_json"]
 serde = ["dep:serde", "serde/derive"]
+zstd_c = ["envelope", "dep:zstd"]
+zstd_rust = ["envelope", "dep:ruzstd"]
 
 [dev-dependencies]
 attohttpc = { workspace = true }
