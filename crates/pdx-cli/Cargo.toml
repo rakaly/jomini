@@ -14,11 +14,11 @@ path = "src/main.rs"
 
 [dependencies]
 arena-serde = { path = "../arena-serde" }
-ck3save = { path = "../ck3save" }
+ck3save = { path = "../ck3save", features = ["zstd_c"] }
 eu4save = { path = "../eu4save" }
-eu5save = { path = "../eu5save" }
+eu5save = { path = "../eu5save", features = ["zstd_c"] }
 hoi4save = { path = "../hoi4save" }
-imperator-save = { path = "../imperator-save" }
-jomini = { workspace = true, features = ["envelope", "json"] }
+imperator-save = { path = "../imperator-save", features = ["zstd_c"] }
+jomini = { workspace = true, features = ["envelope", "json", "zstd_c"] }
 pdx-fixtures = { workspace = true }
-vic3save = { path = "../vic3save" }
+vic3save = { path = "../vic3save", features = ["zstd_c"] }

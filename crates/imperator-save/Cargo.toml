@@ -13,6 +13,8 @@ categories = ["parsing"]
 
 [features]
 serialize = []
+zstd_c = ["jomini/zstd_c"]
+zstd_rust = ["jomini/zstd_rust"]
 
 [dependencies]
 jomini = { workspace = true, features = ["envelope", "json"] }
