@@ -1,3 +1,11 @@
+## v0.37.0 - 2026-09-20
+
+### Added
+
+- Add Zstd support to the `envelope` API for zip entries compressed with
+  Zstandard. Enable the `zstd_c` feature to use the C `zstd` library, or the
+  `zstd_rust` feature to use the pure Rust `ruzstd` decoder.
+
 ## v0.36.1 - 2026-09-12
 
 ### Added
