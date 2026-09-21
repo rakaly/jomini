@@ -10,6 +10,9 @@ use std::io::{Read, Write};
 pub use jomini::envelope::JominiFile as ImperatorFile;
 pub use jomini::envelope::*;
 
+/// An uncompressed Imperator debug save backed by a forward-only reader.
+pub type ImperatorDebugFile<R> = JominiTextFile<R>;
+
 /// Type alias for Imperator text deserializer
 ///
 /// A lazy way to avoid the need to reimplement deserializer
@@ -244,5 +247,25 @@ impl<R: ReaderAt> DeserializeImperator for &'_ ImperatorFile<R> {
                 })
             }
         }
+    }
+}
+
+/// Deserialize an uncompressed text save from a forward-only reader.
+pub trait DeserializeImperatorDebug {
+    /// Deserialize the remaining save data.
+    fn deserialize_debug<T>(&mut self) -> Result<T, ImperatorError>
+    where
+        T: DeserializeOwned;
+}
+
+impl<R: Read> DeserializeImperatorDebug for ImperatorDebugFile<R> {
+    fn deserialize_debug<T>(&mut self) -> Result<T, ImperatorError>
+    where
+        T: DeserializeOwned,
+    {
+        Ok(self
+            .deserializer()
+            .deserialize()
+            .map_err(ImperatorErrorKind::Deserialize)?)
     }
 }

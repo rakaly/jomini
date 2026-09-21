@@ -10,6 +10,9 @@ use std::io::{Read, Write};
 pub use jomini::envelope::JominiFile as Eu5File;
 pub use jomini::envelope::*;
 
+/// An uncompressed EU5 debug save backed by a forward-only reader.
+pub type Eu5DebugFile<R> = JominiTextFile<R>;
+
 /// Type alias for Eu5 text deserializer
 ///
 /// A lazy way to avoid the need to reimplement deserializer
@@ -270,6 +273,23 @@ impl<R: ReaderAt> DeserializeEu5 for &'_ Eu5File<R> {
     }
 }
 
+/// Deserialize an uncompressed text save from a forward-only reader.
+pub trait DeserializeEu5Debug {
+    /// Deserialize the remaining save data.
+    fn deserialize_debug<T>(&mut self) -> Result<T, Eu5Error>
+    where
+        T: DeserializeOwned;
+}
+
+impl<R: Read> DeserializeEu5Debug for Eu5DebugFile<R> {
+    fn deserialize_debug<T>(&mut self) -> Result<T, Eu5Error>
+    where
+        T: DeserializeOwned,
+    {
+        Ok(self.deserializer().deserialize()?)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Eu5Flavor(Utf8Encoding);
 impl Eu5Flavor {
@@ -327,6 +347,26 @@ fn string_lookup_parse(mut data: &[u8]) -> Vec<&'_ str> {
 mod tests {
     use super::*;
     use rstest::rstest;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct DebugSave {
+        value: String,
+    }
+
+    #[test]
+    fn deserialize_debug_reader() {
+        let input = b"SAV01000000000000000000\nvalue=hello";
+        let mut file = Eu5DebugFile::from_reader(&input[..]).unwrap();
+        let save: DebugSave = file.deserialize_debug().unwrap();
+
+        assert_eq!(
+            save,
+            DebugSave {
+                value: "hello".to_string(),
+            }
+        );
+    }
 
     #[rstest]
     #[case([3, 176, 63, 231, 0, 0, 0, 0], 38797.10723)]

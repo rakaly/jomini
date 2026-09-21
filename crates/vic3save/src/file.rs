@@ -10,6 +10,9 @@ use std::io::{Read, Write};
 pub use jomini::envelope::JominiFile as Vic3File;
 pub use jomini::envelope::*;
 
+/// An uncompressed Vic3 debug save backed by a forward-only reader.
+pub type Vic3DebugFile<R> = JominiTextFile<R>;
+
 /// Type alias for Vic3 text deserializer
 ///
 /// A lazy way to avoid the need to reimplement deserializer
@@ -246,5 +249,25 @@ impl<R: ReaderAt> DeserializeVic3 for &'_ Vic3File<R> {
                     .map_err(Vic3ErrorKind::Deserialize)?,
             }),
         }
+    }
+}
+
+/// Deserialize an uncompressed text save from a forward-only reader.
+pub trait DeserializeVic3Debug {
+    /// Deserialize the remaining save data.
+    fn deserialize_debug<T>(&mut self) -> Result<T, Vic3Error>
+    where
+        T: DeserializeOwned;
+}
+
+impl<R: Read> DeserializeVic3Debug for Vic3DebugFile<R> {
+    fn deserialize_debug<T>(&mut self) -> Result<T, Vic3Error>
+    where
+        T: DeserializeOwned,
+    {
+        Ok(self
+            .deserializer()
+            .deserialize()
+            .map_err(Vic3ErrorKind::Deserialize)?)
     }
 }
