@@ -55,6 +55,8 @@ pub struct Metadata<'bump> {
     pub playthrough_name: Option<BStr<'bump>>,
     #[arena(default)]
     pub save_label: Option<BStr<'bump>>,
+    #[arena(default)]
+    pub player_country_name: Option<BStr<'bump>>,
     pub version: GameVersion,
 }
 
