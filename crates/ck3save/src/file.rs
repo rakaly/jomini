@@ -12,6 +12,9 @@ use std::io::{Read, Write};
 pub use jomini::envelope::JominiFile as Ck3File;
 pub use jomini::envelope::*;
 
+/// An uncompressed CK3 debug save backed by a forward-only reader.
+pub type Ck3DebugFile<R> = JominiTextFile<R>;
+
 /// Type alias for Ck3 text deserializer
 ///
 /// A lazy way to avoid the need to reimplement deserializer
@@ -258,5 +261,25 @@ impl<R: ReaderAt> DeserializeCk3 for &'_ Ck3File<R> {
                     .map_err(Ck3ErrorKind::Deserialize)?,
             }),
         }
+    }
+}
+
+/// Deserialize an uncompressed text save from a forward-only reader.
+pub trait DeserializeCk3Debug {
+    /// Deserialize the remaining save data.
+    fn deserialize_debug<T>(&mut self) -> Result<T, Ck3Error>
+    where
+        T: DeserializeOwned;
+}
+
+impl<R: Read> DeserializeCk3Debug for Ck3DebugFile<R> {
+    fn deserialize_debug<T>(&mut self) -> Result<T, Ck3Error>
+    where
+        T: DeserializeOwned,
+    {
+        Ok(self
+            .deserializer()
+            .deserialize()
+            .map_err(Ck3ErrorKind::Deserialize)?)
     }
 }

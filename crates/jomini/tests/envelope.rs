@@ -5,13 +5,25 @@ use jomini::{
         BinaryDeserializerBuilder, BinaryFlavor, Token, TokenResolver, de::BinaryReaderDeserializer,
     },
     envelope::{
-        BinaryEncoding, EnvelopeErrorKind, JominiFile, JominiFileKind, SaveContent,
+        BinaryEncoding, EnvelopeErrorKind, JominiFile, JominiFileKind, JominiTextFile, SaveContent,
         SaveContentKind, SaveData, SaveDataKind, SaveHeaderKind, SaveMetadata, SaveMetadataKind,
     },
 };
 use rawzip::ReaderAt;
 use serde::Deserialize;
 use std::{collections::HashMap, io::Read};
+
+struct ForwardOnlyChunks<R> {
+    inner: R,
+    chunk_size: usize,
+}
+
+impl<R: Read> Read for ForwardOnlyChunks<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let len = buf.len().min(self.chunk_size);
+        self.inner.read(&mut buf[..len])
+    }
+}
 
 #[derive(Debug, PartialEq, Deserialize)]
 struct Meta {
@@ -182,6 +194,54 @@ fn plaintext_extraction() {
     let file = JominiFile::from_slice(&file).unwrap();
     assert_eq!(file.header().kind(), SaveHeaderKind::Text);
     plaintext_uncompressed_assertions(file);
+}
+
+#[test]
+fn debug_reader_is_forward_only() {
+    let data = std::fs::read("tests/fixtures/envelopes/text.txt").unwrap();
+    let reader = ForwardOnlyChunks {
+        inner: data.as_slice(),
+        chunk_size: 2,
+    };
+    let mut file = JominiTextFile::from_reader(reader).unwrap();
+
+    assert_eq!(file.header().kind(), SaveHeaderKind::Text);
+    let _: &ForwardOnlyChunks<&[u8]> = file.get_ref();
+    let gamestate: Gamestate = file.deserializer().deserialize().unwrap();
+    assert_eq!(
+        gamestate,
+        Gamestate {
+            meta: true,
+            gamestate: "hi".to_string(),
+        }
+    );
+}
+
+#[test]
+fn debug_reader_rejects_non_debug_save() {
+    let data = std::fs::read("tests/fixtures/envelopes/autosave.bin").unwrap();
+    let Err(err) = JominiTextFile::from_reader(data.as_slice()) else {
+        panic!("expected the binary save to be rejected");
+    };
+
+    assert!(matches!(err.kind(), EnvelopeErrorKind::InvalidHeader));
+}
+
+#[test]
+fn debug_reader_supports_each_header_length() {
+    let headers: [&[u8]; 4] = [
+        b"SAV01000000000000000000\n",
+        b"SAV01000000000000000000\r\n",
+        b"SAV0200000000000000000000000000\n",
+        b"SAV0200000000000000000000000000\r\n",
+    ];
+
+    for header in headers {
+        let input = [header, b"meta=yes\ngamestate=\"hi\"\n"].concat();
+        let mut file = JominiTextFile::from_reader(input.as_slice()).unwrap();
+        let gamestate: Gamestate = file.deserializer().deserialize().unwrap();
+        assert_eq!(gamestate.gamestate, "hi");
+    }
 }
 
 fn expected_tokens(expected: &[Token], reader: impl std::io::Read) {

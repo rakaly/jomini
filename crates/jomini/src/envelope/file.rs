@@ -113,6 +113,32 @@ impl JominiFile<()> {
     }
 }
 
+fn read_header(reader: &mut impl Read) -> Result<SaveHeader, EnvelopeError> {
+    let mut buf = [0u8; SaveHeader::SIZE];
+    reader.read_exact(&mut buf[..24])?;
+
+    let header_len = match buf[23] {
+        b'\n' => 24,
+        b'\r' => {
+            reader.read_exact(&mut buf[24..25])?;
+            25
+        }
+        _ => {
+            reader.read_exact(&mut buf[24..32])?;
+            match buf[31] {
+                b'\n' => 32,
+                b'\r' => {
+                    reader.read_exact(&mut buf[32..33])?;
+                    33
+                }
+                _ => return Err(EnvelopeErrorKind::InvalidHeader.into()),
+            }
+        }
+    };
+
+    SaveHeader::from_slice(&buf[..header_len])
+}
+
 /// The underlying kind of Jomini file: either ZIP-compressed or uncompressed
 #[derive(Debug, Clone)]
 pub enum JominiFileKind<R> {
@@ -398,6 +424,63 @@ pub struct BinaryEncoding;
 pub struct SaveData<E, R> {
     header: SaveHeader,
     body: SaveContent<E, R>,
+}
+
+/// An uncompressed text save backed by a forward-only reader.
+#[derive(Debug, Clone)]
+pub struct JominiTextFile<R> {
+    header: SaveHeader,
+    reader: R,
+}
+
+impl<R: Read> JominiTextFile<R> {
+    /// Creates an uncompressed text save from a forward-only reader.
+    ///
+    /// This constructor does not inspect the end of the input for a ZIP
+    /// archive. Use [`JominiFile::from_slice`] or [`JominiFile::from_file`]
+    /// when the input can contain a compressed or binary save.
+    pub fn from_reader(mut reader: R) -> Result<Self, EnvelopeError> {
+        let header = read_header(&mut reader)?;
+        if header.kind() != crate::envelope::SaveHeaderKind::Text {
+            return Err(EnvelopeErrorKind::InvalidHeader.into());
+        }
+
+        Ok(JominiTextFile { header, reader })
+    }
+
+    /// Creates a text deserializer for the remaining save data.
+    #[cfg(feature = "serde")]
+    pub fn deserializer(&mut self) -> TextReaderDeserializer<'_, Utf8Encoding> {
+        text_deserializer(&mut self.reader)
+    }
+}
+
+impl<R> JominiTextFile<R> {
+    /// Returns the save file header.
+    pub fn header(&self) -> &SaveHeader {
+        &self.header
+    }
+
+    /// Returns a reference to the underlying reader.
+    pub fn get_ref(&self) -> &R {
+        &self.reader
+    }
+
+    /// Returns a mutable reference to the underlying reader.
+    pub fn get_mut(&mut self) -> &mut R {
+        &mut self.reader
+    }
+
+    /// Consumes the save and returns the underlying reader.
+    pub fn into_inner(self) -> R {
+        self.reader
+    }
+}
+
+impl<R: Read> Read for JominiTextFile<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.reader.read(buf)
+    }
 }
 
 impl<E, R> SaveData<E, R> {
