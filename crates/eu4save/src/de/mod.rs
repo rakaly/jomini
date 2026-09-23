@@ -1,5 +1,6 @@
 mod alternating_key_values;
 mod country_history;
+mod eu4_string;
 mod gameplay_settings;
 mod leader_kind;
 mod ledger_vec;
@@ -16,6 +17,7 @@ mod war_history;
 mod yes_map;
 
 pub(crate) use alternating_key_values::*;
+pub(crate) use eu4_string::*;
 pub(crate) use ledger_vec::*;
 pub(crate) use list_overflow_byte::*;
 pub(crate) use map_capacity::*;
