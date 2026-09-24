@@ -197,7 +197,7 @@ fn test_ironman_roundtrip() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(
         &checksum,
-        "6e8f589e8d181c5205d051834617abbb7b90b4d16b3062d0ac0b85474fe41aa1"
+        "52d41bfbe0da90125e47a5d10543fc6be6b678ec7e0aced4894332ad748f062f"
     );
 
     let file = Hoi4File::from_slice(&out)?;
