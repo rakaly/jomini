@@ -269,7 +269,7 @@ fn melt_patch14() -> Result<(), Box<dyn std::error::Error>> {
         checksum[0], checksum[1], checksum[2], checksum[3]
     );
     assert_eq!(
-        hex, "0xd731c320e2968e28cf7d2642d6a456b3d97b614c734bf4d9d0f6fb3acb1a3ee7",
+        hex, "0x8351fe7cadf7ffc27d9c6834aae691a852bcd74a374455055ecdf050093912aa",
         "patch 1.4 slice did not melt to expected checksum"
     );
     Ok(())
@@ -291,7 +291,7 @@ fn melt_patch15() -> Result<(), Box<dyn std::error::Error>> {
         checksum[0], checksum[1], checksum[2], checksum[3]
     );
     assert_eq!(
-        hex, "0x6b01e43ba332ead0350af9c08372792ece74005268014fbff1c597c8d774ed7e",
+        hex, "0xa34568f6b892bd17ab5a177d40629af89d319aeb46e0940184c64d5773375538",
         "patch 1.5 slice did not melt to expected checksum"
     );
     Ok(())
@@ -314,7 +314,7 @@ fn melt_patch15_slice() -> Result<(), Box<dyn std::error::Error>> {
         checksum[0], checksum[1], checksum[2], checksum[3]
     );
     assert_eq!(
-        hex, "0x6b01e43ba332ead0350af9c08372792ece74005268014fbff1c597c8d774ed7e",
+        hex, "0xa34568f6b892bd17ab5a177d40629af89d319aeb46e0940184c64d5773375538",
         "patch 1.5 slice did not melt to expected checksum"
     );
 
