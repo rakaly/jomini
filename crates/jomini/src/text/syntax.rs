@@ -69,6 +69,9 @@ use fearless_simd::{Level, Simd, dispatch, mask8x16, prelude::*, u8x16};
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
+mod tape;
+pub use tape::{parse_tape, parse_tape_with};
+
 /// The kind of every node (interior) and token (leaf) in a [`SyntaxTree`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -1145,16 +1148,9 @@ pub fn parse(source: &[u8]) -> SyntaxTree<'_> {
 
 /// Parse `source` into a lossless [`SyntaxTree`] with a specific [`Flavor`].
 pub fn parse_with(source: &[u8], flavor: Flavor) -> SyntaxTree<'_> {
-    assert!(
-        u32::try_from(source.len()).is_ok(),
-        "source is larger than 4 GiB"
-    );
-    let lexed = lex(source, flavor);
-    let builder = Builder::with_capacity(lexed.tokens.len());
-    let mut p = Parser::new(source, lexed, builder);
-    p.sink.start_node(SyntaxKind::Root);
-    p.parse_items(false);
-    p.sink.finish_node();
+    let p = run(source, flavor, |lexed| {
+        Builder::with_capacity(lexed.tokens.len())
+    });
     let Parser {
         sink,
         tokens,
@@ -1172,6 +1168,26 @@ pub fn parse_with(source: &[u8], flavor: Flavor) -> SyntaxTree<'_> {
         parents: OnceLock::new(),
         repairs_valid: OnceLock::new(),
     }
+}
+
+/// Lex `source`, then send the events of the grammar to the sink that
+/// `make_sink` makes.
+fn run<S: Sink>(
+    source: &[u8],
+    flavor: Flavor,
+    make_sink: impl FnOnce(&Lexed) -> S,
+) -> Parser<'_, S> {
+    assert!(
+        u32::try_from(source.len()).is_ok(),
+        "source is larger than 4 GiB"
+    );
+    let lexed = lex(source, flavor);
+    let sink = make_sink(&lexed);
+    let mut p = Parser::new(source, lexed, sink);
+    p.sink.start_node(SyntaxKind::Root);
+    p.parse_items(false);
+    p.sink.finish_node();
+    p
 }
 
 impl<'a> SyntaxTree<'a> {
@@ -1420,6 +1436,17 @@ trait Sink {
     fn finish_node(&mut self);
     /// Record that the open node contains a diagnostic.
     fn error(&mut self);
+
+    /// Add a field node whose key, operator, and value are single tokens. A
+    /// sink can do this faster than the four separate events.
+    #[inline]
+    fn scalar_field(&mut self, key: Token, op: Token, value: Token) {
+        self.start_node(SyntaxKind::Field);
+        self.token(key);
+        self.token(op);
+        self.token(value);
+        self.finish_node();
+    }
 }
 
 /// Builds the node tape. The tokens stay in the parser's buffer, so a token
@@ -1660,6 +1687,20 @@ impl<'t, S: Sink> Parser<'t, S> {
         self.pos += 1;
     }
 
+    /// Return `true` when the field at the current position has a scalar
+    /// value that is a single token. The key and the operator are known.
+    /// A value that a brace or a bracket follows can be a header or a code
+    /// payload, so it goes on the general path.
+    #[inline]
+    fn is_scalar_field(&self) -> bool {
+        self.kind_at(self.pos + 2)
+            .is_some_and(SyntaxKind::is_scalar)
+            && !matches!(
+                self.kind_at(self.pos + 3),
+                Some(SyntaxKind::OpenBrace | SyntaxKind::OpenBracket)
+            )
+    }
+
     /// Return `true` when the `]` at the current position is the key of a
     /// field, as in `active_idea_groups = { ]=0 }`.
     fn is_bracket_key(&self) -> bool {
@@ -1724,6 +1765,15 @@ impl<'t, S: Sink> Parser<'t, S> {
                     return;
                 }
                 match self.kind_at(self.pos + 1) {
+                    Some(SyntaxKind::Operator) if self.is_scalar_field() => {
+                        let (key, op, value) = (
+                            self.tokens[self.pos],
+                            self.tokens[self.pos + 1],
+                            self.tokens[self.pos + 2],
+                        );
+                        self.sink.scalar_field(key, op, value);
+                        self.pos += 3;
+                    }
                     Some(SyntaxKind::Operator) => {
                         // key <op> value
                         self.sink.start_node(SyntaxKind::Field);

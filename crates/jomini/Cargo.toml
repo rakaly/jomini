@@ -51,6 +51,9 @@ rawzip = { workspace = true }
 rstest = "0.26.1"
 serde_with = "3.8.1"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(jomini_lossless_tape)"] }
+
 [[bin]]
 name = "json"
 required-features = ["json"]
