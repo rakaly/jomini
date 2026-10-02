@@ -1137,7 +1137,7 @@ const NO_PARENT: u32 = u32::MAX;
 pub struct SyntaxTree<'a> {
     source: &'a [u8],
     flavor: Flavor,
-    /// The significant tokens, then the zero-width missing tokens at EOF.
+    /// The significant and missing tokens in sink emission order.
     tokens: Vec<Token>,
     nodes: Vec<Node>,
     errors: Vec<SyntaxError>,
@@ -1160,12 +1160,13 @@ pub fn parse_with(source: &[u8], flavor: Flavor) -> SyntaxTree<'_> {
     });
     let Parser {
         sink,
-        tokens,
+        mut tokens,
+        lexed,
         errors,
         trailing_comment,
         ..
     } = p;
-    let nodes = sink.finish(trailing_comment);
+    let nodes = sink.finish(trailing_comment, &mut tokens, lexed);
     SyntaxTree {
         source,
         flavor,
@@ -1456,14 +1457,14 @@ trait Sink {
     }
 }
 
-/// Builds the node tape. The tokens stay in the parser's buffer, so a token
-/// event only moves the cursor and collects the flags.
+/// Build the node tape and record the positions of missing tokens.
 struct Builder {
     nodes: Vec<Node>,
     /// The open nodes and the flags collected for each.
     stack: Vec<(u32, NodeFlags)>,
     /// The index of the next token.
     next_token: u32,
+    missing_tokens: Vec<(u32, Token)>,
 }
 
 impl Builder {
@@ -1473,10 +1474,31 @@ impl Builder {
             nodes: Vec::with_capacity(tokens / 2 + 1),
             stack: Vec::new(),
             next_token: 0,
+            missing_tokens: Vec::new(),
         }
     }
 
-    fn finish(mut self, trailing_comment: bool) -> Vec<Node> {
+    fn finish(
+        mut self,
+        trailing_comment: bool,
+        tokens: &mut Vec<Token>,
+        lexed: usize,
+    ) -> Vec<Node> {
+        if !self.missing_tokens.is_empty() {
+            let mut ordered = Vec::with_capacity(tokens.len());
+            let mut significant = tokens[..lexed].iter().copied().peekable();
+            for (index, mut token) in self.missing_tokens {
+                while ordered.len() < index as usize {
+                    ordered.push(significant.next().expect("missing significant token"));
+                }
+                if let Some(next) = significant.peek() {
+                    token.start = next.start;
+                }
+                ordered.push(token);
+            }
+            ordered.extend(significant);
+            *tokens = ordered;
+        }
         debug_assert!(self.stack.is_empty(), "unfinished nodes remain");
         if trailing_comment {
             self.nodes[0].flags.insert(NodeFlags::HAS_COMMENT);
@@ -1503,6 +1525,9 @@ impl Sink for Builder {
     fn token(&mut self, token: Token) {
         let index = self.next_token;
         self.next_token += 1;
+        if token.kind.is_missing() {
+            self.missing_tokens.push((index, token));
+        }
         if let Some((_, flags)) = self.stack.last_mut() {
             flags.insert(own_flag_bits(token.kind));
         }
@@ -2280,7 +2305,14 @@ impl<'t, S: Sink> Parser<'t, S> {
         let at_eof = self.peek().is_none();
         let interior = parse_calc_interior(&self.tokens[from..self.pos], from as u32, at_eof);
         for el in &interior.elems {
-            self.emit_calc(el);
+            self.emit_calc(
+                el,
+                if at_eof {
+                    &[]
+                } else {
+                    &interior.missing_parens
+                },
+            );
         }
         if !at_eof && !interior.missing_parens.is_empty() {
             self.recovery_barrier += 1;
@@ -2329,17 +2361,23 @@ impl<'t, S: Sink> Parser<'t, S> {
     }
 
     /// Walk a [`CalcElem`] in pre-order and send its tokens and nodes to the sink.
-    fn emit_calc(&mut self, el: &CalcElem) {
+    fn emit_calc(&mut self, el: &CalcElem, missing_parens: &[u32]) {
         match el {
             CalcElem::Leaf(index) => {
                 let token = self.tokens[*index as usize];
                 self.sink.token(token);
             }
             CalcElem::Missing(kind) => self.push_missing(*kind),
-            CalcElem::Node { kind, children } => {
+            CalcElem::Node { kind, children, .. } => {
                 self.sink.start_node(*kind);
+                if *kind == SyntaxKind::ParenExpr
+                    && let Some(CalcElem::Leaf(open)) = children.first()
+                    && missing_parens.contains(open)
+                {
+                    self.error_at(*open as usize, SyntaxErrorKind::UnclosedCalcParen);
+                }
                 for c in children {
-                    self.emit_calc(c);
+                    self.emit_calc(c, missing_parens);
                 }
                 self.sink.finish_node();
             }
@@ -2404,7 +2442,17 @@ enum CalcElem {
     Node {
         kind: SyntaxKind,
         children: Vec<CalcElem>,
+        depth: u32,
     },
+}
+
+impl CalcElem {
+    fn depth(&self) -> u32 {
+        match self {
+            Self::Node { depth, .. } => *depth,
+            _ => 0,
+        }
+    }
 }
 
 /// The result of [`parse_calc_interior`].
@@ -2452,6 +2500,12 @@ fn parse_calc_interior(toks: &[Token], base: u32, insert_missing_parens: bool) -
     while c.has_more() {
         elems.push(c.leaf());
     }
+    if c.overflowed {
+        elems = (0..toks.len())
+            .map(|i| CalcElem::Leaf(base + i as u32))
+            .collect();
+        c.missing_parens.clear();
+    }
     CalcInterior {
         elems,
         overflowed: c.overflowed,
@@ -2491,14 +2545,8 @@ impl CalcCursor<'_> {
     /// Parse an operand: a unary expression, a parenthesized expression, a
     /// number/identifier leaf, or (for malformed input) whatever leaf is here.
     fn parse_operand(&mut self) -> CalcElem {
-        // Depth guard: `@[((((…))))]` and `@[----…x]` recurse through here.
-        // Past the limit, stop descending and hand the current token back as a
-        // leaf; the remaining interior tokens then fall through to flat leaves
-        // in `parse_calc_interior`. Every operand frame increments `depth`, so
-        // this bounds the whole calc recursion while staying lossless. (Flat
-        // chains like `1+1+1` do not nest — `parse_expr` handles those in its
-        // loop — so they never approach the limit.)
-        if self.depth >= MAX_DEPTH {
+        // Limit parser recursion through parentheses and unary operators.
+        if self.overflowed || self.depth >= MAX_DEPTH {
             self.overflowed = true;
             return self.leaf();
         }
@@ -2515,10 +2563,7 @@ impl CalcCursor<'_> {
                 if self.has_more() && self.peek() != Some(SyntaxKind::CloseParen) {
                     children.push(self.parse_operand());
                 }
-                CalcElem::Node {
-                    kind: SyntaxKind::UnaryExpr,
-                    children,
-                }
+                self.node(SyntaxKind::UnaryExpr, children)
             }
             Some(SyntaxKind::OpenParen) => {
                 let open = self.base + self.pos as u32;
@@ -2534,10 +2579,7 @@ impl CalcCursor<'_> {
                     }
                     self.missing_parens.push(open);
                 }
-                CalcElem::Node {
-                    kind: SyntaxKind::ParenExpr,
-                    children,
-                }
+                self.node(SyntaxKind::ParenExpr, children)
             }
             // Number, CalcIdent, or — in malformed input — a stray operator.
             Some(_) => self.leaf(),
@@ -2545,40 +2587,34 @@ impl CalcCursor<'_> {
         }
     }
 
+    fn node(&mut self, kind: SyntaxKind, children: Vec<CalcElem>) -> CalcElem {
+        let depth = 1 + children.iter().map(CalcElem::depth).max().unwrap_or(0);
+        if depth > MAX_DEPTH {
+            self.overflowed = true;
+            // Each child is bounded. Discard this partial expression safely.
+            return CalcElem::Leaf(self.base);
+        }
+        CalcElem::Node {
+            kind,
+            children,
+            depth,
+        }
+    }
+
     /// Precedence-climbing parse of a (sub)expression with binding power floor
     /// `min_bp`.
     fn parse_expr(&mut self, min_bp: u8) -> CalcElem {
         let mut lhs = self.parse_operand();
-        // Length of the left-associative chain folded in this call. Unlike
-        // parens/unary, a flat chain (`@[1+1+1+…]`) is folded *iteratively*
-        // here, so `parse_operand`'s depth counter never sees it — yet it still
-        // builds a `BinaryExpr` tree nested `folds` deep, which `emit_calc` and
-        // the tree's recursive `Drop` would later walk. Cap it the same way so
-        // no calc shape can overflow the stack; the tail falls to flat leaves.
-        let mut folds = 0u32;
-        loop {
-            let bp = self.peek().and_then(infix_bp);
-            match bp {
-                Some((l_bp, r_bp)) if l_bp >= min_bp && folds < MAX_DEPTH => {
-                    folds += 1;
-                    let mut children = vec![lhs, self.leaf()]; // lhs, operator
+        while !self.overflowed {
+            match self.peek().and_then(infix_bp) {
+                Some((l_bp, r_bp)) if l_bp >= min_bp => {
+                    let mut children = vec![lhs, self.leaf()];
                     if self.has_more() && self.peek() != Some(SyntaxKind::CloseParen) {
                         children.push(self.parse_expr(r_bp));
                     }
-                    lhs = CalcElem::Node {
-                        kind: SyntaxKind::BinaryExpr,
-                        children,
-                    };
+                    lhs = self.node(SyntaxKind::BinaryExpr, children);
                 }
-                _ => {
-                    // If a foldable operator is present and we are stopping only
-                    // because the fold cap was hit, flag the overflow (the tail
-                    // becomes flat leaves in `parse_calc_interior`).
-                    if matches!(bp, Some((l_bp, _)) if l_bp >= min_bp) {
-                        self.overflowed = true;
-                    }
-                    break;
-                }
+                _ => break,
             }
         }
         lhs
@@ -5794,6 +5830,119 @@ mod tests {
         assert_eq!(tree.repair_fixes()[0].replacement, "]");
         assert!(calc.has_error());
         assert!(parse(&tree.repair()).errors().is_empty());
+    }
+
+    #[test]
+    fn calc_combined_tree_depth_is_bounded() {
+        let mut nested = String::from("a=@[");
+        nested.push_str(&"(".repeat(200));
+        nested.push('1');
+        for _ in 0..200 {
+            nested.push_str(&"+1".repeat(200));
+            nested.push(')');
+        }
+        nested.push(']');
+        for source in [nested.as_bytes(), &nested.as_bytes()[..nested.len() - 1]] {
+            let tree = parse(source);
+            assert!(
+                tree.errors()
+                    .iter()
+                    .any(|e| e.kind == SyntaxErrorKind::CalcDepthExceeded)
+            );
+            assert!(tree.root().has_error());
+            assert_eq!(tree.reconstruct(), source);
+            assert!(tree.repair_fixes().is_empty());
+            let mut stack = vec![(tree.root(), 0)];
+            while let Some((node, depth)) = stack.pop() {
+                assert!(depth <= MAX_DEPTH + 3);
+                stack.extend(node.child_nodes().map(|child| (child, depth + 1)));
+            }
+        }
+
+        let source = format!("a=@[{}1{}]", "(".repeat(100), "+1)".repeat(100));
+        let tree = parse(source.as_bytes());
+        assert!(tree.errors().is_empty());
+        assert_eq!(tree.reconstruct(), source.as_bytes());
+    }
+
+    #[test]
+    fn calc_missing_parens_before_close_have_diagnostics() {
+        for source in [b"a=@[(1]".as_slice(), b"a=@[((1]", b"a={b=@[(1}"] {
+            let tree = parse(source);
+            assert!(
+                tree.errors()
+                    .iter()
+                    .any(|e| e.kind == SyntaxErrorKind::UnclosedCalcParen)
+            );
+            assert!(tree.errors().iter().all(|e| e.recovery.is_none()));
+            assert!(tree.root().has_error());
+            assert!(tree.repair_fixes().is_empty());
+            assert_eq!(tree.reconstruct(), source);
+            let mut stack = vec![tree.root()];
+            while let Some(node) = stack.pop() {
+                if node.kind() == SyntaxKind::ParenExpr {
+                    assert!(node.has_error());
+                }
+                stack.extend(node.child_nodes());
+            }
+        }
+    }
+
+    #[test]
+    fn calc_recovery_tokens_keep_their_emitted_parents() {
+        for source in [b"a=@[(1 2".as_slice(), b"a=@[((1 2", b"a={b=@[(1 2 "] {
+            let tree = parse(source);
+            assert_eq!(tree.reconstruct(), source);
+            let mut previous_end = 0;
+            for token in tree.significant_tokens() {
+                assert!(token.text_range().start() >= previous_end);
+                previous_end = token.text_range().end();
+                if token.kind() == SyntaxKind::MissingCloseParen {
+                    let parent = token.parent().unwrap();
+                    assert_eq!(parent.kind(), SyntaxKind::ParenExpr);
+                    assert!(parent.has_error());
+                    assert!(parent.child_tokens().any(|child| child.idx == token.idx));
+                }
+                if token.text() == b"2" {
+                    assert_eq!(token.parent().unwrap().kind(), SyntaxKind::Calc);
+                }
+            }
+            let calc = if source.starts_with(b"a={") {
+                tree.ast()
+                    .fields()
+                    .next()
+                    .unwrap()
+                    .value()
+                    .unwrap()
+                    .as_block()
+                    .unwrap()
+                    .fields()
+                    .next()
+                    .unwrap()
+                    .value()
+                    .unwrap()
+                    .as_calc()
+                    .unwrap()
+            } else {
+                tree.ast()
+                    .fields()
+                    .next()
+                    .unwrap()
+                    .value()
+                    .unwrap()
+                    .as_calc()
+                    .unwrap()
+            };
+            let Some(Expr::Paren(paren)) = calc.expr() else {
+                panic!("expected a parenthesized expression");
+            };
+            assert!(
+                paren
+                    .syntax()
+                    .significant_child_tokens()
+                    .any(|token| token.kind() == SyntaxKind::MissingCloseParen)
+            );
+        }
     }
 
     #[test]
