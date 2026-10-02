@@ -44,9 +44,11 @@
 //! broad identifier bytes). A lint layer, not the parser, decides if syntax is
 //! correct for a game. [`Flavor`] toggles the few genuine lexer forks.
 //!
-//! A scalar followed directly by a block (`key { ... }`) is a [`Field`] that has
-//! no operator. The parser does not try to decide if the scalar is a key or a
-//! header such as `rgb`. The semantic layer makes that decision.
+//! In item position, a scalar followed directly by a block (`key { ... }`) is a
+//! [`Field`] that has no operator. The parser does not try to decide if the
+//! scalar is a key or a header such as `rgb`. The semantic layer makes that
+//! decision. In value position (`color = rgb { ... }`), the scalar and the block
+//! are a [`HeaderedBlock`], so the field has exactly one value.
 //!
 //! On top of the tree sit the cursors and an ungrammar-style **typed AST**
 //! ([`AstNode`], [`Field`], [`Block`], [`HeaderedBlock`], [`Calc`], …) with value
@@ -150,7 +152,9 @@ pub enum SyntaxKind {
     /// A `{ ... }` block.
     Block,
     /// A tagged block in value position, such as `rgb { 1 2 3 }` in
-    /// `color = rgb { 1 2 3 }` (a header scalar plus a block).
+    /// `color = rgb { 1 2 3 }` (a header scalar plus a block). This node
+    /// gives the field exactly one value. In item position, `rgb { 1 2 3 }`
+    /// is a [`SyntaxKind::Field`] with no operator.
     HeaderedBlock,
     /// A `@[ ... ]` parse-time calculation wrapping an arithmetic expression.
     Calc,
@@ -949,6 +953,8 @@ pub enum SyntaxErrorKind {
     ParameterDepthExceeded,
     CodeDepthExceeded,
     CalcDepthExceeded,
+    /// A `[` that starts no parameter, code payload, or interpolation.
+    UnexpectedOpenBracket,
 }
 
 impl SyntaxErrorKind {
@@ -971,6 +977,7 @@ impl SyntaxErrorKind {
             }
             Self::CodeDepthExceeded => "maximum code nesting depth exceeded; structure flattened",
             Self::CalcDepthExceeded => "maximum calc nesting depth exceeded; structure flattened",
+            Self::UnexpectedOpenBracket => "'[' starts no construct",
         }
     }
 }
@@ -1936,13 +1943,15 @@ impl<'t, S: Sink> Parser<'t, S> {
         } else if self.is_interpolation_start() {
             self.parse_interpolation();
         } else {
+            let index = self.pos;
             self.bump();
             if self.parameter_depth > 0 {
                 self.bracket_depth += 1;
             } else {
-                // A bare `[` has no clear construct at this position. Do not
-                // let an outer EOF repair hide that ambiguity.
+                // A bare `[` has no clear construct at this position. Report
+                // it, but do not let an outer EOF repair hide that ambiguity.
                 self.recovery_barrier += 1;
+                self.error_at(index, SyntaxErrorKind::UnexpectedOpenBracket);
             }
         }
     }
@@ -3046,7 +3055,9 @@ ast_nodes! {
     Field => Field,
     /// A `{ ... }` block ([`SyntaxKind::Block`]).
     Block => Block,
-    /// A tagged block such as `rgb { 1 2 3 }` ([`SyntaxKind::HeaderedBlock`]).
+    /// A tagged block in value position, such as `rgb { 1 2 3 }` in
+    /// `color = rgb { 1 2 3 }` ([`SyntaxKind::HeaderedBlock`]). In item
+    /// position, the same text is a [`Field`] with no operator.
     HeaderedBlock => HeaderedBlock,
     /// A `@[ ... ]` parse-time calculation ([`SyntaxKind::Calc`]).
     Calc => Calc,
@@ -4693,6 +4704,21 @@ mod tests {
         assert_eq!(field.key().unwrap().text(), b"a");
         assert_eq!(field.op(), Some(Operator::NotEqual));
         assert_eq!(tree.reconstruct(), b"a!=1");
+    }
+
+    #[test]
+    fn lone_open_bracket_has_a_diagnostic() {
+        for source in [&b"desc = ["[..], b"desc = [ ", b"a = { desc = [ }"] {
+            let tree = parse(source);
+            let kinds: Vec<_> = tree.errors().iter().map(|e| e.kind).collect();
+            assert_eq!(kinds, vec![SyntaxErrorKind::UnexpectedOpenBracket]);
+            assert!(tree.errors()[0].recovery.is_none());
+            assert!(tree.repair_fixes().is_empty());
+            assert_eq!(tree.reconstruct(), source);
+        }
+
+        // A `[` in a parameter body is an ordinary bracket.
+        assert!(parse(b"[[x] a = [ ] ]").errors().is_empty());
     }
 
     #[test]
