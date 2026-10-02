@@ -23,7 +23,7 @@
 //! ```
 
 use jomini::text::lint::{
-    apply_fixes, line_col, lints, render, FileKind, Fileset, Fix, Linter, Schema, Severity,
+    FileKind, Fileset, Fix, Linter, Schema, Severity, apply_fixes, line_col, lints, render,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -62,14 +62,18 @@ fn main() {
 
     // 1. Project model: load each directory tree as a load-order layer.
     let mut fileset = Fileset::new();
-    let vanilla = fileset.load_dir(&vanilla_dir, FileKind::Vanilla).unwrap_or_else(|e| {
-        eprintln!("failed to read {}: {e}", vanilla_dir.display());
-        std::process::exit(1);
-    });
-    let modded = fileset.load_dir(&mod_dir, FileKind::Mod(0)).unwrap_or_else(|e| {
-        eprintln!("failed to read {}: {e}", mod_dir.display());
-        std::process::exit(1);
-    });
+    let vanilla = fileset
+        .load_dir(&vanilla_dir, FileKind::Vanilla)
+        .unwrap_or_else(|e| {
+            eprintln!("failed to read {}: {e}", vanilla_dir.display());
+            std::process::exit(1);
+        });
+    let modded = fileset
+        .load_dir(&mod_dir, FileKind::Mod(0))
+        .unwrap_or_else(|e| {
+            eprintln!("failed to read {}: {e}", mod_dir.display());
+            std::process::exit(1);
+        });
 
     // 2. Schema: the (hand-written) rules of what defines and references a
     //    building. A real linter would carry a per-game rule set here.
@@ -107,7 +111,10 @@ fn main() {
     println!("{bold}Summary:{reset} {errors} error(s), {warnings} warning(s), {notes} note(s)");
 
     // The punchline: the undefined-reference catch is impossible per-file.
-    if diagnostics.iter().any(|d| d.id == lints::UNDEFINED_REFERENCE) {
+    if diagnostics
+        .iter()
+        .any(|d| d.id == lints::UNDEFINED_REFERENCE)
+    {
         println!(
             "{dim}The undefined-reference error spans files: the reference is in one file, \n\
              its (missing) definition would live in another — only a project-wide pass finds it.{reset}"
@@ -152,7 +159,11 @@ fn apply_and_report(
         for f in fixes {
             let (l, c) = line_col(src, f.range.0);
             let old = String::from_utf8_lossy(&src[f.range.0 as usize..f.range.1 as usize]);
-            println!("  {}:{l}:{c}  `{old}` -> `{}`", path.display(), f.replacement);
+            println!(
+                "  {}:{l}:{c}  `{old}` -> `{}`",
+                path.display(),
+                f.replacement
+            );
         }
         if write {
             let owned: Vec<Fix> = fixes.iter().map(|f| (*f).clone()).collect();

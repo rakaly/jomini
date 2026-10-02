@@ -15,7 +15,7 @@
 //! printf 'rate = @[ (1 - x) * 2 ]\n' | cargo run --example syntax
 //! ```
 
-use jomini::text::syntax::{format, parse, SyntaxKind};
+use jomini::text::syntax::{SyntaxKind, format, parse};
 use std::io::{Read, Write};
 
 fn main() {
@@ -95,15 +95,15 @@ fn main() {
 fn ansi(kind: SyntaxKind) -> Option<&'static str> {
     use SyntaxKind::*;
     Some(match kind {
-        Comment | Bom => "90",                     // grey
-        Quoted => "32",                            // green
-        Variable | CalcOpen | CalcClose => "36",   // cyan: @-things
-        MacroParam | Plus | Minus | Star | Slash => "35", // magenta: substitutions & calc ops
-        Operator | Number => "33",                 // yellow
-        CalcIdent => "34",                         // blue: calc operands
+        Comment | Bom => "90",                                  // grey
+        Quoted => "32",                                         // green
+        Variable | CalcOpen | CalcClose => "36",                // cyan: @-things
+        MacroParam | Plus | Minus | Star | Slash => "35",       // magenta: substitutions & calc ops
+        Operator | Number => "33",                              // yellow
+        CalcIdent => "34",                                      // blue: calc operands
         OpenBrace | CloseBrace | OpenParen | CloseParen => "1", // bold: grouping
-        OpenBracket | CloseBracket | Bang => "31", // red: param brackets
-        Error => "41",                             // red background
-        _ => return None,                          // Unquoted, Whitespace
+        OpenBracket | CloseBracket | Bang => "31",              // red: param brackets
+        Error => "41",                                          // red background
+        _ => return None,                                       // Unquoted, Whitespace
     })
 }
