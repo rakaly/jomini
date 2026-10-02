@@ -86,7 +86,7 @@ fn main() {
         tree.errors().len(),
     );
     for e in tree.errors() {
-        eprintln!("\x1b[31m  [{}..{}] {}\x1b[0m", e.range.0, e.range.1, e.message);
+        eprintln!("\x1b[31m  [{}] {}\x1b[0m", e.range, e.message());
     }
 }
 

@@ -1,10 +1,10 @@
 //! **Experimental** lossless syntax tree for the Clausewitz text format.
 //!
-//! This is the foundation for tooling — formatting, linting, highlighting, and
-//! transformations — and (later) ergonomic deserialization. Unlike [`TextTape`],
-//! which is a fast, lossy tape that discards trivia and elides the `=` operator,
-//! this tree preserves **every byte** of the source: comments, whitespace, the
-//! `=`, even bytes that match no rule. The defining invariant is:
+//! This tree is the base for tooling: formatting, linting, highlighting, and
+//! transformations. Later, it will also be the base for deserialization. Unlike
+//! [`TextTape`], which discards trivia and the `=` operator, this tree keeps
+//! **every byte** of the source: comments, whitespace, the `=`, and bytes that
+//! match no rule. The defining invariant is:
 //!
 //! ```text
 //! concat(text of every leaf token, in order) == source
@@ -12,59 +12,84 @@
 //!
 //! # Representation
 //!
-//! The tree is stored in a single flat arena ([`GreenTree::tape`]) in pre-order,
-//! mirroring jomini's tape philosophy for cache locality. Following rowan's
-//! green/red split, the stored data is **position-independent**: each node and
-//! token records only its *relative width* in bytes, never an absolute offset.
-//! Absolute offsets and parent links are derived once and the lightweight
-//! [`SyntaxNode`]/[`SyntaxToken`] cursors ("red layer") read them on demand.
-//! Keeping widths relative is what makes future incremental reparse (reusing
-//! untouched subtrees) tractable.
+//! The tree has two flat arrays:
+//!
+//! - A **token buffer** that holds only the *significant* tokens. Each token
+//!   records its kind and its absolute byte range.
+//! - A **node tape** in pre-order. Each node records its kind, the range of
+//!   tokens it covers, and the index after its last descendant node.
+//!
+//! Trivia (whitespace, comments, and the BOM) is not stored. It is the bytes
+//! *between* two significant tokens. A cursor lexes such a gap again when it
+//! must show trivia. The gap between two tokens belongs to their nearest
+//! common ancestor node, so the cursors give a complete lossless tree. This
+//! layout is the same as the one that Carbon uses. Trivia is approximately 40%
+//! of all leaves in a save file, so the tree does not pay to store it.
+//!
+//! Offsets are absolute. Parent links are calculated only when a cursor asks
+//! for them. The [`SyntaxNode`]/[`SyntaxToken`] cursors are small `Copy` handles.
+//!
+//! # Parsing
+//!
+//! The lexer classifies bytes with a lookup table. It scans long runs (unquoted
+//! scalars, whitespace, quoted strings, and comments) 16 bytes at a time with
+//! [`fearless_simd`]. The parser is a recursive descent parser. It sends its
+//! events (start node, token, finish node) to an internal sink. The sink builds
+//! the tree. Thus the grammar is independent of the storage.
 //!
 //! # Games (one superset parser)
 //!
 //! A single permissive parser handles every PDS title. The lexer accepts the
 //! *union* of all games' syntax (`@vars`, `@[calc]`, `$macros$`, `[[params]]`,
-//! broad identifier bytes); game-appropriateness is a concern for a later lint
-//! layer, not the parser. The handful of genuine lexer forks are toggled by
-//! [`Flavor`] — currently just HoI4's newline-terminated strings.
+//! broad identifier bytes). A lint layer, not the parser, decides if syntax is
+//! correct for a game. [`Flavor`] toggles the few genuine lexer forks.
 //!
-//! On top of the green tree sit lightweight [`SyntaxNode`]/[`SyntaxToken`]
-//! cursors and an ungrammar-style **typed AST** ([`AstNode`], [`Field`],
-//! [`Block`], [`HeaderedBlock`], [`Calc`], …) with value coercions
-//! ([`Value::to_f64`]). A [`format`](fn@format) pass reprints the tree in a
-//! normalized house style, preserving every comment and significant token.
+//! A scalar followed directly by a block (`key { ... }`) is a [`Field`] that has
+//! no operator. The parser does not try to decide if the scalar is a key or a
+//! header such as `rgb`. The semantic layer makes that decision.
 //!
-//! Parameter blocks are parsed into dedicated nodes. The parser keeps their
-//! complete body lossless and parses ordinary fields and blocks inside it. The
-//! internals of `@[calc]` *are* parsed into a real
-//! expression subtree ([`SyntaxKind::Calc`] / [`SyntaxKind::BinaryExpr`] /
-//! [`SyntaxKind::UnaryExpr`] / [`SyntaxKind::ParenExpr`]). A depth guard caps
-//! recursion on pathological nesting (see [`SyntaxError`]).
+//! On top of the tree sit the cursors and an ungrammar-style **typed AST**
+//! ([`AstNode`], [`Field`], [`Block`], [`HeaderedBlock`], [`Calc`], …) with value
+//! coercions ([`Value::to_f64`]). A [`format`](fn@format) pass prints the tree
+//! again in a normalized house style. It keeps every comment and every
+//! significant token.
+//!
+//! The parser makes dedicated nodes for parameter blocks. It parses the inner
+//! part of `@[calc]` into an expression subtree ([`SyntaxKind::Calc`] /
+//! [`SyntaxKind::BinaryExpr`] / [`SyntaxKind::UnaryExpr`] /
+//! [`SyntaxKind::ParenExpr`]). A depth guard limits recursion on pathological
+//! nesting (see [`SyntaxError`]).
 //!
 //! [`TextTape`]: crate::TextTape
+
 #![allow(missing_docs)] // experimental surface; docs land as the API stabilizes
 
-use crate::{Scalar, text::Operator};
+use crate::{Encoding, Scalar, text::Operator};
+use fearless_simd::{Level, Simd, dispatch, mask8x16, prelude::*, u8x16};
+use std::borrow::Cow;
+use std::sync::OnceLock;
 
-/// The kind of every node (interior) and token (leaf) in a [`GreenTree`].
+/// The kind of every node (interior) and token (leaf) in a [`SyntaxTree`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u16)]
+#[repr(u8)]
 pub enum SyntaxKind {
-    // ===== tokens (leaves) =====
+    // ===== trivia (made from the gaps between stored tokens) =====
     /// A leading UTF-8 byte-order-mark (`EF BB BF`).
     Bom,
     /// A run of spaces, tabs, newlines, carriage returns, or semicolons.
     Whitespace,
     /// A `# ...` comment running to end of line.
     Comment,
+
+    // ===== tokens (leaves) =====
     /// A bare scalar: identifier, number, date, `yes`/`no`, etc.
     Unquoted,
     /// A `"..."` quoted scalar (raw text, including the quotes).
     Quoted,
     /// A `@name` reader-variable reference.
     Variable,
-    /// A `$NAME$` macro parameter.
+    /// An unquoted scalar that contains one or more `$NAME$` macro
+    /// parameters, such as `$NAME$` or `$key$_modifier`.
     MacroParam,
     /// `{`
     OpenBrace,
@@ -117,11 +142,12 @@ pub enum SyntaxKind {
     // ===== nodes (interior) =====
     /// The whole document.
     Root,
-    /// A `key <op> value` field.
+    /// A `key <op> value` field, or a `key { ... }` field with no operator.
     Field,
     /// A `{ ... }` block.
     Block,
-    /// A tagged block such as `rgb { 1 2 3 }` (a header scalar plus a block).
+    /// A tagged block in value position, such as `rgb { 1 2 3 }` in
+    /// `color = rgb { 1 2 3 }` (a header scalar plus a block).
     HeaderedBlock,
     /// A `@[ ... ]` parse-time calculation wrapping an arithmetic expression.
     Calc,
@@ -228,9 +254,106 @@ impl SyntaxKind {
 }
 
 // ---------------------------------------------------------------------------
-// Lexing: a hand-rolled, error-tolerant, BOM-preserving scanner. It classifies
-// every byte (worst case as Unquoted) so the tokens always tile the input with
-// no gaps or overlaps, and every branch advances by at least one byte.
+// Text ranges
+// ---------------------------------------------------------------------------
+
+/// A half-open byte range `start..end` in the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
+pub struct TextRange {
+    start: u32,
+    end: u32,
+}
+
+impl TextRange {
+    /// Make a range. `start` must not be greater than `end`.
+    #[inline]
+    pub const fn new(start: u32, end: u32) -> Self {
+        assert!(start <= end, "range start is greater than range end");
+        TextRange { start, end }
+    }
+
+    /// Make a zero-width range at `offset`.
+    #[inline]
+    pub const fn empty(offset: u32) -> Self {
+        TextRange {
+            start: offset,
+            end: offset,
+        }
+    }
+
+    /// The first byte offset of the range.
+    #[inline]
+    pub const fn start(self) -> u32 {
+        self.start
+    }
+
+    /// The byte offset after the last byte of the range.
+    #[inline]
+    pub const fn end(self) -> u32 {
+        self.end
+    }
+
+    /// The number of bytes in the range.
+    #[inline]
+    pub const fn len(self) -> u32 {
+        self.end - self.start
+    }
+
+    /// Return `true` when the range has no bytes.
+    #[inline]
+    pub const fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+
+    /// Return `true` when `offset` is in `start..end`.
+    #[inline]
+    pub const fn contains(self, offset: u32) -> bool {
+        self.start <= offset && offset < self.end
+    }
+
+    /// Return `true` when `offset` is in `start..=end`.
+    #[inline]
+    pub const fn contains_inclusive(self, offset: u32) -> bool {
+        self.start <= offset && offset <= self.end
+    }
+
+    /// Return `true` when `other` is fully inside this range.
+    #[inline]
+    pub const fn contains_range(self, other: TextRange) -> bool {
+        self.start <= other.start && other.end <= self.end
+    }
+
+    /// The range as a `usize` range, to index the source.
+    #[inline]
+    pub const fn to_usize(self) -> std::ops::Range<usize> {
+        self.start as usize..self.end as usize
+    }
+}
+
+impl From<TextRange> for (u32, u32) {
+    #[inline]
+    fn from(range: TextRange) -> Self {
+        (range.start, range.end)
+    }
+}
+
+impl From<TextRange> for std::ops::Range<usize> {
+    #[inline]
+    fn from(range: TextRange) -> Self {
+        range.to_usize()
+    }
+}
+
+impl std::fmt::Display for TextRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}..{}", self.start, self.end)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lexing: a table-driven, error-tolerant, BOM-preserving scanner. It keeps
+// only significant tokens. The bytes between two tokens are always trivia.
+// Every branch advances by at least one byte.
 // ---------------------------------------------------------------------------
 
 /// Game-specific lexer configuration.
@@ -239,7 +362,7 @@ impl SyntaxKind {
 /// game except where a genuine lexer fork exists. [`Flavor::hoi4`] enables
 /// HoI4's newline-terminated strings and treats `@`/`$` as ordinary identifier
 /// bytes (HoI4 has no reader variables or macros).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Flavor {
     /// A quoted string ends at the first newline if it has no closing quote.
     pub newline_terminated_strings: bool,
@@ -275,160 +398,389 @@ impl Flavor {
     }
 }
 
+/// A significant token in the token buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Tok {
-    kind: SyntaxKind,
+struct Token {
     start: u32,
     len: u32,
+    kind: SyntaxKind,
+    flags: u8,
 }
 
-#[inline]
-fn is_ws(b: u8) -> bool {
-    matches!(b, b' ' | b'\t' | b'\r' | b'\n' | 0x0b | 0x0c | b';')
+/// The gap before this token contains a comment.
+const TOKEN_COMMENT_BEFORE: u8 = 1 << 0;
+/// A diagnostic starts at this token.
+const TOKEN_ERROR: u8 = 1 << 1;
+
+impl Token {
+    #[inline]
+    fn end(self) -> u32 {
+        self.start + self.len
+    }
+
+    #[inline]
+    fn range(self) -> TextRange {
+        TextRange::new(self.start, self.end())
+    }
 }
+
+const CLASS_OTHER: u8 = 0;
+const CLASS_WS: u8 = 1;
+const CLASS_COMMENT: u8 = 2;
+const CLASS_QUOTE: u8 = 3;
+const CLASS_OPEN_BRACE: u8 = 4;
+const CLASS_CLOSE_BRACE: u8 = 5;
+const CLASS_OPEN_BRACKET: u8 = 6;
+const CLASS_CLOSE_BRACKET: u8 = 7;
+const CLASS_OPERATOR: u8 = 8;
+const CLASS_BANG: u8 = 9;
+const CLASS_QUESTION: u8 = 10;
+const CLASS_AT: u8 = 11;
+
+/// The lexer class of each byte.
+static CLASS: [u8; 256] = {
+    let mut table = [CLASS_OTHER; 256];
+    table[b' ' as usize] = CLASS_WS;
+    table[b'\t' as usize] = CLASS_WS;
+    table[b'\r' as usize] = CLASS_WS;
+    table[b'\n' as usize] = CLASS_WS;
+    table[0x0b] = CLASS_WS;
+    table[0x0c] = CLASS_WS;
+    table[b';' as usize] = CLASS_WS;
+    table[b'#' as usize] = CLASS_COMMENT;
+    table[b'"' as usize] = CLASS_QUOTE;
+    table[b'{' as usize] = CLASS_OPEN_BRACE;
+    table[b'}' as usize] = CLASS_CLOSE_BRACE;
+    table[b'[' as usize] = CLASS_OPEN_BRACKET;
+    table[b']' as usize] = CLASS_CLOSE_BRACKET;
+    table[b'=' as usize] = CLASS_OPERATOR;
+    table[b'<' as usize] = CLASS_OPERATOR;
+    table[b'>' as usize] = CLASS_OPERATOR;
+    table[b'!' as usize] = CLASS_BANG;
+    table[b'?' as usize] = CLASS_QUESTION;
+    table[b'@' as usize] = CLASS_AT;
+    table
+};
 
 /// Bytes that terminate an unquoted run. These either start their own token
 /// (braces, brackets, operators, quote, comment) or are whitespace. Notably
 /// `@`, `$`, `!`, `?`, `:`, `.`, `-`, `/`, `|` and high bytes are *not* here, so
 /// they are absorbed mid-identifier and only dispatch specially as a first byte.
-#[inline]
-fn is_stop(b: u8) -> bool {
-    is_ws(b)
-        || matches!(
-            b,
-            b'{' | b'}' | b'[' | b']' | b'=' | b'<' | b'>' | b'"' | b'#'
-        )
-}
+static STOP: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut i = 0;
+    while i < 256 {
+        table[i] = matches!(
+            CLASS[i],
+            CLASS_WS
+                | CLASS_COMMENT
+                | CLASS_QUOTE
+                | CLASS_OPEN_BRACE
+                | CLASS_CLOSE_BRACE
+                | CLASS_OPEN_BRACKET
+                | CLASS_CLOSE_BRACKET
+                | CLASS_OPERATOR
+        );
+        i += 1;
+    }
+    table
+};
 
-/// Find the closing `$` of a macro parameter starting just after the opening
-/// `$`, or `None` if a terminator is hit first (so it isn't really a macro).
-fn macro_close(source: &[u8], from: usize) -> Option<usize> {
-    let mut j = from;
-    while j < source.len() {
-        match source[j] {
-            b'$' => return Some(j),
-            b if is_stop(b) => return None,
-            _ => j += 1,
+/// What an unquoted run does at each byte: continue, stop, or note a `$`.
+const RUN_CONTINUE: u8 = 0;
+const RUN_STOP: u8 = 1;
+const RUN_DOLLAR: u8 = 2;
+
+static RUN: [u8; 256] = {
+    let mut table = [RUN_CONTINUE; 256];
+    let mut i = 0;
+    while i < 256 {
+        if STOP[i] {
+            table[i] = RUN_STOP;
         }
+        i += 1;
     }
-    None
+    table[b'$' as usize] = RUN_DOLLAR;
+    table
+};
+
+#[inline]
+fn is_ws(b: u8) -> bool {
+    CLASS[b as usize] == CLASS_WS
 }
 
-fn lex(source: &[u8], flavor: Flavor) -> Vec<Tok> {
-    let mut out: Vec<Tok> = Vec::new();
-    let n = source.len();
+/// The output of the lexer.
+struct Lexed {
+    tokens: Vec<Token>,
+    /// The gap after the last token contains a comment.
+    trailing_comment: bool,
+}
 
-    let mut i = 0usize;
-    if source.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        out.push(Tok {
-            kind: SyntaxKind::Bom,
-            start: 0,
-            len: 3,
-        });
-        i = 3;
+const BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+
+fn lex(source: &[u8], flavor: Flavor) -> Lexed {
+    // Save files average approximately five bytes per significant token.
+    let mut tokens = Vec::with_capacity(source.len() / 5 + 16);
+    let level = Level::new();
+    let trailing_comment = dispatch!(level, simd => lex_simd(simd, source, flavor, &mut tokens));
+    Lexed {
+        tokens,
+        trailing_comment,
     }
+}
+
+/// Lex `source` into `out`. Return `true` when a comment follows the last token.
+#[inline(always)]
+fn lex_simd<S: Simd>(simd: S, source: &[u8], flavor: Flavor, out: &mut Vec<Token>) -> bool {
+    let n = source.len();
+    let mut i = if source.starts_with(BOM) { 3 } else { 0 };
+    let mut flags = 0u8;
 
     while i < n {
         let b = source[i];
-
-        // `@[ ... ]` calc: emit structured interior tokens (CalcOpen, operands,
-        // operators, interior whitespace as trivia, CalcClose) rather than one
-        // opaque span, so the arithmetic expression can be parsed into a subtree.
-        if flavor.variables && b == b'@' && i + 1 < n && source[i + 1] == b'[' {
-            i = lex_calc(source, i, &mut out);
-            continue;
-        }
-
         let start = i;
-        let kind;
-
-        if is_ws(b) {
-            i += 1;
-            while i < n && is_ws(source[i]) {
-                i += 1;
+        let kind = match CLASS[b as usize] {
+            CLASS_WS => {
+                i = skip_whitespace(simd, source, i + 1);
+                continue;
             }
-            kind = SyntaxKind::Whitespace;
-        } else if b == b'#' {
-            i += 1;
-            while i < n && source[i] != b'\n' && source[i] != b'\r' {
-                i += 1;
+            CLASS_COMMENT => {
+                i = find_line_end(simd, source, i + 1);
+                flags |= TOKEN_COMMENT_BEFORE;
+                continue;
             }
-            kind = SyntaxKind::Comment;
-        } else if b == b'"' {
-            i += 1;
-            loop {
-                if i >= n {
-                    break;
+            CLASS_QUOTE => {
+                i = scan_quoted(simd, source, i + 1, flavor.newline_terminated_strings);
+                SyntaxKind::Quoted
+            }
+            CLASS_OPEN_BRACE => {
+                i += 1;
+                SyntaxKind::OpenBrace
+            }
+            CLASS_CLOSE_BRACE => {
+                i += 1;
+                SyntaxKind::CloseBrace
+            }
+            CLASS_OPEN_BRACKET => {
+                i += 1;
+                SyntaxKind::OpenBracket
+            }
+            CLASS_CLOSE_BRACKET => {
+                i += 1;
+                SyntaxKind::CloseBracket
+            }
+            CLASS_OPERATOR => {
+                i += 1;
+                if i < n && source[i] == b'=' {
+                    i += 1; // ==, <=, >=
                 }
-                match source[i] {
-                    b'\\' => i = (i + 2).min(n),
-                    b'"' => {
-                        i += 1;
-                        break;
-                    }
-                    b'\n' | b'\r' if flavor.newline_terminated_strings => break,
-                    _ => i += 1,
-                }
+                SyntaxKind::Operator
             }
-            kind = SyntaxKind::Quoted;
-        } else if b == b'{' {
-            i += 1;
-            kind = SyntaxKind::OpenBrace;
-        } else if b == b'}' {
-            i += 1;
-            kind = SyntaxKind::CloseBrace;
-        } else if b == b'[' {
-            i += 1;
-            kind = SyntaxKind::OpenBracket;
-        } else if b == b']' {
-            i += 1;
-            kind = SyntaxKind::CloseBracket;
-        } else if matches!(b, b'=' | b'<' | b'>') {
-            i += 1;
-            if i < n && source[i] == b'=' {
-                i += 1; // ==, <=, >=
+            CLASS_BANG | CLASS_QUESTION if i + 1 < n && source[i + 1] == b'=' => {
+                i += 2; // != or ?=
+                SyntaxKind::Operator
             }
-            kind = SyntaxKind::Operator;
-        } else if matches!(b, b'!' | b'?') && i + 1 < n && source[i + 1] == b'=' {
-            i += 2; // != or ?=
-            kind = SyntaxKind::Operator;
-        } else if b == b'!' {
-            i += 1;
-            kind = SyntaxKind::Bang;
-        } else if b == b'@'
-            && flavor.variables
-            && i + 1 < n
-            && !is_stop(source[i + 1])
-            && source[i + 1] != b'@'
-        {
-            // @name reader variable
-            i += 1;
-            while i < n && !is_stop(source[i]) {
+            CLASS_BANG => {
                 i += 1;
+                SyntaxKind::Bang
             }
-            kind = SyntaxKind::Variable;
-        } else if b == b'$' && flavor.macros && macro_close(source, i + 1).is_some() {
-            let close = macro_close(source, i + 1).unwrap();
-            i = close + 1;
-            kind = SyntaxKind::MacroParam;
-        } else {
-            // Ordinary unquoted run: consume up to the next terminator. This
-            // catch-all is what keeps the lexer total (every byte classified).
-            i += 1;
-            while i < n && !is_stop(source[i]) {
-                i += 1;
+            CLASS_AT if flavor.variables && i + 1 < n && source[i + 1] == b'[' => {
+                // `@[ ... ]` calc: emit structured interior tokens so the
+                // arithmetic expression can be parsed into a subtree.
+                i = lex_calc(simd, source, i, flags, out);
+                flags = 0;
+                continue;
             }
-            kind = SyntaxKind::Unquoted;
-        }
+            _ => {
+                // Ordinary unquoted run: consume up to the next terminator. This
+                // catch-all is what keeps the lexer total (every byte classified).
+                let (end, dollar) = scan_unquoted(simd, source, i + 1);
+                i = end;
+                classify_run(&source[start..i], b == b'$' || dollar, flavor)
+            }
+        };
 
-        out.push(Tok {
-            kind,
+        out.push(Token {
             start: start as u32,
             len: (i - start) as u32,
+            kind,
+            flags,
         });
+        flags = 0;
     }
 
-    out
+    flags & TOKEN_COMMENT_BEFORE != 0
+}
+
+/// Classify an unquoted run. `dollar` is `true` when the run contains a `$`.
+#[inline(always)]
+fn classify_run(run: &[u8], dollar: bool, flavor: Flavor) -> SyntaxKind {
+    if flavor.variables && run.len() > 1 && run[0] == b'@' && run[1] != b'@' {
+        SyntaxKind::Variable
+    } else if flavor.macros && dollar && has_macro(run) {
+        SyntaxKind::MacroParam
+    } else {
+        SyntaxKind::Unquoted
+    }
+}
+
+/// Return `true` when `run` contains a `$...$` pair. An unquoted run has no
+/// stop bytes, so any two `$` bytes enclose a macro name.
+#[cold]
+fn has_macro(run: &[u8]) -> bool {
+    run.iter().filter(|&&b| b == b'$').nth(1).is_some()
+}
+
+/// A lane mask for `v <= k` with unsigned bytes.
+#[inline(always)]
+fn lanes_le<S: Simd>(v: u8x16<S>, k: u8) -> mask8x16<S> {
+    v.saturating_sub(k).simd_eq(0u8)
+}
+
+/// A lane mask for whitespace bytes: `\t` `\n` `\v` `\f` `\r` ` ` `;`.
+#[inline(always)]
+fn ws_lanes<S: Simd>(v: u8x16<S>) -> mask8x16<S> {
+    lanes_le(v - 9u8, 4) | v.simd_eq(b' ') | v.simd_eq(b';')
+}
+
+/// A lane mask for the bytes in [`STOP`]. The masks are exact:
+///
+/// - `v | 0x20` is `{` for `{` and `[`, and `}` for `}` and `]`.
+/// - `v - '<' <= 2` is `<`, `=`, and `>`.
+/// - `v - '"' <= 1` is `"` and `#`.
+#[inline(always)]
+fn stop_lanes<S: Simd>(v: u8x16<S>) -> mask8x16<S> {
+    let folded = v | 0x20u8;
+    ws_lanes(v)
+        | folded.simd_eq(b'{')
+        | folded.simd_eq(b'}')
+        | lanes_le(v - b'<', 2)
+        | lanes_le(v - b'"', 1)
+}
+
+#[inline(always)]
+fn load<S: Simd>(simd: S, source: &[u8], i: usize) -> u8x16<S> {
+    u8x16::from_slice(simd, &source[i..i + 16])
+}
+
+/// Return the end of an unquoted run that continues at `i`, and whether the
+/// scanned bytes contain a `$`.
+#[inline(always)]
+fn scan_unquoted<S: Simd>(simd: S, source: &[u8], mut i: usize) -> (usize, bool) {
+    let mut dollar = false;
+    // Most tokens are short (numbers, dates, `yes`). Check the first bytes one
+    // at a time, and use the vector scan only for a longer run.
+    let short_end = (i + 8).min(source.len());
+    while i < short_end {
+        match RUN[source[i] as usize] {
+            RUN_CONTINUE => {}
+            RUN_STOP => return (i, dollar),
+            _ => dollar = true,
+        }
+        i += 1;
+    }
+    while i + 16 <= source.len() {
+        let v = load(simd, source, i);
+        let stops = stop_lanes(v).to_bitmask();
+        let dollars = v.simd_eq(b'$').to_bitmask();
+        if stops != 0 {
+            let at = stops.trailing_zeros();
+            dollar |= dollars & ((1u64 << at) - 1) != 0;
+            return (i + at as usize, dollar);
+        }
+        dollar |= dollars != 0;
+        i += 16;
+    }
+    while i < source.len() {
+        match RUN[source[i] as usize] {
+            RUN_CONTINUE => {}
+            RUN_STOP => break,
+            _ => dollar = true,
+        }
+        i += 1;
+    }
+    (i, dollar)
+}
+
+/// Return the index of the first non-whitespace byte at or after `i`.
+#[inline(always)]
+fn skip_whitespace<S: Simd>(simd: S, source: &[u8], mut i: usize) -> usize {
+    // Most whitespace runs are a newline and some indentation. Check the
+    // first bytes one at a time, and use the vector scan only for a longer run.
+    let short_end = (i + 8).min(source.len());
+    while i < short_end {
+        if !is_ws(source[i]) {
+            return i;
+        }
+        i += 1;
+    }
+    while i + 16 <= source.len() {
+        let other = !ws_lanes(load(simd, source, i)).to_bitmask() & 0xFFFF;
+        if other != 0 {
+            return i + other.trailing_zeros() as usize;
+        }
+        i += 16;
+    }
+    while i < source.len() && is_ws(source[i]) {
+        i += 1;
+    }
+    i
+}
+
+/// Return the index of the first `\n` or `\r` at or after `i`, or the end of
+/// the source.
+#[inline(always)]
+fn find_line_end<S: Simd>(simd: S, source: &[u8], mut i: usize) -> usize {
+    while i + 16 <= source.len() {
+        let v = load(simd, source, i);
+        let hits = (v.simd_eq(b'\n') | v.simd_eq(b'\r')).to_bitmask();
+        if hits != 0 {
+            return i + hits.trailing_zeros() as usize;
+        }
+        i += 16;
+    }
+    while i < source.len() && source[i] != b'\n' && source[i] != b'\r' {
+        i += 1;
+    }
+    i
+}
+
+/// Return the end of a quoted string whose body starts at `i`. The end is
+/// after the closing quote. An unclosed string ends at the end of the source,
+/// or at a newline when `newline_terminated` is set.
+#[inline(always)]
+fn scan_quoted<S: Simd>(simd: S, source: &[u8], mut i: usize, newline_terminated: bool) -> usize {
+    let n = source.len();
+    loop {
+        // Find the next quote, backslash, or (optionally) line break.
+        while i + 16 <= n {
+            let v = load(simd, source, i);
+            let mut hits = v.simd_eq(b'"') | v.simd_eq(b'\\');
+            if newline_terminated {
+                hits = hits | v.simd_eq(b'\n') | v.simd_eq(b'\r');
+            }
+            let hits = hits.to_bitmask();
+            if hits != 0 {
+                i += hits.trailing_zeros() as usize;
+                break;
+            }
+            i += 16;
+        }
+        while i < n
+            && !matches!(source[i], b'"' | b'\\')
+            && !(newline_terminated && matches!(source[i], b'\n' | b'\r'))
+        {
+            i += 1;
+        }
+        if i >= n {
+            return n;
+        }
+        match source[i] {
+            b'\\' => i = (i + 2).min(n),
+            b'"' => return i + 1,
+            _ => return i, // a line break ends the string
+        }
+    }
 }
 
 /// A byte that ends a calc operand identifier or number.
@@ -462,16 +814,23 @@ fn scan_number(source: &[u8], mut i: usize) -> usize {
 }
 
 /// Lex a `@[ ... ]` calc region. `i` points at the leading `@`. Emits a
-/// `CalcOpen` token, then structured interior tokens (operands, operators, and
-/// interior whitespace as trivia) until the matching `]` (emitted as
-/// `CalcClose`) or end of input, and returns the index just past what it
-/// consumed. Every byte is classified, so the calc region tiles the input.
-fn lex_calc(source: &[u8], mut i: usize, out: &mut Vec<Tok>) -> usize {
+/// `CalcOpen` token, then structured interior tokens (operands and operators)
+/// until the matching `]` (emitted as `CalcClose`) or end of input, and returns
+/// the index just past what it consumed. Interior whitespace stays in the gaps.
+#[inline(always)]
+fn lex_calc<S: Simd>(
+    simd: S,
+    source: &[u8],
+    mut i: usize,
+    flags: u8,
+    out: &mut Vec<Token>,
+) -> usize {
     let n = source.len();
-    out.push(Tok {
-        kind: SyntaxKind::CalcOpen,
+    out.push(Token {
         start: i as u32,
         len: 2,
+        kind: SyntaxKind::CalcOpen,
+        flags,
     });
     i += 2; // past `@[`
 
@@ -481,23 +840,20 @@ fn lex_calc(source: &[u8], mut i: usize, out: &mut Vec<Tok>) -> usize {
         let kind;
 
         if b == b']' {
-            i += 1;
-            out.push(Tok {
-                kind: SyntaxKind::CalcClose,
+            out.push(Token {
                 start: start as u32,
                 len: 1,
+                kind: SyntaxKind::CalcClose,
+                flags: 0,
             });
-            return i; // leave calc mode
+            return i + 1; // leave calc mode
         } else if matches!(b, b'{' | b'}') {
             // A brace belongs to the surrounding Clausewitz construct. Keep it
             // outside the calc so a mismatched brace cannot receive a fix.
             return i;
         } else if is_ws(b) {
-            i += 1;
-            while i < n && is_ws(source[i]) {
-                i += 1;
-            }
-            kind = SyntaxKind::Whitespace;
+            i = skip_whitespace(simd, source, i + 1);
+            continue;
         } else if b == b'(' {
             i += 1;
             kind = SyntaxKind::OpenParen;
@@ -529,30 +885,118 @@ fn lex_calc(source: &[u8], mut i: usize, out: &mut Vec<Tok>) -> usize {
             kind = SyntaxKind::CalcIdent;
         }
 
-        out.push(Tok {
-            kind,
+        out.push(Token {
             start: start as u32,
             len: (i - start) as u32,
+            kind,
+            flags: 0,
         });
     }
 
     i // reached EOF without a closing `]` (unterminated calc)
 }
 
+/// Lex one trivia piece of a gap. A gap holds only whitespace, comments, and a
+/// leading BOM, because the lexer emits every other byte as a token.
+fn lex_trivia(source: &[u8], start: u32, end: u32) -> (SyntaxKind, u32) {
+    let (s, e) = (start as usize, end as usize);
+    let bytes = &source[s..e];
+    if s == 0 && bytes.starts_with(BOM) {
+        return (SyntaxKind::Bom, 3);
+    }
+    if bytes[0] == b'#' {
+        let len = bytes
+            .iter()
+            .position(|&b| b == b'\n' || b == b'\r')
+            .unwrap_or(bytes.len());
+        return (SyntaxKind::Comment, len as u32);
+    }
+    debug_assert!(is_ws(bytes[0]), "a gap contains a significant byte");
+    let len = bytes
+        .iter()
+        .position(|&b| !is_ws(b))
+        .unwrap_or(bytes.len())
+        .max(1);
+    (SyntaxKind::Whitespace, len as u32)
+}
+
 // ---------------------------------------------------------------------------
 // Diagnostics
 // ---------------------------------------------------------------------------
+
+/// The kind of a [`SyntaxError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SyntaxErrorKind {
+    UnmatchedCloseBrace,
+    UnclosedBlock,
+    UnclosedInterpolation,
+    UnclosedParameterHeader,
+    UnclosedParameter,
+    UnclosedCodePayload,
+    CodePayloadMissingFirstBracket,
+    CodePayloadMissingSecondBracket,
+    UnclosedCalc,
+    UnclosedCalcParen,
+    BlockDepthExceeded,
+    ParameterDepthExceeded,
+    CodeDepthExceeded,
+    CalcDepthExceeded,
+}
+
+impl SyntaxErrorKind {
+    /// A human-readable description.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::UnmatchedCloseBrace => "unmatched '}'",
+            Self::UnclosedBlock => "unclosed '{'",
+            Self::UnclosedInterpolation => "unclosed bracket interpolation",
+            Self::UnclosedParameterHeader => "unclosed parameter header",
+            Self::UnclosedParameter => "unclosed parameter block",
+            Self::UnclosedCodePayload => "unclosed code payload",
+            Self::CodePayloadMissingFirstBracket => "unclosed code payload (missing first ']')",
+            Self::CodePayloadMissingSecondBracket => "unclosed code payload (missing second ']')",
+            Self::UnclosedCalc => "unclosed '@['",
+            Self::UnclosedCalcParen => "unclosed parenthesized calculation",
+            Self::BlockDepthExceeded => "maximum nesting depth exceeded; structure flattened",
+            Self::ParameterDepthExceeded => {
+                "maximum parameter nesting depth exceeded; structure flattened"
+            }
+            Self::CodeDepthExceeded => "maximum code nesting depth exceeded; structure flattened",
+            Self::CalcDepthExceeded => "maximum calc nesting depth exceeded; structure flattened",
+        }
+    }
+}
+
+impl std::fmt::Display for SyntaxErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
 
 /// A non-fatal problem found while parsing. Parsing never fails — the tree is
 /// always lossless — but recoverable issues are collected here for tooling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyntaxError {
-    /// Human-readable description.
-    pub message: String,
+    /// What is wrong.
+    pub kind: SyntaxErrorKind,
     /// The half-open byte range the problem covers.
-    pub range: (u32, u32),
+    pub range: TextRange,
     /// Structured information for a missing trailing delimiter.
     pub recovery: Option<MissingDelimiter>,
+}
+
+impl SyntaxError {
+    /// A human-readable description.
+    pub fn message(&self) -> &'static str {
+        self.kind.message()
+    }
+}
+
+impl std::fmt::Display for SyntaxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} at {}", self.message(), self.range)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -578,72 +1022,40 @@ impl Applicability {
     }
 }
 
+/// A missing trailing delimiter that the parser inserted as a zero-width token.
+///
+/// Use [`SyntaxTree::repair_applicability`] to know if a client can apply the
+/// repair automatically. That check parses the repaired source again, so the
+/// tree does it only when a client asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MissingDelimiter {
     pub expected: SyntaxKind,
     pub missing: SyntaxKind,
     pub construct: RecoveryConstruct,
-    pub opening_range: (u32, u32),
-    pub insertion_range: (u32, u32),
+    pub opening_range: TextRange,
+    pub insertion_range: TextRange,
     pub repair_text: String,
-    pub applicability: Applicability,
     pub order: u32,
-}
-
-impl MissingDelimiter {
-    /// Return `true` when the repair passed parser validation.
-    pub fn is_machine_applicable(&self) -> bool {
-        self.applicability.is_machine_applicable()
-    }
+    /// The parser's local decision, before the reparse check.
+    local_applicability: Applicability,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repair {
-    pub range: (u32, u32),
+    pub range: TextRange,
     pub replacement: String,
 }
 
 // ---------------------------------------------------------------------------
-// Green tree: flat pre-order arena. Nodes store a relative `len` (width in
-// bytes) and an `end` index delimiting their subtree; tokens store only `len`.
+// Tree storage: a buffer of significant tokens and a pre-order node tape.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy)]
-enum Green {
-    /// A leaf. Its bytes are `source[offset .. offset + len]`, where `offset`
-    /// is derived by the tree (never stored on the node itself).
-    Token { kind: SyntaxKind, len: u32 },
-    /// An interior node. Its children are the elements in `[self_index+1, end)`.
-    Node {
-        kind: SyntaxKind,
-        len: u32,
-        end: u32,
-    },
-}
-
-impl Green {
-    fn kind(&self) -> SyntaxKind {
-        match *self {
-            Green::Token { kind, .. } | Green::Node { kind, .. } => kind,
-        }
-    }
-
-    fn len(&self) -> u32 {
-        match *self {
-            Green::Token { len, .. } | Green::Node { len, .. } => len,
-        }
-    }
-}
-
-/// Precomputed per-subtree summary bits, one byte per element, filled in a
-/// single reverse pass of [`Builder::finish`]. An element's flags are the union
-/// of its own kind's bits and *every* descendant's, so a consumer can skip a
-/// whole subtree with one O(1) test — "does this block contain a comment? a
-/// syntax error? a calc? a macro parameter?" — instead of walking it. This
-/// mirrors swift-syntax's `RecursiveRawSyntaxFlags` and Carbon's per-node
-/// `has_error` bit, and is the cheap accelerator a linter or a future
-/// incremental engine leans on. Stored in a side `Vec` (not on [`Green`]) so the
-/// hot build loop is untouched — consistent with the offsets/parents design.
+/// Precomputed per-subtree summary bits, one byte per node, filled in while the
+/// tree is built. A node's flags are the union of its own kind's bits and
+/// *every* descendant's, so a consumer can skip a whole subtree with one O(1)
+/// test — "does this block contain a comment? a syntax error? a calc? a macro
+/// parameter?" — instead of walking it. This mirrors swift-syntax's
+/// `RecursiveRawSyntaxFlags` and Carbon's per-node `has_error` bit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct NodeFlags(u8);
 
@@ -668,12 +1080,18 @@ impl NodeFlags {
 }
 
 /// The flag bits a single element contributes on its own, before the upward
-/// union of its descendants' bits.
+/// union of its descendants' bits. The match has no guards, so the compiler
+/// can make it a lookup table.
+#[inline]
 fn own_flag_bits(kind: SyntaxKind) -> NodeFlags {
     match kind {
         SyntaxKind::Comment => NodeFlags::HAS_COMMENT,
-        SyntaxKind::Error | SyntaxKind::Bogus => NodeFlags::HAS_ERROR,
-        kind if kind.is_missing() => NodeFlags::HAS_ERROR,
+        SyntaxKind::Error
+        | SyntaxKind::Bogus
+        | SyntaxKind::MissingCloseBrace
+        | SyntaxKind::MissingCloseBracket
+        | SyntaxKind::MissingCalcClose
+        | SyntaxKind::MissingCloseParen => NodeFlags::HAS_ERROR,
         // The `Calc` node covers a well-formed calc; `CalcOpen` covers the rare
         // flattened case where the depth guard tripped before the node formed.
         SyntaxKind::Calc | SyntaxKind::CalcOpen => NodeFlags::HAS_CALC,
@@ -682,76 +1100,77 @@ fn own_flag_bits(kind: SyntaxKind) -> NodeFlags {
     }
 }
 
-/// A lossless syntax tree borrowing its source bytes.
-pub struct GreenTree<'a> {
-    source: &'a [u8],
-    tape: Vec<Green>,
-    /// Absolute byte offset of each element, derived from leaf widths.
-    offsets: Vec<u32>,
-    /// Parent element index per element (`u32::MAX` for the root).
-    parents: Vec<u32>,
-    /// Per-subtree [`NodeFlags`] for each element (see [`NodeFlags`]).
-    flags: Vec<NodeFlags>,
-    errors: Vec<SyntaxError>,
+/// An interior node. It covers the tokens `first_token..token_end`. Its
+/// descendant nodes are `self_index + 1..subtree_end`.
+#[derive(Debug, Clone, Copy)]
+struct Node {
+    kind: SyntaxKind,
+    flags: NodeFlags,
+    first_token: u32,
+    token_end: u32,
+    subtree_end: u32,
 }
 
-/// Parse `source` into a lossless [`GreenTree`] using the permissive superset.
-pub fn parse(source: &[u8]) -> GreenTree<'_> {
+/// The parent of each node and each token. `NO_PARENT` marks the root.
+struct Parents {
+    nodes: Vec<u32>,
+    tokens: Vec<u32>,
+}
+
+const NO_PARENT: u32 = u32::MAX;
+
+/// A lossless syntax tree borrowing its source bytes.
+pub struct SyntaxTree<'a> {
+    source: &'a [u8],
+    flavor: Flavor,
+    /// The significant tokens, then the zero-width missing tokens at EOF.
+    tokens: Vec<Token>,
+    nodes: Vec<Node>,
+    errors: Vec<SyntaxError>,
+    /// Calculated on the first parent query.
+    parents: OnceLock<Parents>,
+    /// Calculated on the first repair query: `true` when the repaired source
+    /// parses without a missing-delimiter diagnostic.
+    repairs_valid: OnceLock<bool>,
+}
+
+/// Parse `source` into a lossless [`SyntaxTree`] using the permissive superset.
+pub fn parse(source: &[u8]) -> SyntaxTree<'_> {
     parse_with(source, Flavor::default())
 }
 
-/// Parse `source` into a lossless [`GreenTree`] with a specific [`Flavor`].
-pub fn parse_with(source: &[u8], flavor: Flavor) -> GreenTree<'_> {
-    let mut tree = parse_raw_with(source, flavor);
-    validate_repairs(&mut tree, flavor);
-    tree
-}
-
-fn parse_raw_with(source: &[u8], flavor: Flavor) -> GreenTree<'_> {
-    let tokens = lex(source, flavor);
-    let builder = Builder::with_capacity(tokens.len());
-    let mut p = Parser {
-        source,
-        tokens: &tokens,
-        pos: 0,
-        builder,
-        errors: Vec::new(),
-        depth: 0,
-        parameter_depth: 0,
-        bracket_depth: 0,
-        code_depth: 0,
-        recovery_barrier: 0,
-    };
-    p.builder.start_node(SyntaxKind::Root);
+/// Parse `source` into a lossless [`SyntaxTree`] with a specific [`Flavor`].
+pub fn parse_with(source: &[u8], flavor: Flavor) -> SyntaxTree<'_> {
+    assert!(
+        u32::try_from(source.len()).is_ok(),
+        "source is larger than 4 GiB"
+    );
+    let lexed = lex(source, flavor);
+    let builder = Builder::with_capacity(lexed.tokens.len());
+    let mut p = Parser::new(source, lexed, builder);
+    p.sink.start_node(SyntaxKind::Root);
     p.parse_items(false);
-    p.builder.finish_node();
+    p.sink.finish_node();
     let Parser {
-        builder, errors, ..
+        sink,
+        tokens,
+        errors,
+        trailing_comment,
+        ..
     } = p;
-    builder.finish(source, errors)
-}
-
-/// Mark a repair as safe only when the repaired source parses without a
-/// missing-delimiter diagnostic.
-fn validate_repairs(tree: &mut GreenTree<'_>, flavor: Flavor) {
-    let candidate = tree.repair_candidate();
-    if candidate == tree.source {
-        return;
-    }
-
-    let reparsed = parse_raw_with(&candidate, flavor);
-    if reparsed.errors.iter().any(|error| error.recovery.is_some()) {
-        for error in &mut tree.errors {
-            if let Some(recovery) = &mut error.recovery
-                && recovery.applicability == Applicability::MachineApplicable
-            {
-                recovery.applicability = Applicability::Unsafe;
-            }
-        }
+    let nodes = sink.finish(trailing_comment);
+    SyntaxTree {
+        source,
+        flavor,
+        tokens,
+        nodes,
+        errors,
+        parents: OnceLock::new(),
+        repairs_valid: OnceLock::new(),
     }
 }
 
-impl<'a> GreenTree<'a> {
+impl<'a> SyntaxTree<'a> {
     /// The full source the tree was parsed from.
     pub fn source(&self) -> &'a [u8] {
         self.source
@@ -767,37 +1186,51 @@ impl<'a> GreenTree<'a> {
         &self.errors
     }
 
+    /// Return if a client can apply the repair of `delimiter` automatically.
+    ///
+    /// A repair is machine-applicable only when the parser found it safe, and
+    /// when the source with all such repairs parses without a missing
+    /// delimiter. The first call does that reparse.
+    pub fn repair_applicability(&self, delimiter: &MissingDelimiter) -> Applicability {
+        if delimiter.local_applicability.is_machine_applicable() && self.repairs_valid() {
+            Applicability::MachineApplicable
+        } else {
+            Applicability::Unsafe
+        }
+    }
+
     /// Coalesced, machine-applicable delimiter insertions in source order.
     pub fn repair_fixes(&self) -> Vec<Repair> {
-        let records: Vec<&MissingDelimiter> = self
-            .errors
-            .iter()
-            .filter_map(|e| e.recovery.as_ref())
-            .filter(|r| r.applicability == Applicability::MachineApplicable)
-            .collect();
-        Self::coalesce_repairs(records)
-    }
-
-    fn repair_candidate(&self) -> Vec<u8> {
-        let records: Vec<&MissingDelimiter> = self
-            .errors
-            .iter()
-            .filter_map(|e| e.recovery.as_ref())
-            .filter(|r| r.applicability == Applicability::MachineApplicable)
-            .collect();
-        let fixes = Self::coalesce_repairs(records);
-        let mut out = self.source.to_vec();
-        for fix in fixes.into_iter().rev() {
-            out.splice(
-                fix.range.0 as usize..fix.range.1 as usize,
-                fix.replacement.bytes(),
-            );
+        if !self.repairs_valid() {
+            return Vec::new();
         }
-        out
+        self.local_fixes()
     }
 
-    fn coalesce_repairs(mut records: Vec<&MissingDelimiter>) -> Vec<Repair> {
-        records.sort_by_key(|r| (r.insertion_range.0, r.order));
+    /// Apply all safe virtual delimiter repairs without changing other bytes.
+    pub fn repair(&self) -> Vec<u8> {
+        apply_repairs(self.source, self.repair_fixes())
+    }
+
+    fn repairs_valid(&self) -> bool {
+        *self.repairs_valid.get_or_init(|| {
+            let candidate = apply_repairs(self.source, self.local_fixes());
+            candidate == self.source
+                || !parse_with(&candidate, self.flavor)
+                    .errors
+                    .iter()
+                    .any(|error| error.recovery.is_some())
+        })
+    }
+
+    fn local_fixes(&self) -> Vec<Repair> {
+        let mut records: Vec<&MissingDelimiter> = self
+            .errors
+            .iter()
+            .filter_map(|e| e.recovery.as_ref())
+            .filter(|r| r.local_applicability.is_machine_applicable())
+            .collect();
+        records.sort_by_key(|r| (r.insertion_range.start(), r.order));
         let mut fixes: Vec<Repair> = Vec::new();
         for record in records {
             if let Some(last) = fixes
@@ -815,36 +1248,30 @@ impl<'a> GreenTree<'a> {
         fixes
     }
 
-    /// Apply all safe virtual delimiter repairs without changing other bytes.
-    pub fn repair(&self) -> Vec<u8> {
-        let fixes = self.repair_fixes();
-        let mut out = self.source.to_vec();
-        for fix in fixes.into_iter().rev() {
-            out.splice(
-                fix.range.0 as usize..fix.range.1 as usize,
-                fix.replacement.bytes(),
-            );
+    /// Every leaf [`SyntaxToken`] in document order, trivia included.
+    ///
+    /// Concatenating [`SyntaxToken::text`] over this iterator reproduces
+    /// [`source`](SyntaxTree::source): the lossless invariant in iterator form.
+    /// Ideal for highlighters and other leaf-oriented tooling.
+    pub fn tokens(&self) -> Tokens<'_, 'a> {
+        Tokens {
+            tree: self,
+            next: 0,
+            prev_end: 0,
+            gap: Gap::EMPTY,
+            pending: None,
+            trailing_done: false,
         }
-        out
     }
 
-    /// Every leaf [`SyntaxToken`] in document order.
-    ///
-    /// Because the green tape is stored in pre-order, the leaves are *already*
-    /// sequenced — this merely skips the interior nodes, so it is O(n) with no
-    /// tree walking. Concatenating [`SyntaxToken::text`] over this iterator
-    /// reproduces [`source`](GreenTree::source): the lossless invariant in
-    /// iterator form. Ideal for highlighters and other leaf-oriented tooling.
-    pub fn tokens(&self) -> impl Iterator<Item = SyntaxToken<'_, 'a>> + '_ {
-        (0..self.tape.len() as u32).filter_map(move |i| match self.tape[i as usize] {
-            Green::Token { .. } => Some(SyntaxToken { tree: self, idx: i }),
-            Green::Node { .. } => None,
-        })
+    /// Every significant (non-trivia) leaf [`SyntaxToken`] in document order.
+    pub fn significant_tokens(&self) -> impl Iterator<Item = SyntaxToken<'_, 'a>> + '_ {
+        (0..self.tokens.len() as u32).map(move |i| self.token(i))
     }
 
     /// Reconstruct the source by walking the tree's leaves via the cursor API.
     ///
-    /// Equals [`GreenTree::source`] for any tree; the lossless invariant.
+    /// Equals [`SyntaxTree::source`] for any tree; the lossless invariant.
     pub fn reconstruct(&self) -> Vec<u8> {
         fn collect(node: SyntaxNode<'_, '_>, out: &mut Vec<u8>) {
             for el in node.children() {
@@ -886,140 +1313,194 @@ impl<'a> GreenTree<'a> {
         out
     }
 
-    fn element(&self, idx: u32) -> SyntaxElement<'_, 'a> {
-        match self.tape[idx as usize] {
-            Green::Node { .. } => SyntaxElement::Node(SyntaxNode { tree: self, idx }),
-            Green::Token { .. } => SyntaxElement::Token(SyntaxToken { tree: self, idx }),
+    fn token(&self, idx: u32) -> SyntaxToken<'_, 'a> {
+        let token = self.tokens[idx as usize];
+        SyntaxToken {
+            tree: self,
+            kind: token.kind,
+            range: token.range(),
+            idx,
+            trivia: false,
         }
+    }
+
+    fn trivia(&self, kind: SyntaxKind, start: u32, len: u32, next: u32) -> SyntaxToken<'_, 'a> {
+        SyntaxToken {
+            tree: self,
+            kind,
+            range: TextRange::new(start, start + len),
+            idx: next,
+            trivia: true,
+        }
+    }
+
+    fn parents(&self) -> &Parents {
+        self.parents.get_or_init(|| {
+            let mut nodes = vec![NO_PARENT; self.nodes.len()];
+            let mut tokens = vec![NO_PARENT; self.tokens.len()];
+            let mut stack: Vec<u32> = Vec::new();
+            let mut t = 0u32;
+            let assign = |stack: &mut Vec<u32>, tokens: &mut [u32], t: u32| {
+                while let Some(&top) = stack.last() {
+                    if t < self.nodes[top as usize].token_end {
+                        break;
+                    }
+                    stack.pop();
+                }
+                tokens[t as usize] = stack.last().copied().unwrap_or(NO_PARENT);
+            };
+            for (i, node) in self.nodes.iter().enumerate() {
+                // Pre-order means `first_token` does not decrease, so every
+                // token before this node belongs to a node already visited.
+                while t < node.first_token {
+                    assign(&mut stack, &mut tokens, t);
+                    t += 1;
+                }
+                while let Some(&top) = stack.last() {
+                    if (i as u32) < self.nodes[top as usize].subtree_end {
+                        break;
+                    }
+                    stack.pop();
+                }
+                nodes[i] = stack.last().copied().unwrap_or(NO_PARENT);
+                stack.push(i as u32);
+            }
+            while (t as usize) < self.tokens.len() {
+                assign(&mut stack, &mut tokens, t);
+                t += 1;
+            }
+            Parents { nodes, tokens }
+        })
+    }
+
+    /// The node that owns the gap before token `next`: the nearest common
+    /// ancestor of the tokens on the two sides of the gap.
+    fn gap_owner(&self, next: u32) -> u32 {
+        if next == 0 || next as usize >= self.tokens.len() {
+            return 0;
+        }
+        let parents = self.parents();
+        let mut left = Vec::new();
+        let mut node = parents.tokens[next as usize - 1];
+        while node != NO_PARENT {
+            left.push(node);
+            node = parents.nodes[node as usize];
+        }
+        let mut node = parents.tokens[next as usize];
+        while node != NO_PARENT {
+            if left.contains(&node) {
+                return node;
+            }
+            node = parents.nodes[node as usize];
+        }
+        0
     }
 }
 
-/// Builds the flat arena. The hot path pushes only to a single `tape` vector;
-/// the derived `offsets`/`parents` caches are computed in two tight linear
-/// passes in [`Builder::finish`]. (Filling those caches incrementally during
-/// the build measured ~6% slower — three interleaved vector pushes hurt the
-/// hot loop more than two cache-friendly sequential passes cost.)
+fn apply_repairs(source: &[u8], fixes: Vec<Repair>) -> Vec<u8> {
+    let mut out = source.to_vec();
+    for fix in fixes.into_iter().rev() {
+        out.splice(fix.range.to_usize(), fix.replacement.bytes());
+    }
+    out
+}
+
+/// Receives the parser's events in source order. The grammar knows only this
+/// interface, so a different storage can reuse the same grammar.
+trait Sink {
+    /// Open a node. Its first token is the next token.
+    fn start_node(&mut self, kind: SyntaxKind);
+    /// Add the next token to the open node.
+    fn token(&mut self, token: Token);
+    /// Close the most recently opened node.
+    fn finish_node(&mut self);
+    /// Record that the open node contains a diagnostic.
+    fn error(&mut self);
+}
+
+/// Builds the node tape. The tokens stay in the parser's buffer, so a token
+/// event only moves the cursor and collects the flags.
 struct Builder {
-    tape: Vec<Green>,
-    stack: Vec<usize>,
-    len_stack: Vec<u32>,
+    nodes: Vec<Node>,
+    /// The open nodes and the flags collected for each.
+    stack: Vec<(u32, NodeFlags)>,
+    /// The index of the next token.
+    next_token: u32,
 }
 
 impl Builder {
     fn with_capacity(tokens: usize) -> Self {
-        // Elements = tokens + interior nodes; nodes are a fraction of tokens.
+        // Nodes are a fraction of tokens: approximately one per field.
         Builder {
-            tape: Vec::with_capacity(tokens + tokens / 2),
+            nodes: Vec::with_capacity(tokens / 2 + 1),
             stack: Vec::new(),
-            len_stack: Vec::new(),
+            next_token: 0,
         }
     }
 
-    fn start_node(&mut self, kind: SyntaxKind) {
-        let idx = self.tape.len();
-        self.tape.push(Green::Node {
-            kind,
-            len: 0,
-            end: 0,
-        });
-        self.stack.push(idx);
-        self.len_stack.push(0);
-    }
-
-    fn token(&mut self, kind: SyntaxKind, len: u32) {
-        self.tape.push(Green::Token { kind, len });
-        if let Some(top) = self.len_stack.last_mut() {
-            *top += len;
-        }
-    }
-
-    fn finish_node(&mut self) {
-        let idx = self.stack.pop().expect("finish_node without start_node");
-        let len = self.len_stack.pop().unwrap();
-        let end = self.tape.len() as u32;
-        if let Green::Node { len: l, end: e, .. } = &mut self.tape[idx] {
-            *l = len;
-            *e = end;
-        }
-        if let Some(top) = self.len_stack.last_mut() {
-            *top += len;
-        }
-    }
-
-    fn finish(self, source: &[u8], errors: Vec<SyntaxError>) -> GreenTree<'_> {
+    fn finish(mut self, trailing_comment: bool) -> Vec<Node> {
         debug_assert!(self.stack.is_empty(), "unfinished nodes remain");
-        let tape = self.tape;
+        if trailing_comment {
+            self.nodes[0].flags.insert(NodeFlags::HAS_COMMENT);
+        }
+        self.nodes
+    }
+}
 
-        // Absolute offset of each element = sum of leaf widths preceding it.
-        let mut offsets = vec![0u32; tape.len()];
-        let mut acc = 0u32;
-        for (i, g) in tape.iter().enumerate() {
-            offsets[i] = acc;
-            if let Green::Token { len, .. } = g {
-                acc += *len;
+impl Sink for Builder {
+    #[inline]
+    fn start_node(&mut self, kind: SyntaxKind) {
+        let idx = self.nodes.len() as u32;
+        self.nodes.push(Node {
+            kind,
+            flags: NodeFlags(0),
+            first_token: self.next_token,
+            token_end: 0,
+            subtree_end: 0,
+        });
+        self.stack.push((idx, own_flag_bits(kind)));
+    }
+
+    #[inline]
+    fn token(&mut self, token: Token) {
+        let index = self.next_token;
+        self.next_token += 1;
+        if let Some((_, flags)) = self.stack.last_mut() {
+            flags.insert(own_flag_bits(token.kind));
+        }
+        if token.flags & TOKEN_COMMENT_BEFORE != 0 {
+            // The comment belongs to the deepest open node that also holds
+            // the previous token. The root holds a leading comment.
+            let nodes = &self.nodes;
+            let owner = self
+                .stack
+                .iter_mut()
+                .rev()
+                .find(|(node, _)| nodes[*node as usize].first_token < index);
+            if let Some((_, flags)) = owner {
+                flags.insert(NodeFlags::HAS_COMMENT);
+            } else if let Some((_, flags)) = self.stack.first_mut() {
+                flags.insert(NodeFlags::HAS_COMMENT);
             }
         }
-        debug_assert_eq!(
-            acc as usize,
-            source.len(),
-            "leaf widths do not cover the source"
-        );
+    }
 
-        // Nearest-enclosing-node parent links via an end-delimited stack.
-        let mut parents = vec![u32::MAX; tape.len()];
-        let mut stack: Vec<(u32, u32)> = Vec::new(); // (node idx, end)
-        for (i, g) in tape.iter().enumerate() {
-            while let Some(&(_, end)) = stack.last() {
-                if end as usize <= i {
-                    stack.pop();
-                } else {
-                    break;
-                }
-            }
-            if let Some(&(p, _)) = stack.last() {
-                parents[i] = p;
-            }
-            if let Green::Node { end, .. } = g {
-                stack.push((i as u32, *end));
-            }
+    #[inline]
+    fn finish_node(&mut self) {
+        let (idx, flags) = self.stack.pop().expect("finish_node without start_node");
+        let subtree_end = self.nodes.len() as u32;
+        let node = &mut self.nodes[idx as usize];
+        node.flags = flags;
+        node.token_end = self.next_token;
+        node.subtree_end = subtree_end;
+        if let Some((_, parent)) = self.stack.last_mut() {
+            parent.insert(flags);
         }
+    }
 
-        // Per-subtree flag bits. Seed each element with its own bits and with
-        // any non-recoverable diagnostic whose range it contains. The latter
-        // keeps refused recovery regions visible to semantic consumers even
-        // when no virtual token was inserted. Then fold each element's flags
-        // into its parent. Pre-order means every descendant has a higher index
-        // than its ancestors, so iterating high→low finalizes a node's flags
-        // before it folds into its own parent — one linear pass, no extra tree
-        // walk. (The root at index 0 has no parent, so the range starts at 1.)
-        let mut flags: Vec<NodeFlags> = tape.iter().map(|g| own_flag_bits(g.kind())).collect();
-        for error in &errors {
-            if error.range.0 == error.range.1 {
-                continue;
-            }
-            for (index, element) in tape.iter().enumerate() {
-                let start = offsets[index];
-                let end = start + element.len();
-                if error.range.0 >= start && error.range.1 <= end {
-                    flags[index].insert(NodeFlags::HAS_ERROR);
-                }
-            }
-        }
-        for i in (1..tape.len()).rev() {
-            let p = parents[i];
-            if p != u32::MAX {
-                let child = flags[i];
-                flags[p as usize].insert(child);
-            }
-        }
-
-        GreenTree {
-            source,
-            tape,
-            offsets,
-            parents,
-            flags,
-            errors,
+    fn error(&mut self) {
+        if let Some((_, flags)) = self.stack.last_mut() {
+            flags.insert(NodeFlags::HAS_ERROR);
         }
     }
 }
@@ -1032,12 +1513,17 @@ impl Builder {
 /// nesting (each has its own recursion).
 const MAX_DEPTH: u32 = 256;
 
-struct Parser<'t> {
+struct Parser<'t, S: Sink> {
     source: &'t [u8],
-    tokens: &'t [Tok],
+    /// The lexed tokens. The parser appends missing tokens after them.
+    tokens: Vec<Token>,
+    /// The number of lexed tokens. A position at or after it is EOF.
+    lexed: usize,
     pos: usize,
-    builder: Builder,
+    sink: S,
     errors: Vec<SyntaxError>,
+    /// The gap after the last lexed token contains a comment.
+    trailing_comment: bool,
     /// Current block-nesting depth, compared against [`MAX_DEPTH`].
     depth: u32,
     /// Current EU4 parameter nesting depth.
@@ -1048,34 +1534,50 @@ struct Parser<'t> {
     code_depth: u32,
     /// Number of non-recoverable interruptions seen below this parser.
     recovery_barrier: u32,
+    /// Number of missing delimiters inserted at EOF.
+    eof_repairs: u32,
+    /// Sorted indexes of the `[` tokens that start a closed interpolation.
+    /// Calculated when the parser first needs it.
+    interpolation_starts: Option<Vec<u32>>,
 }
 
-impl<'t> Parser<'t> {
+impl<'t, S: Sink> Parser<'t, S> {
+    fn new(source: &'t [u8], lexed: Lexed, sink: S) -> Self {
+        let count = lexed.tokens.len();
+        Parser {
+            source,
+            tokens: lexed.tokens,
+            lexed: count,
+            pos: 0,
+            sink,
+            errors: Vec::new(),
+            trailing_comment: lexed.trailing_comment,
+            depth: 0,
+            parameter_depth: 0,
+            bracket_depth: 0,
+            code_depth: 0,
+            recovery_barrier: 0,
+            eof_repairs: 0,
+            interpolation_starts: None,
+        }
+    }
+
+    /// Insert a zero-width `missing` token at EOF and record its repair.
     fn missing(
         &mut self,
-        open: Tok,
+        open: usize,
         missing: SyntaxKind,
         construct: RecoveryConstruct,
-        message: &str,
+        kind: SyntaxErrorKind,
     ) {
         let at = self.source.len() as u32;
-        let order = self
-            .errors
-            .iter()
-            .filter(|e| {
-                e.recovery
-                    .as_ref()
-                    .is_some_and(|r| r.insertion_range == (at, at))
-            })
-            .count() as u32;
+        let order = self.eof_repairs;
+        self.eof_repairs += 1;
         let mut repair_text = missing.missing_text().unwrap().to_owned();
         // A delimiter appended to an unterminated line comment remains comment
         // text. Start a new line and preserve the file's established ending.
         if order == 0
-            && self
-                .tokens
-                .last()
-                .is_some_and(|t| t.kind == SyntaxKind::Comment)
+            && self.trailing_comment
             && !self.source.ends_with(b"\n")
             && !self.source.ends_with(b"\r")
         {
@@ -1086,66 +1588,77 @@ impl<'t> Parser<'t> {
             };
             repair_text.insert_str(0, newline);
         }
-        let unsafe_quote = self.tokens.last().is_some_and(|t| {
-            t.kind == SyntaxKind::Quoted && !quote_is_closed(self.token_text(self.tokens.len() - 1))
-        });
-        self.builder.token(missing, 0);
+        let unsafe_quote = self.lexed > 0 && {
+            let last = self.tokens[self.lexed - 1];
+            last.kind == SyntaxKind::Quoted
+                && last.end() == at
+                && !quote_is_closed(self.token_text(self.lexed - 1))
+        };
+        self.push_missing(missing);
         self.errors.push(SyntaxError {
-            message: message.into(),
-            range: (at, at),
+            kind,
+            range: TextRange::empty(at),
             recovery: Some(MissingDelimiter {
                 expected: missing.expected_kind().unwrap(),
                 missing,
                 construct,
-                opening_range: (open.start, open.start + open.len),
-                insertion_range: (at, at),
+                opening_range: self.tokens[open].range(),
+                insertion_range: TextRange::empty(at),
                 repair_text,
-                applicability: if unsafe_quote {
+                order,
+                local_applicability: if unsafe_quote {
                     Applicability::Unsafe
                 } else {
                     Applicability::MachineApplicable
                 },
-                order,
             }),
         });
     }
 
-    fn peek(&self) -> Option<SyntaxKind> {
-        self.tokens.get(self.pos).map(|t| t.kind)
+    /// Append a zero-width token at EOF and send it to the sink.
+    fn push_missing(&mut self, kind: SyntaxKind) {
+        let token = Token {
+            start: self.source.len() as u32,
+            len: 0,
+            kind,
+            flags: 0,
+        };
+        self.tokens.push(token);
+        self.sink.token(token);
     }
 
+    /// Record a diagnostic that starts at the emitted token `index`. Call it
+    /// while the nodes that hold the token are still open.
+    fn error_at(&mut self, index: usize, kind: SyntaxErrorKind) {
+        self.tokens[index].flags |= TOKEN_ERROR;
+        self.sink.error();
+        self.errors.push(SyntaxError {
+            kind,
+            range: self.tokens[index].range(),
+            recovery: None,
+        });
+    }
+
+    #[inline]
+    fn kind_at(&self, index: usize) -> Option<SyntaxKind> {
+        (index < self.lexed).then(|| self.tokens[index].kind)
+    }
+
+    #[inline]
+    fn peek(&self) -> Option<SyntaxKind> {
+        self.kind_at(self.pos)
+    }
+
+    #[inline]
     fn bump(&mut self) {
         let t = self.tokens[self.pos];
-        self.builder.token(t.kind, t.len);
+        self.sink.token(t);
         self.pos += 1;
     }
 
-    fn bump_trivia(&mut self) {
-        while matches!(self.peek(), Some(k) if k.is_trivia()) {
-            self.bump();
-        }
-    }
-
-    fn previous_significant(&self, from: usize) -> Option<usize> {
-        (0..from).rev().find(|&i| !self.tokens[i].kind.is_trivia())
-    }
-
-    fn next_significant_index(&self, from: usize) -> Option<usize> {
-        self.tokens[from..]
-            .iter()
-            .position(|t| !t.kind.is_trivia())
-            .map(|offset| from + offset)
-    }
-
-    /// Kind of the first non-trivia token at or after `from`.
-    fn next_significant(&self, from: usize) -> Option<SyntaxKind> {
-        self.next_significant_index(from)
-            .map(|index| self.tokens[index].kind)
-    }
-
     fn is_code_close(&self, index: usize) -> bool {
-        self.tokens.get(index).map(|t| t.kind) == Some(SyntaxKind::CloseBracket)
-            && self.tokens.get(index + 1).map(|t| t.kind) == Some(SyntaxKind::CloseBracket)
+        self.kind_at(index) == Some(SyntaxKind::CloseBracket)
+            && self.kind_at(index + 1) == Some(SyntaxKind::CloseBracket)
     }
 
     fn parse_items(&mut self, in_block: bool) {
@@ -1174,18 +1687,13 @@ impl<'t> Parser<'t> {
                 }
                 Some(SyntaxKind::CloseBrace) if in_block => break, // caller eats `}`
                 Some(SyntaxKind::CloseBrace) => {
-                    // Unmatched `}` at the top level: record and wrap in Bogus.
-                    let t = self.tokens[self.pos];
-                    self.errors.push(SyntaxError {
-                        message: "unmatched '}'".into(),
-                        range: (t.start, t.start + t.len),
-                        recovery: None,
-                    });
-                    self.builder.start_node(SyntaxKind::Bogus);
+                    // Unmatched `}` at the top level: wrap in Bogus and record.
+                    let index = self.pos;
+                    self.sink.start_node(SyntaxKind::Bogus);
                     self.bump();
-                    self.builder.finish_node();
+                    self.error_at(index, SyntaxErrorKind::UnmatchedCloseBrace);
+                    self.sink.finish_node();
                 }
-                Some(k) if k.is_trivia() => self.bump(),
                 Some(_) => self.parse_item(),
             }
         }
@@ -1196,18 +1704,27 @@ impl<'t> Parser<'t> {
             Some(k) if k.is_scalar() => {
                 if self.is_code_statement() {
                     self.parse_code_statement();
-                } else if self.next_significant(self.pos + 1) == Some(SyntaxKind::Operator) {
-                    // key <op> value
-                    self.builder.start_node(SyntaxKind::Field);
-                    self.bump(); // key
-                    self.bump_trivia();
-                    self.bump(); // operator
-                    self.bump_trivia();
-                    self.parse_value();
-                    self.builder.finish_node();
-                } else {
+                    return;
+                }
+                match self.kind_at(self.pos + 1) {
+                    Some(SyntaxKind::Operator) => {
+                        // key <op> value
+                        self.sink.start_node(SyntaxKind::Field);
+                        self.bump(); // key
+                        self.bump(); // operator
+                        self.parse_value();
+                        self.sink.finish_node();
+                    }
+                    Some(SyntaxKind::OpenBrace) => {
+                        // key { ... }: a field with no operator. The semantic
+                        // layer decides if the scalar is a key or a header.
+                        self.sink.start_node(SyntaxKind::Field);
+                        self.bump(); // key
+                        self.parse_block();
+                        self.sink.finish_node();
+                    }
                     // bare scalar (array element / loose value)
-                    self.bump();
+                    _ => self.bump(),
                 }
             }
             Some(SyntaxKind::OpenBrace) => self.parse_block(),
@@ -1230,16 +1747,15 @@ impl<'t> Parser<'t> {
             Some(SyntaxKind::OpenBracket) => self.parse_open_bracket(),
             Some(SyntaxKind::Unquoted) if self.is_code_statement() => self.parse_code_statement(),
             Some(SyntaxKind::Unquoted)
-                if self.next_significant(self.pos + 1) == Some(SyntaxKind::OpenBrace) =>
+                if self.kind_at(self.pos + 1) == Some(SyntaxKind::OpenBrace) =>
             {
                 // headered block: `rgb { ... }`, `hsv { ... }`, tag { ... }
-                self.builder.start_node(SyntaxKind::HeaderedBlock);
+                self.sink.start_node(SyntaxKind::HeaderedBlock);
                 self.bump(); // header scalar
-                self.bump_trivia();
                 self.parse_block();
-                self.builder.finish_node();
+                self.sink.finish_node();
             }
-            Some(k) if !k.is_trivia() && k != SyntaxKind::CloseBrace => self.bump(),
+            Some(k) if k != SyntaxKind::CloseBrace => self.bump(),
             // missing value (e.g. `a =` at EOF, or `a = }`): emit nothing.
             _ => {}
         }
@@ -1254,31 +1770,28 @@ impl<'t> Parser<'t> {
         if self.code_depth > 0 {
             return None;
         }
-        if self.tokens.get(open)?.kind != SyntaxKind::OpenBracket
-            || self.tokens.get(open + 1)?.kind != SyntaxKind::OpenBracket
+        if self.kind_at(open)? != SyntaxKind::OpenBracket
+            || self.kind_at(open + 1)? != SyntaxKind::OpenBracket
         {
             return None;
         }
 
         let mut name = open + 2;
-        let kind = if self.tokens.get(name)?.kind == SyntaxKind::Bang {
+        let kind = if self.kind_at(name)? == SyntaxKind::Bang {
             name += 1;
             SyntaxKind::UndefinedParameter
         } else {
             SyntaxKind::Parameter
         };
 
-        let name_token = self.tokens.get(name)?;
-        if name_token.kind != SyntaxKind::Unquoted {
+        if self.kind_at(name)? != SyntaxKind::Unquoted {
             return None;
         }
 
-        let header_close = self.tokens.get(name + 1).map(|token| token.kind);
-        let incomplete_header = header_close.is_none()
-            || self.tokens[name + 1..]
-                .iter()
-                .all(|token| token.kind.is_trivia());
-        if header_close != Some(SyntaxKind::CloseBracket) && !incomplete_header {
+        // The header must close directly after the name, or the input must
+        // end there (an incomplete header).
+        let header_close = self.kind_at(name + 1);
+        if header_close.is_some_and(|kind| kind != SyntaxKind::CloseBracket) {
             return None;
         }
 
@@ -1292,59 +1805,50 @@ impl<'t> Parser<'t> {
     }
 
     fn code_payload_start(&self, open: usize) -> bool {
-        matches!(
-            (self.tokens.get(open), self.tokens.get(open + 1)),
-            (Some(first), Some(second))
-                if first.kind == SyntaxKind::OpenBracket
-                    && second.kind == SyntaxKind::OpenBracket
-                    && self.preceded_by_code(open)
-        )
+        self.kind_at(open) == Some(SyntaxKind::OpenBracket)
+            && self.kind_at(open + 1) == Some(SyntaxKind::OpenBracket)
+            && self.preceded_by_code(open)
+    }
+
+    fn is_code_keyword(&self, index: usize) -> bool {
+        self.kind_at(index) == Some(SyntaxKind::Unquoted)
+            && self.tokens[index].len == 4
+            && self.token_text(index) == b"code"
     }
 
     fn is_code_statement(&self) -> bool {
-        if self.peek() != Some(SyntaxKind::Unquoted) || self.token_text(self.pos) != b"code" {
-            return false;
-        }
-        let Some(open) = self.next_significant_index(self.pos + 1) else {
-            return false;
-        };
-        self.code_payload_start(open)
+        self.is_code_keyword(self.pos) && self.code_payload_start(self.pos + 1)
     }
 
     fn code_statement_open(&self, index: usize) -> Option<usize> {
-        if self.tokens.get(index)?.kind != SyntaxKind::Unquoted || self.token_text(index) != b"code"
-        {
+        if !self.is_code_keyword(index) {
             return None;
         }
 
-        let mut next = self.next_significant_index(index + 1)?;
-        if self.tokens[next].kind == SyntaxKind::Operator && self.token_text(next) == b"=" {
-            next = self.next_significant_index(next + 1)?;
+        let mut next = index + 1;
+        if self.kind_at(next) == Some(SyntaxKind::Operator) && self.token_text(next) == b"=" {
+            next += 1;
         }
         self.code_payload_start(next).then_some(next)
     }
 
     fn token_text(&self, index: usize) -> &'t [u8] {
-        let token = self.tokens[index];
-        &self.source[token.start as usize..(token.start + token.len) as usize]
+        &self.source[self.tokens[index].range().to_usize()]
     }
 
     fn preceded_by_code(&self, open: usize) -> bool {
-        let Some(previous) = self.previous_significant(open) else {
+        let Some(previous) = open.checked_sub(1) else {
             return false;
         };
-        if self.tokens[previous].kind == SyntaxKind::Unquoted
-            && self.token_text(previous) == b"code"
-        {
+        if self.is_code_keyword(previous) {
             return true;
         }
         if self.tokens[previous].kind != SyntaxKind::Operator || self.token_text(previous) != b"=" {
             return false;
         }
-        let Some(code) = self.previous_significant(previous) else {
-            return false;
-        };
-        self.tokens[code].kind == SyntaxKind::Unquoted && self.token_text(code) == b"code"
+        previous
+            .checked_sub(1)
+            .is_some_and(|code| self.is_code_keyword(code))
     }
 
     fn parse_open_bracket(&mut self) {
@@ -1352,14 +1856,10 @@ impl<'t> Parser<'t> {
             self.parse_code_payload();
         } else if let Some(kind) = self.parameter_kind() {
             if self.parameter_depth >= MAX_DEPTH {
-                let token = self.tokens[self.pos];
+                let index = self.pos;
                 self.recovery_barrier += 1;
-                self.errors.push(SyntaxError {
-                    message: "maximum parameter nesting depth exceeded; structure flattened".into(),
-                    range: (token.start, token.start + token.len),
-                    recovery: None,
-                });
                 self.bump();
+                self.error_at(index, SyntaxErrorKind::ParameterDepthExceeded);
                 self.bracket_depth += 1;
             } else {
                 self.parse_parameter(kind);
@@ -1378,35 +1878,22 @@ impl<'t> Parser<'t> {
         }
     }
 
-    fn is_interpolation_start(&self) -> bool {
+    fn is_interpolation_start(&mut self) -> bool {
         if self.peek() != Some(SyntaxKind::OpenBracket)
-            || self.next_significant(self.pos + 1) == Some(SyntaxKind::OpenBracket)
+            || self.kind_at(self.pos + 1) == Some(SyntaxKind::OpenBracket)
         {
             return false;
         }
-
-        let mut bracket_depth = 1u32;
-        for token in &self.tokens[self.pos + 1..] {
-            match token.kind {
-                SyntaxKind::OpenBracket => bracket_depth += 1,
-                SyntaxKind::CloseBracket => {
-                    bracket_depth -= 1;
-                    if bracket_depth == 0 {
-                        return true;
-                    }
-                }
-                SyntaxKind::CloseBrace if bracket_depth == 1 => return false,
-                _ => {}
-            }
-        }
-        // At EOF, a single bracket followed by content is an unambiguous
-        // trailing interpolation. A bare final `[` remains a physical token.
-        self.pos + 1 < self.tokens.len()
+        let pos = self.pos as u32;
+        self.interpolation_starts
+            .get_or_insert_with(|| interpolation_starts(&self.tokens[..self.lexed]))
+            .binary_search(&pos)
+            .is_ok()
     }
 
     fn parse_interpolation(&mut self) {
-        let open = self.tokens[self.pos];
-        self.builder.start_node(SyntaxKind::Interpolation);
+        let open = self.pos;
+        self.sink.start_node(SyntaxKind::Interpolation);
         self.bump(); // `[`
 
         let mut bracket_depth = 1u32;
@@ -1440,35 +1927,30 @@ impl<'t> Parser<'t> {
                     open,
                     SyntaxKind::MissingCloseBracket,
                     RecoveryConstruct::Interpolation,
-                    "unclosed bracket interpolation",
+                    SyntaxErrorKind::UnclosedInterpolation,
                 );
             } else {
-                self.errors.push(SyntaxError {
-                    message: "unclosed bracket interpolation".into(),
-                    range: (open.start, open.start + open.len),
-                    recovery: None,
-                });
+                self.error_at(open, SyntaxErrorKind::UnclosedInterpolation);
             }
         }
-        self.builder.finish_node();
+        self.sink.finish_node();
     }
 
     fn parse_code_statement(&mut self) {
-        self.builder.start_node(SyntaxKind::Code);
+        self.sink.start_node(SyntaxKind::Code);
         self.bump(); // `code`
-        self.bump_trivia();
         self.parse_code_payload_body();
-        self.builder.finish_node();
+        self.sink.finish_node();
     }
 
     fn parse_code_payload(&mut self) {
-        self.builder.start_node(SyntaxKind::Code);
+        self.sink.start_node(SyntaxKind::Code);
         self.parse_code_payload_body();
-        self.builder.finish_node();
+        self.sink.finish_node();
     }
 
     fn parse_code_payload_body(&mut self) {
-        let open = self.tokens[self.pos];
+        let open = self.pos;
         let barrier = self.recovery_barrier;
         self.bump(); // first `[`
         self.bump(); // second `[`
@@ -1476,11 +1958,7 @@ impl<'t> Parser<'t> {
         self.code_depth += 1;
         if self.code_depth >= MAX_DEPTH {
             self.recovery_barrier += 1;
-            self.errors.push(SyntaxError {
-                message: "maximum code nesting depth exceeded; structure flattened".into(),
-                range: (open.start, open.start + open.len),
-                recovery: None,
-            });
+            self.error_at(open, SyntaxErrorKind::CodeDepthExceeded);
             self.flatten_to_code_close();
             self.code_depth -= 1;
             // The depth diagnostic owns this flattened region.
@@ -1499,17 +1977,15 @@ impl<'t> Parser<'t> {
                 Some(SyntaxKind::CloseBrace) => {
                     // Keep an outer block delimiter available when the payload
                     // is incomplete. A brace directly before `]]` is payload.
-                    let Some(next) = self.next_significant_index(self.pos + 1) else {
-                        break;
-                    };
-                    if !self.is_code_close(next) {
-                        self.recovery_barrier += 1;
+                    if !self.is_code_close(self.pos + 1) {
+                        if self.pos + 1 < self.lexed {
+                            self.recovery_barrier += 1;
+                        }
                         break;
                     }
                     self.bump();
                 }
                 None => break,
-                Some(k) if k.is_trivia() => self.bump(),
                 Some(_) => self.parse_item(),
             }
         }
@@ -1517,36 +1993,30 @@ impl<'t> Parser<'t> {
 
         if !closed {
             if self.peek().is_none() && self.recovery_barrier == barrier {
-                let missing_count = if self.previous_significant(self.pos).is_some_and(|index| {
+                let missing_count = if self.pos.checked_sub(1).is_some_and(|index| {
                     let token = self.tokens[index];
                     token.kind == SyntaxKind::CloseBracket
-                        && token.start + token.len == self.source.len() as u32
+                        && token.end() == self.source.len() as u32
                 }) {
                     1
                 } else {
                     2
                 };
                 for index in 0..missing_count {
-                    let message = if missing_count == 1 {
-                        "unclosed code payload (missing second ']')"
-                    } else if index == 0 {
-                        "unclosed code payload (missing first ']')"
+                    let kind = if missing_count == 1 || index == 1 {
+                        SyntaxErrorKind::CodePayloadMissingSecondBracket
                     } else {
-                        "unclosed code payload (missing second ']')"
+                        SyntaxErrorKind::CodePayloadMissingFirstBracket
                     };
                     self.missing(
                         open,
                         SyntaxKind::MissingCloseBracket,
                         RecoveryConstruct::CodePayload,
-                        message,
+                        kind,
                     );
                 }
             } else {
-                self.errors.push(SyntaxError {
-                    message: "unclosed code payload".into(),
-                    range: (open.start, open.start + open.len),
-                    recovery: None,
-                });
+                self.error_at(open, SyntaxErrorKind::UnclosedCodePayload);
             }
         }
     }
@@ -1569,13 +2039,8 @@ impl<'t> Parser<'t> {
                 payload_depth += 1;
             }
 
-            if kind == SyntaxKind::CloseBrace {
-                let Some(next) = self.next_significant_index(self.pos + 1) else {
-                    break;
-                };
-                if !self.is_code_close(next) {
-                    break;
-                }
+            if kind == SyntaxKind::CloseBrace && !self.is_code_close(self.pos + 1) {
+                break;
             }
             self.bump();
         }
@@ -1584,9 +2049,9 @@ impl<'t> Parser<'t> {
 
     /// Parse an EU4 conditional parameter and its complete body.
     fn parse_parameter(&mut self, kind: SyntaxKind) {
-        let open = self.tokens[self.pos];
+        let open = self.pos;
         let barrier = self.recovery_barrier;
-        self.builder.start_node(kind);
+        self.sink.start_node(kind);
         self.bump(); // first `[`
         self.bump(); // second `[`
         if kind == SyntaxKind::UndefinedParameter {
@@ -1596,12 +2061,11 @@ impl<'t> Parser<'t> {
         if self.peek() == Some(SyntaxKind::CloseBracket) {
             self.bump(); // header `]`
         } else {
-            self.bump_trivia();
             self.missing(
                 open,
                 SyntaxKind::MissingCloseBracket,
                 RecoveryConstruct::Parameter,
-                "unclosed parameter header",
+                SyntaxErrorKind::UnclosedParameterHeader,
             );
         }
 
@@ -1621,7 +2085,7 @@ impl<'t> Parser<'t> {
                     // parameter blocks, as in `... = { ]` followed by
                     // `[[name] } ]`. Keep that brace in the body when its
                     // parameter close follows it.
-                    if self.next_significant(self.pos + 1) == Some(SyntaxKind::CloseBracket) {
+                    if self.kind_at(self.pos + 1) == Some(SyntaxKind::CloseBracket) {
                         self.bump();
                         continue;
                     }
@@ -1629,7 +2093,6 @@ impl<'t> Parser<'t> {
                     break;
                 }
                 None => break,
-                Some(k) if k.is_trivia() => self.bump(),
                 Some(_) => self.parse_item(),
             }
         }
@@ -1642,23 +2105,19 @@ impl<'t> Parser<'t> {
                     open,
                     SyntaxKind::MissingCloseBracket,
                     RecoveryConstruct::Parameter,
-                    "unclosed parameter block",
+                    SyntaxErrorKind::UnclosedParameter,
                 );
             } else {
-                self.errors.push(SyntaxError {
-                    message: "unclosed parameter block".into(),
-                    range: (open.start, open.start + open.len),
-                    recovery: None,
-                });
+                self.error_at(open, SyntaxErrorKind::UnclosedParameter);
             }
         }
-        self.builder.finish_node();
+        self.sink.finish_node();
     }
 
     fn parse_block(&mut self) {
-        let open = self.tokens[self.pos];
+        let open = self.pos;
         let barrier = self.recovery_barrier;
-        self.builder.start_node(SyntaxKind::Block);
+        self.sink.start_node(SyntaxKind::Block);
         self.bump(); // `{`
         self.depth += 1;
         if self.depth >= MAX_DEPTH {
@@ -1667,11 +2126,7 @@ impl<'t> Parser<'t> {
             // stack overflow), consume the rest of this block — including
             // everything nested inside it — as flat leaf tokens. The tree
             // stays lossless; it just loses structure past this point.
-            self.errors.push(SyntaxError {
-                message: "maximum nesting depth exceeded; structure flattened".into(),
-                range: (open.start, open.start + open.len),
-                recovery: None,
-            });
+            self.error_at(open, SyntaxErrorKind::BlockDepthExceeded);
             self.flatten_to_block_close();
         } else {
             self.parse_items(true);
@@ -1685,28 +2140,20 @@ impl<'t> Parser<'t> {
                 // intentionally continued by a later parameter block.
             } else if self.peek() == Some(SyntaxKind::CloseBracket) {
                 self.recovery_barrier += 1;
-                self.errors.push(SyntaxError {
-                    message: "unclosed '{'".into(),
-                    range: (open.start, open.start + open.len),
-                    recovery: None,
-                });
+                self.error_at(open, SyntaxErrorKind::UnclosedBlock);
             } else if self.peek().is_none() && self.recovery_barrier == barrier {
                 self.missing(
                     open,
                     SyntaxKind::MissingCloseBrace,
                     RecoveryConstruct::Block,
-                    "unclosed '{'",
+                    SyntaxErrorKind::UnclosedBlock,
                 );
             } else {
-                self.errors.push(SyntaxError {
-                    message: "unclosed '{'".into(),
-                    range: (open.start, open.start + open.len),
-                    recovery: None,
-                });
+                self.error_at(open, SyntaxErrorKind::UnclosedBlock);
             }
         }
         self.depth -= 1;
-        self.builder.finish_node();
+        self.sink.finish_node();
     }
 
     /// Consume the remainder of the current block — including any nested braces
@@ -1736,12 +2183,10 @@ impl<'t> Parser<'t> {
     /// The lexer has already split the interior into calc tokens, so the whole
     /// region is a contiguous run `CalcOpen, <interior...>, [CalcClose]`. The
     /// interior is parsed (precedence-climbing) into a temporary element tree by
-    /// [`parse_calc_interior`], then emitted into the builder in source order —
-    /// no checkpoints needed, since a lossless tree always emits leaves in order
-    /// and only adds node boundaries.
+    /// [`parse_calc_interior`], then emitted to the sink in source order.
     fn parse_calc(&mut self) {
-        let open = self.tokens[self.pos];
-        self.builder.start_node(SyntaxKind::Calc);
+        let open = self.pos;
+        self.sink.start_node(SyntaxKind::Calc);
         self.bump(); // `@[`
 
         // The interior is everything up to the matching `]` (or EOF). The lexer
@@ -1755,71 +2200,109 @@ impl<'t> Parser<'t> {
             self.pos += 1;
         }
         let at_eof = self.peek().is_none();
-        let (elems, overflowed, missing_parens) =
-            parse_calc_interior(&self.tokens[from..self.pos], at_eof);
-        for el in &elems {
-            emit_calc(&mut self.builder, el);
+        let interior = parse_calc_interior(&self.tokens[from..self.pos], from as u32, at_eof);
+        for el in &interior.elems {
+            self.emit_calc(el);
         }
-        if !at_eof && !missing_parens.is_empty() {
+        if !at_eof && !interior.missing_parens.is_empty() {
             self.recovery_barrier += 1;
         }
-        if at_eof && !overflowed {
-            for paren_open in missing_parens {
+        if at_eof && !interior.overflowed {
+            for paren_open in interior.missing_parens {
                 // The zero-width leaf was emitted inside its ParenExpr above.
                 let at = self.source.len() as u32;
-                let order = self
-                    .errors
-                    .iter()
-                    .filter(|e| {
-                        e.recovery
-                            .as_ref()
-                            .is_some_and(|r| r.insertion_range == (at, at))
-                    })
-                    .count() as u32;
+                let order = self.eof_repairs;
+                self.eof_repairs += 1;
                 self.errors.push(SyntaxError {
-                    message: "unclosed parenthesized calculation".into(),
-                    range: (at, at),
+                    kind: SyntaxErrorKind::UnclosedCalcParen,
+                    range: TextRange::empty(at),
                     recovery: Some(MissingDelimiter {
                         expected: SyntaxKind::CloseParen,
                         missing: SyntaxKind::MissingCloseParen,
                         construct: RecoveryConstruct::ParenthesizedCalculation,
-                        opening_range: (paren_open.start, paren_open.start + paren_open.len),
-                        insertion_range: (at, at),
+                        opening_range: self.tokens[paren_open as usize].range(),
+                        insertion_range: TextRange::empty(at),
                         repair_text: ")".into(),
-                        applicability: Applicability::MachineApplicable,
                         order,
+                        local_applicability: Applicability::MachineApplicable,
                     }),
                 });
             }
         }
-        if overflowed {
+        if interior.overflowed {
             self.recovery_barrier += 1;
-            self.errors.push(SyntaxError {
-                message: "maximum calc nesting depth exceeded; structure flattened".into(),
-                range: (open.start, open.start + open.len),
-                recovery: None,
-            });
+            self.error_at(open, SyntaxErrorKind::CalcDepthExceeded);
         }
 
         if self.peek() == Some(SyntaxKind::CalcClose) {
             self.bump(); // `]`
-        } else if at_eof && !overflowed {
+        } else if at_eof && !interior.overflowed {
             self.missing(
                 open,
                 SyntaxKind::MissingCalcClose,
                 RecoveryConstruct::Calculation,
-                "unclosed '@['",
+                SyntaxErrorKind::UnclosedCalc,
             );
-        } else if !at_eof && self.peek() != Some(SyntaxKind::CalcClose) {
+        } else if !at_eof {
             self.recovery_barrier += 1;
-            self.errors.push(SyntaxError {
-                message: "unclosed '@['".into(),
-                range: (open.start, open.start + open.len),
-                recovery: None,
-            });
+            self.error_at(open, SyntaxErrorKind::UnclosedCalc);
         }
-        self.builder.finish_node();
+        self.sink.finish_node();
     }
+
+    /// Walk a [`CalcElem`] in pre-order and send its tokens and nodes to the sink.
+    fn emit_calc(&mut self, el: &CalcElem) {
+        match el {
+            CalcElem::Leaf(index) => {
+                let token = self.tokens[*index as usize];
+                self.sink.token(token);
+            }
+            CalcElem::Missing(kind) => self.push_missing(*kind),
+            CalcElem::Node { kind, children } => {
+                self.sink.start_node(*kind);
+                for c in children {
+                    self.emit_calc(c);
+                }
+                self.sink.finish_node();
+            }
+        }
+    }
+}
+
+/// Find each `[` that starts a closed single-bracket interpolation, in one pass.
+///
+/// A `[` starts an interpolation when its matching `]` comes before a `}` that
+/// is directly inside it. At EOF, a still-open `[` that is followed by more
+/// tokens is a trailing interpolation. A bare final `[` is not.
+fn interpolation_starts(tokens: &[Token]) -> Vec<u32> {
+    // Open brackets and whether a `}` interrupted each one.
+    let mut stack: Vec<(u32, bool)> = Vec::new();
+    let mut starts = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
+            SyntaxKind::OpenBracket => stack.push((index as u32, false)),
+            SyntaxKind::CloseBracket => {
+                if let Some((open, false)) = stack.pop() {
+                    starts.push(open);
+                }
+            }
+            SyntaxKind::CloseBrace => {
+                if let Some(top) = stack.last_mut() {
+                    top.1 = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    let count = tokens.len() as u32;
+    starts.extend(
+        stack
+            .into_iter()
+            .filter(|&(open, interrupted)| !interrupted && open + 1 < count)
+            .map(|(open, _)| open),
+    );
+    starts.sort_unstable();
+    starts
 }
 
 // ---------------------------------------------------------------------------
@@ -1829,15 +2312,16 @@ impl<'t> Parser<'t> {
 // binary   : `+` `-` (looser) and `*` `/` (tighter), left-associative
 //
 // Parsed precedence-climbing into a temporary `CalcElem` tree, which is then
-// walked in pre-order to emit green tokens/nodes. Interior whitespace rides
-// along as trivia leaves, attached to whichever node encloses it, so the region
-// round-trips byte-for-byte.
+// walked in pre-order to emit tokens/nodes. Interior whitespace stays in the
+// gaps between tokens, so the region round-trips byte-for-byte.
 // ---------------------------------------------------------------------------
 
 /// A node in the temporary calc tree (see [`parse_calc_interior`]).
 enum CalcElem {
-    /// A leaf carrying a lexer token's kind and width.
-    Leaf { kind: SyntaxKind, len: u32 },
+    /// A leaf that refers to a lexed token by its index.
+    Leaf(u32),
+    /// A zero-width missing token, appended at EOF when emitted.
+    Missing(SyntaxKind),
     /// An interior expression node with children in source order.
     Node {
         kind: SyntaxKind,
@@ -1845,18 +2329,14 @@ enum CalcElem {
     },
 }
 
-/// Walk a [`CalcElem`] in pre-order, emitting its tokens/nodes into `b`.
-fn emit_calc(b: &mut Builder, el: &CalcElem) {
-    match el {
-        CalcElem::Leaf { kind, len } => b.token(*kind, *len),
-        CalcElem::Node { kind, children } => {
-            b.start_node(*kind);
-            for c in children {
-                emit_calc(b, c);
-            }
-            b.finish_node();
-        }
-    }
+/// The result of [`parse_calc_interior`].
+struct CalcInterior {
+    /// The expression, then any unconsumed (malformed) tokens.
+    elems: Vec<CalcElem>,
+    /// `true` if the [`MAX_DEPTH`] guard tripped.
+    overflowed: bool,
+    /// The token indexes of `(` that have no `)`, innermost first.
+    missing_parens: Vec<u32>,
 }
 
 /// Infix binding powers; `* /` bind tighter than `+ -`. The left power being
@@ -1870,46 +2350,47 @@ fn infix_bp(kind: SyntaxKind) -> Option<(u8, u8)> {
 }
 
 /// Parse the interior tokens of a calc (everything between `@[` and `]`) into a
-/// flat list of [`CalcElem`]s: leading trivia, the expression, then any trailing
-/// trivia / unconsumed (malformed) tokens. Total over any token slice. The
-/// returned bool is `true` if the [`MAX_DEPTH`] guard tripped (pathologically
-/// deep parens/unary), in which case parsing stopped descending but every token
-/// is still emitted as a flat leaf.
-fn parse_calc_interior(
-    toks: &[Tok],
-    insert_missing_parens: bool,
-) -> (Vec<CalcElem>, bool, Vec<Tok>) {
+/// flat list of [`CalcElem`]s: the expression, then any unconsumed (malformed)
+/// tokens. Total over any token slice. `base` is the index of the first token
+/// of `toks` in the token buffer. When the [`MAX_DEPTH`] guard trips, parsing
+/// stops descending but every token is still emitted as a flat leaf.
+fn parse_calc_interior(toks: &[Token], base: u32, insert_missing_parens: bool) -> CalcInterior {
     let mut c = CalcCursor {
         toks,
+        base,
         pos: 0,
         depth: 0,
         overflowed: false,
         missing_parens: Vec::new(),
         insert_missing_parens,
     };
-    let mut out = Vec::new();
-    c.eat_trivia(&mut out);
+    let mut elems = Vec::new();
     if c.has_more() {
-        out.push(c.parse_expr(0));
+        elems.push(c.parse_expr(0));
     }
-    // Trailing trivia plus, for malformed input like `@[1 2]`, any leftover
-    // tokens the expression grammar did not consume — kept as leaves so the
-    // region still tiles its source.
+    // For malformed input like `@[1 2]`, any leftover tokens the expression
+    // grammar did not consume are kept as leaves so the region still tiles
+    // its source.
     while c.has_more() {
-        out.push(c.leaf());
+        elems.push(c.leaf());
     }
-    (out, c.overflowed, c.missing_parens)
+    CalcInterior {
+        elems,
+        overflowed: c.overflowed,
+        missing_parens: c.missing_parens,
+    }
 }
 
 /// A cursor over a calc's interior tokens used by [`parse_calc_interior`].
 struct CalcCursor<'t> {
-    toks: &'t [Tok],
+    toks: &'t [Token],
+    base: u32,
     pos: usize,
     /// Current operand-nesting depth, compared against [`MAX_DEPTH`].
     depth: u32,
     /// Set once the depth guard trips (see [`CalcCursor::parse_operand`]).
     overflowed: bool,
-    missing_parens: Vec<Tok>,
+    missing_parens: Vec<u32>,
     insert_missing_parens: bool,
 }
 
@@ -1924,19 +2405,9 @@ impl CalcCursor<'_> {
 
     /// Consume one token as a leaf, advancing the cursor.
     fn leaf(&mut self) -> CalcElem {
-        let t = self.toks[self.pos];
+        let index = self.base + self.pos as u32;
         self.pos += 1;
-        CalcElem::Leaf {
-            kind: t.kind,
-            len: t.len,
-        }
-    }
-
-    /// Push any run of trivia tokens at the cursor onto `out`.
-    fn eat_trivia(&mut self, out: &mut Vec<CalcElem>) {
-        while matches!(self.peek(), Some(k) if k.is_trivia()) {
-            out.push(self.leaf());
-        }
+        CalcElem::Leaf(index)
     }
 
     /// Parse an operand: a unary expression, a parenthesized expression, a
@@ -1963,7 +2434,6 @@ impl CalcCursor<'_> {
         match self.peek() {
             Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus) => {
                 let mut children = vec![self.leaf()]; // unary operator
-                self.eat_trivia(&mut children);
                 if self.has_more() && self.peek() != Some(SyntaxKind::CloseParen) {
                     children.push(self.parse_operand());
                 }
@@ -1973,22 +2443,17 @@ impl CalcCursor<'_> {
                 }
             }
             Some(SyntaxKind::OpenParen) => {
-                let open = self.toks[self.pos];
+                let open = self.base + self.pos as u32;
                 let mut children = vec![self.leaf()]; // `(`
-                self.eat_trivia(&mut children);
                 if self.has_more() && self.peek() != Some(SyntaxKind::CloseParen) {
                     children.push(self.parse_expr(0));
                 }
-                self.eat_trivia(&mut children);
                 if self.peek() == Some(SyntaxKind::CloseParen) {
                     children.push(self.leaf()); // `)`
-                } else if self.insert_missing_parens {
-                    children.push(CalcElem::Leaf {
-                        kind: SyntaxKind::MissingCloseParen,
-                        len: 0,
-                    });
-                    self.missing_parens.push(open);
                 } else {
+                    if self.insert_missing_parens {
+                        children.push(CalcElem::Missing(SyntaxKind::MissingCloseParen));
+                    }
                     self.missing_parens.push(open);
                 }
                 CalcElem::Node {
@@ -2003,8 +2468,7 @@ impl CalcCursor<'_> {
     }
 
     /// Precedence-climbing parse of a (sub)expression with binding power floor
-    /// `min_bp`. Trivia before a candidate operator is held speculatively and
-    /// either folded into the binary node or rewound to the enclosing context.
+    /// `min_bp`.
     fn parse_expr(&mut self, min_bp: u8) -> CalcElem {
         let mut lhs = self.parse_operand();
         // Length of the left-associative chain folded in this call. Unlike
@@ -2015,19 +2479,11 @@ impl CalcCursor<'_> {
         // no calc shape can overflow the stack; the tail falls to flat leaves.
         let mut folds = 0u32;
         loop {
-            // Peek past trivia for the next operator; rewind if it isn't one
-            // (or binds too loosely) so that trivia stays with the outer node.
-            let save = self.pos;
-            let mut trivia = Vec::new();
-            self.eat_trivia(&mut trivia);
             let bp = self.peek().and_then(infix_bp);
             match bp {
                 Some((l_bp, r_bp)) if l_bp >= min_bp && folds < MAX_DEPTH => {
                     folds += 1;
-                    let mut children = vec![lhs];
-                    children.append(&mut trivia);
-                    children.push(self.leaf()); // operator
-                    self.eat_trivia(&mut children);
+                    let mut children = vec![lhs, self.leaf()]; // lhs, operator
                     if self.has_more() && self.peek() != Some(SyntaxKind::CloseParen) {
                         children.push(self.parse_expr(r_bp));
                     }
@@ -2043,7 +2499,6 @@ impl CalcCursor<'_> {
                     if matches!(bp, Some((l_bp, _)) if l_bp >= min_bp) {
                         self.overflowed = true;
                     }
-                    self.pos = save;
                     break;
                 }
             }
@@ -2053,22 +2508,28 @@ impl CalcCursor<'_> {
 }
 
 // ---------------------------------------------------------------------------
-// Cursor ("red layer"): lightweight handles into the tree that compute
-// positions on demand. `'t` borrows the tree, `'a` is the source lifetime.
+// Cursors: lightweight handles into the tree. `'t` borrows the tree, `'a` is
+// the source lifetime. Trivia tokens are made on demand from the gaps.
 // ---------------------------------------------------------------------------
 
-/// A handle to an interior node in a [`GreenTree`].
+/// A handle to an interior node in a [`SyntaxTree`].
 #[derive(Clone, Copy)]
 pub struct SyntaxNode<'t, 'a> {
-    tree: &'t GreenTree<'a>,
+    tree: &'t SyntaxTree<'a>,
     idx: u32,
 }
 
-/// A handle to a leaf token in a [`GreenTree`].
+/// A handle to a leaf token in a [`SyntaxTree`]. It is a significant token from
+/// the token buffer, or a trivia token made from a gap.
 #[derive(Clone, Copy)]
 pub struct SyntaxToken<'t, 'a> {
-    tree: &'t GreenTree<'a>,
+    tree: &'t SyntaxTree<'a>,
+    kind: SyntaxKind,
+    range: TextRange,
+    /// For a significant token, its index in the token buffer. For trivia, the
+    /// index of the significant token after the gap.
     idx: u32,
+    trivia: bool,
 }
 
 /// Either a [`SyntaxNode`] or a [`SyntaxToken`].
@@ -2079,27 +2540,39 @@ pub enum SyntaxElement<'t, 'a> {
 }
 
 impl<'t, 'a> SyntaxNode<'t, 'a> {
-    /// This node's kind.
-    pub fn kind(&self) -> SyntaxKind {
-        self.tree.tape[self.idx as usize].kind()
+    #[inline]
+    fn data(&self) -> &'t Node {
+        &self.tree.nodes[self.idx as usize]
     }
 
-    /// The half-open byte range this node spans in the source.
-    pub fn text_range(&self) -> (u32, u32) {
-        let start = self.tree.offsets[self.idx as usize];
-        (start, start + self.tree.tape[self.idx as usize].len())
+    /// This node's kind.
+    pub fn kind(&self) -> SyntaxKind {
+        self.data().kind
+    }
+
+    /// The half-open byte range this node spans in the source. The root spans
+    /// the whole source. Other nodes span from their first token to their last.
+    pub fn text_range(&self) -> TextRange {
+        let node = self.data();
+        if self.idx == 0 {
+            return TextRange::new(0, self.tree.source.len() as u32);
+        }
+        let tokens = &self.tree.tokens;
+        TextRange::new(
+            tokens[node.first_token as usize].start,
+            tokens[node.token_end as usize - 1].end(),
+        )
     }
 
     /// The source bytes this node spans (a lossless slice of the subtree).
     pub fn text(&self) -> &'a [u8] {
-        let (s, e) = self.text_range();
-        &self.tree.source[s as usize..e as usize]
+        &self.tree.source[self.text_range().to_usize()]
     }
 
     /// The parent node, or `None` for the root.
     pub fn parent(&self) -> Option<SyntaxNode<'t, 'a>> {
-        let p = self.tree.parents[self.idx as usize];
-        (p != u32::MAX).then_some(SyntaxNode {
+        let p = self.tree.parents().nodes[self.idx as usize];
+        (p != NO_PARENT).then_some(SyntaxNode {
             tree: self.tree,
             idx: p,
         })
@@ -2108,7 +2581,7 @@ impl<'t, 'a> SyntaxNode<'t, 'a> {
     /// The precomputed [`NodeFlags`] summarizing this node's whole subtree (see
     /// [`NodeFlags`]). An O(1) lookup — no subtree walk.
     pub fn flags(&self) -> NodeFlags {
-        self.tree.flags[self.idx as usize]
+        self.data().flags
     }
 
     /// Whether this subtree contains a syntax error or recovery element. Lets
@@ -2132,44 +2605,77 @@ impl<'t, 'a> SyntaxNode<'t, 'a> {
         self.flags().contains(NodeFlags::HAS_MACRO)
     }
 
-    /// All direct children, nodes and tokens, in source order.
+    /// All direct children, nodes and tokens, in source order. This includes
+    /// the trivia tokens that this node owns.
     pub fn children(&self) -> Children<'t, 'a> {
-        let end = match self.tree.tape[self.idx as usize] {
-            Green::Node { end, .. } => end,
-            Green::Token { .. } => self.idx + 1,
-        };
+        self.children_impl(true)
+    }
+
+    /// The direct children without trivia. This is faster than
+    /// [`children`](Self::children) because it does not lex the gaps.
+    pub fn significant_children(&self) -> Children<'t, 'a> {
+        self.children_impl(false)
+    }
+
+    fn children_impl(&self, trivia: bool) -> Children<'t, 'a> {
+        let node = self.data();
         Children {
             tree: self.tree,
-            next: self.idx + 1,
-            end,
+            next_token: node.first_token,
+            token_end: node.token_end,
+            next_child: self.idx + 1,
+            child_end: node.subtree_end,
+            trivia,
+            is_root: self.idx == 0,
+            started: false,
+            trailing_done: false,
+            prev_end: 0,
+            gap: Gap::EMPTY,
+            pending: None,
         }
     }
 
     /// Direct child nodes only.
     pub fn child_nodes(&self) -> impl Iterator<Item = SyntaxNode<'t, 'a>> + 't {
-        self.children().filter_map(SyntaxElement::into_node)
+        self.significant_children()
+            .filter_map(SyntaxElement::into_node)
     }
 
-    /// Direct child tokens only.
+    /// Direct child tokens only, trivia included.
     pub fn child_tokens(&self) -> impl Iterator<Item = SyntaxToken<'t, 'a>> + 't {
         self.children().filter_map(SyntaxElement::into_token)
+    }
+
+    /// Direct significant child tokens only.
+    pub fn significant_child_tokens(&self) -> impl Iterator<Item = SyntaxToken<'t, 'a>> + 't {
+        self.significant_children()
+            .filter_map(SyntaxElement::into_token)
     }
 }
 
 impl<'t, 'a> SyntaxToken<'t, 'a> {
     /// This token's kind.
     pub fn kind(&self) -> SyntaxKind {
-        self.tree.tape[self.idx as usize].kind()
+        self.kind
     }
 
     /// Whether this is a zero-width parser recovery token.
     pub fn is_missing(&self) -> bool {
-        self.kind().is_missing()
+        self.kind.is_missing()
+    }
+
+    /// Whether this is a trivia token (whitespace, comment, or BOM).
+    pub fn is_trivia(&self) -> bool {
+        self.trivia
     }
 
     /// Return the flags for this token.
     pub fn flags(&self) -> NodeFlags {
-        self.tree.flags[self.idx as usize]
+        let mut flags = own_flag_bits(self.kind);
+        if !self.trivia && self.tree.tokens[self.idx as usize].flags & TOKEN_ERROR != 0 {
+            flags.insert(NodeFlags::HAS_ERROR);
+        }
+        flags
     }
 
     /// Return `true` when this token has a syntax error.
@@ -2178,21 +2684,23 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
     }
 
     /// The half-open byte range this token spans in the source.
-    pub fn text_range(&self) -> (u32, u32) {
-        let start = self.tree.offsets[self.idx as usize];
-        (start, start + self.tree.tape[self.idx as usize].len())
+    pub fn text_range(&self) -> TextRange {
+        self.range
     }
 
     /// The raw source bytes of this token.
     pub fn text(&self) -> &'a [u8] {
-        let (s, e) = self.text_range();
-        &self.tree.source[s as usize..e as usize]
+        &self.tree.source[self.range.to_usize()]
     }
 
-    /// The parent node.
+    /// The parent node. A trivia token's parent is the node that owns its gap.
     pub fn parent(&self) -> Option<SyntaxNode<'t, 'a>> {
-        let p = self.tree.parents[self.idx as usize];
-        (p != u32::MAX).then_some(SyntaxNode {
+        let p = if self.trivia {
+            self.tree.gap_owner(self.idx)
+        } else {
+            self.tree.parents().tokens[self.idx as usize]
+        };
+        (p != NO_PARENT).then_some(SyntaxNode {
             tree: self.tree,
             idx: p,
         })
@@ -2231,6 +2739,14 @@ impl<'t, 'a> SyntaxElement<'t, 'a> {
         matches!(self, Self::Token(token) if token.is_missing())
     }
 
+    /// The half-open byte range this element spans in the source.
+    pub fn text_range(&self) -> TextRange {
+        match self {
+            SyntaxElement::Node(n) => n.text_range(),
+            SyntaxElement::Token(t) => t.text_range(),
+        }
+    }
+
     /// The source bytes this element spans (its subtree, for a node).
     pub fn text(&self) -> &'a [u8] {
         match self {
@@ -2256,32 +2772,166 @@ impl<'t, 'a> SyntaxElement<'t, 'a> {
     }
 }
 
+/// The part of a gap that is not yet lexed into trivia tokens.
+#[derive(Clone, Copy)]
+struct Gap {
+    start: u32,
+    end: u32,
+    /// The index of the significant token after the gap.
+    next: u32,
+}
+
+impl Gap {
+    const EMPTY: Gap = Gap {
+        start: 0,
+        end: 0,
+        next: 0,
+    };
+
+    #[inline]
+    fn next_token<'t, 'a>(&mut self, tree: &'t SyntaxTree<'a>) -> Option<SyntaxToken<'t, 'a>> {
+        if self.start >= self.end {
+            return None;
+        }
+        let (kind, len) = lex_trivia(tree.source, self.start, self.end);
+        let token = tree.trivia(kind, self.start, len, self.next);
+        self.start += len;
+        Some(token)
+    }
+}
+
 /// Iterator over a node's direct children (see [`SyntaxNode::children`]).
 pub struct Children<'t, 'a> {
-    tree: &'t GreenTree<'a>,
-    next: u32,
-    end: u32,
+    tree: &'t SyntaxTree<'a>,
+    next_token: u32,
+    token_end: u32,
+    next_child: u32,
+    child_end: u32,
+    trivia: bool,
+    is_root: bool,
+    started: bool,
+    trailing_done: bool,
+    prev_end: u32,
+    gap: Gap,
+    pending: Option<SyntaxElement<'t, 'a>>,
 }
 
 impl<'t, 'a> Iterator for Children<'t, 'a> {
     type Item = SyntaxElement<'t, 'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.next >= self.end {
+        loop {
+            if let Some(token) = self.gap.next_token(self.tree) {
+                return Some(SyntaxElement::Token(token));
+            }
+            if let Some(el) = self.pending.take() {
+                return Some(el);
+            }
+            if self.next_token < self.token_end {
+                let tree = self.tree;
+                let first = self.next_token;
+                let el = match tree.nodes.get(self.next_child as usize) {
+                    Some(child)
+                        if self.next_child < self.child_end && child.first_token == first =>
+                    {
+                        let el = SyntaxElement::Node(SyntaxNode {
+                            tree,
+                            idx: self.next_child,
+                        });
+                        self.next_token = child.token_end;
+                        self.next_child = child.subtree_end;
+                        el
+                    }
+                    _ => {
+                        self.next_token += 1;
+                        SyntaxElement::Token(tree.token(first))
+                    }
+                };
+                if !self.trivia {
+                    return Some(el);
+                }
+                // The gap before a child belongs to this node, unless the
+                // child is the first one. The root also owns its leading gap.
+                let start = tree.tokens[first as usize].start;
+                if self.started || self.is_root {
+                    self.gap = Gap {
+                        start: self.prev_end,
+                        end: start,
+                        next: first,
+                    };
+                }
+                self.started = true;
+                self.prev_end = tree.tokens[self.next_token as usize - 1].end();
+                self.pending = Some(el);
+                continue;
+            }
+            if self.trivia && self.is_root && !self.trailing_done {
+                // The root owns the gap after the last token.
+                self.trailing_done = true;
+                self.gap = Gap {
+                    start: self.prev_end,
+                    end: self.tree.source.len() as u32,
+                    next: self.tree.tokens.len() as u32,
+                };
+                continue;
+            }
             return None;
         }
-        let idx = self.next;
-        // Skip past this child's whole subtree to reach the next sibling.
-        self.next = match self.tree.tape[idx as usize] {
-            Green::Node { end, .. } => end,
-            Green::Token { .. } => idx + 1,
-        };
-        Some(self.tree.element(idx))
+    }
+}
+
+/// Iterator over every leaf token of a tree, trivia included (see
+/// [`SyntaxTree::tokens`]).
+pub struct Tokens<'t, 'a> {
+    tree: &'t SyntaxTree<'a>,
+    next: u32,
+    prev_end: u32,
+    gap: Gap,
+    pending: Option<SyntaxToken<'t, 'a>>,
+    trailing_done: bool,
+}
+
+impl<'t, 'a> Iterator for Tokens<'t, 'a> {
+    type Item = SyntaxToken<'t, 'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(token) = self.gap.next_token(self.tree) {
+                return Some(token);
+            }
+            if let Some(token) = self.pending.take() {
+                return Some(token);
+            }
+            let tree = self.tree;
+            if (self.next as usize) < tree.tokens.len() {
+                let index = self.next;
+                self.next += 1;
+                let token = tree.tokens[index as usize];
+                self.gap = Gap {
+                    start: self.prev_end,
+                    end: token.start,
+                    next: index,
+                };
+                self.prev_end = token.end();
+                self.pending = Some(tree.token(index));
+                continue;
+            }
+            if !self.trailing_done {
+                self.trailing_done = true;
+                self.gap = Gap {
+                    start: self.prev_end,
+                    end: tree.source.len() as u32,
+                    next: self.next,
+                };
+                continue;
+            }
+            return None;
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Typed AST: "ungrammar-style" strongly-typed views over the red layer. Each
+// Typed AST: "ungrammar-style" strongly-typed views over the cursors. Each
 // wrapper is a thin newtype around a `SyntaxNode` of a fixed `SyntaxKind`, with
 // accessors that locate children by kind/position. They are zero-copy `Copy`
 // views computed on demand, so constructing one is free; `syntax()` always
@@ -2427,12 +3077,28 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
         };
         Scalar::new(bytes)
     }
+
+    /// Decode the scalar value of this token into a string with `encoding`.
+    /// The encoding removes the escape characters of a quoted string.
+    ///
+    /// ```
+    /// use jomini::{Windows1252Encoding, text::syntax::parse};
+    ///
+    /// let tree = parse(b"name = \"Kr\xe4ftig \\\"Leo\\\"\"");
+    /// let field = tree.ast().fields().next().unwrap();
+    /// let value = field.value().unwrap();
+    /// let decoded = value.decode(Windows1252Encoding::new()).unwrap();
+    /// assert_eq!(decoded, "Kr\u{e4}ftig \"Leo\"");
+    /// ```
+    pub fn decode<E: Encoding>(&self, encoding: E) -> Cow<'a, str> {
+        encoding.decode(self.as_scalar().as_bytes())
+    }
 }
 
 /// First significant child element of `node` after skipping leading trivia and
 /// (for blocks) the delimiting braces — used to classify entries.
 fn child_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Item<'t, 'a>> + 't {
-    node.children().filter_map(item_from_element)
+    node.significant_children().filter_map(item_from_element)
 }
 
 fn item_from_element<'t, 'a>(el: SyntaxElement<'t, 'a>) -> Option<Item<'t, 'a>> {
@@ -2464,7 +3130,7 @@ fn item_from_element<'t, 'a>(el: SyntaxElement<'t, 'a>) -> Option<Item<'t, 'a>> 
 
 fn parameter_name<'t, 'a>(node: SyntaxNode<'t, 'a>) -> Option<SyntaxToken<'t, 'a>> {
     let mut open_brackets = 0;
-    node.children().find_map(|el| match el {
+    node.significant_children().find_map(|el| match el {
         SyntaxElement::Token(token) if token.kind() == SyntaxKind::OpenBracket => {
             open_brackets += 1;
             None
@@ -2479,7 +3145,7 @@ fn parameter_name<'t, 'a>(node: SyntaxNode<'t, 'a>) -> Option<SyntaxToken<'t, 'a
 fn parameter_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Item<'t, 'a>> + 't {
     let mut header_done = false;
     let mut body_done = false;
-    node.children().filter_map(move |el| {
+    node.significant_children().filter_map(move |el| {
         if body_done {
             return None;
         }
@@ -2524,7 +3190,7 @@ fn parameter_body_item<'t, 'a>(el: SyntaxElement<'t, 'a>) -> Option<Item<'t, 'a>
 }
 
 fn code_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Item<'t, 'a>> + 't {
-    let children: Vec<_> = node.children().collect();
+    let children: Vec<_> = node.significant_children().collect();
     let payload_start = children
         .windows(2)
         .position(|pair| {
@@ -2562,13 +3228,16 @@ impl<'t, 'a> Root<'t, 'a> {
 impl<'t, 'a> Field<'t, 'a> {
     /// The key scalar token (the left-hand side).
     pub fn key(&self) -> Option<SyntaxToken<'t, 'a>> {
-        self.syntax().child_tokens().find(|t| t.kind().is_scalar())
+        self.syntax()
+            .significant_child_tokens()
+            .find(|t| t.kind().is_scalar())
     }
 
-    /// The operator token (`=`, `==`, `?=`, `<`, …).
+    /// The operator token (`=`, `==`, `?=`, `<`, …), or `None` for a
+    /// `key { ... }` field that has no operator.
     pub fn op_token(&self) -> Option<SyntaxToken<'t, 'a>> {
         self.syntax()
-            .child_tokens()
+            .significant_child_tokens()
             .find(|t| t.kind() == SyntaxKind::Operator)
     }
 
@@ -2578,19 +3247,16 @@ impl<'t, 'a> Field<'t, 'a> {
     }
 
     /// The value (the right-hand side), or `None` if it is missing.
+    ///
+    /// A field with no operator (`key { ... }`) has its block as the value.
     pub fn value(&self) -> Option<Value<'t, 'a>> {
-        let mut after_op = false;
-        for el in self.syntax().children() {
-            if el.kind().is_trivia() {
-                continue;
-            }
-            if !after_op {
-                after_op = el.kind() == SyntaxKind::Operator;
-                continue;
-            }
-            return Value::cast_element(el);
+        let mut children = self.syntax().significant_children();
+        children.next()?; // key
+        let mut value = children.next()?;
+        if value.kind() == SyntaxKind::Operator {
+            value = children.next()?;
         }
-        None
+        Value::cast_element(value)
     }
 }
 
@@ -2618,7 +3284,7 @@ impl<'t, 'a> Block<'t, 'a> {
     /// Return the physical closing brace, if the source contains one.
     pub fn close_brace(&self) -> Option<SyntaxToken<'t, 'a>> {
         self.syntax()
-            .child_tokens()
+            .significant_child_tokens()
             .find(|token| token.kind() == SyntaxKind::CloseBrace)
     }
 
@@ -2652,7 +3318,7 @@ impl<'t, 'a> Parameter<'t, 'a> {
     /// Return the physical body closing bracket, if the source contains one.
     pub fn close_bracket(&self) -> Option<SyntaxToken<'t, 'a>> {
         self.syntax()
-            .child_tokens()
+            .significant_child_tokens()
             .filter(|token| token.kind() == SyntaxKind::CloseBracket)
             .skip(1)
             .last()
@@ -2688,7 +3354,7 @@ impl<'t, 'a> UndefinedParameter<'t, 'a> {
     /// Return the physical body closing bracket, if the source contains one.
     pub fn close_bracket(&self) -> Option<SyntaxToken<'t, 'a>> {
         self.syntax()
-            .child_tokens()
+            .significant_child_tokens()
             .filter(|token| token.kind() == SyntaxKind::CloseBracket)
             .skip(1)
             .last()
@@ -2704,14 +3370,14 @@ impl<'t, 'a> Code<'t, 'a> {
     /// The `code` keyword, when this node includes the no-equals form.
     pub fn keyword(&self) -> Option<SyntaxToken<'t, 'a>> {
         self.syntax()
-            .child_tokens()
+            .significant_child_tokens()
             .find(|token| token.kind() == SyntaxKind::Unquoted && token.text() == b"code")
     }
 
     /// The optional operator in `code = [[ ... ]]`.
     pub fn op_token(&self) -> Option<SyntaxToken<'t, 'a>> {
         self.syntax()
-            .child_tokens()
+            .significant_child_tokens()
             .find(|token| token.kind() == SyntaxKind::Operator)
     }
 
@@ -2734,12 +3400,12 @@ impl<'t, 'a> Code<'t, 'a> {
     pub fn is_closed_in_source(&self) -> bool {
         let closes: Vec<_> = self
             .syntax()
-            .child_tokens()
+            .significant_child_tokens()
             .filter(|token| token.kind() == SyntaxKind::CloseBracket)
             .collect();
         closes
             .windows(2)
-            .any(|pair| pair[0].text_range().1 == pair[1].text_range().0)
+            .any(|pair| pair[0].text_range().end() == pair[1].text_range().start())
     }
 }
 
@@ -2759,7 +3425,7 @@ impl<'t, 'a> Interpolation<'t, 'a> {
     /// Return `true` when the interpolation has a physical closing bracket.
     pub fn is_closed_in_source(&self) -> bool {
         self.syntax()
-            .child_tokens()
+            .significant_child_tokens()
             .any(|token| token.kind() == SyntaxKind::CloseBracket)
     }
 }
@@ -2767,7 +3433,9 @@ impl<'t, 'a> Interpolation<'t, 'a> {
 impl<'t, 'a> HeaderedBlock<'t, 'a> {
     /// The header scalar (e.g. `rgb`, `hsv`, a tag).
     pub fn header(&self) -> Option<SyntaxToken<'t, 'a>> {
-        self.syntax().child_tokens().find(|t| t.kind().is_scalar())
+        self.syntax()
+            .significant_child_tokens()
+            .find(|t| t.kind().is_scalar())
     }
 
     /// The block that follows the header.
@@ -2779,19 +3447,23 @@ impl<'t, 'a> HeaderedBlock<'t, 'a> {
 impl<'t, 'a> Calc<'t, 'a> {
     /// The wrapped arithmetic expression (between `@[` and `]`).
     pub fn expr(&self) -> Option<Expr<'t, 'a>> {
-        self.syntax().children().find_map(Expr::cast_element)
+        self.syntax()
+            .significant_children()
+            .find_map(Expr::cast_element)
     }
 }
 
 impl<'t, 'a> BinaryExpr<'t, 'a> {
     /// The left operand.
     pub fn lhs(&self) -> Option<Expr<'t, 'a>> {
-        self.syntax().children().find_map(Expr::cast_element)
+        self.syntax()
+            .significant_children()
+            .find_map(Expr::cast_element)
     }
 
     /// The operator token (`+`, `-`, `*`, `/`).
     pub fn op_token(&self) -> Option<SyntaxToken<'t, 'a>> {
-        self.syntax().child_tokens().find(|t| {
+        self.syntax().significant_child_tokens().find(|t| {
             matches!(
                 t.kind(),
                 SyntaxKind::Plus | SyntaxKind::Minus | SyntaxKind::Star | SyntaxKind::Slash
@@ -2802,7 +3474,7 @@ impl<'t, 'a> BinaryExpr<'t, 'a> {
     /// The right operand.
     pub fn rhs(&self) -> Option<Expr<'t, 'a>> {
         self.syntax()
-            .children()
+            .significant_children()
             .filter_map(Expr::cast_element)
             .nth(1)
     }
@@ -2812,20 +3484,24 @@ impl<'t, 'a> UnaryExpr<'t, 'a> {
     /// The prefix operator token (`-` or `+`).
     pub fn op_token(&self) -> Option<SyntaxToken<'t, 'a>> {
         self.syntax()
-            .child_tokens()
+            .significant_child_tokens()
             .find(|t| matches!(t.kind(), SyntaxKind::Plus | SyntaxKind::Minus))
     }
 
     /// The operand the prefix applies to.
     pub fn operand(&self) -> Option<Expr<'t, 'a>> {
-        self.syntax().children().find_map(Expr::cast_element)
+        self.syntax()
+            .significant_children()
+            .find_map(Expr::cast_element)
     }
 }
 
 impl<'t, 'a> ParenExpr<'t, 'a> {
     /// The expression between the parentheses.
     pub fn inner(&self) -> Option<Expr<'t, 'a>> {
-        self.syntax().children().find_map(Expr::cast_element)
+        self.syntax()
+            .significant_children()
+            .find_map(Expr::cast_element)
     }
 }
 
@@ -2964,6 +3640,15 @@ impl<'t, 'a> Value<'t, 'a> {
         }
     }
 
+    /// Decode a scalar value into a string with `encoding` (see
+    /// [`SyntaxToken::decode`]).
+    pub fn decode<E: Encoding>(&self, encoding: E) -> Option<Cow<'a, str>> {
+        match self {
+            Value::Scalar(t) => Some(t.decode(encoding)),
+            _ => None,
+        }
+    }
+
     /// Coerce a scalar value to `f64` (e.g. `1.000`, `-5.7`, `10.0f`).
     pub fn to_f64(&self) -> Option<f64> {
         self.as_scalar()?.to_f64().ok()
@@ -3004,7 +3689,7 @@ impl<'t, 'a> Expr<'t, 'a> {
     }
 }
 
-impl<'a> GreenTree<'a> {
+impl<'a> SyntaxTree<'a> {
     /// The typed [`Root`] of the document.
     pub fn ast(&self) -> Root<'_, 'a> {
         Root::cast(self.root()).expect("the root node is always SyntaxKind::Root")
@@ -3035,7 +3720,7 @@ impl<'a> GreenTree<'a> {
 // rough.
 // ---------------------------------------------------------------------------
 
-/// Configuration for [`GreenTree::format`].
+/// Configuration for [`SyntaxTree::format`].
 #[derive(Debug, Clone)]
 pub struct FormatOptions {
     /// The string emitted once per nesting level of indentation. Defaults to a
@@ -3059,7 +3744,7 @@ pub fn format(source: &[u8]) -> Vec<u8> {
     parse(source).format(&FormatOptions::default())
 }
 
-impl<'a> GreenTree<'a> {
+impl<'a> SyntaxTree<'a> {
     /// Reformat the tree with the given [`FormatOptions`]. See the module-level
     /// formatter notes for the house style.
     pub fn format(&self, opts: &FormatOptions) -> Vec<u8> {
@@ -3171,22 +3856,32 @@ impl Fmt<'_> {
         self.comment_open = true;
     }
 
+    /// Emit a node verbatim. Then set the "open" flags from the end of the
+    /// node: an unclosed quote, or a comment in the trailing gap of a node that
+    /// missing tokens close at EOF.
     fn emit_node_text(&mut self, node: SyntaxNode<'_, '_>) {
         self.push(node.text());
-        if let Some(last) = node
-            .tree
-            .tokens()
-            .filter(|t| {
-                let (start, end) = t.text_range();
-                let (node_start, node_end) = node.text_range();
-                start >= node_start && end <= node_end && !t.is_missing()
-            })
-            .last()
-        {
-            self.comment_open = last.kind() == SyntaxKind::Comment
-                && !last.text().ends_with(b"\n")
-                && !last.text().ends_with(b"\r");
-            self.quote_open = last.kind() == SyntaxKind::Quoted && !quote_is_closed(last.text());
+        let tree = node.tree;
+        let data = node.data();
+        let tokens = &tree.tokens[data.first_token as usize..data.token_end as usize];
+        let Some(last) = tokens.iter().rev().find(|t| !t.kind.is_missing()) else {
+            return;
+        };
+        let mut gap = Gap {
+            start: last.end(),
+            end: node.text_range().end(),
+            next: 0,
+        };
+        let mut last_trivia = None;
+        while let Some(token) = gap.next_token(tree) {
+            last_trivia = Some(token.kind());
+        }
+        match last_trivia {
+            Some(kind) => self.comment_open = kind == SyntaxKind::Comment,
+            None => {
+                self.quote_open = last.kind == SyntaxKind::Quoted
+                    && !quote_is_closed(&tree.source[last.range().to_usize()]);
+            }
         }
     }
 
@@ -3389,13 +4084,33 @@ mod tests {
     use super::*;
     use quickcheck_macros::quickcheck;
 
-    /// Assert the lexer tiles the input: contiguous spans covering `[0, len)`.
+    /// Assert the lexer output and the leaf iterator tile the input: the
+    /// significant tokens are in order and do not overlap, every gap is only
+    /// trivia, and the leaves are contiguous spans covering `[0, len)`.
     fn assert_tiles(data: &[u8], flavor: Flavor) {
-        let toks = lex(data, flavor);
+        let lexed = lex(data, flavor);
         let mut at = 0u32;
-        for t in &toks {
-            assert_eq!(t.start, at, "gap/overlap at {} in {:?}", at, data);
-            at += t.len;
+        for t in &lexed.tokens {
+            assert!(t.start >= at, "overlap at {} in {:?}", at, data);
+            let mut gap = at;
+            while gap < t.start {
+                let (kind, len) = lex_trivia(data, gap, t.start);
+                assert!(kind.is_trivia());
+                gap += len;
+            }
+            at = t.end();
+        }
+        let tree = parse_with(data, flavor);
+        let mut at = 0u32;
+        for t in tree.tokens() {
+            assert_eq!(
+                t.text_range().start(),
+                at,
+                "gap/overlap at {} in {:?}",
+                at,
+                data
+            );
+            at = t.text_range().end();
         }
         assert_eq!(at as usize, data.len(), "tokens do not reach end of input");
     }
@@ -3582,7 +4297,7 @@ mod tests {
         let src = b"x=\"ab\ncd\"";
 
         // Default: the newline is inside the string; one Quoted token.
-        let toks = lex(src, Flavor::default());
+        let toks = lex(src, Flavor::default()).tokens;
         let quoted: Vec<_> = toks
             .iter()
             .filter(|t| t.kind == SyntaxKind::Quoted)
@@ -3591,7 +4306,7 @@ mod tests {
         assert_eq!(quoted[0].len as usize, src.len() - 2); // `"ab\ncd"`
 
         // HoI4: the string ends at the newline.
-        let toks = lex(src, Flavor::hoi4());
+        let toks = lex(src, Flavor::hoi4()).tokens;
         let first = toks.iter().find(|t| t.kind == SyntaxKind::Quoted).unwrap();
         let text = &src[first.start as usize..(first.start + first.len) as usize];
         assert_eq!(text, b"\"ab");
@@ -3604,18 +4319,22 @@ mod tests {
     #[test]
     fn flavor_hoi4_treats_at_as_identifier() {
         // With HoI4, `@` is an ordinary identifier byte, not a variable marker.
-        let toks = lex(b"@foo", Flavor::hoi4());
+        let toks = lex(b"@foo", Flavor::hoi4()).tokens;
         assert_eq!(toks.len(), 1);
         assert_eq!(toks[0].kind, SyntaxKind::Unquoted);
 
-        let toks = lex(b"@foo", Flavor::default());
+        let toks = lex(b"@foo", Flavor::default()).tokens;
         assert_eq!(toks[0].kind, SyntaxKind::Variable);
     }
 
     #[test]
     fn diagnostics_unclosed_block() {
         let tree = parse(b"a = { b");
-        assert!(tree.errors().iter().any(|e| e.message.contains("unclosed")));
+        assert!(
+            tree.errors()
+                .iter()
+                .any(|e| e.message().contains("unclosed"))
+        );
         assert_eq!(tree.reconstruct(), b"a = { b"); // still lossless
     }
 
@@ -3631,19 +4350,16 @@ mod tests {
         let recovery = error.recovery.as_ref().unwrap();
         assert_eq!(recovery.expected, SyntaxKind::CloseBrace);
         assert_eq!(recovery.missing, SyntaxKind::MissingCloseBrace);
-        assert_eq!(recovery.opening_range, (4, 5));
+        assert_eq!(recovery.opening_range, TextRange::new(4, 5));
         assert_eq!(
             recovery.insertion_range,
-            (source.len() as u32, source.len() as u32)
+            TextRange::empty(source.len() as u32)
         );
 
         let missing = tree.tokens().find(|token| token.is_missing()).unwrap();
         assert_eq!(missing.kind(), SyntaxKind::MissingCloseBrace);
         assert_eq!(missing.text(), b"");
-        assert_eq!(
-            missing.text_range(),
-            (source.len() as u32, source.len() as u32)
-        );
+        assert_eq!(missing.text_range(), TextRange::empty(source.len() as u32));
         assert!(missing.has_error());
         assert_eq!(missing.parent().unwrap().kind(), SyntaxKind::Block);
         assert!(missing.parent().unwrap().has_error());
@@ -3663,7 +4379,7 @@ mod tests {
         assert_eq!(
             tree.repair_fixes(),
             [Repair {
-                range: (7, 7),
+                range: TextRange::empty(7),
                 replacement: "}".into()
             }]
         );
@@ -3717,17 +4433,16 @@ mod tests {
             assert!(
                 tree.errors()
                     .iter()
-                    .any(|error| error.message.contains("unclosed"))
+                    .any(|error| error.message().contains("unclosed"))
             );
             assert!(
                 tree.repair_fixes().is_empty(),
                 "unexpected fix for {source:?}"
             );
             assert!(tree.errors().iter().all(|error| {
-                error
-                    .recovery
-                    .as_ref()
-                    .is_none_or(|recovery| !recovery.is_machine_applicable())
+                error.recovery.as_ref().is_none_or(|recovery| {
+                    !tree.repair_applicability(recovery).is_machine_applicable()
+                })
             }));
         }
 
@@ -3757,7 +4472,7 @@ mod tests {
             interrupted_calc
                 .errors()
                 .iter()
-                .any(|error| error.message.contains("unclosed '@['"))
+                .any(|error| error.message().contains("unclosed '@['"))
         );
         assert!(interrupted_calc.repair_fixes().is_empty());
 
@@ -3789,10 +4504,9 @@ mod tests {
             let tree = parse(source);
             assert!(tree.repair_fixes().is_empty());
             assert!(tree.errors().iter().any(|error| {
-                error
-                    .recovery
-                    .as_ref()
-                    .is_some_and(|recovery| recovery.applicability == Applicability::Unsafe)
+                error.recovery.as_ref().is_some_and(|recovery| {
+                    tree.repair_applicability(recovery) == Applicability::Unsafe
+                })
             }));
         }
     }
@@ -3887,7 +4601,7 @@ mod tests {
         assert!(
             tree.errors()
                 .iter()
-                .any(|e| e.message.contains("unmatched"))
+                .any(|e| e.message().contains("unmatched"))
         );
         assert_eq!(tree.reconstruct(), b"x } y");
         // The stray brace lands in a Bogus node.
@@ -3918,7 +4632,7 @@ mod tests {
         assert!(
             tree.errors()
                 .iter()
-                .any(|e| e.message.contains("maximum nesting depth"))
+                .any(|e| e.message().contains("maximum nesting depth"))
         );
     }
 
@@ -3948,7 +4662,7 @@ mod tests {
         assert!(
             tree.errors()
                 .iter()
-                .any(|e| e.message.contains("calc nesting"))
+                .any(|e| e.message().contains("calc nesting"))
         );
     }
 
@@ -3965,7 +4679,7 @@ mod tests {
         assert!(
             tree.errors()
                 .iter()
-                .any(|e| e.message.contains("calc nesting"))
+                .any(|e| e.message().contains("calc nesting"))
         );
     }
 
@@ -3986,7 +4700,7 @@ mod tests {
         assert!(
             tree.errors()
                 .iter()
-                .any(|e| e.message.contains("calc nesting"))
+                .any(|e| e.message().contains("calc nesting"))
         );
         // A pure `*` chain folds the same way.
         let mut data = Vec::new();
@@ -4302,7 +5016,8 @@ mod tests {
             .ast()
             .items()
             .find_map(|item| match item {
-                Item::Value(value) => value.as_block(),
+                // `example { ... }` is a field with no operator.
+                Item::Field(field) => field.value()?.as_block(),
                 _ => None,
             })
             .unwrap();
@@ -4336,7 +5051,8 @@ mod tests {
             .ast()
             .items()
             .find_map(|item| match item {
-                Item::Value(value) => value.as_block(),
+                // `example { ... }` is a field with no operator.
+                Item::Field(field) => field.value()?.as_block(),
                 _ => None,
             })
             .unwrap();
@@ -4419,7 +5135,7 @@ mod tests {
         assert!(
             tree.errors()
                 .iter()
-                .any(|error| error.message.contains("unclosed code payload"))
+                .any(|error| error.message().contains("unclosed code payload"))
         );
         let outer = tree
             .ast()
@@ -4450,7 +5166,7 @@ mod tests {
             assert!(
                 tree.errors()
                     .iter()
-                    .any(|error| error.message.contains("unclosed code payload"))
+                    .any(|error| error.message().contains("unclosed code payload"))
             );
         }
     }
@@ -4470,7 +5186,7 @@ mod tests {
         assert_eq!(tree.reconstruct(), source);
         assert!(tree.errors().iter().any(|error| {
             error
-                .message
+                .message()
                 .contains("maximum code nesting depth exceeded")
         }));
     }
@@ -4483,7 +5199,7 @@ mod tests {
         assert!(
             tree.errors()
                 .iter()
-                .any(|error| error.message.contains("unclosed parameter block"))
+                .any(|error| error.message().contains("unclosed parameter block"))
         );
         let outer = tree
             .ast()
@@ -4702,8 +5418,8 @@ mod tests {
         let mut at = 0u32;
         let mut joined = Vec::new();
         for t in tree.tokens() {
-            assert_eq!(t.text_range().0, at);
-            at = t.text_range().1;
+            assert_eq!(t.text_range().start(), at);
+            at = t.text_range().end();
             joined.extend_from_slice(t.text());
         }
         assert_eq!(joined, src); // the lossless invariant, via tokens()
@@ -4934,7 +5650,7 @@ mod tests {
         assert!(
             tree.errors()
                 .iter()
-                .any(|e| e.message.contains("unclosed '@['")),
+                .any(|e| e.message().contains("unclosed '@['")),
             "expected an unclosed-calc diagnostic, got {:?}",
             tree.errors()
         );
@@ -4991,5 +5707,374 @@ mod tests {
             .map(|b| ALPHABET[*b as usize % ALPHABET.len()])
             .collect();
         parse(&mapped).reconstruct() == mapped
+    }
+
+    /// A byte-at-a-time lexer with the same rules as [`lex`]. It checks the
+    /// SIMD scans, which handle 16 bytes at a time.
+    fn reference_lex(source: &[u8], flavor: Flavor) -> Vec<(SyntaxKind, u32, u32, u8)> {
+        let n = source.len();
+        let mut i = if source.starts_with(BOM) { 3 } else { 0 };
+        let mut flags = 0u8;
+        let mut out = Vec::new();
+        let push = |out: &mut Vec<_>, kind, start: usize, end: usize, flags: &mut u8| {
+            out.push((kind, start as u32, end as u32, *flags));
+            *flags = 0;
+        };
+        while i < n {
+            let b = source[i];
+            let start = i;
+            if is_ws(b) {
+                while i < n && is_ws(source[i]) {
+                    i += 1;
+                }
+                continue;
+            }
+            if b == b'#' {
+                while i < n && source[i] != b'\n' && source[i] != b'\r' {
+                    i += 1;
+                }
+                flags = TOKEN_COMMENT_BEFORE;
+                continue;
+            }
+            if flavor.variables && b == b'@' && source.get(i + 1) == Some(&b'[') {
+                push(&mut out, SyntaxKind::CalcOpen, i, i + 2, &mut flags);
+                i += 2;
+                while i < n {
+                    let c = source[i];
+                    let start = i;
+                    let kind = match c {
+                        b']' => {
+                            i += 1;
+                            push(&mut out, SyntaxKind::CalcClose, start, i, &mut flags);
+                            break;
+                        }
+                        b'{' | b'}' => break,
+                        c if is_ws(c) => {
+                            i += 1;
+                            continue;
+                        }
+                        b'(' => SyntaxKind::OpenParen,
+                        b')' => SyntaxKind::CloseParen,
+                        b'+' => SyntaxKind::Plus,
+                        b'-' => SyntaxKind::Minus,
+                        b'*' => SyntaxKind::Star,
+                        b'/' => SyntaxKind::Slash,
+                        c if c.is_ascii_digit()
+                            || (c == b'.' && source.get(i + 1).is_some_and(u8::is_ascii_digit)) =>
+                        {
+                            i = scan_number(source, i);
+                            push(&mut out, SyntaxKind::Number, start, i, &mut flags);
+                            continue;
+                        }
+                        _ => {
+                            i += 1;
+                            while i < n && !is_calc_stop(source[i]) {
+                                i += 1;
+                            }
+                            push(&mut out, SyntaxKind::CalcIdent, start, i, &mut flags);
+                            continue;
+                        }
+                    };
+                    i += 1;
+                    push(&mut out, kind, start, i, &mut flags);
+                }
+                continue;
+            }
+            let kind = match b {
+                b'"' => {
+                    i += 1;
+                    while i < n {
+                        match source[i] {
+                            b'\\' => i = (i + 2).min(n),
+                            b'"' => {
+                                i += 1;
+                                break;
+                            }
+                            b'\n' | b'\r' if flavor.newline_terminated_strings => break,
+                            _ => i += 1,
+                        }
+                    }
+                    SyntaxKind::Quoted
+                }
+                b'{' | b'}' | b'[' | b']' => {
+                    i += 1;
+                    match b {
+                        b'{' => SyntaxKind::OpenBrace,
+                        b'}' => SyntaxKind::CloseBrace,
+                        b'[' => SyntaxKind::OpenBracket,
+                        _ => SyntaxKind::CloseBracket,
+                    }
+                }
+                b'=' | b'<' | b'>' => {
+                    i += 1;
+                    if source.get(i) == Some(&b'=') {
+                        i += 1;
+                    }
+                    SyntaxKind::Operator
+                }
+                b'!' | b'?' if source.get(i + 1) == Some(&b'=') => {
+                    i += 2;
+                    SyntaxKind::Operator
+                }
+                b'!' => {
+                    i += 1;
+                    SyntaxKind::Bang
+                }
+                _ => {
+                    i += 1;
+                    while i < n && !STOP[source[i] as usize] {
+                        i += 1;
+                    }
+                    let run = &source[start..i];
+                    if flavor.variables && run.len() > 1 && run[0] == b'@' && run[1] != b'@' {
+                        SyntaxKind::Variable
+                    } else if flavor.macros && run.iter().filter(|&&b| b == b'$').count() >= 2 {
+                        SyntaxKind::MacroParam
+                    } else {
+                        SyntaxKind::Unquoted
+                    }
+                }
+            };
+            push(&mut out, kind, start, i, &mut flags);
+        }
+        out
+    }
+
+    /// Compare the dispatched lexer and the portable fallback lexer (the path
+    /// for targets without SIMD) with [`reference_lex`].
+    fn lex_matches_reference(source: &[u8]) -> bool {
+        let simplify = |tokens: &[Token]| -> Vec<_> {
+            tokens
+                .iter()
+                .map(|t| (t.kind, t.start, t.end(), t.flags))
+                .collect()
+        };
+        [Flavor::default(), Flavor::hoi4()]
+            .into_iter()
+            .all(|flavor| {
+                let expected = reference_lex(source, flavor);
+                let lexed = lex(source, flavor);
+                let mut fallback = Vec::new();
+                let fallback_comment = lex_simd(
+                    fearless_simd::Fallback::new(),
+                    source,
+                    flavor,
+                    &mut fallback,
+                );
+                simplify(&lexed.tokens) == expected
+                    && simplify(&fallback) == expected
+                    && fallback_comment == lexed.trailing_comment
+            })
+    }
+
+    #[quickcheck]
+    fn prop_lex_matches_reference(data: Vec<u8>) -> bool {
+        lex_matches_reference(&data)
+    }
+
+    /// Map random bytes onto the bytes that the lexer treats specially, so
+    /// that the SIMD masks see every class at every lane position.
+    #[quickcheck]
+    fn prop_lex_matches_reference_alphabet(data: Vec<u8>) -> bool {
+        const ALPHABET: &[u8] = b"ab01._-$@#\"\\ \t\r\n\x0b\x0c;{}[]=<>!?()+*/|:\x80\xff";
+        let mapped: Vec<u8> = data
+            .iter()
+            .map(|b| ALPHABET[*b as usize % ALPHABET.len()])
+            .collect();
+        lex_matches_reference(&mapped)
+    }
+
+    #[test]
+    fn lex_scans_across_vector_boundaries() {
+        for len in 0..48 {
+            let word = "x".repeat(len);
+            let cases = [
+                format!("{word}={word}"),
+                format!("\"{word}\\\"{word}\""),
+                format!("#{word}\n{word}"),
+                format!("{}{word}", " ".repeat(len)),
+                format!("$a$_{word}"),
+                format!("{word}$a$ {word}"),
+                format!("\"{word}\n{word}"),
+            ];
+            for case in &cases {
+                assert!(lex_matches_reference(case.as_bytes()), "{case:?}");
+                rt(case.as_bytes());
+            }
+        }
+    }
+
+    /// The scan that [`interpolation_starts`] replaces: from one `[`, count
+    /// brackets until the match, and stop at a `}` directly inside it.
+    fn naive_interpolation_start(tokens: &[Token], pos: usize) -> bool {
+        let mut depth = 1u32;
+        for token in &tokens[pos + 1..] {
+            match token.kind {
+                SyntaxKind::OpenBracket => depth += 1,
+                SyntaxKind::CloseBracket => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return true;
+                    }
+                }
+                SyntaxKind::CloseBrace if depth == 1 => return false,
+                _ => {}
+            }
+        }
+        pos + 1 < tokens.len()
+    }
+
+    #[quickcheck]
+    fn prop_interpolation_starts_match_naive_scan(data: Vec<u8>) -> bool {
+        const ALPHABET: &[u8] = b"[]{} a";
+        let mapped: Vec<u8> = data
+            .iter()
+            .map(|b| ALPHABET[*b as usize % ALPHABET.len()])
+            .collect();
+        let tokens = lex(&mapped, Flavor::default()).tokens;
+        let starts = interpolation_starts(&tokens);
+        tokens.iter().enumerate().all(|(pos, token)| {
+            token.kind != SyntaxKind::OpenBracket
+                || starts.binary_search(&(pos as u32)).is_ok()
+                    == naive_interpolation_start(&tokens, pos)
+        })
+    }
+
+    #[test]
+    fn scalar_followed_by_block_is_a_field_without_operator() {
+        let tree = parse(b"foo{bar=qux} color = { rgb { 1 2 3 } }");
+        assert!(tree.errors().is_empty());
+        let fields: Vec<_> = tree.ast().fields().collect();
+        assert_eq!(fields.len(), 2);
+
+        assert_eq!(fields[0].key().unwrap().text(), b"foo");
+        assert!(fields[0].op_token().is_none());
+        assert!(fields[0].op().is_none());
+        let block = fields[0].value().unwrap().as_block().unwrap();
+        assert_eq!(block.fields().next().unwrap().key().unwrap().text(), b"bar");
+
+        // In item position, a header such as `rgb` is a field too. The
+        // semantic layer decides that it is a header.
+        let inner = fields[1].value().unwrap().as_block().unwrap();
+        let rgb = inner.fields().next().unwrap();
+        assert_eq!(rgb.key().unwrap().text(), b"rgb");
+        let values = rgb.value().unwrap().as_block().unwrap().values().count();
+        assert_eq!(values, 3);
+
+        // In value position, a header is still a headered block.
+        let tree = parse(b"color = rgb { 1 2 3 }");
+        let value = tree.ast().fields().next().unwrap().value().unwrap();
+        assert!(value.as_headered().is_some());
+    }
+
+    #[test]
+    fn macro_parameters_glue_to_the_surrounding_scalar() {
+        for (source, kind) in [
+            (b"$a$_b".as_slice(), SyntaxKind::MacroParam),
+            (b"foo_$a$", SyntaxKind::MacroParam),
+            (b"$a$_$b$_c", SyntaxKind::MacroParam),
+            (b"$$", SyntaxKind::MacroParam),
+            (b"$5", SyntaxKind::Unquoted),
+            (b"a$b", SyntaxKind::Unquoted),
+        ] {
+            let tokens = lex(source, Flavor::default()).tokens;
+            assert_eq!(tokens.len(), 1, "{source:?}");
+            assert_eq!(tokens[0].kind, kind, "{source:?}");
+        }
+
+        let tree = parse(b"k = $a$_b");
+        let field = tree.ast().fields().next().unwrap();
+        let value = field.value().unwrap().as_scalar().unwrap();
+        assert_eq!(value.as_bytes(), b"$a$_b");
+        assert!(tree.root().contains_macro());
+        assert_eq!(tree.root().child_nodes().count(), 1);
+
+        // HoI4 has no macros.
+        let tokens = lex(b"$a$_b", Flavor::hoi4()).tokens;
+        assert_eq!(tokens[0].kind, SyntaxKind::Unquoted);
+    }
+
+    #[test]
+    fn trivia_belongs_to_the_nearest_common_ancestor() {
+        let source = b"# lead\na # inside\n= { b }  # tail\n";
+        let tree = parse(source);
+        let comments: Vec<_> = tree
+            .tokens()
+            .filter(|t| t.kind() == SyntaxKind::Comment)
+            .collect();
+        assert_eq!(comments.len(), 3);
+        assert!(comments.iter().all(|c| c.is_trivia()));
+        assert_eq!(comments[0].parent().unwrap().kind(), SyntaxKind::Root);
+        assert_eq!(comments[1].parent().unwrap().kind(), SyntaxKind::Field);
+        assert_eq!(comments[2].parent().unwrap().kind(), SyntaxKind::Root);
+
+        // The space after `{` belongs to the block.
+        let space = tree
+            .tokens()
+            .find(|t| t.kind() == SyntaxKind::Whitespace && t.text_range().start() == 21)
+            .unwrap();
+        assert_eq!(space.parent().unwrap().kind(), SyntaxKind::Block);
+
+        let field = tree.root().child_nodes().next().unwrap();
+        assert!(field.has_comment());
+        assert!(tree.root().has_comment());
+        let block = field.child_nodes().next().unwrap();
+        assert!(!block.has_comment());
+
+        // The node's children hold the same trivia as the cursor parents.
+        let field_comments = field
+            .child_tokens()
+            .filter(|t| t.kind() == SyntaxKind::Comment)
+            .count();
+        assert_eq!(field_comments, 1);
+        assert_eq!(field.text(), b"a # inside\n= { b }");
+        assert_eq!(field.significant_children().count(), 3);
+    }
+
+    #[test]
+    fn every_leaf_parent_holds_the_leaf() {
+        let source = b"# c\na = { b = @[ (1 + x) * 2 ] [[p] c = d ] } e { f } g\n";
+        let tree = parse(source);
+        fn walk(node: SyntaxNode<'_, '_>) {
+            for child in node.children() {
+                match child {
+                    SyntaxElement::Token(token) => {
+                        assert_eq!(token.parent().unwrap().text_range(), node.text_range());
+                        assert_eq!(token.parent().unwrap().kind(), node.kind());
+                    }
+                    SyntaxElement::Node(child) => {
+                        assert_eq!(child.parent().unwrap().text_range(), node.text_range());
+                        walk(child);
+                    }
+                }
+            }
+        }
+        walk(tree.root());
+        assert_eq!(tree.reconstruct(), source);
+    }
+
+    #[test]
+    fn decode_removes_quotes_and_escapes() {
+        let tree = parse(b"a = \"x \\\"y\\\"\" b = \xe4");
+        let values: Vec<_> = tree
+            .ast()
+            .fields()
+            .map(|f| {
+                f.value()
+                    .unwrap()
+                    .decode(crate::Windows1252Encoding::new())
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(values, ["x \"y\"", "\u{e4}"]);
+    }
+
+    #[test]
+    fn repair_validation_is_lazy_and_cached() {
+        let tree = parse(b"a = { b");
+        assert!(tree.repairs_valid.get().is_none());
+        let recovery = tree.errors()[0].recovery.as_ref().unwrap();
+        assert!(tree.repair_applicability(recovery).is_machine_applicable());
+        assert_eq!(tree.repairs_valid.get(), Some(&true));
     }
 }

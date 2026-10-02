@@ -1,6 +1,6 @@
 //! **Experimental** cross-file linting layer over the lossless [`syntax`] tree.
 //!
-//! A single [`GreenTree`](syntax::GreenTree) describes *one* file. But the
+//! A single [`SyntaxTree`](syntax::SyntaxTree) describes *one* file. But the
 //! interesting bugs in a Paradox mod are *cross-file*: a building that references
 //! a culture defined in another file, or in no file at all. Catching those needs
 //! a project-wide view, so this module adds the layers a per-file parser cannot
@@ -12,7 +12,7 @@
 //!    `vfs`/`FileId` shape plus Paradox override semantics).
 //! 2. [`FileSummary`] — an *ItemTree-style* summary. Each file is parsed once and
 //!    lowered into a small, **owned**, position-independent list of definitions
-//!    and references (with source ranges). The borrowing [`GreenTree`] is then
+//!    and references (with source ranges). The borrowing [`SyntaxTree`] is then
 //!    dropped, which sidesteps the "thousands of trees, each borrowing its source"
 //!    lifetime problem entirely.
 //! 3. [`Index`] — the symbol table. A flat arena of [`Definition`]s keyed by
@@ -255,7 +255,7 @@ pub struct RefItem {
 
 /// The owned, tree-free summary of one file: its definitions, references, and
 /// any syntax errors. Produced by [`summarize`], after which the parsed
-/// [`GreenTree`](syntax::GreenTree) is dropped — the summary outlives it. This
+/// [`SyntaxTree`](syntax::SyntaxTree) is dropped — the summary outlives it. This
 /// is the invalidation barrier rust-analyzer's `ItemTree` provides: it depends
 /// only on the items in the file, not on byte offsets within value bodies.
 pub struct FileSummary {
@@ -278,7 +278,7 @@ fn decode(s: crate::Scalar) -> String {
     String::from_utf8_lossy(s.as_bytes()).into_owned()
 }
 
-/// Parse one file and lower it into a [`FileSummary`]. The [`GreenTree`] is
+/// Parse one file and lower it into a [`FileSummary`]. The [`SyntaxTree`] is
 /// local to this function — every datum kept is owned — so no tree outlives the
 /// call, and the whole project's worth of summaries can be held at once without
 /// the borrow-one-slice lifetime headache.
@@ -298,7 +298,7 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
                 defs.push(DefItem {
                     kind: kind.clone(),
                     name: decode(key.as_scalar()),
-                    range: key.text_range(),
+                    range: key.text_range().into(),
                 });
             }
         }
@@ -318,14 +318,14 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
                 .filter(|r| r.order == 0)
                 .and_then(|r| repair_fixes.iter().find(|f| f.range == r.insertion_range))
                 .map(|f| Fix {
-                    range: f.range,
+                    range: f.range.into(),
                     replacement: f.replacement.clone(),
                 });
             SyntaxDiagnosticSummary {
-                message: e.message.clone(),
-                range: e.range,
-                opening_range: recovery.map(|r| r.opening_range),
-                applicability: recovery.map(|r| r.applicability),
+                message: e.message().to_owned(),
+                range: e.range.into(),
+                opening_range: recovery.map(|r| r.opening_range.into()),
+                applicability: recovery.map(|r| tree.repair_applicability(r)),
                 fix,
             }
         })
@@ -354,7 +354,7 @@ fn collect_refs(node: SyntaxNode<'_, '_>, schema: &Schema, in_error: bool, out: 
         out.push(RefItem {
             kind: kind.clone(),
             name: decode(tok.as_scalar()),
-            range: tok.text_range(),
+            range: tok.text_range().into(),
             in_error_subtree: in_error,
         });
     }
