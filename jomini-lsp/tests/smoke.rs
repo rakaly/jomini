@@ -1,5 +1,5 @@
 //! End-to-end smoke test: drive the real server (via [`jomini_lsp::serve`]) over
-//! an in-memory [`Connection`] against the bundled `examples/mod-demo` corpus —
+//! an in-memory [`Connection`] against the bundled `crates/jomini/examples/mod-demo` corpus —
 //! the same two-layer vanilla+mod project `examples/lint.rs` uses. No subprocess,
 //! no wire framing: the client and server share a process over channel pairs.
 
@@ -77,7 +77,7 @@ fn demo_paths() -> (PathBuf, PathBuf) {
         .parent()
         .unwrap()
         .to_path_buf();
-    let demo = repo.join("examples/mod-demo");
+    let demo = repo.join("crates/jomini/examples/mod-demo");
     (demo.join("mod"), demo.join("vanilla"))
 }
 

@@ -598,7 +598,7 @@ fn workspace_roots(init: &InitializeParams) -> Vec<PathBuf> {
 /// The prototype rule set: which directories define entities and which field keys
 /// reference them. This stands in for a real per-game schema (a `.cwt`-config or
 /// richer hand-written front-end is the follow-up); it mirrors `examples/lint.rs`
-/// so the bundled `examples/mod-demo` corpus lights up end-to-end in an editor.
+/// so the bundled `crates/jomini/examples/mod-demo` corpus lights up end-to-end in an editor.
 fn demo_schema() -> Schema {
     let mut schema = Schema::new();
     schema

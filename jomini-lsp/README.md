@@ -108,5 +108,5 @@ cargo test   # line_index unit tests + an in-process end-to-end smoke test
 ```
 
 `tests/smoke.rs` drives the real `serve` loop over an in-memory `Connection`
-against `../examples/mod-demo`, exercising diagnostics, symbols, go-to-definition,
+against `../crates/jomini/examples/mod-demo`, exercising diagnostics, symbols, go-to-definition,
 find-references, code actions, and formatting without a subprocess.
