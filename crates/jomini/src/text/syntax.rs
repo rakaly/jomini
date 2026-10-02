@@ -594,7 +594,11 @@ fn lex_simd<S: Simd>(simd: S, source: &[u8], flavor: Flavor, out: &mut Vec<Token
             _ => {
                 // Ordinary unquoted run: consume up to the next terminator. This
                 // catch-all is what keeps the lexer total (every byte classified).
-                let (end, dollar) = scan_unquoted(simd, source, i + 1);
+                let (mut end, dollar) = scan_unquoted(simd, source, i + 1);
+                if end < n && source[end] == b'=' && end - start > 1 && source[end - 1] == b'!' {
+                    // `a!=b` is `a`, `!=`, `b`, as in `TextTape`.
+                    end -= 1;
+                }
                 i = end;
                 classify_run(&source[start..i], b == b'$' || dollar, flavor)
             }
@@ -1656,6 +1660,14 @@ impl<'t, S: Sink> Parser<'t, S> {
         self.pos += 1;
     }
 
+    /// Return `true` when the `]` at the current position is the key of a
+    /// field, as in `active_idea_groups = { ]=0 }`.
+    fn is_bracket_key(&self) -> bool {
+        self.parameter_depth == 0
+            && self.code_depth == 0
+            && self.kind_at(self.pos + 1) == Some(SyntaxKind::Operator)
+    }
+
     fn is_code_close(&self, index: usize) -> bool {
         self.kind_at(index) == Some(SyntaxKind::CloseBracket)
             && self.kind_at(index + 1) == Some(SyntaxKind::CloseBracket)
@@ -1669,6 +1681,11 @@ impl<'t, S: Sink> Parser<'t, S> {
                     if self.parameter_depth > 0 && self.bracket_depth == 0 =>
                 {
                     break;
+                }
+                Some(SyntaxKind::CloseBracket) if self.is_bracket_key() => {
+                    // EU4 saves contain `]=0` as a field. The `]` is a scalar.
+                    self.tokens[self.pos].kind = SyntaxKind::Unquoted;
+                    self.parse_item();
                 }
                 Some(SyntaxKind::CloseBracket) if in_block && self.parameter_depth == 0 => {
                     // A raw `]` interrupts an ordinary block. Leave it for the
@@ -4620,6 +4637,30 @@ mod tests {
     }
 
     #[test]
+    fn bang_equal_splits_from_a_scalar() {
+        let tree = parse(b"a!=1");
+        let field = tree.ast().fields().next().unwrap();
+        assert_eq!(field.key().unwrap().text(), b"a");
+        assert_eq!(field.op(), Some(Operator::NotEqual));
+        assert_eq!(tree.reconstruct(), b"a!=1");
+    }
+
+    #[test]
+    fn close_bracket_key_is_a_field() {
+        let source = b"active_idea_groups = { ]=0 defensive_ideas=2 }";
+        let tree = parse(source);
+        assert!(tree.errors().is_empty());
+        let field = tree.ast().fields().next().unwrap();
+        let block = field.value().unwrap().as_block().unwrap();
+        let keys: Vec<_> = block
+            .fields()
+            .map(|f| f.key().unwrap().text().to_vec())
+            .collect();
+        assert_eq!(keys, vec![b"]".to_vec(), b"defensive_ideas".to_vec()]);
+        assert_eq!(tree.reconstruct(), source);
+    }
+
+    #[test]
     #[cfg_attr(miri, ignore)] // the deep input is slow under miri
     fn deeply_nested_blocks_do_not_overflow() {
         // Analogous to TextTape's `test_too_heavily_nested`: tens of thousands
@@ -5826,6 +5867,9 @@ mod tests {
                     i += 1;
                     while i < n && !STOP[source[i] as usize] {
                         i += 1;
+                    }
+                    if source.get(i) == Some(&b'=') && i - start > 1 && source[i - 1] == b'!' {
+                        i -= 1;
                     }
                     let run = &source[start..i];
                     if flavor.variables && run.len() > 1 && run[0] == b'@' && run[1] != b'@' {
