@@ -3,3 +3,5 @@
 1.10-normal-text.hoi4
 1.17-new-ironman-format.hoi4
 comp_bin.hoi4
+ironman-1.19.hoi4
+MAN_1938.hoi4
