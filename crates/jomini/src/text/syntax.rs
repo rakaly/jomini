@@ -1641,7 +1641,7 @@ impl<'t, S: Sink> Parser<'t, S> {
 
     #[inline]
     fn kind_at(&self, index: usize) -> Option<SyntaxKind> {
-        (index < self.lexed).then(|| self.tokens[index].kind)
+        self.tokens[..self.lexed].get(index).map(|token| token.kind)
     }
 
     #[inline]
@@ -1810,12 +1810,14 @@ impl<'t, S: Sink> Parser<'t, S> {
             && self.preceded_by_code(open)
     }
 
+    #[inline]
     fn is_code_keyword(&self, index: usize) -> bool {
         self.kind_at(index) == Some(SyntaxKind::Unquoted)
             && self.tokens[index].len == 4
             && self.token_text(index) == b"code"
     }
 
+    #[inline]
     fn is_code_statement(&self) -> bool {
         self.is_code_keyword(self.pos) && self.code_payload_start(self.pos + 1)
     }
