@@ -306,13 +306,18 @@ fn can_deserialize_meta(file: &Eu5File<impl ReaderAt>) {
     }
 }
 
-fn can_deserialize_gamestate(file: &Eu5File<impl ReaderAt>) {
+type GamestateAssertions = fn(&Gamestate<'_>);
+
+fn can_deserialize_gamestate(
+    file: &Eu5File<impl ReaderAt>,
+    assertions: Option<GamestateAssertions>,
+) {
     let resolver = &*TOKENS;
     let bump = arena_serde::Arena::new();
-    match file.gamestate().unwrap() {
+    let save = match file.gamestate().unwrap() {
         eu5save::SaveContentKind::Text(mut txt) => {
             Gamestate::deserialize_in_arena(&mut txt.deserializer(), &bump)
-                .expect("failed to deserialize text gamestate");
+                .expect("failed to deserialize text gamestate")
         }
         eu5save::SaveContentKind::Binary(mut bin) => {
             // Skip deserialization if we don't have tokens
@@ -322,22 +327,62 @@ fn can_deserialize_gamestate(file: &Eu5File<impl ReaderAt>) {
             let save_resolver =
                 SaveResolver::from_file(file, resolver).expect("failed to create save resolver");
             Gamestate::deserialize_in_arena(&mut bin.deserializer(&save_resolver), &bump)
-                .expect("failed to deserialize binary gamestate");
+                .expect("failed to deserialize binary gamestate")
         }
+    };
+
+    if let Some(assertions) = assertions {
+        assertions(&save);
     }
 }
 
+fn assert_milan_1_4_buildings(save: &Gamestate<'_>) {
+    let buildings = &save.building_manager.database;
+    assert_eq!(buildings.iter().count(), 127916);
+    assert_eq!(
+        buildings
+            .iter()
+            .map(|b| b.production_methods.len())
+            .sum::<usize>(),
+        132623,
+    );
+    assert_eq!(
+        buildings
+            .iter()
+            .filter(|b| b.production_methods.len() == 2)
+            .count(),
+        4707,
+    );
+    let jewelry = buildings
+        .iter()
+        .find(|b| b.kind.to_str() == "jewelry_guild" && b.location.value() == 125)
+        .expect("jewelry guild exists in the 1.4 save");
+    let methods: Vec<_> = jewelry
+        .production_methods
+        .iter()
+        .map(|m| m.to_str())
+        .collect();
+    assert_eq!(methods, ["silver_base", "gems_enhancement"]);
+    assert_eq!(jewelry.employed, 0.0);
+}
+
 #[rstest]
-#[case("ironman-1.0.eu5")]
-#[case("debug-1.0.eu5")]
-#[case("Clandeboye.eu5")]
-#[case("mp_cas_1374_03_06.eu5")]
-#[case("SP_ironman_95ff2d32-01d9-446a-98bb-9eec434606a5.eu5")]
-#[case("SP_ironman_aa80180a-6b96-4666-a3f2-5d4587b0751e.eu5")]
-#[case("SP_MLO_1617_04_01_166d38a1-bffb-4182-9e37-9540b0c2ac4f.eu5")]
-fn deserialization_regression_test(#[case] filename: &str) {
+#[case("ironman-1.0.eu5", None)]
+#[case("debug-1.0.eu5", None)]
+#[case("Clandeboye.eu5", None)]
+#[case("mp_cas_1374_03_06.eu5", None)]
+#[case("SP_ironman_95ff2d32-01d9-446a-98bb-9eec434606a5.eu5", None)]
+#[case("SP_ironman_aa80180a-6b96-4666-a3f2-5d4587b0751e.eu5", None)]
+#[case(
+    "SP_MLO_1617_04_01_166d38a1-bffb-4182-9e37-9540b0c2ac4f.eu5",
+    Some(assert_milan_1_4_buildings as GamestateAssertions)
+)]
+fn deserialization_regression_test(
+    #[case] filename: &str,
+    #[case] assertions: Option<GamestateAssertions>,
+) {
     let file = utils::request_file(filename);
     let save = Eu5File::from_file(file).unwrap();
     can_deserialize_meta(&save);
-    can_deserialize_gamestate(&save);
+    can_deserialize_gamestate(&save, assertions);
 }
