@@ -136,6 +136,9 @@ pub struct MarketGood<'bump> {
     pub good: GoodName<'bump>,
     pub price: f64,
     pub supplied: &'bump [(BStr<'bump>, f64)],
+    /// The `Production` entry of `supplied`, split by source: `RawMaterials`
+    /// (RGOs), `Buildings`, and `Base`.
+    pub production_supplied: &'bump [(BStr<'bump>, f64)],
     pub demanded: &'bump [(BStr<'bump>, f64)],
     pub taken: &'bump [(BStr<'bump>, f64)],
     pub impact: f64,
@@ -241,6 +244,8 @@ where
         #[arena(default, deserialize_with = "deserialize_market_good_breakdown")]
         supplied: &'bump [(BStr<'bump>, f64)],
         #[arena(default, deserialize_with = "deserialize_market_good_breakdown")]
+        production_supplied: &'bump [(BStr<'bump>, f64)],
+        #[arena(default, deserialize_with = "deserialize_market_good_breakdown")]
         demanded: &'bump [(BStr<'bump>, f64)],
         #[arena(default, deserialize_with = "deserialize_market_good_breakdown")]
         taken: &'bump [(BStr<'bump>, f64)],
@@ -290,6 +295,7 @@ where
                     good: key,
                     price: value.price,
                     supplied: value.supplied,
+                    production_supplied: value.production_supplied,
                     demanded: value.demanded,
                     taken: value.taken,
                     impact: value.impact,
