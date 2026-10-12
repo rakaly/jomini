@@ -72,7 +72,7 @@ impl Eu4File {
     }
 }
 
-const EMPTY_RESOLVER: SegmentedResolver<'static> = SegmentedResolver::empty();
+static EMPTY_RESOLVER: SegmentedResolver<'static> = SegmentedResolver::empty();
 
 pub struct Eu4Text<'a>(&'a [u8]);
 
@@ -81,8 +81,8 @@ impl<'a> Eu4Text<'a> {
         self.0
     }
 
-    pub fn deserializer(&self) -> Eu4Modeller<'a, SegmentedResolver<'static>> {
-        Eu4Modeller::from_reader(Box::new(self.0), EMPTY_RESOLVER).with_encoding(Encoding::Text)
+    pub fn deserializer(&self) -> Eu4Modeller<'a, &'static SegmentedResolver<'static>> {
+        Eu4Modeller::from_reader(Box::new(self.0), &EMPTY_RESOLVER).with_encoding(Encoding::Text)
     }
 }
 
@@ -172,7 +172,7 @@ impl<'a> Eu4SliceFile<'a> {
     {
         match &self.kind {
             Eu4SliceFileKind::Text(data) => {
-                Eu4Modeller::from_reader(Box::new(data.0), EMPTY_RESOLVER)
+                Eu4Modeller::from_reader(Box::new(data.0), &EMPTY_RESOLVER)
                     .with_encoding(Encoding::Text)
                     .deserialize()
             }
