@@ -1,3 +1,15 @@
+## v0.37.2 - 2026-10-15
+
+### Added
+
+- Add `JominiFile::from_reader_at` under the `envelope` feature.
+  Accept readers that implement `ReaderAt` and the total data size.
+
+### Fixed
+
+- Return I/O errors from `JominiFile::from_file` during ZIP detection
+  instead of treating the data as uncompressed.
+
 ## v0.37.1 - 2026-09-21
 
 ### Added
