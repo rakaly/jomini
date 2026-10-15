@@ -25,6 +25,42 @@ impl<R: Read> Read for ForwardOnlyChunks<R> {
     }
 }
 
+/// Reads at absolute offsets and does not expose the data as a slice.
+struct OffsetReader {
+    data: Vec<u8>,
+}
+
+impl OffsetReader {
+    fn open(path: &str) -> (Self, u64) {
+        let data = std::fs::read(path).unwrap();
+        let size = data.len() as u64;
+        (OffsetReader { data }, size)
+    }
+}
+
+impl ReaderAt for OffsetReader {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        self.data.as_slice().read_at(buf, offset)
+    }
+}
+
+/// Fails all reads after the first read, which reads the header.
+#[derive(Debug)]
+struct FailingReader {
+    data: Vec<u8>,
+    header_read: std::cell::Cell<bool>,
+}
+
+impl ReaderAt for FailingReader {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        if self.header_read.replace(true) {
+            Err(std::io::Error::other("read failure"))
+        } else {
+            self.data.as_slice().read_at(buf, offset)
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Deserialize)]
 struct Meta {
     meta: bool,
@@ -192,6 +228,11 @@ fn plaintext_extraction() {
 
     let file = std::fs::read("tests/fixtures/envelopes/text.txt").unwrap();
     let file = JominiFile::from_slice(&file).unwrap();
+    assert_eq!(file.header().kind(), SaveHeaderKind::Text);
+    plaintext_uncompressed_assertions(file);
+
+    let (reader, size) = OffsetReader::open("tests/fixtures/envelopes/text.txt");
+    let file = JominiFile::from_reader_at(reader, size).unwrap();
     assert_eq!(file.header().kind(), SaveHeaderKind::Text);
     plaintext_uncompressed_assertions(file);
 }
@@ -384,6 +425,11 @@ fn zip_bin_compressed_meta() {
     let file = JominiFile::from_slice(&file).unwrap();
     assert_eq!(file.header().kind(), SaveHeaderKind::SplitBinary);
     zip_binary_assertions(&file);
+
+    let (reader, size) = OffsetReader::open("tests/fixtures/envelopes/split.zip");
+    let file = JominiFile::from_reader_at(reader, size).unwrap();
+    assert_eq!(file.header().kind(), SaveHeaderKind::SplitBinary);
+    zip_binary_assertions(&file);
 }
 
 #[test]
@@ -395,6 +441,11 @@ fn zip_bin_uncompressed_meta() {
 
     let file = std::fs::read("tests/fixtures/envelopes/header.zip").unwrap();
     let file = JominiFile::from_slice(&file).unwrap();
+    assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedBinary);
+    zip_binary_assertions(&file);
+
+    let (reader, size) = OffsetReader::open("tests/fixtures/envelopes/header.zip");
+    let file = JominiFile::from_reader_at(reader, size).unwrap();
     assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedBinary);
     zip_binary_assertions(&file);
 }
@@ -411,6 +462,11 @@ fn bin_uncompressed() {
     let file = JominiFile::from_slice(&file).unwrap();
     assert_eq!(file.header().kind(), SaveHeaderKind::Binary);
     binary_uncompressed_assertions(file);
+
+    let (reader, size) = OffsetReader::open("tests/fixtures/envelopes/autosave.bin");
+    let file = JominiFile::from_reader_at(reader, size).unwrap();
+    assert_eq!(file.header().kind(), SaveHeaderKind::Binary);
+    binary_uncompressed_assertions(file);
 }
 
 #[test]
@@ -425,6 +481,11 @@ fn zip_txt() {
     let file = JominiFile::from_slice(&file).unwrap();
     assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedText);
     zip_text_assertions(file);
+
+    let (reader, size) = OffsetReader::open("tests/fixtures/envelopes/text.zip");
+    let file = JominiFile::from_reader_at(reader, size).unwrap();
+    assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedText);
+    zip_text_assertions(file);
 }
 
 #[test]
@@ -434,6 +495,29 @@ fn envelope_vec() {
     let file = JominiFile::from_slice(file).unwrap();
     assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedText);
     zip_text_assertions(file);
+}
+
+#[test]
+fn reader_at_propagates_read_errors() {
+    let data = std::fs::read("tests/fixtures/envelopes/text.txt").unwrap();
+    let size = data.len() as u64;
+    let reader = FailingReader {
+        data,
+        header_read: std::cell::Cell::new(false),
+    };
+    let err = JominiFile::from_reader_at(reader, size).unwrap_err();
+    let EnvelopeErrorKind::Zip(err) = err.kind() else {
+        panic!("expected a zip error, got {err:?}");
+    };
+    assert!(matches!(err.kind(), rawzip::ErrorKind::IO(_)));
+}
+
+#[test]
+fn reader_at_rejects_short_input() {
+    let data = b"SAV01".to_vec();
+    let size = data.len() as u64;
+    let err = JominiFile::from_reader_at(data, size).unwrap_err();
+    assert!(matches!(err.kind(), EnvelopeErrorKind::InvalidHeader));
 }
 
 #[test]
