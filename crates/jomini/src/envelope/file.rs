@@ -12,7 +12,7 @@ use rawzip::{
 };
 use std::{
     fs::File,
-    io::{Cursor, Read},
+    io::{Cursor, Read, Seek, SeekFrom},
     ops::Range,
 };
 
@@ -76,13 +76,47 @@ impl JominiFile<()> {
 
     /// Creates a Jomini file from a file handle
     pub fn from_file(mut file: File) -> Result<JominiFile<FileReader>, EnvelopeError> {
+        let size = file.seek(SeekFrom::End(0))?;
+        JominiFile::from_reader_at(FileReader::from(file), size)
+    }
+
+    /// Creates a Jomini file from a reader that reads at absolute offsets.
+    ///
+    /// Use this constructor when the data is not in memory and is not a
+    /// [`File`]. For example, a `Blob` that a web worker reads with
+    /// `FileReaderSync`. The `size` is the total length of the data in bytes.
+    ///
+    /// This constructor reads only the header and the end of the data.
+    /// Subsequent operations read the save content incrementally. Thus, the
+    /// full save does not have to be in memory.
+    ///
+    /// Read errors that occur while the constructor looks for a ZIP archive
+    /// are returned. They do not cause the data to be read as uncompressed.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use jomini::envelope::{JominiFile, SaveHeaderKind};
+    ///
+    /// let data = std::fs::read("tests/fixtures/envelopes/text.zip").unwrap();
+    /// let file = JominiFile::from_reader_at(data.as_slice(), data.len() as u64).unwrap();
+    /// assert_eq!(file.header().kind(), SaveHeaderKind::UnifiedText);
+    /// ```
+    pub fn from_reader_at<R>(reader: R, size: u64) -> Result<JominiFile<R>, EnvelopeError>
+    where
+        R: ReaderAt,
+    {
         let mut buf = [0u8; SaveHeader::SIZE];
-        file.read_exact(&mut buf)?;
-        let header = SaveHeader::from_slice(&buf)?;
+        let header_buf = &mut buf[..size.min(SaveHeader::SIZE as u64) as usize];
+        reader.read_exact_at(header_buf, 0)?;
+        let header = SaveHeader::from_slice(header_buf)?;
+        let header_len = header.header_len() as u64;
         let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
 
-        let archive =
-            rawzip::ZipArchive::with_max_search_space(64 * 1024).locate_in_file(file, &mut buf);
+        // Always look for a ZIP archive at the end of the data, because some
+        // headers claim that the data is uncompressed when it is a ZIP.
+        let archive = rawzip::ZipArchive::with_max_search_space(64 * 1024)
+            .locate_in_reader(reader, &mut buf, size);
 
         match archive {
             Ok(archive) => {
@@ -91,23 +125,20 @@ impl JominiFile<()> {
                     kind: JominiFileKind::Zip(zip),
                 })
             }
-            Err((file, _)) => {
-                let reader = FileReader::from(file);
-                if header.kind().is_binary() {
-                    let body = SaveContent::with_offset(reader, header.header_len() as u64);
-                    Ok(JominiFile {
-                        kind: JominiFileKind::Uncompressed(SaveDataKind::Binary(SaveData::new(
-                            header, body,
-                        ))),
-                    })
+            Err((_, e)) if matches!(e.kind(), rawzip::ErrorKind::IO(_)) => {
+                Err(EnvelopeErrorKind::Zip(e).into())
+            }
+            Err((reader, _)) => {
+                let data = if header.kind().is_binary() {
+                    let body = SaveContent::with_offset(reader, header_len);
+                    SaveDataKind::Binary(SaveData::new(header, body))
                 } else {
-                    let body = SaveContent::with_offset(reader, header.header_len() as u64);
-                    Ok(JominiFile {
-                        kind: JominiFileKind::Uncompressed(SaveDataKind::Text(SaveData::new(
-                            header, body,
-                        ))),
-                    })
-                }
+                    let body = SaveContent::with_offset(reader, header_len);
+                    SaveDataKind::Text(SaveData::new(header, body))
+                };
+                Ok(JominiFile {
+                    kind: JominiFileKind::Uncompressed(data),
+                })
             }
         }
     }
