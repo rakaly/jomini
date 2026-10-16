@@ -26,6 +26,8 @@ serde = { workspace = true, optional = true }
 serde_json = { version = "1.0.114", optional = true }
 zstd = { version = "0.14", default-features = false, optional = true }
 ruzstd = { version = "0.9", optional = true }
+fearless_simd = "1.0"
+smallvec = { workspace = true }
 
 [features]
 default = ["derive", "faster_writer"]
@@ -40,12 +42,17 @@ zstd_rust = ["envelope", "dep:ruzstd"]
 [dev-dependencies]
 attohttpc = { workspace = true }
 encoding_rs = "0.8"
+# Tests run the lexer on the portable fallback that targets without SIMD use.
+fearless_simd = { version = "1.0", features = ["force_support_fallback"] }
 flate2 = { workspace = true }
 quickcheck = "1"
 quickcheck_macros = "1"
 rawzip = { workspace = true }
 rstest = "0.26.1"
 serde_with = "3.8.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(jomini_lossless_tape)"] }
 
 [[bin]]
 name = "json"
