@@ -62,9 +62,7 @@ pub fn parse_tape(source: &[u8]) -> TextTape<'_> {
 
 /// Parse `source` into a [`TextTape`] with a specific [`Flavor`].
 pub fn parse_tape_with(source: &[u8], flavor: Flavor) -> TextTape<'_> {
-    let p = run(source, flavor, |lexed| {
-        TapeSink::new(source, lexed.tokens.len())
-    });
+    let p = run(source, flavor, TapeSink::new(source, source.len() / 5));
     let bom = source.starts_with(super::BOM);
     TextTape::from_parts(p.sink.tape, bom)
 }
@@ -506,6 +504,8 @@ fn operator(text: &[u8]) -> Option<Operator> {
 }
 
 impl Sink for TapeSink<'_> {
+    const KEEP_TOKENS: bool = false;
+
     #[inline]
     fn start_node(&mut self, kind: SyntaxKind) {
         if self.skip > 0 || matches!(self.frames.last(), Some(Frame::Opaque { .. })) {
@@ -793,6 +793,9 @@ mod tests {
         same(b"a = @var b = @[1 + 2] c = $MACRO$");
         same(b"date=1444.11.11 name=\"a \\\"b\\\" c\"");
         same(b"foo = { @[a * 2] }");
+        // A quote in an unquoted scalar does not start a string.
+        same(b"names = { 10 = { a b\" } 11 = { c } }");
+        same(b"foo = { blockoverride\"name\" { a = b } }");
     }
 
     #[test]

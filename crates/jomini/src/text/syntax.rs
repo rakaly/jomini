@@ -470,9 +470,13 @@ static CLASS: [u8; 256] = {
 };
 
 /// Bytes that terminate an unquoted run. These either start their own token
-/// (braces, brackets, operators, quote, comment) or are whitespace. Notably
-/// `@`, `$`, `!`, `?`, `:`, `.`, `-`, `/`, `|` and high bytes are *not* here, so
-/// they are absorbed mid-identifier and only dispatch specially as a first byte.
+/// (braces, brackets, operators, comment) or are whitespace. Notably `"`, `@`,
+/// `$`, `!`, `?`, `:`, `.`, `-`, `/`, `|` and high bytes are *not* here, so they
+/// are absorbed mid-identifier and only dispatch specially as a first byte.
+///
+/// A `"` in a run is part of the scalar, as in `TextTape`. Game files contain
+/// typos such as `{ name" }`. If such a quote started a string, the string
+/// would contain the `}` and change the structure of the remainder of the file.
 static STOP: [bool; 256] = {
     let mut table = [false; 256];
     let mut i = 0;
@@ -481,7 +485,6 @@ static STOP: [bool; 256] = {
             CLASS[i],
             CLASS_WS
                 | CLASS_COMMENT
-                | CLASS_QUOTE
                 | CLASS_OPEN_BRACE
                 | CLASS_CLOSE_BRACE
                 | CLASS_OPEN_BRACKET
@@ -516,34 +519,92 @@ fn is_ws(b: u8) -> bool {
     CLASS[b as usize] == CLASS_WS
 }
 
-/// The output of the lexer.
+/// A resumable lexer. Each [`Lexer::fill`] call appends the next tokens, so
+/// the parser can read a small window of tokens instead of a full buffer.
+struct Lexer {
+    level: Level,
+    flavor: Flavor,
+    /// The byte offset where lexing continues.
+    offset: usize,
+    /// The flags for the next token.
+    flags: u8,
+    /// All the source is lexed.
+    done: bool,
+}
+
+const BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+
+impl Lexer {
+    fn new(source: &[u8], flavor: Flavor) -> Self {
+        Lexer {
+            level: Level::new(),
+            flavor,
+            offset: if source.starts_with(BOM) { 3 } else { 0 },
+            flags: 0,
+            done: source.is_empty(),
+        }
+    }
+
+    /// Append at least `min` tokens to `out`, or all the remaining tokens.
+    #[inline(never)]
+    fn fill(&mut self, source: &[u8], out: &mut Vec<Token>, min: usize) {
+        if self.done {
+            return;
+        }
+        let limit = out.len().saturating_add(min);
+        let (offset, flags) = dispatch!(self.level, simd => lex_simd(
+            simd,
+            source,
+            self.flavor,
+            (self.offset, self.flags),
+            limit,
+            out,
+        ));
+        self.offset = offset;
+        self.flags = flags;
+        self.done = offset >= source.len();
+    }
+
+    /// Return `true` when the gap after the last token contains a comment.
+    /// The value is correct only when the lexer is done.
+    fn trailing_comment(&self) -> bool {
+        self.flags & TOKEN_COMMENT_BEFORE != 0
+    }
+}
+
+/// All the tokens of a source.
+#[cfg(test)]
 struct Lexed {
     tokens: Vec<Token>,
     /// The gap after the last token contains a comment.
     trailing_comment: bool,
 }
 
-const BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
-
+#[cfg(test)]
 fn lex(source: &[u8], flavor: Flavor) -> Lexed {
-    // Save files average approximately five bytes per significant token.
-    let mut tokens = Vec::with_capacity(source.len() / 5 + 16);
-    let level = Level::new();
-    let trailing_comment = dispatch!(level, simd => lex_simd(simd, source, flavor, &mut tokens));
+    let mut lexer = Lexer::new(source, flavor);
+    let mut tokens = Vec::new();
+    lexer.fill(source, &mut tokens, usize::MAX);
     Lexed {
         tokens,
-        trailing_comment,
+        trailing_comment: lexer.trailing_comment(),
     }
 }
 
-/// Lex `source` into `out`. Return `true` when a comment follows the last token.
+/// Lex `source` from the state `(offset, flags)` into `out` until `out` has
+/// `limit` tokens or the source ends. Return the state after the last token.
 #[inline(always)]
-fn lex_simd<S: Simd>(simd: S, source: &[u8], flavor: Flavor, out: &mut Vec<Token>) -> bool {
+fn lex_simd<S: Simd>(
+    simd: S,
+    source: &[u8],
+    flavor: Flavor,
+    (mut i, mut flags): (usize, u8),
+    limit: usize,
+    out: &mut Vec<Token>,
+) -> (usize, u8) {
     let n = source.len();
-    let mut i = if source.starts_with(BOM) { 3 } else { 0 };
-    let mut flags = 0u8;
 
-    while i < n {
+    while i < n && out.len() < limit {
         let b = source[i];
         let start = i;
         let kind = match CLASS[b as usize] {
@@ -602,7 +663,7 @@ fn lex_simd<S: Simd>(simd: S, source: &[u8], flavor: Flavor, out: &mut Vec<Token
                 // Ordinary unquoted run: consume up to the next terminator. This
                 // catch-all is what keeps the lexer total (every byte classified).
                 let (mut end, dollar) = scan_unquoted(simd, source, i + 1);
-                if end < n && source[end] == b'=' && end - start > 1 && source[end - 1] == b'!' {
+                if source[end - 1] == b'!' && end - start > 1 && end < n && source[end] == b'=' {
                     // `a!=b` is `a`, `!=`, `b`, as in `TextTape`.
                     end -= 1;
                 }
@@ -620,7 +681,7 @@ fn lex_simd<S: Simd>(simd: S, source: &[u8], flavor: Flavor, out: &mut Vec<Token
         flags = 0;
     }
 
-    flags & TOKEN_COMMENT_BEFORE != 0
+    (i, flags)
 }
 
 /// Classify an unquoted run. `dollar` is `true` when the run contains a `$`.
@@ -658,7 +719,6 @@ fn ws_lanes<S: Simd>(v: u8x16<S>) -> mask8x16<S> {
 ///
 /// - `v | 0x20` is `{` for `{` and `[`, and `}` for `}` and `]`.
 /// - `v - '<' <= 2` is `<`, `=`, and `>`.
-/// - `v - '"' <= 1` is `"` and `#`.
 #[inline(always)]
 fn stop_lanes<S: Simd>(v: u8x16<S>) -> mask8x16<S> {
     let folded = v | 0x20u8;
@@ -666,7 +726,7 @@ fn stop_lanes<S: Simd>(v: u8x16<S>) -> mask8x16<S> {
         | folded.simd_eq(b'{')
         | folded.simd_eq(b'}')
         | lanes_le(v - b'<', 2)
-        | lanes_le(v - b'"', 1)
+        | v.simd_eq(b'#')
 }
 
 #[inline(always)]
@@ -679,17 +739,6 @@ fn load<S: Simd>(simd: S, source: &[u8], i: usize) -> u8x16<S> {
 #[inline(always)]
 fn scan_unquoted<S: Simd>(simd: S, source: &[u8], mut i: usize) -> (usize, bool) {
     let mut dollar = false;
-    // Most tokens are short (numbers, dates, `yes`). Check the first bytes one
-    // at a time, and use the vector scan only for a longer run.
-    let short_end = (i + 8).min(source.len());
-    while i < short_end {
-        match RUN[source[i] as usize] {
-            RUN_CONTINUE => {}
-            RUN_STOP => return (i, dollar),
-            _ => dollar = true,
-        }
-        i += 1;
-    }
     while i + 16 <= source.len() {
         let v = load(simd, source, i);
         let stops = stop_lanes(v).to_bitmask();
@@ -940,6 +989,8 @@ fn lex_trivia(source: &[u8], start: u32, end: u32) -> (SyntaxKind, u32) {
 #[non_exhaustive]
 pub enum SyntaxErrorKind {
     UnmatchedCloseBrace,
+    /// A `]` that closes no parameter, code payload, or interpolation.
+    UnmatchedCloseBracket,
     UnclosedBlock,
     UnclosedInterpolation,
     UnclosedParameterHeader,
@@ -962,6 +1013,7 @@ impl SyntaxErrorKind {
     pub fn message(self) -> &'static str {
         match self {
             Self::UnmatchedCloseBrace => "unmatched '}'",
+            Self::UnmatchedCloseBracket => "unmatched ']'",
             Self::UnclosedBlock => "unclosed '{'",
             Self::UnclosedInterpolation => "unclosed bracket interpolation",
             Self::UnclosedParameterHeader => "unclosed parameter header",
@@ -1155,17 +1207,17 @@ pub fn parse(source: &[u8]) -> SyntaxTree<'_> {
 
 /// Parse `source` into a lossless [`SyntaxTree`] with a specific [`Flavor`].
 pub fn parse_with(source: &[u8], flavor: Flavor) -> SyntaxTree<'_> {
-    let p = run(source, flavor, |lexed| {
-        Builder::with_capacity(lexed.tokens.len())
-    });
+    let p = run(source, flavor, Builder::with_capacity(source.len() / 5));
+    let trailing_comment = p.lexer.trailing_comment();
     let Parser {
         sink,
         mut tokens,
+        base,
         lexed,
         errors,
-        trailing_comment,
         ..
     } = p;
+    debug_assert_eq!(base, 0, "the tree keeps every token");
     let nodes = sink.finish(trailing_comment, &mut tokens, lexed);
     SyntaxTree {
         source,
@@ -1178,20 +1230,14 @@ pub fn parse_with(source: &[u8], flavor: Flavor) -> SyntaxTree<'_> {
     }
 }
 
-/// Lex `source`, then send the events of the grammar to the sink that
-/// `make_sink` makes.
-fn run<S: Sink>(
-    source: &[u8],
-    flavor: Flavor,
-    make_sink: impl FnOnce(&Lexed) -> S,
-) -> Parser<'_, S> {
+/// Send the events of the grammar for `source` to `sink`. The parser lexes
+/// the source while it parses.
+fn run<S: Sink>(source: &[u8], flavor: Flavor, sink: S) -> Parser<'_, S> {
     assert!(
         u32::try_from(source.len()).is_ok(),
         "source is larger than 4 GiB"
     );
-    let lexed = lex(source, flavor);
-    let sink = make_sink(&lexed);
-    let mut p = Parser::new(source, lexed, sink);
+    let mut p = Parser::new(source, flavor, sink);
     p.sink.start_node(SyntaxKind::Root);
     p.parse_items(false);
     p.sink.finish_node();
@@ -1436,6 +1482,11 @@ fn apply_repairs(source: &[u8], fixes: Vec<Repair>) -> Vec<u8> {
 /// Receives the parser's events in source order. The grammar knows only this
 /// interface, so a different storage can reuse the same grammar.
 trait Sink {
+    /// The sink needs every token and every diagnostic after the parse. When
+    /// this is `false`, the parser keeps only a small window of tokens and
+    /// does not record diagnostics.
+    const KEEP_TOKENS: bool;
+
     /// Open a node. Its first token is the next token.
     fn start_node(&mut self, kind: SyntaxKind);
     /// Add the next token to the open node.
@@ -1508,6 +1559,8 @@ impl Builder {
 }
 
 impl Sink for Builder {
+    const KEEP_TOKENS: bool = true;
+
     #[inline]
     fn start_node(&mut self, kind: SyntaxKind) {
         let idx = self.nodes.len() as u32;
@@ -1576,17 +1629,34 @@ impl Sink for Builder {
 /// nesting (each has its own recursion).
 const MAX_DEPTH: u32 = 256;
 
+/// The number of tokens that the parser can always read after its position
+/// with [`Parser::kind_at`]. The grammar looks at most five tokens ahead.
+const LOOKAHEAD: usize = 8;
+
+/// The number of tokens that the lexer adds to the window at a time. Tests
+/// use a small value so that they exercise the window logic.
+const CHUNK: usize = if cfg!(test) { 3 } else { 1024 };
+
+/// The number of tokens before the parser position that stay in the window.
+/// The grammar looks at most two tokens back.
+const LOOKBEHIND: usize = 4;
+
 struct Parser<'t, S: Sink> {
     source: &'t [u8],
-    /// The lexed tokens. The parser appends missing tokens after them.
+    lexer: Lexer,
+    /// A window of the lexed tokens: `tokens[0]` has the index `base`. When
+    /// the sink keeps tokens, the window holds all the tokens and `base` is
+    /// zero.
     tokens: Vec<Token>,
-    /// The number of lexed tokens. A position at or after it is EOF.
+    base: usize,
+    /// The number of lexed tokens. When the lexer is done, a position at or
+    /// after it is EOF.
     lexed: usize,
+    /// The window keeps the tokens at and after this index.
+    pin: usize,
     pos: usize,
     sink: S,
     errors: Vec<SyntaxError>,
-    /// The gap after the last lexed token contains a comment.
-    trailing_comment: bool,
     /// Current block-nesting depth, compared against [`MAX_DEPTH`].
     depth: u32,
     /// Current EU4 parameter nesting depth.
@@ -1599,30 +1669,82 @@ struct Parser<'t, S: Sink> {
     recovery_barrier: u32,
     /// Number of missing delimiters inserted at EOF.
     eof_repairs: u32,
-    /// Sorted indexes of the `[` tokens that start a closed interpolation.
-    /// Calculated when the parser first needs it.
-    interpolation_starts: Option<Vec<u32>>,
+    /// The sorted indexes of the `[` tokens that start an interpolation,
+    /// for the `[` tokens before `resolved_until`.
+    interpolations: Vec<u32>,
+    resolved_until: usize,
 }
 
 impl<'t, S: Sink> Parser<'t, S> {
-    fn new(source: &'t [u8], lexed: Lexed, sink: S) -> Self {
-        let count = lexed.tokens.len();
-        Parser {
+    fn new(source: &'t [u8], flavor: Flavor, sink: S) -> Self {
+        // Save files average approximately five bytes per significant token.
+        let capacity = if S::KEEP_TOKENS {
+            source.len() / 5 + 16
+        } else {
+            2 * CHUNK + LOOKAHEAD
+        };
+        let mut parser = Parser {
             source,
-            tokens: lexed.tokens,
-            lexed: count,
+            lexer: Lexer::new(source, flavor),
+            tokens: Vec::with_capacity(capacity),
+            base: 0,
+            lexed: 0,
+            pin: usize::MAX,
             pos: 0,
             sink,
             errors: Vec::new(),
-            trailing_comment: lexed.trailing_comment,
             depth: 0,
             parameter_depth: 0,
             bracket_depth: 0,
             code_depth: 0,
             recovery_barrier: 0,
             eof_repairs: 0,
-            interpolation_starts: None,
+            interpolations: Vec::new(),
+            resolved_until: 0,
+        };
+        parser.refill();
+        parser
+    }
+
+    /// Lex more tokens into the window. When the sink does not keep tokens,
+    /// first remove the tokens that the parser cannot read again.
+    #[inline(never)]
+    fn fill(&mut self) {
+        if !S::KEEP_TOKENS {
+            let keep = self.pos.saturating_sub(LOOKBEHIND).min(self.pin);
+            if keep >= self.base + CHUNK {
+                self.tokens.drain(..keep - self.base);
+                self.base = keep;
+            }
         }
+        self.lexer.fill(self.source, &mut self.tokens, CHUNK);
+        self.lexed = self.base + self.tokens.len();
+    }
+
+    /// Lex until [`LOOKAHEAD`] tokens follow the position, or the source ends.
+    #[inline]
+    fn refill(&mut self) {
+        while self.pos + LOOKAHEAD > self.lexed && !self.lexer.done {
+            self.fill();
+        }
+    }
+
+    /// Move the position `n` tokens forward.
+    #[inline]
+    fn advance(&mut self, n: usize) {
+        self.pos += n;
+        self.refill();
+    }
+
+    /// The token at `index`. It must be in the window.
+    #[inline]
+    fn tok(&self, index: usize) -> Token {
+        self.tokens[index - self.base]
+    }
+
+    #[inline]
+    fn tok_mut(&mut self, index: usize) -> &mut Token {
+        &mut self.tokens[index - self.base]
     }
 
     /// Insert a zero-width `missing` token at EOF and record its repair.
@@ -1633,6 +1755,10 @@ impl<'t, S: Sink> Parser<'t, S> {
         construct: RecoveryConstruct,
         kind: SyntaxErrorKind,
     ) {
+        self.push_missing(missing);
+        if !S::KEEP_TOKENS {
+            return;
+        }
         let at = self.source.len() as u32;
         let order = self.eof_repairs;
         self.eof_repairs += 1;
@@ -1640,7 +1766,7 @@ impl<'t, S: Sink> Parser<'t, S> {
         // A delimiter appended to an unterminated line comment remains comment
         // text. Start a new line and preserve the file's established ending.
         if order == 0
-            && self.trailing_comment
+            && self.lexer.trailing_comment()
             && !self.source.ends_with(b"\n")
             && !self.source.ends_with(b"\r")
         {
@@ -1652,12 +1778,11 @@ impl<'t, S: Sink> Parser<'t, S> {
             repair_text.insert_str(0, newline);
         }
         let unsafe_quote = self.lexed > 0 && {
-            let last = self.tokens[self.lexed - 1];
+            let last = self.tok(self.lexed - 1);
             last.kind == SyntaxKind::Quoted
                 && last.end() == at
                 && !quote_is_closed(self.token_text(self.lexed - 1))
         };
-        self.push_missing(missing);
         self.errors.push(SyntaxError {
             kind,
             range: TextRange::empty(at),
@@ -1665,7 +1790,7 @@ impl<'t, S: Sink> Parser<'t, S> {
                 expected: missing.expected_kind().unwrap(),
                 missing,
                 construct,
-                opening_range: self.tokens[open].range(),
+                opening_range: self.tok(open).range(),
                 insertion_range: TextRange::empty(at),
                 repair_text,
                 order,
@@ -1678,7 +1803,8 @@ impl<'t, S: Sink> Parser<'t, S> {
         });
     }
 
-    /// Append a zero-width token at EOF and send it to the sink.
+    /// Send a zero-width token at EOF to the sink. The window does not hold
+    /// it: the sink records where it goes.
     fn push_missing(&mut self, kind: SyntaxKind) {
         let token = Token {
             start: self.source.len() as u32,
@@ -1686,25 +1812,42 @@ impl<'t, S: Sink> Parser<'t, S> {
             kind,
             flags: 0,
         };
-        self.tokens.push(token);
         self.sink.token(token);
     }
 
     /// Record a diagnostic that starts at the emitted token `index`. Call it
     /// while the nodes that hold the token are still open.
     fn error_at(&mut self, index: usize, kind: SyntaxErrorKind) {
-        self.tokens[index].flags |= TOKEN_ERROR;
+        if !S::KEEP_TOKENS {
+            return;
+        }
+        self.tok_mut(index).flags |= TOKEN_ERROR;
         self.sink.error();
         self.errors.push(SyntaxError {
             kind,
-            range: self.tokens[index].range(),
+            range: self.tok(index).range(),
             recovery: None,
         });
     }
 
     #[inline]
     fn kind_at(&self, index: usize) -> Option<SyntaxKind> {
-        self.tokens[..self.lexed].get(index).map(|token| token.kind)
+        debug_assert!(index >= self.base, "lookbehind before the token window");
+        let token = self.tokens.get(index.wrapping_sub(self.base));
+        debug_assert!(
+            token.is_some() || self.lexer.done,
+            "lookahead past the token window"
+        );
+        token.map(|token| token.kind)
+    }
+
+    /// Return the kind at `index` like [`Parser::kind_at`], but lex as far as
+    /// necessary.
+    fn kind_far(&mut self, index: usize) -> Option<SyntaxKind> {
+        while index >= self.lexed && !self.lexer.done {
+            self.fill();
+        }
+        self.kind_at(index)
     }
 
     #[inline]
@@ -1714,9 +1857,9 @@ impl<'t, S: Sink> Parser<'t, S> {
 
     #[inline]
     fn bump(&mut self) {
-        let t = self.tokens[self.pos];
+        let t = self.tok(self.pos);
         self.sink.token(t);
-        self.pos += 1;
+        self.advance(1);
     }
 
     /// Return `true` when the field at the current position has a scalar
@@ -1757,18 +1900,25 @@ impl<'t, S: Sink> Parser<'t, S> {
                 }
                 Some(SyntaxKind::CloseBracket) if self.is_bracket_key() => {
                     // EU4 saves contain `]=0` as a field. The `]` is a scalar.
-                    self.tokens[self.pos].kind = SyntaxKind::Unquoted;
+                    self.tok_mut(self.pos).kind = SyntaxKind::Unquoted;
                     self.parse_item();
-                }
-                Some(SyntaxKind::CloseBracket) if in_block && self.parameter_depth == 0 => {
-                    // A raw `]` interrupts an ordinary block. Leave it for the
-                    // enclosing parser and refuse a virtual `}` for this block.
-                    break;
                 }
                 Some(SyntaxKind::CloseBracket)
                     if self.code_depth > 0 && self.is_code_close(self.pos) =>
                 {
                     break;
+                }
+                Some(SyntaxKind::CloseBracket) if self.parameter_depth == 0 => {
+                    // A stray `]`, as in `{ 0.5 0.9] }`. Keep it in a bogus
+                    // node and continue, so that the enclosing blocks keep
+                    // their structure. The `]` makes the intent of the author
+                    // unclear, thus refuse a virtual `}` at EOF.
+                    let index = self.pos;
+                    self.recovery_barrier += 1;
+                    self.sink.start_node(SyntaxKind::Bogus);
+                    self.bump();
+                    self.error_at(index, SyntaxErrorKind::UnmatchedCloseBracket);
+                    self.sink.finish_node();
                 }
                 Some(SyntaxKind::CloseBrace)
                     if in_block && self.parameter_depth > 0 && self.bracket_depth > 0 =>
@@ -1799,12 +1949,12 @@ impl<'t, S: Sink> Parser<'t, S> {
                 match self.kind_at(self.pos + 1) {
                     Some(SyntaxKind::Operator) if self.is_scalar_field() => {
                         let (key, op, value) = (
-                            self.tokens[self.pos],
-                            self.tokens[self.pos + 1],
-                            self.tokens[self.pos + 2],
+                            self.tok(self.pos),
+                            self.tok(self.pos + 1),
+                            self.tok(self.pos + 2),
                         );
                         self.sink.scalar_field(key, op, value);
-                        self.pos += 3;
+                        self.advance(3);
                     }
                     Some(SyntaxKind::Operator) => {
                         // key <op> value
@@ -1912,7 +2062,7 @@ impl<'t, S: Sink> Parser<'t, S> {
     #[inline]
     fn is_code_keyword(&self, index: usize) -> bool {
         self.kind_at(index) == Some(SyntaxKind::Unquoted)
-            && self.tokens[index].len == 4
+            && self.tok(index).len == 4
             && self.token_text(index) == b"code"
     }
 
@@ -1934,7 +2084,7 @@ impl<'t, S: Sink> Parser<'t, S> {
     }
 
     fn token_text(&self, index: usize) -> &'t [u8] {
-        &self.source[self.tokens[index].range().to_usize()]
+        &self.source[self.tok(index).range().to_usize()]
     }
 
     fn preceded_by_code(&self, open: usize) -> bool {
@@ -1944,7 +2094,7 @@ impl<'t, S: Sink> Parser<'t, S> {
         if self.is_code_keyword(previous) {
             return true;
         }
-        if self.tokens[previous].kind != SyntaxKind::Operator || self.token_text(previous) != b"=" {
+        if self.tok(previous).kind != SyntaxKind::Operator || self.token_text(previous) != b"=" {
             return false;
         }
         previous
@@ -1987,10 +2137,14 @@ impl<'t, S: Sink> Parser<'t, S> {
         {
             return false;
         }
-        let pos = self.pos as u32;
-        self.interpolation_starts
-            .get_or_insert_with(|| interpolation_starts(&self.tokens[..self.lexed]))
-            .binary_search(&pos)
+        if self.pos >= self.resolved_until {
+            let mut starts = std::mem::take(&mut self.interpolations);
+            self.resolved_until =
+                resolve_interpolations(self.pos, |index| self.kind_far(index), &mut starts);
+            self.interpolations = starts;
+        }
+        self.interpolations
+            .binary_search(&(self.pos as u32))
             .is_ok()
     }
 
@@ -2081,7 +2235,7 @@ impl<'t, S: Sink> Parser<'t, S> {
                     // Keep an outer block delimiter available when the payload
                     // is incomplete. A brace directly before `]]` is payload.
                     if !self.is_code_close(self.pos + 1) {
-                        if self.pos + 1 < self.lexed {
+                        if self.kind_at(self.pos + 1).is_some() {
                             self.recovery_barrier += 1;
                         }
                         break;
@@ -2097,7 +2251,7 @@ impl<'t, S: Sink> Parser<'t, S> {
         if !closed {
             if self.peek().is_none() && self.recovery_barrier == barrier {
                 let missing_count = if self.pos.checked_sub(1).is_some_and(|index| {
-                    let token = self.tokens[index];
+                    let token = self.tok(index);
                     token.kind == SyntaxKind::CloseBracket
                         && token.end() == self.source.len() as u32
                 }) {
@@ -2296,14 +2450,19 @@ impl<'t, S: Sink> Parser<'t, S> {
         // only ever emits calc tokens between a CalcOpen and its CalcClose, so
         // no calc token can leak past this slice into the outer parser.
         let from = self.pos;
+        self.pin = from;
         while !matches!(
             self.peek(),
             Some(SyntaxKind::CalcClose | SyntaxKind::OpenBrace | SyntaxKind::CloseBrace) | None
         ) {
-            self.pos += 1;
+            self.advance(1);
         }
         let at_eof = self.peek().is_none();
-        let interior = parse_calc_interior(&self.tokens[from..self.pos], from as u32, at_eof);
+        let interior = parse_calc_interior(
+            &self.tokens[from - self.base..self.pos - self.base],
+            from as u32,
+            at_eof,
+        );
         for el in &interior.elems {
             self.emit_calc(
                 el,
@@ -2317,7 +2476,7 @@ impl<'t, S: Sink> Parser<'t, S> {
         if !at_eof && !interior.missing_parens.is_empty() {
             self.recovery_barrier += 1;
         }
-        if at_eof && !interior.overflowed {
+        if at_eof && !interior.overflowed && S::KEEP_TOKENS {
             for paren_open in interior.missing_parens {
                 // The zero-width leaf was emitted inside its ParenExpr above.
                 let at = self.source.len() as u32;
@@ -2330,7 +2489,7 @@ impl<'t, S: Sink> Parser<'t, S> {
                         expected: SyntaxKind::CloseParen,
                         missing: SyntaxKind::MissingCloseParen,
                         construct: RecoveryConstruct::ParenthesizedCalculation,
-                        opening_range: self.tokens[paren_open as usize].range(),
+                        opening_range: self.tok(paren_open as usize).range(),
                         insertion_range: TextRange::empty(at),
                         repair_text: ")".into(),
                         order,
@@ -2357,6 +2516,7 @@ impl<'t, S: Sink> Parser<'t, S> {
             self.recovery_barrier += 1;
             self.error_at(open, SyntaxErrorKind::UnclosedCalc);
         }
+        self.pin = usize::MAX;
         self.sink.finish_node();
     }
 
@@ -2364,7 +2524,7 @@ impl<'t, S: Sink> Parser<'t, S> {
     fn emit_calc(&mut self, el: &CalcElem, missing_parens: &[u32]) {
         match el {
             CalcElem::Leaf(index) => {
-                let token = self.tokens[*index as usize];
+                let token = self.tok(*index as usize);
                 self.sink.token(token);
             }
             CalcElem::Missing(kind) => self.push_missing(*kind),
@@ -2385,40 +2545,61 @@ impl<'t, S: Sink> Parser<'t, S> {
     }
 }
 
-/// Find each `[` that starts a closed single-bracket interpolation, in one pass.
+/// Find each `[` that starts a single-bracket interpolation, from the `[` at
+/// `from` to the returned end index. Push their indexes to `starts` in sorted
+/// order. `kind_at` gives the kind of a token, or `None` at EOF.
 ///
 /// A `[` starts an interpolation when its matching `]` comes before a `}` that
 /// is directly inside it. At EOF, a still-open `[` that is followed by more
 /// tokens is a trailing interpolation. A bare final `[` is not.
-fn interpolation_starts(tokens: &[Token]) -> Vec<u32> {
+///
+/// The result for a `[` depends only on the tokens after it. The scan stops
+/// when the `[` at `from` is resolved. At that point, each `[` inside the
+/// scanned region is also resolved, so the total work is linear.
+fn resolve_interpolations(
+    from: usize,
+    mut kind_at: impl FnMut(usize) -> Option<SyntaxKind>,
+    starts: &mut Vec<u32>,
+) -> usize {
+    starts.clear();
     // Open brackets and whether a `}` interrupted each one.
-    let mut stack: Vec<(u32, bool)> = Vec::new();
-    let mut starts = Vec::new();
-    for (index, token) in tokens.iter().enumerate() {
-        match token.kind {
-            SyntaxKind::OpenBracket => stack.push((index as u32, false)),
-            SyntaxKind::CloseBracket => {
+    let mut stack: Vec<(u32, bool)> = vec![(from as u32, false)];
+    let mut index = from + 1;
+    let end = loop {
+        match kind_at(index) {
+            Some(SyntaxKind::OpenBracket) => stack.push((index as u32, false)),
+            Some(SyntaxKind::CloseBracket) => {
                 if let Some((open, false)) = stack.pop() {
                     starts.push(open);
                 }
+                if stack.is_empty() {
+                    break index + 1;
+                }
             }
-            SyntaxKind::CloseBrace => {
+            Some(SyntaxKind::CloseBrace) => {
+                if stack.len() == 1 {
+                    // A `}` interrupts the `[` at `from`.
+                    break index;
+                }
                 if let Some(top) = stack.last_mut() {
                     top.1 = true;
                 }
             }
-            _ => {}
+            Some(_) => {}
+            None => {
+                starts.extend(
+                    stack
+                        .iter()
+                        .filter(|&&(open, interrupted)| !interrupted && open as usize + 1 < index)
+                        .map(|&(open, _)| open),
+                );
+                break index;
+            }
         }
-    }
-    let count = tokens.len() as u32;
-    starts.extend(
-        stack
-            .into_iter()
-            .filter(|&(open, interrupted)| !interrupted && open + 1 < count)
-            .map(|(open, _)| open),
-    );
+        index += 1;
+    };
     starts.sort_unstable();
-    starts
+    end
 }
 
 // ---------------------------------------------------------------------------
@@ -4758,6 +4939,24 @@ mod tests {
     }
 
     #[test]
+    fn stray_close_bracket_keeps_block_structure() {
+        let source = b"a = { pos = { 0.5 0.9] } scale = { 1 } } b = c";
+        let tree = parse(source);
+        let kinds: Vec<_> = tree.errors().iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, vec![SyntaxErrorKind::UnmatchedCloseBracket]);
+        let fields: Vec<_> = tree.ast().fields().collect();
+        assert_eq!(fields.len(), 2);
+        let block = fields[0].value().unwrap().as_block().unwrap();
+        assert!(block.is_closed_in_source());
+        assert_eq!(block.fields().count(), 2);
+        assert_eq!(tree.reconstruct(), source);
+
+        // The `]` refuses the virtual `}` at EOF.
+        let tree = parse(b"a = { b ] c");
+        assert!(tree.repair_fixes().is_empty());
+    }
+
+    #[test]
     fn close_bracket_key_is_a_field() {
         let source = b"active_idea_groups = { ]=0 defensive_ideas=2 }";
         let tree = parse(source);
@@ -6126,12 +6325,16 @@ mod tests {
                 let expected = reference_lex(source, flavor);
                 let lexed = lex(source, flavor);
                 let mut fallback = Vec::new();
-                let fallback_comment = lex_simd(
+                let start = if source.starts_with(BOM) { 3 } else { 0 };
+                let (_, flags) = lex_simd(
                     fearless_simd::Fallback::new(),
                     source,
                     flavor,
+                    (start, 0),
+                    usize::MAX,
                     &mut fallback,
                 );
+                let fallback_comment = flags & TOKEN_COMMENT_BEFORE != 0;
                 simplify(&lexed.tokens) == expected
                     && simplify(&fallback) == expected
                     && fallback_comment == lexed.trailing_comment
@@ -6175,7 +6378,7 @@ mod tests {
         }
     }
 
-    /// The scan that [`interpolation_starts`] replaces: from one `[`, count
+    /// The scan that [`resolve_interpolations`] replaces: from one `[`, count
     /// brackets until the match, and stop at a `}` directly inside it.
     fn naive_interpolation_start(tokens: &[Token], pos: usize) -> bool {
         let mut depth = 1u32;
@@ -6203,11 +6406,20 @@ mod tests {
             .map(|b| ALPHABET[*b as usize % ALPHABET.len()])
             .collect();
         let tokens = lex(&mapped, Flavor::default()).tokens;
-        let starts = interpolation_starts(&tokens);
+        let mut starts = Vec::new();
+        let mut resolved_until = 0;
         tokens.iter().enumerate().all(|(pos, token)| {
-            token.kind != SyntaxKind::OpenBracket
-                || starts.binary_search(&(pos as u32)).is_ok()
-                    == naive_interpolation_start(&tokens, pos)
+            if token.kind != SyntaxKind::OpenBracket {
+                return true;
+            }
+            if pos >= resolved_until {
+                resolved_until = resolve_interpolations(
+                    pos,
+                    |index| tokens.get(index).map(|t| t.kind),
+                    &mut starts,
+                );
+            }
+            starts.binary_search(&(pos as u32)).is_ok() == naive_interpolation_start(&tokens, pos)
         })
     }
 
