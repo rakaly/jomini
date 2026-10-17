@@ -266,6 +266,87 @@ fn test_hoi4_1_19_ironman_map_data() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn test_hoi4_multiplayer() -> Result<(), Box<dyn Error>> {
+    if TOKENS.is_empty() {
+        return Ok(());
+    }
+
+    let file = utils::request_file("GER_1947_02_03_04.hoi4");
+    let mut file = Hoi4File::from_file(file)?;
+    let save = file.parse_save(&*TOKENS)?;
+    assert_eq!(file.encoding(), Encoding::Binary);
+    assert_eq!(save.player.as_deref(), Some("GER"));
+    assert_eq!(save.date.game_fmt().to_string(), "1947.2.3.4");
+    assert_eq!(
+        save.version.as_deref(),
+        Some("Musketeer v1.17.3.0.3a95 (f303)")
+    );
+
+    // Two users play GER and one user plays ITA. The save writes a tag one
+    // time for each user, so a map keeps only one GER user.
+    struct Players(Vec<(String, String)>);
+
+    impl<'de> Deserialize<'de> for Players {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            #[derive(Deserialize)]
+            struct Player {
+                user: String,
+            }
+
+            struct PlayersVisitor;
+
+            impl<'de> serde::de::Visitor<'de> for PlayersVisitor {
+                type Value = Players;
+
+                fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    formatter.write_str("a map of tags to players")
+                }
+
+                fn visit_map<A: serde::de::MapAccess<'de>>(
+                    self,
+                    mut map: A,
+                ) -> Result<Players, A::Error> {
+                    let mut players = Vec::new();
+                    while let Some((tag, player)) = map.next_entry::<String, Player>()? {
+                        players.push((tag, player.user));
+                    }
+                    Ok(Players(players))
+                }
+            }
+
+            deserializer.deserialize_map(PlayersVisitor)
+        }
+    }
+
+    #[derive(Deserialize)]
+    struct MultiplayerSave {
+        player_countries: Players,
+    }
+
+    let file = Hoi4File::from_file(utils::request_file("GER_1947_02_03_04.hoi4"))?;
+    let Hoi4FsFileKind::Binary(bin) = file.kind() else {
+        panic!("expected binary file kind");
+    };
+
+    let save: MultiplayerSave = bin.as_ref().deserializer(&*TOKENS).deserialize()?;
+    let players: Vec<_> = save
+        .player_countries
+        .0
+        .iter()
+        .map(|(tag, user)| (tag.as_str(), user.as_str()))
+        .collect();
+    assert_eq!(
+        players,
+        vec![
+            ("GER", "MY_NAME_1"),
+            ("ITA", "MY_NAME_2"),
+            ("GER", "MY_NAME_3"),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn test_skip_modern_fixed_point_in_nested_value() -> Result<(), Box<dyn Error>> {
     #[derive(Debug, Deserialize, PartialEq)]
     struct PlayerOnly {
