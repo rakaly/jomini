@@ -2,7 +2,7 @@
 //! bracket constructs and recovery cases. The full grammar then reads the
 //! source again. Both paths use the same scalar and trivia scans.
 
-use super::{Flavor, Leaf, Shape};
+use super::{Flavor, Leaf, NO_OPEN, OnEmpty, Shape};
 use crate::{Scalar, TextToken};
 use fearless_simd::Simd;
 
@@ -20,8 +20,9 @@ pub(super) fn parse<S: Simd>(simd: S, source: &[u8], flavor: Flavor) -> Option<V
         flavor,
         pos: if source.starts_with(BOM) { 3 } else { 0 },
         tape: Vec::with_capacity(source.len() / 5),
+        stack: Vec::new(),
     };
-    p.items(Shape::Object, 0)?;
+    p.items()?;
     Some(p.tape)
 }
 
@@ -30,6 +31,31 @@ struct Container {
     mixed: bool,
     empty: bool,
     first_scalar: bool,
+    flag: bool,
+    open: usize,
+    on_empty: OnEmpty,
+}
+
+impl Container {
+    fn new(shape: Shape, open: usize, on_empty: OnEmpty) -> Self {
+        Self {
+            shape,
+            mixed: false,
+            empty: true,
+            first_scalar: false,
+            flag: false,
+            open,
+            on_empty,
+        }
+    }
+
+    #[inline(always)]
+    fn entry(&mut self, scalar: bool) {
+        if self.empty {
+            self.first_scalar = scalar;
+            self.empty = false;
+        }
+    }
 }
 
 struct Parser<'a, S> {
@@ -38,6 +64,7 @@ struct Parser<'a, S> {
     flavor: Flavor,
     pos: usize,
     tape: Vec<TextToken<'a>>,
+    stack: Vec<Container>,
 }
 
 impl<'a, S: Simd> Parser<'a, S> {
@@ -110,8 +137,8 @@ impl<'a, S: Simd> Parser<'a, S> {
     }
 
     #[inline(always)]
-    fn block(&mut self, depth: u32) -> Option<Container> {
-        if depth + 1 >= MAX_DEPTH {
+    fn block(&mut self, current: &mut Container, on_empty: OnEmpty) -> Option<()> {
+        if self.stack.len() + 1 >= MAX_DEPTH as usize {
             return None;
         }
         self.pos += 1;
@@ -120,108 +147,133 @@ impl<'a, S: Simd> Parser<'a, S> {
             end: 0,
             mixed: false,
         });
-        let container = self.items(Shape::Open, depth + 1)?;
+        self.stack.push(std::mem::replace(
+            current,
+            Container::new(Shape::Open, open, on_empty),
+        ));
+        Some(())
+    }
+
+    #[inline(always)]
+    fn close(&mut self, current: &mut Container) {
+        let Some(parent) = self.stack.pop() else {
+            return;
+        };
+        let child = std::mem::replace(current, parent);
+        if child.empty {
+            match child.on_empty {
+                OnEmpty::Keep => {}
+                OnEmpty::Drop { len, shape, mixed } => {
+                    self.tape.truncate(len);
+                    current.shape = shape;
+                    current.mixed = mixed;
+                    return;
+                }
+                OnEmpty::Header { len } => {
+                    let TextToken::Header(header) = self.tape[len] else {
+                        unreachable!()
+                    };
+                    self.tape.truncate(len);
+                    self.tape.push(TextToken::Unquoted(header));
+                    return;
+                }
+            }
+        }
         let end = self.tape.len();
-        self.tape[open] = if container.shape == Shape::Object {
+        self.tape[child.open] = if child.shape == Shape::Object {
             TextToken::Object {
                 end,
-                mixed: container.mixed,
+                mixed: child.mixed,
             }
         } else {
             TextToken::Array {
                 end,
-                mixed: container.mixed,
+                mixed: child.mixed,
             }
         };
-        self.tape.push(TextToken::End(open));
-        Some(container)
-    }
-
-    fn items(&mut self, shape: Shape, depth: u32) -> Option<Container> {
-        // Each recursive call must enable the SIMD level again. Keep the
-        // closure inline so vector operations do not call separate helpers.
-        self.simd.vectorize(
-            #[inline(always)]
-            || self.items_simd(shape, depth),
-        )
+        self.tape.push(TextToken::End(child.open));
+        current.flag |= child.first_scalar && current.mixed && current.open != NO_OPEN;
+        current.mixed = current.flag;
     }
 
     #[inline(always)]
-    fn items_simd(&mut self, mut shape: Shape, depth: u32) -> Option<Container> {
-        let mut empty = true;
-        let mut first_scalar = false;
-        let mut mixed = false;
-        // A child block can set the mixed flag in the parent's open token.
-        // When a child closes, the parent uses that flag again.
-        let mut flag = false;
-        while let Some(b) = self.trivia() {
+    fn items(&mut self) -> Option<()> {
+        let mut current = Container::new(Shape::Object, NO_OPEN, OnEmpty::Keep);
+        let mut next = self.trivia();
+        loop {
+            let Some(b) = next else {
+                if self.stack.is_empty() {
+                    return Some(());
+                }
+                self.close(&mut current);
+                continue;
+            };
             if b == b'}' {
                 self.pos += 1;
-                if depth != 0 {
-                    break;
-                }
+                self.close(&mut current);
+                next = self.trivia();
                 continue;
             }
             if b == b'{' {
+                current.entry(false);
                 let len = self.tape.len();
-                let old_shape = shape;
-                let old_mixed = mixed;
-                if shape == Shape::Open {
-                    shape = Shape::Array;
-                } else if shape == Shape::Object && !mixed {
-                    self.tape.push(TextToken::MixedContainer);
-                    mixed = true;
-                }
-                let child = self.block(depth)?;
-                if child.empty
-                    && (old_shape == Shape::Open || (old_shape == Shape::Object && !old_mixed))
-                {
-                    self.tape.truncate(len);
-                    shape = old_shape;
-                    mixed = old_mixed;
-                } else {
-                    flag |= child.first_scalar && mixed && depth != 0;
-                    mixed = flag;
-                }
-                empty = false;
+                let drop = OnEmpty::Drop {
+                    len,
+                    shape: current.shape,
+                    mixed: current.mixed,
+                };
+                let on_empty = match current.shape {
+                    Shape::Open => {
+                        current.shape = Shape::Array;
+                        drop
+                    }
+                    Shape::Object if !current.mixed => {
+                        self.tape.push(TextToken::MixedContainer);
+                        current.mixed = true;
+                        drop
+                    }
+                    _ => OnEmpty::Keep,
+                };
+                self.block(&mut current, on_empty)?;
+                next = self.trivia();
                 continue;
             }
             let key = self.scalar(b, true)?;
-            if empty {
-                first_scalar = true;
-            }
-            let next = self.trivia();
+            current.entry(true);
+            next = self.trivia();
             let op = self.operator();
             if op.is_some() || next == Some(b'{') {
-                match shape {
+                match current.shape {
                     Shape::Open => {
-                        shape = if op.is_some() {
+                        current.shape = if op.is_some() {
                             Shape::Object
                         } else {
                             Shape::Array
                         }
                     }
-                    Shape::Array if op.is_some() && !mixed => {
+                    Shape::Array if op.is_some() && !current.mixed => {
                         self.tape.push(TextToken::MixedContainer);
-                        mixed = true;
+                        current.mixed = true;
                     }
                     _ => {}
                 }
-                let header_ok = shape == Shape::Object && !mixed;
+                let header_ok = current.shape == Shape::Object && !current.mixed;
                 self.tape.push(key.token());
                 if let Some(op) = op
-                    && (mixed || op != crate::text::Operator::Equal)
+                    && (current.mixed || op != crate::text::Operator::Equal)
                 {
                     self.tape.push(TextToken::Operator(op));
                 }
-                let b = self.trivia()?;
+                if op.is_some() {
+                    next = self.trivia();
+                }
+                let b = next?;
                 if b == b'{' {
-                    let child = self.block(depth)?;
-                    flag |= child.first_scalar && mixed && depth != 0;
-                    mixed = flag;
+                    self.block(&mut current, OnEmpty::Keep)?;
+                    next = self.trivia();
                 } else {
                     let value = self.scalar(b, false)?;
-                    let next = self.trivia();
+                    next = self.trivia();
                     if next == Some(b'[') {
                         return None;
                     }
@@ -241,14 +293,13 @@ impl<'a, S: Simd> Parser<'a, S> {
                         } else {
                             value.token()
                         });
-                        let child = self.block(depth)?;
-                        if child.empty && header_ok {
-                            self.tape.truncate(len);
-                            self.tape.push(value.token());
+                        let on_empty = if header_ok {
+                            OnEmpty::Header { len }
                         } else {
-                            flag |= child.first_scalar && mixed && depth != 0;
-                            mixed = flag;
-                        }
+                            OnEmpty::Keep
+                        };
+                        self.block(&mut current, on_empty)?;
+                        next = self.trivia();
                     } else {
                         self.tape.push(value.token());
                     }
@@ -257,21 +308,14 @@ impl<'a, S: Simd> Parser<'a, S> {
                 if next == Some(b'[') {
                     return None;
                 }
-                if shape == Shape::Open {
-                    shape = Shape::Array;
-                } else if shape == Shape::Object && !mixed {
+                if current.shape == Shape::Open {
+                    current.shape = Shape::Array;
+                } else if current.shape == Shape::Object && !current.mixed {
                     self.tape.push(TextToken::MixedContainer);
-                    mixed = true;
+                    current.mixed = true;
                 }
                 self.tape.push(key.token());
             }
-            empty = false;
         }
-        Some(Container {
-            shape,
-            mixed,
-            empty,
-            first_scalar,
-        })
     }
 }
