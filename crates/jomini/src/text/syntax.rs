@@ -1507,6 +1507,13 @@ trait Sink {
         self.finish_node();
     }
 
+    /// Add a `{` or a `}` token of a block. A sink that does not use the
+    /// braces can do this faster than [`Sink::token`].
+    #[inline]
+    fn brace(&mut self, token: Token) {
+        self.token(token);
+    }
+
     /// Open a field node and add its key and operator. The value follows.
     #[inline]
     fn field_head(&mut self, key: Token, op: Token) {
@@ -1867,6 +1874,14 @@ impl<'t, S: Sink> Parser<'t, S> {
     fn bump(&mut self) {
         let t = self.tok(self.pos);
         self.sink.token(t);
+        self.advance(1);
+    }
+
+    /// Add the brace at the position to the sink, and move to the next token.
+    #[inline]
+    fn bump_brace(&mut self) {
+        let t = self.tok(self.pos);
+        self.sink.brace(t);
         self.advance(1);
     }
 
@@ -2383,7 +2398,7 @@ impl<'t, S: Sink> Parser<'t, S> {
         let open = self.pos;
         let barrier = self.recovery_barrier;
         self.sink.start_node(SyntaxKind::Block);
-        self.bump(); // `{`
+        self.bump_brace(); // `{`
         self.depth += 1;
         if self.depth >= MAX_DEPTH {
             self.recovery_barrier += 1;
@@ -2396,7 +2411,7 @@ impl<'t, S: Sink> Parser<'t, S> {
         } else {
             self.parse_items(true);
             if self.peek() == Some(SyntaxKind::CloseBrace) {
-                self.bump(); // `}`
+                self.bump_brace(); // `}`
             } else if self.peek() == Some(SyntaxKind::CloseBracket)
                 && self.parameter_depth > 0
                 && self.bracket_depth == 0

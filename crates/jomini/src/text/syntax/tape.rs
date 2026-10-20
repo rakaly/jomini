@@ -672,6 +672,14 @@ impl Sink for TapeSink<'_> {
     fn error(&mut self) {}
 
     #[inline]
+    fn brace(&mut self, token: Token) {
+        // Only an opaque node uses the braces: they are part of its text.
+        if matches!(self.frames.last(), Some(Frame::Opaque { .. })) {
+            self.token(token);
+        }
+    }
+
+    #[inline]
     fn field_head(&mut self, key: Token, op: Token) {
         if self.skip > 0 || !matches!(self.frames.last(), Some(Frame::Container(_))) {
             self.start_node(SyntaxKind::Field);
