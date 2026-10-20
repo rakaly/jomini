@@ -862,7 +862,7 @@ fn find_line_end<S: Simd>(simd: S, source: &[u8], mut i: usize) -> usize {
 #[inline(always)]
 fn scan_quoted<S: Simd>(simd: S, source: &[u8], mut i: usize, newline_terminated: bool) -> usize {
     let n = source.len();
-    loop {
+    'quoted: loop {
         // Find the next quote, backslash, or (optionally) line break.
         while i + 16 <= n {
             let v = load(simd, source, i);
@@ -873,7 +873,14 @@ fn scan_quoted<S: Simd>(simd: S, source: &[u8], mut i: usize, newline_terminated
             let hits = hits.to_bitmask();
             if hits != 0 {
                 i += hits.trailing_zeros() as usize;
-                break;
+                match source[i] {
+                    b'\\' => {
+                        i = (i + 2).min(n);
+                        continue 'quoted;
+                    }
+                    b'"' => return i + 1,
+                    _ => return i,
+                }
             }
             i += 16;
         }
