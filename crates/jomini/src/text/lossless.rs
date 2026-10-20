@@ -159,6 +159,8 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::OnceLock;
 
+#[cfg(feature = "serde")]
+pub mod de;
 mod line_index;
 mod tape;
 pub use line_index::{LineCol, LineIndex};
