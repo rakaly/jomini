@@ -1768,6 +1768,36 @@ impl Sink for Builder {
     const KEEP_TOKENS: bool = true;
 
     #[inline]
+    fn scalar_field(&mut self, key: Token, op: Token, value: Token) {
+        if (key.flags | op.flags | value.flags) & TOKEN_COMMENT_BEFORE != 0 {
+            self.start_node(SyntaxKind::Field);
+            self.token(key);
+            self.token(op);
+            self.token(value);
+            self.finish_node();
+            return;
+        }
+        let mut flags = own_flag_bits(key.kind);
+        flags.insert(own_flag_bits(value.kind));
+        if (key.flags | op.flags | value.flags) & TOKEN_ERROR != 0 {
+            flags.insert(NodeFlags::HAS_ERROR);
+        }
+        let first_token = self.next_token;
+        self.next_token += 3;
+        let subtree_end = self.nodes.len() as u32 + 1;
+        self.nodes.push(Node {
+            kind: SyntaxKind::Field,
+            flags,
+            first_token,
+            token_end: self.next_token,
+            subtree_end,
+        });
+        if let Some((_, parent)) = self.stack.last_mut() {
+            parent.insert(flags);
+        }
+    }
+
+    #[inline]
     fn start_node(&mut self, kind: SyntaxKind) {
         let idx = self.nodes.len() as u32;
         self.nodes.push(Node {
@@ -4610,6 +4640,61 @@ impl Fmt<'_> {
 mod tests {
     use super::*;
     use quickcheck_macros::quickcheck;
+
+    #[quickcheck]
+    fn scalar_field_matches_events(kinds: (u8, u8), flags: (u8, u8, u8), nested: bool) -> bool {
+        const KINDS: &[SyntaxKind] = &[
+            SyntaxKind::Unquoted,
+            SyntaxKind::Quoted,
+            SyntaxKind::Variable,
+            SyntaxKind::MacroParam,
+        ];
+        let token = |kind, flags| Token {
+            start: 0,
+            len: 1,
+            kind,
+            flags: flags & 3,
+        };
+        let key = token(KINDS[kinds.0 as usize % KINDS.len()], flags.0);
+        let op = token(SyntaxKind::Operator, flags.1);
+        let value = token(KINDS[kinds.1 as usize % KINDS.len()], flags.2);
+        let mut actual = Builder::with_capacity(16);
+        let mut expected = Builder::with_capacity(16);
+        for builder in [&mut actual, &mut expected] {
+            builder.start_node(SyntaxKind::Root);
+            if nested {
+                builder.start_node(SyntaxKind::Block);
+                builder.token(token(SyntaxKind::OpenBrace, 0));
+            }
+        }
+        actual.scalar_field(key, op, value);
+        expected.start_node(SyntaxKind::Field);
+        expected.token(key);
+        expected.token(op);
+        expected.token(value);
+        expected.finish_node();
+        for builder in [&mut actual, &mut expected] {
+            while !builder.stack.is_empty() {
+                builder.finish_node();
+            }
+        }
+        let nodes = |builder: Builder| {
+            builder
+                .nodes
+                .into_iter()
+                .map(|node| {
+                    (
+                        node.kind,
+                        node.flags,
+                        node.first_token,
+                        node.token_end,
+                        node.subtree_end,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        nodes(actual) == nodes(expected)
+    }
 
     /// Assert the lexer output and the leaf iterator tile the input: the
     /// significant tokens are in order and do not overlap, every gap is only
