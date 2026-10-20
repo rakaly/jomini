@@ -605,7 +605,16 @@ fn lex_simd<S: Simd>(
     let n = source.len();
 
     while i < n && out.len() < limit {
-        let b = source[i];
+        let mut b = source[i];
+        if is_ws(b) {
+            // Most tokens follow whitespace. Skip it here, so that it does
+            // not need a separate dispatch.
+            i = skip_whitespace(simd, source, i + 1);
+            if i >= n {
+                break;
+            }
+            b = source[i];
+        }
         let start = i;
         let kind = match CLASS[b as usize] {
             CLASS_WS => {
