@@ -77,6 +77,7 @@ pub use tape::{parse_tape, parse_tape_with};
 /// The kind of every node (interior) and token (leaf) in a [`SyntaxTree`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum SyntaxKind {
     // ===== trivia (made from the gaps between stored tokens) =====
     /// A leading UTF-8 byte-order-mark (`EF BB BF`).
@@ -370,6 +371,7 @@ impl std::fmt::Display for TextRange {
 /// HoI4's newline-terminated strings and treats `@`/`$` as ordinary identifier
 /// bytes (HoI4 has no reader variables or macros).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Flavor {
     /// A quoted string ends at the first newline if it has no closing quote.
     pub newline_terminated_strings: bool,
@@ -1088,6 +1090,7 @@ impl std::fmt::Display for SyntaxErrorKind {
 /// A non-fatal problem found while parsing. Parsing never fails — the tree is
 /// always lossless — but recoverable issues are collected here for tooling.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SyntaxError {
     /// What is wrong.
     pub kind: SyntaxErrorKind,
@@ -1110,7 +1113,10 @@ impl std::fmt::Display for SyntaxError {
     }
 }
 
+impl std::error::Error for SyntaxError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RecoveryConstruct {
     Block,
     Interpolation,
@@ -1121,6 +1127,7 @@ pub enum RecoveryConstruct {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Applicability {
     MachineApplicable,
     Unsafe,
@@ -1152,6 +1159,7 @@ pub struct MissingDelimiter {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Repair {
     pub range: TextRange,
     pub replacement: String,
@@ -3378,6 +3386,7 @@ ast_nodes! {
 
 /// An entry within a [`Root`] or [`Block`].
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub enum Item<'t, 'a> {
     /// A `key <op> value` field.
     Field(Field<'t, 'a>),
@@ -3399,6 +3408,7 @@ pub enum Item<'t, 'a> {
 
 /// A value in value position (the RHS of a [`Field`] or a bare array element).
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub enum Value<'t, 'a> {
     /// A scalar token: [`SyntaxKind::Unquoted`], [`SyntaxKind::Quoted`],
     /// [`SyntaxKind::Variable`], or [`SyntaxKind::MacroParam`].
@@ -3421,6 +3431,7 @@ pub enum Value<'t, 'a> {
 
 /// An arithmetic expression inside a [`Calc`].
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub enum Expr<'t, 'a> {
     /// `lhs <op> rhs`.
     Binary(BinaryExpr<'t, 'a>),
@@ -4100,6 +4111,7 @@ impl<'a> SyntaxTree<'a> {
 
 /// Configuration for [`SyntaxTree::format`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FormatOptions {
     /// The string emitted once per nesting level of indentation. Defaults to a
     /// single tab (the Paradox convention); set it to spaces if preferred.
