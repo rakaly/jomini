@@ -672,6 +672,50 @@ impl Sink for TapeSink<'_> {
     fn error(&mut self) {}
 
     #[inline]
+    fn field_head(&mut self, key: Token, op: Token) {
+        if self.skip > 0 || !matches!(self.frames.last(), Some(Frame::Container(_))) {
+            self.start_node(SyntaxKind::Field);
+            self.token(key);
+            self.token(op);
+            return;
+        }
+        let op = operator(self.text(op)).unwrap_or(Operator::Equal);
+        let key = self.leaf(key);
+        self.begin_entry(true);
+        let len = self.tape.len();
+        let Some(c) = self.top_container() else {
+            return;
+        };
+        let (old_shape, old_mixed) = (c.shape, c.mixed);
+        let mut push_mixed = false;
+        match c.shape {
+            Shape::Open => c.shape = Shape::Object,
+            Shape::Array if !c.mixed => {
+                c.mixed = true;
+                push_mixed = true;
+            }
+            _ => {}
+        }
+        let (shape, mixed) = (c.shape, c.mixed);
+        if push_mixed {
+            self.tape.push(TextToken::MixedContainer);
+        }
+        self.tape.push(key.token());
+        if mixed || op != Operator::Equal {
+            self.tape.push(TextToken::Operator(op));
+        }
+        self.frames.push(Frame::Field {
+            key: Some(key),
+            resolved: true,
+            has_value: false,
+            header_ok: shape == Shape::Object && !mixed,
+            len,
+            shape: old_shape,
+            mixed: old_mixed,
+        });
+    }
+
+    #[inline]
     fn scalar_field(&mut self, key: Token, op: Token, value: Token) {
         if self.skip > 0 || !matches!(self.frames.last(), Some(Frame::Container(_))) {
             self.start_node(SyntaxKind::Field);

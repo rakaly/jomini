@@ -1506,6 +1506,14 @@ trait Sink {
         self.token(value);
         self.finish_node();
     }
+
+    /// Open a field node and add its key and operator. The value follows.
+    #[inline]
+    fn field_head(&mut self, key: Token, op: Token) {
+        self.start_node(SyntaxKind::Field);
+        self.token(key);
+        self.token(op);
+    }
 }
 
 /// Build the node tape and record the positions of missing tokens.
@@ -1958,9 +1966,9 @@ impl<'t, S: Sink> Parser<'t, S> {
                     }
                     Some(SyntaxKind::Operator) => {
                         // key <op> value
-                        self.sink.start_node(SyntaxKind::Field);
-                        self.bump(); // key
-                        self.bump(); // operator
+                        let (key, op) = (self.tok(self.pos), self.tok(self.pos + 1));
+                        self.sink.field_head(key, op);
+                        self.advance(2);
                         self.parse_value();
                         self.sink.finish_node();
                     }
