@@ -67,7 +67,11 @@ mod wrappers;
 pub use self::error::{Error, ErrorKind};
 pub use self::wrappers::{Headered, MaybeQuoted, Spanned, WithOp};
 
-use self::engine::ValueDe;
+pub(crate) use self::engine::{
+    Doc, DocDe, Item, TAG_BLOCK, TAG_CALC, TAG_FIELD, TAG_HEADERED, TAG_PARAMETER, TAG_QUOTED,
+    TAG_UNQUOTED, TAG_VALUE, VALUE, ValueDe, View,
+};
+
 use self::tree::{TreeCtx, TreeDoc};
 use super::{Flavor, Parse, SyntaxErrorKind, SyntaxTree, parse_with};
 use crate::{Encoding, Utf8Encoding, Windows1252Encoding};

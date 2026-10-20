@@ -163,6 +163,8 @@ use std::sync::OnceLock;
 pub mod de;
 mod line_index;
 mod tape;
+#[cfg(feature = "serde")]
+pub mod value;
 pub use line_index::{LineCol, LineIndex};
 #[cfg(all(jomini_lossless_tape, feature = "lossless"))]
 pub(crate) use tape::recover_tape;
