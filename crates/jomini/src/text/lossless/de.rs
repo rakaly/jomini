@@ -62,8 +62,10 @@
 mod engine;
 mod error;
 mod tree;
+mod wrappers;
 
 pub use self::error::{Error, ErrorKind};
+pub use self::wrappers::{Headered, MaybeQuoted, Spanned, WithOp};
 
 use self::engine::ValueDe;
 use self::tree::{TreeCtx, TreeDoc};
