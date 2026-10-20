@@ -71,7 +71,9 @@ use fearless_simd::{Level, Simd, dispatch, mask8x16, prelude::*, u8x16};
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
+mod line_index;
 mod tape;
+pub use line_index::{LineCol, LineIndex};
 pub use tape::{parse_tape, parse_tape_with};
 
 /// The kind of every node (interior) and token (leaf) in a [`SyntaxTree`].
