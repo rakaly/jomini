@@ -12,9 +12,9 @@
 //!    `vfs`/`FileId` shape plus Paradox override semantics).
 //! 2. [`FileSummary`] — an *ItemTree-style* summary. Each file is parsed once and
 //!    lowered into a small, **owned**, position-independent list of definitions
-//!    and references (with source ranges). The borrowing [`SyntaxTree`] is then
-//!    dropped, which sidesteps the "thousands of trees, each borrowing its source"
-//!    lifetime problem entirely.
+//!    and references (with source ranges). The tree is then dropped: a summary
+//!    is much smaller than a tree, so a whole game fits in memory, and
+//!    [`Linter::reanalyze`] summarizes again only the files that changed.
 //! 3. [`Index`] — the symbol table. A flat arena of [`Definition`]s keyed by
 //!    `(kind, name)`, with override/duplicate resolution by load order.
 //! 4. [`Resolution`] / [`Linter`] — the two-pass resolver. Collect *all*
@@ -35,10 +35,14 @@
 
 #![allow(missing_docs)] // experimental surface; docs land as the API stabilizes
 
-use crate::text::lossless::{self, Applicability, AstNode, Field, Flavor, SyntaxNode, Value};
+use crate::text::lossless::{
+    self, Applicability, AstNode, Field, Flavor, LineCol, LineIndex, SyntaxNode, Value,
+};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
 // Project model: files + load order
@@ -68,14 +72,30 @@ struct FileEntry {
     path: PathBuf,
     kind: FileKind,
     source: Vec<u8>,
+    /// Increases each time the source changes.
+    revision: u64,
+    /// Made on the first request, and cleared when the source changes.
+    lines: OnceLock<LineIndex>,
 }
 
 /// The set of source files under consideration, each tagged with its load-order
-/// [`FileKind`]. **Owns** the file bytes, so the parsed trees (which borrow
-/// their source) can come and go while the project model stays alive.
-#[derive(Default)]
+/// [`FileKind`]. **Owns** the file bytes. An [`Analysis`] holds owned summaries,
+/// not trees, so the trees come and go while the project model stays alive.
 pub struct Fileset {
+    /// Identifies this fileset, so that [`Linter::reanalyze`] does not reuse
+    /// the summaries of a different fileset.
+    tag: u64,
     files: Vec<FileEntry>,
+}
+
+impl Default for Fileset {
+    fn default() -> Self {
+        static NEXT_TAG: AtomicU64 = AtomicU64::new(0);
+        Fileset {
+            tag: NEXT_TAG.fetch_add(1, Ordering::Relaxed),
+            files: Vec::new(),
+        }
+    }
 }
 
 impl Fileset {
@@ -92,6 +112,8 @@ impl Fileset {
             path: path.into(),
             kind,
             source,
+            revision: 0,
+            lines: OnceLock::new(),
         });
         id
     }
@@ -140,6 +162,17 @@ impl Fileset {
         &self.files[id.0 as usize].source
     }
 
+    /// The line index of a file. The first call for a file makes the index.
+    pub fn line_index(&self, id: FileId) -> &LineIndex {
+        let file = &self.files[id.0 as usize];
+        file.lines.get_or_init(|| LineIndex::new(&file.source))
+    }
+
+    /// The line and column of `offset` in a file.
+    pub fn line_col(&self, id: FileId, offset: u32) -> LineCol {
+        self.line_index(id).line_col(offset)
+    }
+
     /// The display path of a file.
     pub fn path(&self, id: FileId) -> &Path {
         &self.files[id.0 as usize].path
@@ -170,9 +203,12 @@ impl Fileset {
     /// Replace a file's source bytes in place, keeping its [`FileId`], path, and
     /// layer. This is the editor-overlay hook: an LSP server swaps in the unsaved
     /// buffer on a keystroke and re-analyzes, without disturbing any other file's
-    /// handle. Re-run [`Linter::analyze`] afterwards to refresh the snapshot.
+    /// handle. Run [`Linter::reanalyze`] afterwards to refresh the snapshot.
     pub fn set_source(&mut self, id: FileId, source: Vec<u8>) {
-        self.files[id.0 as usize].source = source;
+        let file = &mut self.files[id.0 as usize];
+        file.source = source;
+        file.revision += 1;
+        file.lines = OnceLock::new();
     }
 }
 
@@ -260,6 +296,8 @@ pub struct RefSite {
 /// only on the items in the file, not on byte offsets within value bodies.
 pub struct FileSummary {
     pub file: FileId,
+    /// The [`Fileset`] revision of the source that this summary comes from.
+    pub revision: u64,
     pub defs: Vec<DefSite>,
     pub refs: Vec<RefSite>,
     pub syntax_errors: Vec<SyntaxDiagnosticSummary>,
@@ -333,6 +371,7 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
 
     FileSummary {
         file,
+        revision: fileset.files[file.0 as usize].revision,
         defs,
         refs,
         syntax_errors,
@@ -696,12 +735,45 @@ impl Linter {
     /// so go-to-definition / find-references / symbol queries cost a lookup
     /// rather than a re-lint.
     pub fn analyze(&self, fileset: &Fileset) -> Analysis {
-        // Pass 1: lower every file to a summary, then register definitions.
+        // Pass 1: lower every file to a summary.
         let summaries: Vec<FileSummary> = fileset
             .ids()
             .map(|id| summarize(fileset, &self.schema, id))
             .collect();
+        self.resolve(fileset, summaries)
+    }
 
+    /// Update `analysis` after some sources of `fileset` changed.
+    ///
+    /// The result is the same as [`analyze`](Linter::analyze), but the
+    /// summaries in `analysis` are used again for each file that has not
+    /// changed since then. Only the changed files and the new files are parsed.
+    /// The cross-file pass runs on all the files, because one change can
+    /// change the winner of an override in a different file.
+    ///
+    /// `analysis` must come from this linter. When it comes from a different
+    /// fileset, all the files are parsed.
+    pub fn reanalyze(&self, fileset: &Fileset, analysis: &mut Analysis) {
+        if analysis.fileset_tag != fileset.tag {
+            *analysis = self.analyze(fileset);
+            return;
+        }
+        let mut summaries = std::mem::take(&mut analysis.summaries);
+        for (summary, file) in summaries.iter_mut().zip(&fileset.files) {
+            if summary.revision != file.revision {
+                *summary = summarize(fileset, &self.schema, summary.file);
+            }
+        }
+        for id in summaries.len()..fileset.files.len() {
+            summaries.push(summarize(fileset, &self.schema, FileId(id as u32)));
+        }
+        *analysis = self.resolve(fileset, summaries);
+    }
+
+    /// Pass 2 for [`analyze`](Linter::analyze) and
+    /// [`reanalyze`](Linter::reanalyze): register the definitions, then
+    /// resolve the references of all the summaries.
+    fn resolve(&self, fileset: &Fileset, summaries: Vec<FileSummary>) -> Analysis {
         let mut index = Index::new();
         for s in &summaries {
             for d in &s.defs {
@@ -787,6 +859,7 @@ impl Linter {
 
         diags.sort_by_key(|d| (d.file, d.range.0, d.range.1));
         Analysis {
+            fileset_tag: fileset.tag,
             index,
             summaries,
             diagnostics: diags,
@@ -807,9 +880,11 @@ impl Linter {
 /// `Analysis` keeps it, so go-to-definition, find-references, and document/
 /// workspace symbols are all reads off this one structure. Like [`FileSummary`]
 /// it is fully **owned** — it holds no borrow on any parse tree or on the
-/// [`Fileset`] — so it can live in a long-running server and be replaced wholesale
-/// when a file changes (re-run [`Linter::analyze`] on the updated [`Fileset`]).
+/// [`Fileset`] — so it can live in a long-running server. When a file changes,
+/// [`Linter::reanalyze`] makes the next analysis from it.
 pub struct Analysis {
+    /// The tag of the [`Fileset`] that the summaries come from.
+    fileset_tag: u64,
     index: Index,
     /// `summaries[i]` is the summary of `FileId(i)` (built in `fileset.ids()`
     /// order, which is `0..len`).
@@ -929,36 +1004,17 @@ impl Analysis {
 // Rendering: lazy line/column + a compiler-style console report
 // ---------------------------------------------------------------------------
 
-/// Convert a byte `offset` into 1-based `(line, column)` by scanning newlines.
-/// Carbon's lazy location model: positions are stored as plain offsets and
-/// resolved to line/column only when a diagnostic is actually rendered.
-pub fn line_col(source: &[u8], offset: u32) -> (usize, usize) {
-    let offset = (offset as usize).min(source.len());
-    let mut line = 1;
-    let mut col = 1;
-    for &b in &source[..offset] {
-        if b == b'\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
-}
-
-/// The bytes of the line containing `offset`, and the offset of that line start.
-fn line_bytes(source: &[u8], offset: u32) -> (&[u8], usize) {
-    let offset = (offset as usize).min(source.len());
-    let start = source[..offset]
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .map_or(0, |p| p + 1);
-    let end = source[start..]
-        .iter()
-        .position(|&b| b == b'\n')
-        .map_or(source.len(), |p| start + p);
-    (&source[start..end], start)
+/// The bytes of the line that holds `offset`, without the line break, and the
+/// offset of the start of the line. Carbon's lazy location model: positions are
+/// plain offsets, and become lines only when a diagnostic is rendered.
+fn line_bytes(fileset: &Fileset, file: FileId, offset: u32) -> (&[u8], usize) {
+    let index = fileset.line_index(file);
+    let range = index
+        .line_range(index.line_col(offset).line)
+        .expect("the line of an offset exists");
+    let line = &fileset.source(file)[range.to_range()];
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    (line, range.start() as usize)
 }
 
 fn severity_label(s: Severity) -> &'static str {
@@ -985,9 +1041,9 @@ fn severity_color(s: Severity) -> &'static str {
 /// diagnostic production and rendering apart): it touches only owned data + the
 /// source bytes, never a parsed tree.
 pub fn render(diag: &Diagnostic, fileset: &Fileset, color: bool) -> String {
-    let source = fileset.source(diag.file);
-    let (line, col) = line_col(source, diag.range.0);
-    let (line_src, line_start) = line_bytes(source, diag.range.0);
+    let at = fileset.line_col(diag.file, diag.range.0);
+    let (line, col) = (at.line + 1, at.col + 1);
+    let (line_src, line_start) = line_bytes(fileset, diag.file, diag.range.0);
     let line_text = String::from_utf8_lossy(line_src);
 
     let (reset, bold, dim) = if color {
@@ -1116,6 +1172,71 @@ mod tests {
             .reference_key("remove_building", "building")
             .reference_key("upgrades_from", "building");
         (fs, schema)
+    }
+
+    fn keys(analysis: &Analysis) -> Vec<(&'static str, FileId, (u32, u32))> {
+        analysis
+            .diagnostics()
+            .iter()
+            .map(|d| (d.id, d.file, d.range))
+            .collect()
+    }
+
+    #[test]
+    fn reanalyze_matches_analyze() {
+        let (mut fs, schema) = demo();
+        let linter = Linter::new(schema);
+        let mut analysis = linter.analyze(&fs);
+
+        // Fix the typo in the events file.
+        fs.set_source(
+            FileId(2),
+            b"e = { effect = { add_building = fortress\n add_building = barracks\n remove_building = temple } }\n".to_vec(),
+        );
+        linter.reanalyze(&fs, &mut analysis);
+        assert_eq!(keys(&analysis), keys(&linter.analyze(&fs)));
+        assert!(analysis.reference_at(FileId(2), 60).is_some());
+
+        // Remove `fortress` from the mod buildings. The events file does not
+        // change, but its reference to `fortress` is now undefined.
+        fs.set_source(FileId(1), b"temple = { cost = 80 }\n".to_vec());
+        linter.reanalyze(&fs, &mut analysis);
+        assert_eq!(keys(&analysis), keys(&linter.analyze(&fs)));
+        assert!(
+            analysis
+                .diagnostics()
+                .iter()
+                .any(|d| d.id == lints::UNDEFINED_REFERENCE && d.file == FileId(2))
+        );
+
+        // A new file is summarized too.
+        let id = fs.add(
+            "mod/common/buildings/02_more.txt",
+            FileKind::Mod(0),
+            b"fortress = { cost = 1 }\n".to_vec(),
+        );
+        linter.reanalyze(&fs, &mut analysis);
+        assert_eq!(keys(&analysis), keys(&linter.analyze(&fs)));
+        assert!(analysis.summary(id).is_some_and(|s| s.defs.len() == 1));
+    }
+
+    #[test]
+    fn reanalyze_ignores_summaries_of_a_different_fileset() {
+        let (fs, schema) = demo();
+        let linter = Linter::new(schema);
+        let mut analysis = linter.analyze(&fs);
+
+        // The same revisions, but different bytes.
+        let mut other = Fileset::new();
+        for id in fs.ids() {
+            other.add(
+                fs.path(id),
+                fs.kind(id),
+                b"x = { add_building = nowhere }".to_vec(),
+            );
+        }
+        linter.reanalyze(&other, &mut analysis);
+        assert_eq!(keys(&analysis), keys(&linter.analyze(&other)));
     }
 
     #[test]
@@ -1362,11 +1483,12 @@ mod tests {
     }
 
     #[test]
-    fn line_col_is_one_based() {
-        let src = b"a = 1\nbb = 2\n";
-        assert_eq!(line_col(src, 0), (1, 1));
-        assert_eq!(line_col(src, 6), (2, 1)); // first byte of line 2
-        assert_eq!(line_col(src, 9), (2, 4));
+    fn line_col_follows_set_source() {
+        let mut fs = Fileset::new();
+        let id = fs.add("a.txt", FileKind::Vanilla, b"a = 1\nbb = 2\n".to_vec());
+        assert_eq!(fs.line_col(id, 9).to_string(), "2:4");
+        fs.set_source(id, b"bb = 2\n".to_vec());
+        assert_eq!(fs.line_col(id, 3).to_string(), "1:4");
     }
 
     #[test]
