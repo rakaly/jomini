@@ -29,6 +29,12 @@
 //! Offsets are absolute. Parent links are calculated only when a cursor asks
 //! for them. The [`SyntaxNode`]/[`SyntaxToken`] cursors are small `Copy` handles.
 //!
+//! The tree holds only offsets, not the source. A [`Parse`] holds the tree
+//! and a source of any type that gives bytes: `&[u8]`, `Vec<u8>`, `Arc<[u8]>`,
+//! or a memory map. Thus the caller decides who owns the bytes, and the parser
+//! does not copy them. The [`SyntaxTree`] view and the cursors have two
+//! lifetimes: `'t` for the tree and `'a` for the source.
+//!
 //! # Parsing
 //!
 //! The lexer classifies bytes with a lookup table. It scans long runs (unquoted
@@ -1233,6 +1239,7 @@ struct Node {
 }
 
 /// The parent of each node and each token. `NO_PARENT` marks the root.
+#[derive(Clone)]
 struct Parents {
     nodes: Vec<u32>,
     tokens: Vec<u32>,
@@ -1240,9 +1247,10 @@ struct Parents {
 
 const NO_PARENT: u32 = u32::MAX;
 
-/// A lossless syntax tree borrowing its source bytes.
-pub struct SyntaxTree<'a> {
-    source: &'a [u8],
+/// The parse result without the source. It holds only byte offsets, so it
+/// has no lifetime.
+#[derive(Clone)]
+struct TreeData {
     flavor: Flavor,
     /// The significant and missing tokens in sink emission order.
     tokens: Vec<Token>,
@@ -1255,13 +1263,129 @@ pub struct SyntaxTree<'a> {
     repairs_valid: OnceLock<bool>,
 }
 
-/// Parse `source` into a lossless [`SyntaxTree`] using the permissive superset.
-pub fn parse(source: &[u8]) -> SyntaxTree<'_> {
+/// A source and its lossless syntax tree.
+///
+/// The source type `S` decides who owns the bytes. A `Parse<&[u8]>` borrows
+/// them. A `Parse<Vec<u8>>` or a `Parse<Arc<[u8]>>` owns them, so you can keep
+/// it in a struct, a cache, or a map, or send it to a different thread. The
+/// parser does not copy the source.
+///
+/// Use [`tree`](Parse::tree) to get the [`SyntaxTree`] view. The methods of
+/// the view are also available on the `Parse`.
+///
+/// ```
+/// use jomini::text::syntax::{parse, Parse};
+/// use std::sync::Arc;
+///
+/// let source: Arc<[u8]> = Arc::from(&b"a = 1"[..]);
+/// let parse: Parse<Arc<[u8]>> = parse(source);
+/// assert_eq!(parse.root().children().count(), 1);
+/// assert!(parse.errors().is_empty());
+/// ```
+#[derive(Clone)]
+pub struct Parse<S> {
+    source: S,
+    data: TreeData,
+}
+
+/// A view of a lossless syntax tree and its source bytes.
+///
+/// The view is two references, so it is cheap to copy. The text of its
+/// tokens has the lifetime `'a` of the source, not the lifetime `'t` of the
+/// tree.
+#[derive(Clone, Copy)]
+pub struct SyntaxTree<'t, 'a> {
+    data: &'t TreeData,
+    source: &'a [u8],
+}
+
+/// Parse `source` into a lossless syntax tree using the permissive superset.
+pub fn parse<S: AsRef<[u8]>>(source: S) -> Parse<S> {
     parse_with(source, Flavor::default())
 }
 
-/// Parse `source` into a lossless [`SyntaxTree`] with a specific [`Flavor`].
-pub fn parse_with(source: &[u8], flavor: Flavor) -> SyntaxTree<'_> {
+/// Parse `source` into a lossless syntax tree with a specific [`Flavor`].
+pub fn parse_with<S: AsRef<[u8]>>(source: S, flavor: Flavor) -> Parse<S> {
+    let data = parse_data(source.as_ref(), flavor);
+    Parse { source, data }
+}
+
+impl<S: AsRef<[u8]>> Parse<S> {
+    /// The [`SyntaxTree`] view of the tree and the source.
+    pub fn tree(&self) -> SyntaxTree<'_, '_> {
+        SyntaxTree {
+            data: &self.data,
+            source: self.source.as_ref(),
+        }
+    }
+
+    /// The source.
+    pub fn source(&self) -> &S {
+        &self.source
+    }
+
+    /// Discard the tree and return the source.
+    pub fn into_source(self) -> S {
+        self.source
+    }
+
+    /// See [`SyntaxTree::root`].
+    pub fn root(&self) -> SyntaxNode<'_, '_> {
+        self.tree().root()
+    }
+
+    /// See [`SyntaxTree::ast`].
+    pub fn ast(&self) -> Root<'_, '_> {
+        self.tree().ast()
+    }
+
+    /// See [`SyntaxTree::errors`].
+    pub fn errors(&self) -> &[SyntaxError] {
+        &self.data.errors
+    }
+
+    /// See [`SyntaxTree::repair_applicability`].
+    pub fn repair_applicability(&self, delimiter: &MissingDelimiter) -> Applicability {
+        self.tree().repair_applicability(delimiter)
+    }
+
+    /// See [`SyntaxTree::repair_fixes`].
+    pub fn repair_fixes(&self) -> Vec<Repair> {
+        self.tree().repair_fixes()
+    }
+
+    /// See [`SyntaxTree::repair`].
+    pub fn repair(&self) -> Vec<u8> {
+        self.tree().repair()
+    }
+
+    /// See [`SyntaxTree::tokens`].
+    pub fn tokens(&self) -> Tokens<'_, '_> {
+        self.tree().tokens()
+    }
+
+    /// See [`SyntaxTree::significant_tokens`].
+    pub fn significant_tokens(&self) -> impl Iterator<Item = SyntaxToken<'_, '_>> {
+        self.tree().significant_tokens()
+    }
+
+    /// See [`SyntaxTree::reconstruct`].
+    pub fn reconstruct(&self) -> Vec<u8> {
+        self.tree().reconstruct()
+    }
+
+    /// See [`SyntaxTree::debug_tree`].
+    pub fn debug_tree(&self) -> String {
+        self.tree().debug_tree()
+    }
+
+    /// See [`SyntaxTree::format`].
+    pub fn format(&self, opts: &FormatOptions) -> Vec<u8> {
+        self.tree().format(opts)
+    }
+}
+
+fn parse_data(source: &[u8], flavor: Flavor) -> TreeData {
     let p = run(source, flavor, Builder::with_capacity(source.len() / 5));
     let trailing_comment = p.lexer.trailing_comment();
     let Parser {
@@ -1274,8 +1398,7 @@ pub fn parse_with(source: &[u8], flavor: Flavor) -> SyntaxTree<'_> {
     } = p;
     debug_assert_eq!(base, 0, "the tree keeps every token");
     let nodes = sink.finish(trailing_comment, &mut tokens, lexed);
-    SyntaxTree {
-        source,
+    TreeData {
         flavor,
         tokens,
         nodes,
@@ -1308,20 +1431,23 @@ fn run<S: Sink>(source: &[u8], flavor: Flavor, sink: S) -> Parser<'_, S> {
     p
 }
 
-impl<'a> SyntaxTree<'a> {
+impl<'t, 'a> SyntaxTree<'t, 'a> {
     /// The full source the tree was parsed from.
     pub fn source(&self) -> &'a [u8] {
         self.source
     }
 
     /// The root [`SyntaxNode`] (always [`SyntaxKind::Root`]).
-    pub fn root(&self) -> SyntaxNode<'_, 'a> {
-        SyntaxNode { tree: self, idx: 0 }
+    pub fn root(&self) -> SyntaxNode<'t, 'a> {
+        SyntaxNode {
+            tree: *self,
+            idx: 0,
+        }
     }
 
     /// Recoverable problems found during parsing (empty for clean input).
     pub fn errors(&self) -> &[SyntaxError] {
-        &self.errors
+        &self.data.errors
     }
 
     /// Return if a client can apply the repair of `delimiter` automatically.
@@ -1351,10 +1477,10 @@ impl<'a> SyntaxTree<'a> {
     }
 
     fn repairs_valid(&self) -> bool {
-        *self.repairs_valid.get_or_init(|| {
+        *self.data.repairs_valid.get_or_init(|| {
             let candidate = apply_repairs(self.source, self.local_fixes());
             candidate == self.source
-                || !parse_with(&candidate, self.flavor)
+                || !parse_data(&candidate, self.data.flavor)
                     .errors
                     .iter()
                     .any(|error| error.recovery.is_some())
@@ -1363,6 +1489,7 @@ impl<'a> SyntaxTree<'a> {
 
     fn local_fixes(&self) -> Vec<Repair> {
         let mut records: Vec<&MissingDelimiter> = self
+            .data
             .errors
             .iter()
             .filter_map(|e| e.recovery.as_ref())
@@ -1391,9 +1518,9 @@ impl<'a> SyntaxTree<'a> {
     /// Concatenating [`SyntaxToken::text`] over this iterator reproduces
     /// [`source`](SyntaxTree::source): the lossless invariant in iterator form.
     /// Ideal for highlighters and other leaf-oriented tooling.
-    pub fn tokens(&self) -> Tokens<'_, 'a> {
+    pub fn tokens(&self) -> Tokens<'t, 'a> {
         Tokens {
-            tree: self,
+            tree: *self,
             next: 0,
             prev_end: 0,
             gap: Gap::EMPTY,
@@ -1403,8 +1530,8 @@ impl<'a> SyntaxTree<'a> {
     }
 
     /// Every significant (non-trivia) leaf [`SyntaxToken`] in document order.
-    pub fn significant_tokens(&self) -> impl Iterator<Item = SyntaxToken<'_, 'a>> + '_ {
-        (0..self.tokens.len() as u32).map(move |i| self.token(i))
+    pub fn significant_tokens(self) -> impl Iterator<Item = SyntaxToken<'t, 'a>> {
+        (0..self.data.tokens.len() as u32).map(move |i| self.token(i))
     }
 
     /// Reconstruct the source by walking the tree's leaves via the cursor API.
@@ -1451,10 +1578,10 @@ impl<'a> SyntaxTree<'a> {
         out
     }
 
-    fn token(&self, idx: u32) -> SyntaxToken<'_, 'a> {
-        let token = self.tokens[idx as usize];
+    fn token(&self, idx: u32) -> SyntaxToken<'t, 'a> {
+        let token = self.data.tokens[idx as usize];
         SyntaxToken {
-            tree: self,
+            tree: *self,
             kind: token.kind,
             range: token.range(),
             idx,
@@ -1462,9 +1589,9 @@ impl<'a> SyntaxTree<'a> {
         }
     }
 
-    fn trivia(&self, kind: SyntaxKind, start: u32, len: u32, next: u32) -> SyntaxToken<'_, 'a> {
+    fn trivia(&self, kind: SyntaxKind, start: u32, len: u32, next: u32) -> SyntaxToken<'t, 'a> {
         SyntaxToken {
-            tree: self,
+            tree: *self,
             kind,
             range: TextRange::new(start, start + len),
             idx: next,
@@ -1473,21 +1600,21 @@ impl<'a> SyntaxTree<'a> {
     }
 
     fn parents(&self) -> &Parents {
-        self.parents.get_or_init(|| {
-            let mut nodes = vec![NO_PARENT; self.nodes.len()];
-            let mut tokens = vec![NO_PARENT; self.tokens.len()];
+        self.data.parents.get_or_init(|| {
+            let mut nodes = vec![NO_PARENT; self.data.nodes.len()];
+            let mut tokens = vec![NO_PARENT; self.data.tokens.len()];
             let mut stack: Vec<u32> = Vec::new();
             let mut t = 0u32;
             let assign = |stack: &mut Vec<u32>, tokens: &mut [u32], t: u32| {
                 while let Some(&top) = stack.last() {
-                    if t < self.nodes[top as usize].token_end {
+                    if t < self.data.nodes[top as usize].token_end {
                         break;
                     }
                     stack.pop();
                 }
                 tokens[t as usize] = stack.last().copied().unwrap_or(NO_PARENT);
             };
-            for (i, node) in self.nodes.iter().enumerate() {
+            for (i, node) in self.data.nodes.iter().enumerate() {
                 // Pre-order means `first_token` does not decrease, so every
                 // token before this node belongs to a node already visited.
                 while t < node.first_token {
@@ -1495,7 +1622,7 @@ impl<'a> SyntaxTree<'a> {
                     t += 1;
                 }
                 while let Some(&top) = stack.last() {
-                    if (i as u32) < self.nodes[top as usize].subtree_end {
+                    if (i as u32) < self.data.nodes[top as usize].subtree_end {
                         break;
                     }
                     stack.pop();
@@ -1503,7 +1630,7 @@ impl<'a> SyntaxTree<'a> {
                 nodes[i] = stack.last().copied().unwrap_or(NO_PARENT);
                 stack.push(i as u32);
             }
-            while (t as usize) < self.tokens.len() {
+            while (t as usize) < self.data.tokens.len() {
                 assign(&mut stack, &mut tokens, t);
                 t += 1;
             }
@@ -1514,7 +1641,7 @@ impl<'a> SyntaxTree<'a> {
     /// The node that owns the gap before token `next`: the nearest common
     /// ancestor of the tokens on the two sides of the gap.
     fn gap_owner(&self, next: u32) -> u32 {
-        if next == 0 || next as usize >= self.tokens.len() {
+        if next == 0 || next as usize >= self.data.tokens.len() {
             return 0;
         }
         let parents = self.parents();
@@ -2901,7 +3028,7 @@ impl CalcCursor<'_> {
 /// A handle to an interior node in a [`SyntaxTree`].
 #[derive(Clone, Copy)]
 pub struct SyntaxNode<'t, 'a> {
-    tree: &'t SyntaxTree<'a>,
+    tree: SyntaxTree<'t, 'a>,
     idx: u32,
 }
 
@@ -2909,7 +3036,7 @@ pub struct SyntaxNode<'t, 'a> {
 /// the token buffer, or a trivia token made from a gap.
 #[derive(Clone, Copy)]
 pub struct SyntaxToken<'t, 'a> {
-    tree: &'t SyntaxTree<'a>,
+    tree: SyntaxTree<'t, 'a>,
     kind: SyntaxKind,
     range: TextRange,
     /// For a significant token, its index in the token buffer. For trivia, the
@@ -2928,7 +3055,7 @@ pub enum SyntaxElement<'t, 'a> {
 impl<'t, 'a> SyntaxNode<'t, 'a> {
     #[inline]
     fn data(&self) -> &'t Node {
-        &self.tree.nodes[self.idx as usize]
+        &self.tree.data.nodes[self.idx as usize]
     }
 
     /// This node's kind.
@@ -2943,7 +3070,7 @@ impl<'t, 'a> SyntaxNode<'t, 'a> {
         if self.idx == 0 {
             return TextRange::new(0, self.tree.source.len() as u32);
         }
-        let tokens = &self.tree.tokens;
+        let tokens = &self.tree.data.tokens;
         TextRange::new(
             tokens[node.first_token as usize].start,
             tokens[node.token_end as usize - 1].end(),
@@ -3022,18 +3149,20 @@ impl<'t, 'a> SyntaxNode<'t, 'a> {
     }
 
     /// Direct child nodes only.
-    pub fn child_nodes(&self) -> impl Iterator<Item = SyntaxNode<'t, 'a>> + 't {
+    pub fn child_nodes(&self) -> impl Iterator<Item = SyntaxNode<'t, 'a>> + use<'t, 'a> {
         self.significant_children()
             .filter_map(SyntaxElement::into_node)
     }
 
     /// Direct child tokens only, trivia included.
-    pub fn child_tokens(&self) -> impl Iterator<Item = SyntaxToken<'t, 'a>> + 't {
+    pub fn child_tokens(&self) -> impl Iterator<Item = SyntaxToken<'t, 'a>> + use<'t, 'a> {
         self.children().filter_map(SyntaxElement::into_token)
     }
 
     /// Direct significant child tokens only.
-    pub fn significant_child_tokens(&self) -> impl Iterator<Item = SyntaxToken<'t, 'a>> + 't {
+    pub fn significant_child_tokens(
+        &self,
+    ) -> impl Iterator<Item = SyntaxToken<'t, 'a>> + use<'t, 'a> {
         self.significant_children()
             .filter_map(SyntaxElement::into_token)
     }
@@ -3058,7 +3187,7 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
     /// Return the flags for this token.
     pub fn flags(&self) -> NodeFlags {
         let mut flags = own_flag_bits(self.kind);
-        if !self.trivia && self.tree.tokens[self.idx as usize].flags & TOKEN_ERROR != 0 {
+        if !self.trivia && self.tree.data.tokens[self.idx as usize].flags & TOKEN_ERROR != 0 {
             flags.insert(NodeFlags::HAS_ERROR);
         }
         flags
@@ -3175,7 +3304,7 @@ impl Gap {
     };
 
     #[inline]
-    fn next_token<'t, 'a>(&mut self, tree: &'t SyntaxTree<'a>) -> Option<SyntaxToken<'t, 'a>> {
+    fn next_token<'t, 'a>(&mut self, tree: SyntaxTree<'t, 'a>) -> Option<SyntaxToken<'t, 'a>> {
         if self.start >= self.end {
             return None;
         }
@@ -3188,7 +3317,7 @@ impl Gap {
 
 /// Iterator over a node's direct children (see [`SyntaxNode::children`]).
 pub struct Children<'t, 'a> {
-    tree: &'t SyntaxTree<'a>,
+    tree: SyntaxTree<'t, 'a>,
     next_token: u32,
     token_end: u32,
     next_child: u32,
@@ -3216,7 +3345,7 @@ impl<'t, 'a> Iterator for Children<'t, 'a> {
             if self.next_token < self.token_end {
                 let tree = self.tree;
                 let first = self.next_token;
-                let el = match tree.nodes.get(self.next_child as usize) {
+                let el = match tree.data.nodes.get(self.next_child as usize) {
                     Some(child)
                         if self.next_child < self.child_end && child.first_token == first =>
                     {
@@ -3238,7 +3367,7 @@ impl<'t, 'a> Iterator for Children<'t, 'a> {
                 }
                 // The gap before a child belongs to this node, unless the
                 // child is the first one. The root also owns its leading gap.
-                let start = tree.tokens[first as usize].start;
+                let start = tree.data.tokens[first as usize].start;
                 if self.started || self.is_root {
                     self.gap = Gap {
                         start: self.prev_end,
@@ -3247,7 +3376,7 @@ impl<'t, 'a> Iterator for Children<'t, 'a> {
                     };
                 }
                 self.started = true;
-                self.prev_end = tree.tokens[self.next_token as usize - 1].end();
+                self.prev_end = tree.data.tokens[self.next_token as usize - 1].end();
                 self.pending = Some(el);
                 continue;
             }
@@ -3257,7 +3386,7 @@ impl<'t, 'a> Iterator for Children<'t, 'a> {
                 self.gap = Gap {
                     start: self.prev_end,
                     end: self.tree.source.len() as u32,
-                    next: self.tree.tokens.len() as u32,
+                    next: self.tree.data.tokens.len() as u32,
                 };
                 continue;
             }
@@ -3269,7 +3398,7 @@ impl<'t, 'a> Iterator for Children<'t, 'a> {
 /// Iterator over every leaf token of a tree, trivia included (see
 /// [`SyntaxTree::tokens`]).
 pub struct Tokens<'t, 'a> {
-    tree: &'t SyntaxTree<'a>,
+    tree: SyntaxTree<'t, 'a>,
     next: u32,
     prev_end: u32,
     gap: Gap,
@@ -3289,10 +3418,10 @@ impl<'t, 'a> Iterator for Tokens<'t, 'a> {
                 return Some(token);
             }
             let tree = self.tree;
-            if (self.next as usize) < tree.tokens.len() {
+            if (self.next as usize) < tree.data.tokens.len() {
                 let index = self.next;
                 self.next += 1;
-                let token = tree.tokens[index as usize];
+                let token = tree.data.tokens[index as usize];
                 self.gap = Gap {
                     start: self.prev_end,
                     end: token.start,
@@ -3488,7 +3617,9 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
 
 /// First significant child element of `node` after skipping leading trivia and
 /// (for blocks) the delimiting braces — used to classify entries.
-fn child_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+fn child_items<'t, 'a>(
+    node: SyntaxNode<'t, 'a>,
+) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
     node.significant_children().filter_map(item_from_element)
 }
 
@@ -3533,7 +3664,9 @@ fn parameter_name<'t, 'a>(node: SyntaxNode<'t, 'a>) -> Option<SyntaxToken<'t, 'a
     })
 }
 
-fn parameter_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+fn parameter_items<'t, 'a>(
+    node: SyntaxNode<'t, 'a>,
+) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
     let mut header_done = false;
     let mut body_done = false;
     node.significant_children().filter_map(move |el| {
@@ -3580,7 +3713,9 @@ fn parameter_body_item<'t, 'a>(el: SyntaxElement<'t, 'a>) -> Option<Item<'t, 'a>
     }
 }
 
-fn code_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+fn code_items<'t, 'a>(
+    node: SyntaxNode<'t, 'a>,
+) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
     let children: Vec<_> = node.significant_children().collect();
     let payload_start = children
         .windows(2)
@@ -3606,12 +3741,12 @@ fn code_items<'t, 'a>(node: SyntaxNode<'t, 'a>) -> impl Iterator<Item = Item<'t,
 
 impl<'t, 'a> Root<'t, 'a> {
     /// Every top-level entry, in source order (trivia skipped).
-    pub fn items(&self) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+    pub fn items(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
         child_items(self.syntax())
     }
 
     /// The top-level `key = value` fields.
-    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + 't {
+    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + use<'t, 'a> {
         self.items().filter_map(Item::into_field)
     }
 }
@@ -3653,17 +3788,17 @@ impl<'t, 'a> Field<'t, 'a> {
 
 impl<'t, 'a> Block<'t, 'a> {
     /// Every entry between the braces, in source order (trivia skipped).
-    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
         child_items(self.syntax())
     }
 
     /// The `key = value` fields directly inside this block.
-    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + 't {
+    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + use<'t, 'a> {
         self.entries().filter_map(Item::into_field)
     }
 
     /// The bare values (array elements) directly inside this block.
-    pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + 't {
+    pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + use<'t, 'a> {
         self.entries().filter_map(Item::into_value)
     }
 
@@ -3692,17 +3827,17 @@ impl<'t, 'a> Parameter<'t, 'a> {
     }
 
     /// The entries in the parameter body.
-    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
         parameter_items(self.syntax())
     }
 
     /// The fields directly inside the parameter body.
-    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + 't {
+    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + use<'t, 'a> {
         self.entries().filter_map(Item::into_field)
     }
 
     /// The bare values directly inside the parameter body.
-    pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + 't {
+    pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + use<'t, 'a> {
         self.entries().filter_map(Item::into_value)
     }
 
@@ -3728,17 +3863,17 @@ impl<'t, 'a> UndefinedParameter<'t, 'a> {
     }
 
     /// The entries in the parameter body.
-    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
         parameter_items(self.syntax())
     }
 
     /// The fields directly inside the parameter body.
-    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + 't {
+    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + use<'t, 'a> {
         self.entries().filter_map(Item::into_field)
     }
 
     /// The bare values directly inside the parameter body.
-    pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + 't {
+    pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + use<'t, 'a> {
         self.entries().filter_map(Item::into_value)
     }
 
@@ -3773,17 +3908,17 @@ impl<'t, 'a> Code<'t, 'a> {
     }
 
     /// The entries in the code payload.
-    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + 't {
+    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
         code_items(self.syntax())
     }
 
     /// The fields directly inside the code payload.
-    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + 't {
+    pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + use<'t, 'a> {
         self.entries().filter_map(Item::into_field)
     }
 
     /// The bare values directly inside the code payload.
-    pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + 't {
+    pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + use<'t, 'a> {
         self.entries().filter_map(Item::into_value)
     }
 
@@ -3802,7 +3937,7 @@ impl<'t, 'a> Code<'t, 'a> {
 
 impl<'t, 'a> Interpolation<'t, 'a> {
     /// The elements between the interpolation brackets.
-    pub fn body(&self) -> impl Iterator<Item = SyntaxElement<'t, 'a>> + 't {
+    pub fn body(&self) -> impl Iterator<Item = SyntaxElement<'t, 'a>> + use<'t, 'a> {
         self.syntax().children().filter(|element| {
             !matches!(
                 element.kind(),
@@ -4080,9 +4215,9 @@ impl<'t, 'a> Expr<'t, 'a> {
     }
 }
 
-impl<'a> SyntaxTree<'a> {
+impl<'t, 'a> SyntaxTree<'t, 'a> {
     /// The typed [`Root`] of the document.
-    pub fn ast(&self) -> Root<'_, 'a> {
+    pub fn ast(&self) -> Root<'t, 'a> {
         Root::cast(self.root()).expect("the root node is always SyntaxKind::Root")
     }
 }
@@ -4136,7 +4271,7 @@ pub fn format(source: &[u8]) -> Vec<u8> {
     parse(source).format(&FormatOptions::default())
 }
 
-impl<'a> SyntaxTree<'a> {
+impl<'t, 'a> SyntaxTree<'t, 'a> {
     /// Reformat the tree with the given [`FormatOptions`]. See the module-level
     /// formatter notes for the house style.
     pub fn format(&self, opts: &FormatOptions) -> Vec<u8> {
@@ -4255,7 +4390,7 @@ impl Fmt<'_> {
         self.push(node.text());
         let tree = node.tree;
         let data = node.data();
-        let tokens = &tree.tokens[data.first_token as usize..data.token_end as usize];
+        let tokens = &tree.data.tokens[data.first_token as usize..data.token_end as usize];
         let Some(last) = tokens.iter().rev().find(|t| !t.kind.is_missing()) else {
             return;
         };
@@ -4706,6 +4841,36 @@ mod tests {
         // Both round-trip.
         assert_eq!(parse_with(src, Flavor::default()).reconstruct(), src);
         assert_eq!(parse_with(src, Flavor::hoi4()).reconstruct(), src);
+    }
+
+    #[test]
+    fn text_outlives_tree_data() {
+        // The text of a token borrows the source, not the tree.
+        fn first_key(source: &[u8]) -> &[u8] {
+            let data = parse_data(source, Flavor::default());
+            let tree = SyntaxTree {
+                data: &data,
+                source,
+            };
+            tree.ast().fields().next().unwrap().key().unwrap().text()
+        }
+        assert_eq!(first_key(b"a = 1"), b"a");
+    }
+
+    #[test]
+    fn owned_parse() {
+        fn assert_send_sync<T: Send + Sync + 'static>(_: &T) {}
+
+        let parse = parse(std::sync::Arc::<[u8]>::from(&b"a = { b = 1 }"[..]));
+        assert_send_sync(&parse);
+        let count = std::thread::spawn(move || parse.root().children().count())
+            .join()
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let parse = super::parse(b"a = 1".to_vec());
+        assert_eq!(parse.reconstruct(), b"a = 1");
+        assert_eq!(parse.into_source(), b"a = 1");
     }
 
     #[test]
@@ -6726,9 +6891,9 @@ mod tests {
     #[test]
     fn repair_validation_is_lazy_and_cached() {
         let tree = parse(b"a = { b");
-        assert!(tree.repairs_valid.get().is_none());
+        assert!(tree.data.repairs_valid.get().is_none());
         let recovery = tree.errors()[0].recovery.as_ref().unwrap();
         assert!(tree.repair_applicability(recovery).is_machine_applicable());
-        assert_eq!(tree.repairs_valid.get(), Some(&true));
+        assert_eq!(tree.data.repairs_valid.get(), Some(&true));
     }
 }
