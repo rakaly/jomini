@@ -23,7 +23,7 @@
 //! ```
 
 use jomini::text::lint::{
-    FileKind, Fileset, Fix, Linter, Schema, Severity, apply_fixes, line_col, lints, render,
+    FileKind, Fileset, Fix, Linter, Schema, Severity, apply_fixes, lints, render,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -157,13 +157,9 @@ fn apply_and_report(
         let src = fileset.source(*file);
         let path = fileset.path(*file);
         for f in fixes {
-            let (l, c) = line_col(src, f.range.0);
+            let at = fileset.line_col(*file, f.range.0);
             let old = String::from_utf8_lossy(&src[f.range.0 as usize..f.range.1 as usize]);
-            println!(
-                "  {}:{l}:{c}  `{old}` -> `{}`",
-                path.display(),
-                f.replacement
-            );
+            println!("  {}:{at}  `{old}` -> `{}`", path.display(), f.replacement);
         }
         if write {
             let owned: Vec<Fix> = fixes.iter().map(|f| (*f).clone()).collect();
