@@ -489,16 +489,17 @@ impl<'a> TapeSink<'a> {
     }
 }
 
+#[inline]
 fn operator(text: &[u8]) -> Option<Operator> {
-    Some(match text {
-        b"=" => Operator::Equal,
-        b"<" => Operator::LessThan,
-        b"<=" => Operator::LessThanEqual,
-        b">" => Operator::GreaterThan,
-        b">=" => Operator::GreaterThanEqual,
-        b"==" => Operator::Exact,
-        b"!=" => Operator::NotEqual,
-        b"?=" => Operator::Exists,
+    Some(match *text {
+        [b'='] => Operator::Equal,
+        [b'<'] => Operator::LessThan,
+        [b'>'] => Operator::GreaterThan,
+        [b'<', b'='] => Operator::LessThanEqual,
+        [b'>', b'='] => Operator::GreaterThanEqual,
+        [b'=', b'='] => Operator::Exact,
+        [b'!', b'='] => Operator::NotEqual,
+        [b'?', b'='] => Operator::Exists,
         _ => return None,
     })
 }
