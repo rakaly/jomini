@@ -1962,6 +1962,7 @@ impl<'t, S: Sink> Parser<'t, S> {
         }
     }
 
+    #[inline(always)]
     fn parse_item(&mut self) {
         match self.peek() {
             Some(k) if k.is_scalar() => {
