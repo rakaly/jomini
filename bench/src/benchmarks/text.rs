@@ -19,6 +19,12 @@ pub(crate) fn tape_parse(data: &[u8]) -> usize {
 }
 
 #[inline(never)]
+pub(crate) fn syntax_parse(data: &[u8]) -> usize {
+    let tree = jomini::text::syntax::parse(data);
+    black_box(tree.root().children().count())
+}
+
+#[inline(never)]
 pub(crate) fn reader_count_equals(data: &[u8]) -> i32 {
     let mut reader = jomini::text::TokenReader::from_slice(data);
     let mut count = 0i32;
@@ -91,6 +97,9 @@ pub mod criterion_benches {
             group.bench_function(BenchmarkId::new("reader", game), |b| {
                 b.iter(|| reader_count_equals(data))
             });
+            group.bench_function(BenchmarkId::new("syntax", game), |b| {
+                b.iter(|| syntax_parse(data))
+            });
         }
         group.finish();
     }
@@ -138,6 +147,13 @@ pub mod gungraun_benches {
     }
 
     #[library_benchmark]
+    #[bench::eu4(setup = setup_eu4)]
+    #[bench::ck3(setup = setup_ck3)]
+    fn syntax(data: &[u8]) -> usize {
+        syntax_parse(data)
+    }
+
+    #[library_benchmark]
     #[bench::meta(setup = setup_meta)]
     fn deserialize(data: &[u8]) -> Meta {
         deserialize_meta(data)
@@ -152,6 +168,6 @@ pub mod gungraun_benches {
 
     library_benchmark_group!(
         name = text_benches,
-        benchmarks = [tape, reader, deserialize, compressed_read,]
+        benchmarks = [tape, reader, syntax, deserialize, compressed_read,]
     );
 }

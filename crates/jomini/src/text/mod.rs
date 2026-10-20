@@ -25,8 +25,10 @@
 pub mod de;
 mod dom;
 mod fnv;
+pub mod lint;
 mod operator;
 mod reader;
+pub mod syntax;
 mod tape;
 mod writer;
 
