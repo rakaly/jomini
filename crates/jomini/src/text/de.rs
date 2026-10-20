@@ -1759,9 +1759,14 @@ mod tests {
 
     fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
     where
-        T: Deserialize<'a>,
+        T: Deserialize<'a> + PartialEq + Debug,
     {
-        super::from_windows1252_slice(data)
+        let result = super::from_windows1252_slice(data);
+        #[cfg(feature = "lossless")]
+        if let Ok(expected) = &result {
+            check_syntax_tree(data, expected);
+        }
+        result
     }
 
     fn from_owned<T>(data: &[u8]) -> T
@@ -1779,7 +1784,44 @@ mod tests {
         };
         let x2 = T::deserialize(&mut des).unwrap();
         assert_eq!(x1, x2);
+        #[cfg(feature = "lossless")]
+        {
+            check_syntax_tree(data, &x1);
+            check_syntax_value(data, &x1);
+        }
         x1
+    }
+
+    /// The deserializer of the syntax tree must give the same result as the
+    /// deserializer of the tape.
+    #[cfg(feature = "lossless")]
+    fn check_syntax_tree<'a, T>(data: &'a [u8], expected: &T)
+    where
+        T: Deserialize<'a> + PartialEq + Debug,
+    {
+        let parse = crate::text::lossless::parse(data);
+        let actual: T =
+            crate::text::lossless::de::from_tree(parse.borrowed_tree(), Windows1252Encoding::new())
+                .unwrap();
+        assert_eq!(&actual, expected, "the syntax tree deserializer differs");
+    }
+
+    /// A value from the syntax tree must deserialize into the same result.
+    #[cfg(feature = "lossless")]
+    fn check_syntax_value<T>(data: &[u8], expected: &T)
+    where
+        T: DeserializeOwned + PartialEq + Debug,
+    {
+        use crate::text::lossless::value::Value;
+        let parse = crate::text::lossless::parse(data);
+        let value = Value::from_tree(parse.tree(), Windows1252Encoding::new());
+        let borrowed = T::deserialize(&value).unwrap();
+        assert_eq!(
+            &borrowed, expected,
+            "the borrowed value deserializer differs"
+        );
+        let owned = T::deserialize(value).unwrap();
+        assert_eq!(&owned, expected, "the owned value deserializer differs");
     }
 
     #[test]
@@ -2935,6 +2977,7 @@ mod tests {
             Blue,
         }
 
+        #[derive(Debug, PartialEq)]
         struct Container;
 
         impl<'de> Deserialize<'de> for Container {
@@ -3165,7 +3208,14 @@ mod tests {
             string_field: String,
         }
 
-        let actual: MyStruct = from_owned(&data[..]);
+        // A syntax value keeps the decoded text, not the raw bytes, so this
+        // test does not use `from_owned`.
+        let tape = TextTape::from_slice(&data[..]).unwrap();
+        let actual: MyStruct = TextDeserializer::from_windows1252_tape(&tape)
+            .deserialize()
+            .unwrap();
+        #[cfg(feature = "lossless")]
+        check_syntax_tree(&data[..], &actual);
         assert_eq!(actual.raw_field.0, b"Joe \\\"Captain\\\" Rogers ");
         assert_eq!(actual.string_field, "Joe \"Captain\" Rogers");
     }
