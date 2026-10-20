@@ -4,7 +4,8 @@
 //! or an editor needs a line and a column. A [`LineIndex`] stores the start of
 //! each line, so a conversion is a binary search.
 //!
-//! A line ends after a `\n`, so `\r\n` also ends a line. The column counts
+//! A line ends after a `\n`, a `\r\n`, or a `\r` alone. The lexer uses the
+//! same line breaks to end a comment. The column counts
 //! bytes from the start of the line. An editor that counts UTF-16 code units
 //! can convert the bytes of the line before the column.
 
@@ -59,7 +60,7 @@ impl LineIndex {
             source
                 .iter()
                 .enumerate()
-                .filter(|&(_, &b)| b == b'\n')
+                .filter(|&(i, &b)| b == b'\n' || (b == b'\r' && source.get(i + 1) != Some(&b'\n')))
                 .map(|(i, _)| i as u32 + 1),
         );
         LineIndex { line_starts, len }
@@ -82,11 +83,12 @@ impl LineIndex {
     }
 
     /// The byte offset of `at`. Return `None` when the line does not exist or
-    /// the column is after the end of the line.
+    /// the column is after the end of the line. The column of the end of the
+    /// source is valid, but the column after a line break is not.
     pub fn offset(&self, at: LineCol) -> Option<u32> {
         let range = self.line_range(at.line)?;
         let offset = range.start().checked_add(at.col)?;
-        (offset <= range.end()).then_some(offset)
+        (offset < range.end() || offset == self.len).then_some(offset)
     }
 
     /// The range of `line`, with its line break. Return `None` when the line
@@ -129,8 +131,21 @@ mod tests {
         assert_eq!(index.line_range(0), Some(TextRange::new(0, 3)));
         assert_eq!(index.line_range(1), Some(TextRange::new(3, 5)));
         assert_eq!(index.line_range(2), None);
+        assert_eq!(index.offset(LineCol { line: 0, col: 3 }), None);
         assert_eq!(index.offset(LineCol { line: 0, col: 4 }), None);
+        assert_eq!(index.offset(LineCol { line: 1, col: 2 }), Some(5));
         assert_eq!(index.offset(LineCol { line: 2, col: 0 }), None);
+    }
+
+    #[test]
+    fn lone_carriage_return() {
+        let source = b"a = 1\rb = \"x";
+        let index = LineIndex::new(source);
+        assert_eq!(index.line_count(), 2);
+        assert_eq!(index.line_col(6), LineCol { line: 1, col: 0 });
+        let tree = crate::text::syntax::parse(source);
+        let at = index.line_col(tree.errors()[0].range.start());
+        assert_eq!(at.to_string(), "2:5");
     }
 
     #[test]

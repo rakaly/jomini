@@ -1184,12 +1184,14 @@ pub struct Repair {
 // Tree storage: a buffer of significant tokens and a pre-order node tape.
 // ---------------------------------------------------------------------------
 
-/// Precomputed per-subtree summary bits, one byte per node, filled in while the
-/// tree is built. A node's flags are the union of its own kind's bits and
-/// *every* descendant's, so a consumer can skip a whole subtree with one O(1)
-/// test — "does this block contain a comment? a syntax error? a calc? a macro
-/// parameter?" — instead of walking it. This mirrors swift-syntax's
-/// `RecursiveRawSyntaxFlags` and Carbon's per-node `has_error` bit.
+/// Summary bits for a subtree, one byte for each node. The parser sets the
+/// bits when it builds the tree.
+///
+/// The flags of a node contain the bits of its kind and the bits of *all* its
+/// descendants. Thus one O(1) test tells if a block has a comment, a syntax
+/// error, a calc, or a macro parameter. You do not have to walk the subtree.
+/// swift-syntax (`RecursiveRawSyntaxFlags`) and Carbon (`has_error`) use the
+/// same method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct NodeFlags(u8);
 
@@ -3263,18 +3265,24 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
         if self.kind() != SyntaxKind::Operator {
             return None;
         }
-        Some(match self.text() {
-            b"<" => Operator::LessThan,
-            b"<=" => Operator::LessThanEqual,
-            b">" => Operator::GreaterThan,
-            b">=" => Operator::GreaterThanEqual,
-            b"==" => Operator::Exact,
-            b"=" => Operator::Equal,
-            b"!=" => Operator::NotEqual,
-            b"?=" => Operator::Exists,
-            _ => return None,
-        })
+        operator(self.text())
     }
+}
+
+/// The operator that `text` spells.
+#[inline]
+fn operator(text: &[u8]) -> Option<Operator> {
+    Some(match *text {
+        [b'='] => Operator::Equal,
+        [b'<'] => Operator::LessThan,
+        [b'>'] => Operator::GreaterThan,
+        [b'<', b'='] => Operator::LessThanEqual,
+        [b'>', b'='] => Operator::GreaterThanEqual,
+        [b'=', b'='] => Operator::Exact,
+        [b'!', b'='] => Operator::NotEqual,
+        [b'?', b'='] => Operator::Exists,
+        _ => return None,
+    })
 }
 
 impl<'t, 'a> SyntaxElement<'t, 'a> {
@@ -3687,6 +3695,22 @@ fn item_from_element<'t, 'a>(el: SyntaxElement<'t, 'a>) -> Option<Item<'t, 'a>> 
     }
 }
 
+/// The closing bracket of the parameter body. The body closes with the last
+/// bracket of the node. When that bracket is a missing token, the body is not
+/// closed, and a `]` before it closes an inner bracket.
+fn parameter_close_bracket<'t, 'a>(node: SyntaxNode<'t, 'a>) -> Option<SyntaxToken<'t, 'a>> {
+    node.significant_child_tokens()
+        .filter(|token| {
+            matches!(
+                token.kind(),
+                SyntaxKind::CloseBracket | SyntaxKind::MissingCloseBracket
+            )
+        })
+        .skip(1)
+        .last()
+        .filter(|token| token.kind() == SyntaxKind::CloseBracket)
+}
+
 fn parameter_name<'t, 'a>(node: SyntaxNode<'t, 'a>) -> Option<SyntaxToken<'t, 'a>> {
     let mut open_brackets = 0;
     node.significant_children().find_map(|el| match el {
@@ -3880,11 +3904,7 @@ impl<'t, 'a> Parameter<'t, 'a> {
 
     /// Return the physical body closing bracket, if the source contains one.
     pub fn close_bracket(&self) -> Option<SyntaxToken<'t, 'a>> {
-        self.syntax()
-            .significant_child_tokens()
-            .filter(|token| token.kind() == SyntaxKind::CloseBracket)
-            .skip(1)
-            .last()
+        parameter_close_bracket(self.syntax())
     }
 
     /// Return `true` when the parameter body has a physical closing bracket.
@@ -3916,11 +3936,7 @@ impl<'t, 'a> UndefinedParameter<'t, 'a> {
 
     /// Return the physical body closing bracket, if the source contains one.
     pub fn close_bracket(&self) -> Option<SyntaxToken<'t, 'a>> {
-        self.syntax()
-            .significant_child_tokens()
-            .filter(|token| token.kind() == SyntaxKind::CloseBracket)
-            .skip(1)
-            .last()
+        parameter_close_bracket(self.syntax())
     }
 
     /// Return `true` when the parameter body has a physical closing bracket.
@@ -4260,27 +4276,26 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
 }
 
 // ---------------------------------------------------------------------------
-// Formatter: walk the tree and re-emit it with normalized whitespace. Only
-// whitespace is regenerated — every significant token, comment, and the BOM is
-// reproduced byte-for-byte — so reparsing the output yields the same tree of
-// significant tokens, and formatting is idempotent.
+// Formatter: walk the tree and write it again with new whitespace. The
+// formatter changes only the whitespace. It writes each significant token,
+// each comment, and the BOM with the same bytes. Thus a parse of the output
+// gives the same significant tokens, and a second format makes no change.
 //
-// House style:
-//   * one entry per line, indented by `FormatOptions::indent` per nesting level;
-//   * `key = value`, a single space around the operator;
-//   * a block of only bare scalars stays inline (`{ 1 2 3 }`); any block with
-//     fields, nested blocks, or comments breaks onto multiple lines; an empty
-//     block collapses to `{}`;
-//   * comments are preserved and always end their line, so a comment can never
-//     swallow a following token; an author's blank line between entries is kept
-//     (collapsed to a single blank line);
-//   * the document ends in exactly one newline.
+// Style:
+//   * Each entry is on its own line. Each nesting level adds one
+//     `FormatOptions::indent`.
+//   * A field is `key = value`, with one space on each side of the operator.
+//   * A block that has only scalars stays on one line (`{ 1 2 3 }`). A block
+//     with fields, blocks, or comments has one entry on each line. An empty
+//     block becomes `{}`.
+//   * A comment always ends its line, so it cannot hide the token after it.
+//     A quoted string that a newline closes also ends its line.
+//   * One blank line between entries stays. More blank lines become one.
+//   * The document ends with one newline.
 //
-// Constructs the parser does not yet structure (`Bogus` recovery nodes and
-// some calc internals) are reflowed conservatively: parameter, code, calc, and
-// Bogus nodes are reprinted verbatim, and loose tokens land one per line.
-// Content is always preserved; only the layout of those rare constructs is
-// rough.
+// The formatter writes parameter, code, calc, and `Bogus` nodes with their
+// source bytes. It writes each loose token on its own line. The content of
+// these nodes does not change, but their layout can be rough.
 // ---------------------------------------------------------------------------
 
 /// Configuration for [`SyntaxTree::format`].
@@ -4350,7 +4365,9 @@ fn quote_is_closed(text: &[u8]) -> bool {
 
 /// Whether `el` is a bare scalar token eligible to keep its block inline.
 fn is_inline_scalar(el: SyntaxElement<'_, '_>) -> bool {
-    el.kind().is_scalar()
+    // A quoted string that a newline closes (`Flavor::newline_terminated_strings`)
+    // must stay at the end of its line.
+    el.kind().is_scalar() && quote_is_closed(el.text())
 }
 
 /// Collect the comments that sit *inline* within a field/headered-block line —
@@ -5213,6 +5230,28 @@ mod tests {
     }
 
     #[test]
+    fn unclosed_parameter_with_inner_bracket_is_not_closed() {
+        let tree = parse(b"[[x] [ } ]");
+        let parameter = tree.ast().items().find_map(Item::into_parameter).unwrap();
+        assert!(!parameter.is_closed_in_source(), "{}", tree.debug_tree());
+
+        let tree = parse(b"[[!x] [ } ]");
+        let parameter = tree
+            .ast()
+            .items()
+            .find_map(|item| match item {
+                Item::UndefinedParameter(value) => Some(value),
+                _ => None,
+            })
+            .unwrap();
+        assert!(!parameter.is_closed_in_source(), "{}", tree.debug_tree());
+
+        let tree = parse(b"[[x] a = b ]");
+        let parameter = tree.ast().items().find_map(Item::into_parameter).unwrap();
+        assert!(parameter.is_closed_in_source());
+    }
+
+    #[test]
     fn incomplete_parameters_and_code_payloads_preserve_typed_content() {
         let parameter = parse(b"[[name] value");
         let parameter_node = parameter
@@ -6043,6 +6082,26 @@ mod tests {
     fn fmt_inline_scalar_blocks() {
         assert_eq!(fmt(b"color=rgb{255 0 128}"), "color = rgb { 255 0 128 }\n");
         assert_eq!(fmt(b"arr = {1    2 3}"), "arr = { 1 2 3 }\n");
+    }
+
+    #[test]
+    fn fmt_newline_terminated_string_ends_its_line() {
+        let tokens = |src: &[u8]| -> Vec<(SyntaxKind, Vec<u8>)> {
+            parse_with(src, Flavor::hoi4())
+                .tokens()
+                .filter(|t| !t.kind().is_missing() && !t.kind().is_trivia())
+                .map(|t| (t.kind(), t.text().to_vec()))
+                .collect()
+        };
+        for src in [&b"x = { \"abc\n 1 }"[..], b"x = { \"abc\n}"] {
+            let out = parse_with(src, Flavor::hoi4()).format(&FormatOptions::default());
+            assert_eq!(
+                tokens(&out),
+                tokens(src),
+                "{}",
+                String::from_utf8_lossy(&out)
+            );
+        }
     }
 
     #[test]

@@ -35,7 +35,7 @@
 
 mod fast;
 
-use super::{Flavor, Sink, SyntaxKind, Token, run, strip_quotes};
+use super::{Flavor, Sink, SyntaxKind, Token, operator, run, strip_quotes};
 use crate::{Scalar, TextTape, TextToken, text::Operator};
 
 /// Parse `source` with the lossless grammar into a [`TextTape`].
@@ -68,13 +68,17 @@ pub fn parse_tape_with(source: &[u8], flavor: Flavor) -> TextTape<'_> {
         u32::try_from(source.len()).is_ok(),
         "source is larger than 4 GiB"
     );
-    let level = fearless_simd::Level::new();
-    let fast = fearless_simd::dispatch!(level, simd => fast::parse(simd, source, flavor));
-    if let Some(tape) = fast {
-        return TextTape::from_parts(tape, source.starts_with(super::BOM));
-    }
-    let p = run(source, flavor, TapeSink::new(source, source.len() / 5));
     let bom = source.starts_with(super::BOM);
+    let tape = Vec::with_capacity(source.len() / 5);
+    let level = fearless_simd::Level::new();
+    let fast = fearless_simd::dispatch!(level, simd => fast::parse(simd, source, flavor, tape));
+    let mut tape = match fast {
+        Ok(tape) => return TextTape::from_parts(tape, bom),
+        Err(tape) => tape,
+    };
+    // The fast path stopped. Keep its memory for the full grammar.
+    tape.clear();
+    let p = run(source, flavor, TapeSink::new(source, tape));
     TextTape::from_parts(p.sink.tape, bom)
 }
 
@@ -117,11 +121,13 @@ enum OnEmpty {
     /// Keep an empty array.
     Keep,
     /// Remove the block. Truncate the tape to `len` and set the state of the
-    /// parent container again.
+    /// parent container again. When `first` is set, the block was the first
+    /// entry of the parent, so the parent has no entries again.
     Drop {
         len: usize,
         shape: Shape,
         mixed: bool,
+        first: bool,
     },
     /// Remove the block and change the header at `len` to a scalar.
     Header { len: usize },
@@ -209,10 +215,10 @@ struct TapeSink<'a> {
 }
 
 impl<'a> TapeSink<'a> {
-    fn new(source: &'a [u8], tokens: usize) -> Self {
+    fn new(source: &'a [u8], tape: Vec<TextToken<'a>>) -> Self {
         TapeSink {
             source,
-            tape: Vec::with_capacity(tokens),
+            tape,
             frames: Vec::with_capacity(16),
             skip: 0,
         }
@@ -405,6 +411,7 @@ impl<'a> TapeSink<'a> {
                     len,
                     shape: old.shape,
                     mixed: old.mixed,
+                    first: old.entries == 0,
                 };
                 let Some(c) = self.top_container() else {
                     return;
@@ -460,11 +467,19 @@ impl<'a> TapeSink<'a> {
             }
             ContainerKind::Block if c.entries == 0 => match c.on_empty {
                 OnEmpty::Keep => {}
-                OnEmpty::Drop { len, shape, mixed } => {
+                OnEmpty::Drop {
+                    len,
+                    shape,
+                    mixed,
+                    first,
+                } => {
                     self.tape.truncate(len);
                     if let Some(parent) = self.top_container() {
                         parent.shape = shape;
                         parent.mixed = mixed;
+                        if first {
+                            parent.entries = 0;
+                        }
                     }
                     return;
                 }
@@ -505,21 +520,6 @@ impl<'a> TapeSink<'a> {
 #[inline]
 fn is_plain_object(c: &Container) -> bool {
     c.entries > 0 && c.shape == Shape::Object && !c.mixed
-}
-
-#[inline]
-fn operator(text: &[u8]) -> Option<Operator> {
-    Some(match *text {
-        [b'='] => Operator::Equal,
-        [b'<'] => Operator::LessThan,
-        [b'>'] => Operator::GreaterThan,
-        [b'<', b'='] => Operator::LessThanEqual,
-        [b'>', b'='] => Operator::GreaterThanEqual,
-        [b'=', b'='] => Operator::Exact,
-        [b'!', b'='] => Operator::NotEqual,
-        [b'?', b'='] => Operator::Exists,
-        _ => return None,
-    })
 }
 
 impl Sink for TapeSink<'_> {
@@ -817,9 +817,10 @@ mod tests {
     use quickcheck_macros::quickcheck;
 
     fn matches_grammar(source: &[u8], flavor: Flavor) -> bool {
-        let expected = run(source, flavor, TapeSink::new(source, source.len() / 5));
+        let expected = run(source, flavor, TapeSink::new(source, Vec::new()));
         parse_tape_with(source, flavor).tokens() == expected.sink.tape
-            && fast::parse(fearless_simd::Fallback::new(), source, flavor)
+            && fast::parse(fearless_simd::Fallback::new(), source, flavor, Vec::new())
+                .ok()
                 .is_none_or(|tape| tape == expected.sink.tape)
     }
 
@@ -862,6 +863,7 @@ mod tests {
             b"a=}",
             b"a=]=b",
             b"x={a=b",
+            b"x={1 c={{} d=3} e=4}",
         ];
         let mut source = Vec::new();
         for entry in entries {
@@ -911,6 +913,9 @@ mod tests {
         same(b"foo={bar=val { } a=b} me=you");
         same(b"foo={{} {a=b}}");
         same(b"foo={1 {} 2}");
+        same(b"a = { 1 c = { {} d = 3 } e = 4 }");
+        same(b"a = { 1 c = { {} {} d = 3 } e = 4 }");
+        same(b"a = { 1 c = { {} 2 } e = 4 }");
         same(b"foo={a {b=c}}");
         same(b"foo={a=b c {d=e}}");
         same(b"army={name=abc} army={name=def}");

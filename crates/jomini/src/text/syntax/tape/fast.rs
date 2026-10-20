@@ -12,18 +12,27 @@ use super::super::{
     find_line_end, is_ws, scan_quoted, scan_unquoted, skip_whitespace, strip_quotes,
 };
 
+/// Write the tape of `source` into `tape`, which must be empty. On `Err`, the
+/// tape has a partial result. Clear it and give it to the full grammar.
 #[inline(always)]
-pub(super) fn parse<S: Simd>(simd: S, source: &[u8], flavor: Flavor) -> Option<Vec<TextToken<'_>>> {
+pub(super) fn parse<'a, S: Simd>(
+    simd: S,
+    source: &'a [u8],
+    flavor: Flavor,
+    tape: Vec<TextToken<'a>>,
+) -> Result<Vec<TextToken<'a>>, Vec<TextToken<'a>>> {
     let mut p = Parser {
         simd,
         source,
         flavor,
         pos: if source.starts_with(BOM) { 3 } else { 0 },
-        tape: Vec::with_capacity(source.len() / 5),
+        tape,
         stack: Vec::new(),
     };
-    p.items()?;
-    Some(p.tape)
+    match p.items() {
+        Some(()) => Ok(p.tape),
+        None => Err(p.tape),
+    }
 }
 
 struct Container {
@@ -163,10 +172,19 @@ impl<'a, S: Simd> Parser<'a, S> {
         if child.empty {
             match child.on_empty {
                 OnEmpty::Keep => {}
-                OnEmpty::Drop { len, shape, mixed } => {
+                OnEmpty::Drop {
+                    len,
+                    shape,
+                    mixed,
+                    first,
+                } => {
                     self.tape.truncate(len);
                     current.shape = shape;
                     current.mixed = mixed;
+                    if first {
+                        current.empty = true;
+                        current.first_scalar = false;
+                    }
                     return;
                 }
                 OnEmpty::Header { len } => {
@@ -215,12 +233,14 @@ impl<'a, S: Simd> Parser<'a, S> {
                 continue;
             }
             if b == b'{' {
+                let first = current.empty;
                 current.entry(false);
                 let len = self.tape.len();
                 let drop = OnEmpty::Drop {
                     len,
                     shape: current.shape,
                     mixed: current.mixed,
+                    first,
                 };
                 let on_empty = match current.shape {
                     Shape::Open => {
