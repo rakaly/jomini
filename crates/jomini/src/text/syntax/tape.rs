@@ -489,6 +489,13 @@ impl<'a> TapeSink<'a> {
     }
 }
 
+/// Return `true` when `c` is an object that is not mixed and has an entry. A
+/// new field in such a container changes only the entry count.
+#[inline]
+fn is_plain_object(c: &Container) -> bool {
+    c.entries > 0 && c.shape == Shape::Object && !c.mixed
+}
+
 #[inline]
 fn operator(text: &[u8]) -> Option<Operator> {
     Some(match *text {
@@ -509,7 +516,8 @@ impl Sink for TapeSink<'_> {
 
     #[inline]
     fn start_node(&mut self, kind: SyntaxKind) {
-        if self.skip > 0 || matches!(self.frames.last(), Some(Frame::Opaque { .. })) {
+        // When `skip` is not zero, the top frame is opaque.
+        if matches!(self.frames.last(), Some(Frame::Opaque { .. })) {
             self.skip += 1;
             return;
         }
@@ -682,14 +690,35 @@ impl Sink for TapeSink<'_> {
 
     #[inline]
     fn field_head(&mut self, key: Token, op: Token) {
-        if self.skip > 0 || !matches!(self.frames.last(), Some(Frame::Container(_))) {
-            self.start_node(SyntaxKind::Field);
-            self.token(key);
-            self.token(op);
-            return;
-        }
+        let (key_token, op_token) = (key, op);
         let op = operator(self.text(op)).unwrap_or(Operator::Equal);
         let key = self.leaf(key);
+        let Some(Frame::Container(c)) = self.frames.last_mut() else {
+            self.start_node(SyntaxKind::Field);
+            self.token(key_token);
+            self.token(op_token);
+            return;
+        };
+        if is_plain_object(c) {
+            // The most frequent case: a field after the first entry of an
+            // object. The first-entry rules do not apply.
+            c.entries += 1;
+            let len = self.tape.len();
+            self.tape.push(key.token());
+            if op != Operator::Equal {
+                self.tape.push(TextToken::Operator(op));
+            }
+            self.frames.push(Frame::Field {
+                key: Some(key),
+                resolved: true,
+                has_value: false,
+                header_ok: true,
+                len,
+                shape: Shape::Object,
+                mixed: false,
+            });
+            return;
+        }
         self.begin_entry(true);
         let len = self.tape.len();
         let Some(c) = self.top_container() else {
@@ -726,16 +755,26 @@ impl Sink for TapeSink<'_> {
 
     #[inline]
     fn scalar_field(&mut self, key: Token, op: Token, value: Token) {
-        if self.skip > 0 || !matches!(self.frames.last(), Some(Frame::Container(_))) {
-            self.start_node(SyntaxKind::Field);
-            self.token(key);
-            self.token(op);
-            self.token(value);
-            self.finish_node();
-            return;
-        }
+        let tokens = (key, op, value);
         let op = operator(self.text(op)).unwrap_or(Operator::Equal);
         let (key, value) = (self.leaf(key), self.leaf(value));
+        let Some(Frame::Container(c)) = self.frames.last_mut() else {
+            self.start_node(SyntaxKind::Field);
+            self.token(tokens.0);
+            self.token(tokens.1);
+            self.token(tokens.2);
+            self.finish_node();
+            return;
+        };
+        if is_plain_object(c) {
+            c.entries += 1;
+            self.tape.push(key.token());
+            if op != Operator::Equal {
+                self.tape.push(TextToken::Operator(op));
+            }
+            self.tape.push(value.token());
+            return;
+        }
         self.begin_entry(true);
         let Some(c) = self.top_container() else {
             return;
