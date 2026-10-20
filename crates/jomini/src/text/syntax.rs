@@ -715,18 +715,36 @@ fn ws_lanes<S: Simd>(v: u8x16<S>) -> mask8x16<S> {
     lanes_le(v - 9u8, 4) | v.simd_eq(b' ') | v.simd_eq(b';')
 }
 
-/// A lane mask for the bytes in [`STOP`]. The masks are exact:
+/// The run classes of a byte come from two tables: one for the low nibble and
+/// one for the high nibble. The class of a byte is the bitwise AND of the two
+/// values. Each low bit is one group of [`STOP`] bytes:
 ///
-/// - `v | 0x20` is `{` for `{` and `[`, and `}` for `}` and `]`.
-/// - `v - '<' <= 2` is `<`, `=`, and `>`.
+/// - `0x01`: `\t` `\n` `\v` `\f` `\r` (high nibble 0, low nibble 9 to D).
+/// - `0x02`: ` ` `#` (high nibble 2, low nibble 0 or 3).
+/// - `0x04`: `;` `<` `=` `>` (high nibble 3, low nibble B to E).
+/// - `0x08`: `[` `]` `{` `}` (high nibble 5 or 7, low nibble B or D).
+///
+/// The class of `$` is [`RUN_CLASS_DOLLAR`] alone.
+const RUN_CLASS_STOP: u8 = 0x0F;
+const RUN_CLASS_DOLLAR: u8 = 0x80;
+
+static RUN_LOW_NIBBLE: [u8; 16] = [
+    0x02, 0, 0, 0x02, 0x80, 0, 0, 0, 0, 0x01, 0x01, 0x0D, 0x05, 0x0D, 0x04, 0,
+];
+
+static RUN_HIGH_NIBBLE: [u8; 16] = [
+    0x01, 0, 0x82, 0x04, 0, 0x08, 0, 0x08, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
+/// Return the lane bits of the bytes in [`STOP`] and of the `$` bytes.
 #[inline(always)]
-fn stop_lanes<S: Simd>(v: u8x16<S>) -> mask8x16<S> {
-    let folded = v | 0x20u8;
-    ws_lanes(v)
-        | folded.simd_eq(b'{')
-        | folded.simd_eq(b'}')
-        | lanes_le(v - b'<', 2)
-        | v.simd_eq(b'#')
+fn run_lanes<S: Simd>(simd: S, v: u8x16<S>) -> (u64, u64) {
+    let low = u8x16::from_slice(simd, &RUN_LOW_NIBBLE).swizzle_dyn(v & 0x0Fu8);
+    let high = u8x16::from_slice(simd, &RUN_HIGH_NIBBLE).swizzle_dyn(v >> 4);
+    let class = low & high;
+    let stops = !(class & RUN_CLASS_STOP).simd_eq(0u8).to_bitmask() & 0xFFFF;
+    let dollars = class.simd_eq(RUN_CLASS_DOLLAR).to_bitmask();
+    (stops, dollars)
 }
 
 #[inline(always)]
@@ -740,9 +758,7 @@ fn load<S: Simd>(simd: S, source: &[u8], i: usize) -> u8x16<S> {
 fn scan_unquoted<S: Simd>(simd: S, source: &[u8], mut i: usize) -> (usize, bool) {
     let mut dollar = false;
     while i + 16 <= source.len() {
-        let v = load(simd, source, i);
-        let stops = stop_lanes(v).to_bitmask();
-        let dollars = v.simd_eq(b'$').to_bitmask();
+        let (stops, dollars) = run_lanes(simd, load(simd, source, i));
         if stops != 0 {
             let at = stops.trailing_zeros();
             dollar |= dollars & ((1u64 << at) - 1) != 0;
@@ -6380,6 +6396,25 @@ mod tests {
             .map(|b| ALPHABET[*b as usize % ALPHABET.len()])
             .collect();
         lex_matches_reference(&mapped)
+    }
+
+    /// Check the nibble tables of [`run_lanes`] against [`STOP`] for every
+    /// byte, in the fallback and in the dispatched SIMD level.
+    #[test]
+    fn run_lanes_match_stop_table() {
+        fn check<S: Simd>(simd: S) {
+            for b in 0..=255u8 {
+                let mut bytes = [b'a'; 16];
+                bytes[b as usize % 16] = b;
+                let (stops, dollars) = run_lanes(simd, u8x16::from_slice(simd, &bytes));
+                let lane = 1u64 << (b as usize % 16);
+                assert_eq!(stops == lane, STOP[b as usize], "stop byte {b:#04x}");
+                assert_eq!(stops & !lane, 0, "stop byte {b:#04x}");
+                assert_eq!(dollars, if b == b'$' { lane } else { 0 }, "byte {b:#04x}");
+            }
+        }
+        check(fearless_simd::Fallback::new());
+        dispatch!(Level::new(), simd => check(simd));
     }
 
     #[test]
