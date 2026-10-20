@@ -530,6 +530,8 @@ struct Lexer {
     flags: u8,
     /// All the source is lexed.
     done: bool,
+    /// The opening quote of a quoted string that has no closing quote.
+    unclosed_quote: Option<TextRange>,
 }
 
 const BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
@@ -542,6 +544,7 @@ impl Lexer {
             offset: if source.starts_with(BOM) { 3 } else { 0 },
             flags: 0,
             done: source.is_empty(),
+            unclosed_quote: None,
         }
     }
 
@@ -563,6 +566,16 @@ impl Lexer {
         self.offset = offset;
         self.flags = flags;
         self.done = offset >= source.len();
+
+        // Only the last token can be a quoted string without a closing quote,
+        // because such a string continues to the end of the source.
+        if self.done
+            && let Some(t) = out.last()
+            && t.kind == SyntaxKind::Quoted
+            && t.flags & TOKEN_ERROR != 0
+        {
+            self.unclosed_quote = Some(TextRange::new(t.start, t.start + 1));
+        }
     }
 
     /// Return `true` when the gap after the last token contains a comment.
@@ -628,6 +641,9 @@ fn lex_simd<S: Simd>(
             }
             CLASS_QUOTE => {
                 i = scan_quoted(simd, source, i + 1, flavor.newline_terminated_strings);
+                if i == n && !quote_is_closed(&source[start..]) {
+                    flags |= TOKEN_ERROR;
+                }
                 SyntaxKind::Quoted
             }
             CLASS_OPEN_BRACE => {
@@ -1031,6 +1047,9 @@ pub enum SyntaxErrorKind {
     CalcDepthExceeded,
     /// A `[` that starts no parameter, code payload, or interpolation.
     UnexpectedOpenBracket,
+    /// A quoted string that has no closing quote. The string continues to
+    /// the end of the source.
+    UnclosedQuote,
 }
 
 impl SyntaxErrorKind {
@@ -1055,6 +1074,7 @@ impl SyntaxErrorKind {
             Self::CodeDepthExceeded => "maximum code nesting depth exceeded; structure flattened",
             Self::CalcDepthExceeded => "maximum calc nesting depth exceeded; structure flattened",
             Self::UnexpectedOpenBracket => "'[' starts no construct",
+            Self::UnclosedQuote => "unclosed '\"'",
         }
     }
 }
@@ -1265,6 +1285,15 @@ fn run<S: Sink>(source: &[u8], flavor: Flavor, sink: S) -> Parser<'_, S> {
     let mut p = Parser::new(source, flavor, sink);
     p.sink.start_node(SyntaxKind::Root);
     p.parse_items(false);
+    if S::KEEP_TOKENS
+        && let Some(range) = p.lexer.unclosed_quote
+    {
+        p.errors.push(SyntaxError {
+            kind: SyntaxErrorKind::UnclosedQuote,
+            range,
+            recovery: None,
+        });
+    }
     p.sink.finish_node();
     p
 }
@@ -1623,6 +1652,9 @@ impl Sink for Builder {
         }
         if let Some((_, flags)) = self.stack.last_mut() {
             flags.insert(own_flag_bits(token.kind));
+            if token.flags & TOKEN_ERROR != 0 {
+                flags.insert(NodeFlags::HAS_ERROR);
+            }
         }
         if token.flags & TOKEN_COMMENT_BEFORE != 0 {
             // The comment belongs to the deepest open node that also holds
@@ -4663,6 +4695,58 @@ mod tests {
     }
 
     #[test]
+    fn unclosed_quote() {
+        let source = b"a = \"x\nb = 2";
+        let tree = parse(source);
+        let kinds: Vec<_> = tree.errors().iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, vec![SyntaxErrorKind::UnclosedQuote]);
+        assert_eq!(tree.errors()[0].range, TextRange::new(4, 5));
+        assert!(tree.root().has_error());
+        assert_eq!(tree.reconstruct(), source);
+
+        let quoted = tree
+            .tokens()
+            .find(|t| t.kind() == SyntaxKind::Quoted)
+            .unwrap();
+        assert!(quoted.has_error());
+
+        // An escaped quote or a trailing backslash does not close the string.
+        for source in [&b"a = \"x\\\""[..], b"a = \"x\\"] {
+            let kinds: Vec<_> = parse(source).errors().iter().map(|e| e.kind).collect();
+            assert_eq!(kinds, vec![SyntaxErrorKind::UnclosedQuote]);
+        }
+
+        // The error marks each node that holds the string.
+        let tree = parse(b"a = { b = \"x");
+        let kinds: Vec<_> = tree.errors().iter().map(|e| e.kind).collect();
+        assert!(kinds.contains(&SyntaxErrorKind::UnclosedQuote));
+        let block = tree
+            .root()
+            .child_nodes()
+            .find_map(|n| n.child_nodes().find(|n| n.kind() == SyntaxKind::Block))
+            .unwrap();
+        assert!(block.has_error());
+
+        // Closed strings have no error.
+        assert!(parse(b"a = \"x\"").errors().is_empty());
+        assert!(parse(b"a = \"x\\\"y\"").errors().is_empty());
+
+        // With HoI4, a line break ends a string, so only a quote at the end of
+        // the source is unclosed.
+        assert!(
+            parse_with(b"a = \"x\nb = 2", Flavor::hoi4())
+                .errors()
+                .is_empty()
+        );
+        let kinds: Vec<_> = parse_with(b"a = \"x", Flavor::hoi4())
+            .errors()
+            .iter()
+            .map(|e| e.kind)
+            .collect();
+        assert_eq!(kinds, vec![SyntaxErrorKind::UnclosedQuote]);
+    }
+
+    #[test]
     fn flavor_hoi4_treats_at_as_identifier() {
         // With HoI4, `@` is an ordinary identifier byte, not a variable marker.
         let toks = lex(b"@foo", Flavor::hoi4()).tokens;
@@ -6299,16 +6383,21 @@ mod tests {
             let kind = match b {
                 b'"' => {
                     i += 1;
+                    let mut closed = false;
                     while i < n {
                         match source[i] {
                             b'\\' => i = (i + 2).min(n),
                             b'"' => {
                                 i += 1;
+                                closed = true;
                                 break;
                             }
                             b'\n' | b'\r' if flavor.newline_terminated_strings => break,
                             _ => i += 1,
                         }
+                    }
+                    if !closed && i >= n {
+                        flags |= TOKEN_ERROR;
                     }
                     SyntaxKind::Quoted
                 }
