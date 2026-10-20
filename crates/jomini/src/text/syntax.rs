@@ -795,14 +795,9 @@ fn scan_unquoted<S: Simd>(simd: S, source: &[u8], mut i: usize) -> (usize, bool)
 /// Return the index of the first non-whitespace byte at or after `i`.
 #[inline(always)]
 fn skip_whitespace<S: Simd>(simd: S, source: &[u8], mut i: usize) -> usize {
-    // Most whitespace runs are a newline and some indentation. Check the
-    // first bytes one at a time, and use the vector scan only for a longer run.
-    let short_end = (i + 8).min(source.len());
-    while i < short_end {
-        if !is_ws(source[i]) {
-            return i;
-        }
-        i += 1;
+    // Most whitespace runs are one byte. Check that byte first.
+    if i < source.len() && !is_ws(source[i]) {
+        return i;
     }
     while i + 16 <= source.len() {
         let other = !ws_lanes(load(simd, source, i)).to_bitmask() & 0xFFFF;
