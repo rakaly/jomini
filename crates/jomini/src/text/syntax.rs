@@ -671,13 +671,15 @@ fn lex_simd<S: Simd>(
             _ => {
                 // Ordinary unquoted run: consume up to the next terminator. This
                 // catch-all is what keeps the lexer total (every byte classified).
-                let (mut end, dollar) = scan_unquoted(simd, source, i + 1);
+                // The first byte is not a stop byte, so the scan can include
+                // it in the `$` check.
+                let (mut end, dollar) = scan_unquoted(simd, source, i);
                 if source[end - 1] == b'!' && end - start > 1 && end < n && source[end] == b'=' {
                     // `a!=b` is `a`, `!=`, `b`, as in `TextTape`.
                     end -= 1;
                 }
                 i = end;
-                classify_run(&source[start..i], b == b'$' || dollar, flavor)
+                classify_run(&source[start..i], dollar, flavor)
             }
         };
 
@@ -696,9 +698,12 @@ fn lex_simd<S: Simd>(
 /// Classify an unquoted run. `dollar` is `true` when the run contains a `$`.
 #[inline(always)]
 fn classify_run(run: &[u8], dollar: bool, flavor: Flavor) -> SyntaxKind {
-    if flavor.variables && run.len() > 1 && run[0] == b'@' && run[1] != b'@' {
+    if let [b'@', second, ..] = run
+        && *second != b'@'
+        && flavor.variables
+    {
         SyntaxKind::Variable
-    } else if flavor.macros && dollar && has_macro(run) {
+    } else if dollar && flavor.macros && has_macro(run) {
         SyntaxKind::MacroParam
     } else {
         SyntaxKind::Unquoted
