@@ -27,6 +27,8 @@ mod dom;
 mod fnv;
 mod operator;
 mod reader;
+#[cfg(feature = "syntax")]
+pub mod syntax;
 mod tape;
 mod writer;
 

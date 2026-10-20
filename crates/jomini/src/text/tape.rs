@@ -122,11 +122,20 @@ impl TextTapeParser {
     }
 
     /// Parse the text format into the given tape.
+    #[cfg_attr(all(jomini_lossless_tape, feature = "syntax"), allow(unreachable_code))]
     pub fn parse_slice_into_tape<'a>(
         self,
         data: &'a [u8],
         tape: &mut TextTape<'a>,
     ) -> Result<(), Error> {
+        // Test the readers and the deserializer on the lossless parser:
+        // RUSTFLAGS="--cfg jomini_lossless_tape" cargo test -p jomini --features syntax
+        #[cfg(all(jomini_lossless_tape, feature = "syntax"))]
+        {
+            *tape = crate::text::syntax::parse_tape(data);
+            return Ok(());
+        }
+
         let token_tape = &mut tape.token_tape;
         token_tape.clear();
         token_tape.reserve(data.len() / 5);
@@ -424,6 +433,15 @@ impl<'a> TextTape<'a> {
     /// Returns a parser for text data
     pub fn parser() -> TextTapeParser {
         TextTapeParser
+    }
+
+    /// Make a tape from tokens that another parser wrote.
+    #[cfg(feature = "syntax")]
+    pub(crate) fn from_parts(token_tape: Vec<TextToken<'a>>, utf8_bom: bool) -> Self {
+        TextTape {
+            token_tape,
+            utf8_bom,
+        }
     }
 
     /// Return the parsed tokens
@@ -1660,6 +1678,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        all(jomini_lossless_tape, feature = "syntax"),
+        ignore = "the lossless parser recovers from this error"
+    )]
     fn test_regression() {
         let data = [0, 32, 34, 0];
         assert!(parse(&data[..]).is_err());
@@ -1673,6 +1695,10 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)] // too slow
+    #[cfg_attr(
+        all(jomini_lossless_tape, feature = "syntax"),
+        ignore = "the lossless parser recovers from this error"
+    )]
     fn test_too_heavily_nested() {
         let mut data = Vec::new();
         data.extend_from_slice(b"foo=");
@@ -1806,6 +1832,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        all(jomini_lossless_tape, feature = "syntax"),
+        ignore = "the lossless lexer reads a leading `==` as an operator"
+    )]
     fn test_equal_identifier() {
         let data = br#"=="bar""#;
 
@@ -2075,6 +2105,10 @@ mod tests {
     // }
 
     #[test]
+    #[cfg_attr(
+        all(jomini_lossless_tape, feature = "syntax"),
+        ignore = "the lossless parser recovers from this error"
+    )]
     fn test_operator_early_eof() {
         let data = b"a{b=}";
         assert!(TextTape::from_slice(&data[..]).is_err());
@@ -2850,12 +2884,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        all(jomini_lossless_tape, feature = "syntax"),
+        ignore = "the lossless parser recovers from this error"
+    )]
     fn test_parameter_eof() {
         let data = b"[[";
         TextTape::from_slice(data).unwrap_err();
     }
 
     #[test]
+    #[cfg_attr(
+        all(jomini_lossless_tape, feature = "syntax"),
+        ignore = "the lossless parser recovers from this error"
+    )]
     fn incomplete_object_fail_to_parse() {
         let data = b"T&}";
         TextTape::from_slice(data).unwrap_err();

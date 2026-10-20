@@ -294,6 +294,12 @@ jobs:
       run: ${{ env.CARGO }} test --features zstd_rust,serde -p jomini --verbose ${{ env.TARGET }}
     - name: Run all-features tests
       run: ${{ env.CARGO }} test --all-features ${{ env.PKGS }} --verbose ${{ env.TARGET }}
+    # Run the reader and deserializer tests again on the tapes that the
+    # lossless parser writes.
+    - name: Run lossless tape tests
+      run: ${{ env.CARGO }} test --features syntax -p jomini --verbose ${{ env.TARGET }}
+      env:
+        RUSTFLAGS: --cfg jomini_lossless_tape
     - name: Run serde-only tests (no derive macros)
       run: ${{ env.CARGO }} test --no-default-features --features serde ${{ env.PKGS }} --verbose ${{ env.TARGET }}
 
@@ -304,6 +310,7 @@ jobs:
         cargo fuzz build fuzz_binary
         cargo fuzz build fuzz_scalar_text
         cargo fuzz build fuzz_text
+        cargo fuzz build fuzz_text_lossless
         cargo fuzz build fuzz_date
         cargo fuzz build fuzz_envelope
         cargo fuzz build fuzz_eu4
