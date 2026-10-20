@@ -1,4 +1,4 @@
-//! Write a [`TextTape`] from the events of the lossless grammar.
+//! Write a [`TextTape`] with the lossless grammar.
 //!
 //! The deserializer and the DOM readers ([`ObjectReader`] and the other
 //! readers) need the token layout of [`TextTape`], not the full tree. This sink
@@ -33,6 +33,8 @@
 //!
 //! [`ObjectReader`]: crate::text::ObjectReader
 
+mod fast;
+
 use super::{Flavor, Sink, SyntaxKind, Token, run, strip_quotes};
 use crate::{Scalar, TextTape, TextToken, text::Operator};
 
@@ -62,6 +64,15 @@ pub fn parse_tape(source: &[u8]) -> TextTape<'_> {
 
 /// Parse `source` into a [`TextTape`] with a specific [`Flavor`].
 pub fn parse_tape_with(source: &[u8], flavor: Flavor) -> TextTape<'_> {
+    assert!(
+        u32::try_from(source.len()).is_ok(),
+        "source is larger than 4 GiB"
+    );
+    let level = fearless_simd::Level::new();
+    let fast = fearless_simd::dispatch!(level, simd => fast::parse(simd, source, flavor));
+    if let Some(tape) = fast {
+        return TextTape::from_parts(tape, source.starts_with(super::BOM));
+    }
     let p = run(source, flavor, TapeSink::new(source, source.len() / 5));
     let bom = source.starts_with(super::BOM);
     TextTape::from_parts(p.sink.tape, bom)
@@ -803,6 +814,62 @@ impl Sink for TapeSink<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quickcheck_macros::quickcheck;
+
+    fn matches_grammar(source: &[u8], flavor: Flavor) -> bool {
+        let expected = run(source, flavor, TapeSink::new(source, source.len() / 5));
+        parse_tape_with(source, flavor).tokens() == expected.sink.tape
+            && fast::parse(fearless_simd::Fallback::new(), source, flavor)
+                .is_none_or(|tape| tape == expected.sink.tape)
+    }
+
+    #[quickcheck]
+    fn fused_matches_grammar(source: Vec<u8>) -> bool {
+        matches_grammar(&source, Flavor::default()) && matches_grammar(&source, Flavor::hoi4())
+    }
+
+    #[quickcheck]
+    fn fused_matches_grammar_alphabet(source: Vec<u8>) -> bool {
+        const ALPHABET: &[u8] = b"abc\"\\{}[]<>!?= \t\n;#@$";
+        let source: Vec<u8> = source
+            .iter()
+            .map(|b| ALPHABET[*b as usize % ALPHABET.len()])
+            .collect();
+        matches_grammar(&source, Flavor::default()) && matches_grammar(&source, Flavor::hoi4())
+    }
+
+    #[quickcheck]
+    fn fused_matches_grammar_entries(entries: Vec<u8>) -> bool {
+        const ENTRIES: &[&[u8]] = &[
+            b"a=b",
+            b"a!=b",
+            b"a",
+            b"{ }",
+            b"{{}}",
+            b"{a=b}",
+            b"{a b=c}",
+            b"x={1 a=b c={2} d=e}",
+            b"x=rgb {}",
+            b"x=rgb {1 2}",
+            b"x {a=b}",
+            b"x=$v$ {1}",
+            b"x=@v {1}",
+            b"a=\"b\"",
+            b"x={a=b c d={1} e=f}",
+            b"[[x] a=b ]",
+            b"a=[Name]",
+            b"code [[a=b]]",
+            b"a=}",
+            b"a=]=b",
+            b"x={a=b",
+        ];
+        let mut source = Vec::new();
+        for entry in entries {
+            source.extend_from_slice(ENTRIES[entry as usize % ENTRIES.len()]);
+            source.push(b' ');
+        }
+        matches_grammar(&source, Flavor::default()) && matches_grammar(&source, Flavor::hoi4())
+    }
 
     /// Assert that the lossless tape is the same as the `TextTape`.
     #[track_caller]
@@ -816,6 +883,11 @@ mod tests {
             String::from_utf8_lossy(data)
         );
         assert_eq!(actual.utf8_bom(), expected.utf8_bom());
+    }
+
+    #[test]
+    fn bracket_value_before_operator() {
+        assert!(matches_grammar(b"a=]=b", Flavor::default()));
     }
 
     #[test]
