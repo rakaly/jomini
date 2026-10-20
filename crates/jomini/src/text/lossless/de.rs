@@ -59,11 +59,13 @@
 //! ignore an extra closing brace (`}`), as `TextTape` does. To deserialize
 //! a tree that has errors, make a [`Deserializer`] from the tree.
 
+mod document;
 mod engine;
 mod error;
 mod tree;
 mod wrappers;
 
+pub use self::document::{BlockRef, Document, FieldRef, ValueRef};
 pub use self::error::{Error, ErrorKind};
 pub use self::wrappers::{Headered, MaybeQuoted, Spanned, WithOp};
 
