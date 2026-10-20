@@ -1,4 +1,5 @@
 use crate::corpus::{self, Corpus, CorpusArchive, CorpusBytes, Game};
+use eu4save::models::GameState;
 use jomini::TextTape;
 use std::hint::black_box;
 
@@ -60,6 +61,38 @@ pub(crate) fn reader_count_equals(data: &[u8]) -> i32 {
 #[inline(never)]
 pub(crate) fn deserialize_meta(data: &[u8]) -> Meta {
     jomini::text::de::from_windows1252_slice(data).unwrap()
+}
+
+/// Parse with `TextTape` and deserialize with `TextDeserializer`.
+#[inline(never)]
+pub(crate) fn deserialize_tape<'a, T: serde::Deserialize<'a>>(data: &'a [u8]) -> T {
+    let tape = TextTape::from_slice(data).unwrap();
+    jomini::TextDeserializer::from_windows1252_tape(&tape)
+        .deserialize()
+        .unwrap()
+}
+
+/// Parse with the lossless grammar into a `TextTape` and deserialize with
+/// `TextDeserializer`.
+#[inline(never)]
+pub(crate) fn deserialize_lossless_tape<'a, T: serde::Deserialize<'a>>(data: &'a [u8]) -> T {
+    let tape = jomini::text::lossless::parse_tape(data);
+    jomini::TextDeserializer::from_windows1252_tape(&tape)
+        .deserialize()
+        .unwrap()
+}
+
+/// Parse into a syntax tree and deserialize the tree directly.
+#[inline(never)]
+pub(crate) fn deserialize_tree<'a, T: serde::Deserialize<'a>>(data: &'a [u8]) -> T {
+    let parse = jomini::text::lossless::parse(data);
+    jomini::text::lossless::de::from_tree(parse.borrowed_tree(), jomini::Windows1252Encoding::new())
+        .unwrap()
+}
+
+/// The EU4 save without the `EU4txt` header, for the `GameState` model.
+fn setup_eu4_gamestate() -> &'static [u8] {
+    &setup_eu4()["EU4txt".len()..]
 }
 
 #[inline(never)]
@@ -134,6 +167,28 @@ pub mod criterion_benches {
         let mut group = c.benchmark_group("text/deserialize");
         group.throughput(Throughput::Bytes(data.len() as u64));
         group.bench_function("meta", |b| b.iter(|| deserialize_meta(data)));
+        group.bench_function(BenchmarkId::new("tape", "meta"), |b| {
+            b.iter(|| deserialize_tape::<Meta>(data))
+        });
+        group.bench_function(BenchmarkId::new("lossless_tape", "meta"), |b| {
+            b.iter(|| deserialize_lossless_tape::<Meta>(data))
+        });
+        group.bench_function(BenchmarkId::new("tree", "meta"), |b| {
+            b.iter(|| deserialize_tree::<Meta>(data))
+        });
+
+        let data = setup_eu4_gamestate();
+        group.sample_size(20);
+        group.throughput(Throughput::Bytes(data.len() as u64));
+        group.bench_function(BenchmarkId::new("tape", "eu4"), |b| {
+            b.iter(|| deserialize_tape::<GameState>(data))
+        });
+        group.bench_function(BenchmarkId::new("lossless_tape", "eu4"), |b| {
+            b.iter(|| deserialize_lossless_tape::<GameState>(data))
+        });
+        group.bench_function(BenchmarkId::new("tree", "eu4"), |b| {
+            b.iter(|| deserialize_tree::<GameState>(data))
+        });
         group.finish();
     }
 
@@ -192,6 +247,42 @@ pub mod gungraun_benches {
     }
 
     #[library_benchmark]
+    #[bench::meta(setup = setup_meta)]
+    fn deserialize_meta_tape(data: &[u8]) -> Meta {
+        deserialize_tape(data)
+    }
+
+    #[library_benchmark]
+    #[bench::meta(setup = setup_meta)]
+    fn deserialize_meta_lossless_tape(data: &[u8]) -> Meta {
+        deserialize_lossless_tape(data)
+    }
+
+    #[library_benchmark]
+    #[bench::meta(setup = setup_meta)]
+    fn deserialize_meta_tree(data: &[u8]) -> Meta {
+        deserialize_tree(data)
+    }
+
+    #[library_benchmark]
+    #[bench::eu4(setup = setup_eu4_gamestate)]
+    fn deserialize_eu4_tape(data: &[u8]) -> GameState {
+        deserialize_tape(data)
+    }
+
+    #[library_benchmark]
+    #[bench::eu4(setup = setup_eu4_gamestate)]
+    fn deserialize_eu4_lossless_tape(data: &[u8]) -> GameState {
+        deserialize_lossless_tape(data)
+    }
+
+    #[library_benchmark]
+    #[bench::eu4(setup = setup_eu4_gamestate)]
+    fn deserialize_eu4_tree(data: &[u8]) -> GameState {
+        deserialize_tree(data)
+    }
+
+    #[library_benchmark]
     #[bench::eu4(setup = setup_eu4_archive)]
     #[bench::ck3(setup = setup_ck3_archive)]
     fn compressed_read(archive: &CorpusArchive) -> i32 {
@@ -206,6 +297,12 @@ pub mod gungraun_benches {
             reader,
             lossless,
             deserialize,
+            deserialize_meta_tape,
+            deserialize_meta_lossless_tape,
+            deserialize_meta_tree,
+            deserialize_eu4_tape,
+            deserialize_eu4_lossless_tape,
+            deserialize_eu4_tree,
             compressed_read,
         ]
     );
