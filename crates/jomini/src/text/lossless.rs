@@ -68,6 +68,67 @@
 //! [`SyntaxKind::ParenExpr`]). A depth guard limits recursion on pathological
 //! nesting (see [`SyntaxError`]).
 //!
+//! # Examples
+//!
+//! Read the values of a file with the typed AST:
+//!
+//! ```
+//! use jomini::text::{Operator, lossless::parse};
+//!
+//! let source = b"
+//! # Brittany
+//! capital = 169
+//! is_city = yes
+//! discovered_by = { western eastern }
+//! trigger = { num_of_cities >= 5 }
+//! ";
+//! let parse = parse(&source[..]);
+//! assert!(parse.errors().is_empty());
+//!
+//! let root = parse.ast();
+//! let field = |key: &[u8]| {
+//!     root.fields()
+//!         .find(|f| f.key().is_some_and(|k| k.text() == key))
+//!         .unwrap()
+//! };
+//!
+//! assert_eq!(field(b"capital").value().unwrap().to_u64(), Some(169));
+//! assert_eq!(field(b"is_city").value().unwrap().to_bool(), Some(true));
+//!
+//! let discovered_by = field(b"discovered_by").value().unwrap().as_block().unwrap();
+//! assert_eq!(discovered_by.values().count(), 2);
+//!
+//! let trigger = field(b"trigger").value().unwrap().as_block().unwrap();
+//! let condition = trigger.fields().next().unwrap();
+//! assert_eq!(condition.op(), Some(Operator::GreaterThanEqual));
+//! ```
+//!
+//! Change one value and keep all of the other bytes. The comments, the
+//! whitespace, and the order of the fields do not change, because each token
+//! knows its byte range in the source:
+//!
+//! ```
+//! use jomini::text::lossless::{parse, Value};
+//!
+//! let source = b"# Set by the history file\nbase_tax = 3 # was 2\nbase_production = 2\n";
+//! let parse = parse(&source[..]);
+//! let field = parse
+//!     .ast()
+//!     .fields()
+//!     .find(|f| f.key().is_some_and(|k| k.text() == b"base_tax"))
+//!     .unwrap();
+//! let Some(Value::Scalar(token)) = field.value() else {
+//!     panic!("expected a scalar");
+//! };
+//!
+//! let mut edited = source.to_vec();
+//! edited.splice(token.text_range().to_range(), b"5".iter().copied());
+//! assert_eq!(
+//!     edited,
+//!     b"# Set by the history file\nbase_tax = 5 # was 2\nbase_production = 2\n"
+//! );
+//! ```
+//!
 //! [`TextTape`]: crate::TextTape
 
 #![allow(missing_docs)] // experimental surface; docs land as the API stabilizes
@@ -271,6 +332,20 @@ impl SyntaxKind {
 // ---------------------------------------------------------------------------
 
 /// A half-open byte range `start..end` in the source.
+///
+/// Use [`to_range`](TextRange::to_range) to get the bytes of the range from
+/// the source:
+///
+/// ```
+/// use jomini::text::lossless::parse;
+///
+/// let source = b"name = Jean";
+/// let parse = parse(&source[..]);
+/// let key = parse.ast().fields().next().unwrap().key().unwrap();
+/// let range = key.text_range();
+/// assert_eq!((range.start(), range.end()), (0, 4));
+/// assert_eq!(&source[range.to_range()], b"name");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct TextRange {
     start: u32,
@@ -375,6 +450,23 @@ impl std::fmt::Display for TextRange {
 /// game except where a genuine lexer fork exists. [`Flavor::hoi4`] enables
 /// HoI4's newline-terminated strings and treats `@`/`$` as ordinary identifier
 /// bytes (HoI4 has no reader variables or macros).
+///
+/// In HoI4, a newline closes a quoted string that has no closing quote. The
+/// default flavor reads such a string to the end of the source:
+///
+/// ```
+/// use jomini::text::lossless::{parse, parse_with, Flavor};
+///
+/// let source = b"name = \"Paris\nowner = FRA";
+///
+/// let hoi4 = parse_with(&source[..], Flavor::hoi4());
+/// assert!(hoi4.errors().is_empty());
+/// assert_eq!(hoi4.ast().fields().count(), 2);
+///
+/// let default = parse(&source[..]);
+/// assert_eq!(default.errors().len(), 1);
+/// assert_eq!(default.ast().fields().count(), 1);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Flavor {
@@ -1118,6 +1210,19 @@ impl std::fmt::Display for SyntaxErrorKind {
 
 /// A non-fatal problem found while parsing. Parsing never fails — the tree is
 /// always lossless — but recoverable issues are collected here for tooling.
+///
+/// The parser continues after an error, so one parse finds all of the
+/// problems in a file, and the fields after an error are still available:
+///
+/// ```
+/// use jomini::text::lossless::{parse, SyntaxErrorKind};
+///
+/// let parse = parse(b"a = { b = 1 } } c = 2");
+/// let error = &parse.errors()[0];
+/// assert_eq!(error.kind, SyntaxErrorKind::UnmatchedCloseBrace);
+/// assert_eq!(error.to_string(), "unmatched '}' at 14..15");
+/// assert_eq!(parse.ast().fields().count(), 2);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SyntaxError {
@@ -1324,6 +1429,19 @@ pub struct SyntaxTree<'t, 'a> {
 }
 
 /// Parse `source` into a lossless syntax tree using the permissive superset.
+///
+/// ```
+/// use jomini::text::lossless::parse;
+///
+/// let parse = parse(b"owner = FRA controller = FRA");
+/// let keys: Vec<&[u8]> = parse
+///     .ast()
+///     .fields()
+///     .filter_map(|f| f.key())
+///     .map(|k| k.text())
+///     .collect();
+/// assert_eq!(keys, [&b"owner"[..], &b"controller"[..]]);
+/// ```
 pub fn parse<S: AsRef<[u8]>>(source: S) -> Parse<S> {
     parse_with(source, Flavor::default())
 }
@@ -1489,6 +1607,18 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     }
 
     /// Coalesced, machine-applicable delimiter insertions in source order.
+    ///
+    /// An editor can show each repair as a quick fix:
+    ///
+    /// ```
+    /// use jomini::text::lossless::parse;
+    ///
+    /// let parse = parse(b"country = { tag = FRA");
+    /// let repairs = parse.repairs();
+    /// assert_eq!(repairs.len(), 1);
+    /// assert_eq!(repairs[0].range.start(), 21);
+    /// assert_eq!(repairs[0].replacement, "}");
+    /// ```
     pub fn repairs(&self) -> Vec<Repair> {
         if !self.repairs_valid() {
             return Vec::new();
@@ -1497,6 +1627,13 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     }
 
     /// Apply all safe virtual delimiter repairs without changing other bytes.
+    ///
+    /// ```
+    /// use jomini::text::lossless::parse;
+    ///
+    /// let parse = parse(b"country = { tag = FRA # unclosed");
+    /// assert_eq!(parse.repaired_source(), b"country = { tag = FRA # unclosed\n}");
+    /// ```
     pub fn repaired_source(&self) -> Vec<u8> {
         apply_repairs(self.source, self.repairs())
     }
@@ -1543,6 +1680,38 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     /// Concatenating [`SyntaxToken::text`] over this iterator reproduces
     /// [`source`](SyntaxTree::source): the lossless invariant in iterator form.
     /// Ideal for highlighters and other leaf-oriented tooling.
+    ///
+    /// ```
+    /// use jomini::text::lossless::{parse, SyntaxKind};
+    ///
+    /// let source = b"size = 3 # small";
+    /// let parse = parse(&source[..]);
+    ///
+    /// // Give each token a highlight class.
+    /// let classes: Vec<(&str, &[u8])> = parse
+    ///     .tokens()
+    ///     .filter(|t| t.kind() != SyntaxKind::Whitespace)
+    ///     .map(|t| {
+    ///         let class = match t.kind() {
+    ///             SyntaxKind::Comment => "comment",
+    ///             SyntaxKind::Operator => "operator",
+    ///             _ if t.as_scalar().to_f64().is_ok() => "number",
+    ///             _ => "identifier",
+    ///         };
+    ///         (class, t.text())
+    ///     })
+    ///     .collect();
+    /// assert_eq!(classes, [
+    ///     ("identifier", &b"size"[..]),
+    ///     ("operator", b"="),
+    ///     ("number", b"3"),
+    ///     ("comment", b"# small"),
+    /// ]);
+    ///
+    /// // The tokens give back the source.
+    /// let text: Vec<u8> = parse.tokens().flat_map(|t| t.text()).copied().collect();
+    /// assert_eq!(text, source);
+    /// ```
     pub fn tokens(&self) -> Tokens<'t, 'a> {
         Tokens {
             tree: *self,
@@ -3099,6 +3268,27 @@ impl CalcCursor<'_> {
 // ---------------------------------------------------------------------------
 
 /// A handle to an interior node in a [`SyntaxTree`].
+///
+/// The untyped cursors see every byte, the trivia too. The flags of a node
+/// tell in constant time if its subtree has a comment, an error, a calc, or a
+/// macro, so a tool can skip a subtree that it does not have to examine:
+///
+/// ```
+/// use jomini::text::lossless::{parse, SyntaxKind};
+///
+/// let parse = parse(b"a = { 1 2 } b = { # keep\n 3 }");
+/// let fields: Vec<_> = parse.root().child_nodes().collect();
+/// assert!(!fields[0].has_comment());
+/// assert!(fields[1].has_comment());
+///
+/// let comment = fields[1]
+///     .child_nodes()
+///     .flat_map(|block| block.child_tokens())
+///     .find(|t| t.kind() == SyntaxKind::Comment)
+///     .unwrap();
+/// assert_eq!(comment.text(), b"# keep");
+/// assert_eq!(comment.parent().unwrap().kind(), SyntaxKind::Block);
+/// ```
 #[derive(Clone, Copy)]
 pub struct SyntaxNode<'t, 'a> {
     tree: SyntaxTree<'t, 'a>,
@@ -3534,6 +3724,20 @@ impl<'t, 'a> Iterator for Tokens<'t, 'a> {
 ///
 /// Mirrors rust-analyzer's generated AST: [`AstNode::cast`] succeeds only when
 /// the node's kind matches, and [`AstNode::syntax`] recovers the untyped node.
+///
+/// Use `cast` to go from the untyped cursors to the typed view, and `syntax`
+/// to go back:
+///
+/// ```
+/// use jomini::text::lossless::{parse, AstNode, Field, SyntaxKind};
+///
+/// let parse = parse(b"a = 1");
+/// let node = parse.root().child_nodes().next().unwrap();
+/// let field = Field::cast(node).unwrap();
+/// assert_eq!(field.key().unwrap().text(), b"a");
+/// assert_eq!(field.syntax().kind(), SyntaxKind::Field);
+/// assert!(Field::cast(parse.root()).is_none());
+/// ```
 pub trait AstNode<'t, 'a>: Sized {
     /// Wrap `node` if its kind matches this type, otherwise `None`.
     fn cast(node: SyntaxNode<'t, 'a>) -> Option<Self>;
@@ -3566,16 +3770,102 @@ ast_nodes! {
     /// The whole document ([`SyntaxKind::Root`]).
     Root => Root,
     /// A `key <op> value` field ([`SyntaxKind::Field`]).
+    ///
+    /// The field keeps its operator, so a tool can tell `>=` from `=`. A field
+    /// can also have no operator, as in `key { ... }`:
+    ///
+    /// ```
+    /// use jomini::text::{Operator, lossless::parse};
+    ///
+    /// let parse = parse(b"num_of_cities >= 5 modifier { tax = 1 }");
+    /// let fields: Vec<_> = parse.ast().fields().collect();
+    ///
+    /// assert_eq!(fields[0].op(), Some(Operator::GreaterThanEqual));
+    /// assert_eq!(fields[0].op_token().unwrap().text(), b">=");
+    /// assert_eq!(fields[0].value().unwrap().to_i64(), Some(5));
+    ///
+    /// assert_eq!(fields[1].key().unwrap().text(), b"modifier");
+    /// assert_eq!(fields[1].op(), None);
+    /// assert!(fields[1].value().unwrap().as_block().is_some());
+    /// ```
     Field => Field,
     /// A `{ ... }` block ([`SyntaxKind::Block`]).
+    ///
+    /// A block can hold fields, bare values, or both:
+    ///
+    /// ```
+    /// use jomini::text::lossless::{parse, Item};
+    ///
+    /// let parse = parse(b"area = { color = { 1 2 3 } 169 170 }");
+    /// let field = parse.ast().fields().next().unwrap();
+    /// let block = field.value().unwrap().as_block().unwrap();
+    ///
+    /// let provinces: Vec<u64> = block.values().filter_map(|v| v.to_u64()).collect();
+    /// assert_eq!(provinces, [169, 170]);
+    ///
+    /// let kinds: Vec<&str> = block
+    ///     .items()
+    ///     .map(|item| match item {
+    ///         Item::Field(_) => "field",
+    ///         Item::Value(_) => "value",
+    ///         _ => "other",
+    ///     })
+    ///     .collect();
+    /// assert_eq!(kinds, ["field", "value", "value"]);
+    /// ```
     Block => Block,
     /// A tagged block in value position, such as `rgb { 1 2 3 }` in
     /// `color = rgb { 1 2 3 }` ([`SyntaxKind::HeaderedBlock`]). In item
     /// position, the same text is a [`Field`] with no operator.
+    ///
+    /// ```
+    /// use jomini::text::lossless::parse;
+    ///
+    /// let parse = parse(b"color = hsv { 0.5 0.2 0.8 }");
+    /// let value = parse.ast().fields().next().unwrap().value().unwrap();
+    /// let color = value.as_headered_block().unwrap();
+    /// assert_eq!(color.header().unwrap().text(), b"hsv");
+    ///
+    /// let hsv: Vec<f64> = color.block().unwrap().values().filter_map(|v| v.to_f64()).collect();
+    /// assert_eq!(hsv, [0.5, 0.2, 0.8]);
+    /// ```
     HeaderedBlock => HeaderedBlock,
     /// A `@[ ... ]` parse-time calculation ([`SyntaxKind::Calc`]).
+    ///
+    /// The parser makes an expression tree from the calculation, so a tool can
+    /// examine or evaluate it:
+    ///
+    /// ```
+    /// use jomini::text::lossless::{parse, Expr};
+    ///
+    /// let parse = parse(b"cost = @[base * 2]");
+    /// let value = parse.ast().fields().next().unwrap().value().unwrap();
+    /// let calc = value.as_calc().unwrap();
+    ///
+    /// let Some(Expr::Binary(product)) = calc.expr() else {
+    ///     panic!("expected a binary expression");
+    /// };
+    /// let Some(Expr::Ident(lhs)) = product.lhs() else { panic!() };
+    /// let Some(Expr::Number(rhs)) = product.rhs() else { panic!() };
+    /// assert_eq!(lhs.text(), b"base");
+    /// assert_eq!(product.op_token().unwrap().text(), b"*");
+    /// assert_eq!(rhs.text(), b"2");
+    /// ```
     Calc => Calc,
     /// An EU4 conditional parameter block ([`SyntaxKind::Parameter`]).
+    ///
+    /// ```
+    /// use jomini::text::lossless::{parse, AstNode};
+    ///
+    /// let parse = parse(b"[[scaled] add_prestige = $scaled$ ]");
+    /// let item = parse.ast().items().next().unwrap();
+    /// let parameter = item.as_parameter().unwrap();
+    /// assert_eq!(parameter.name().unwrap().text(), b"scaled");
+    ///
+    /// let field = parameter.fields().next().unwrap();
+    /// assert_eq!(field.key().unwrap().text(), b"add_prestige");
+    /// assert!(field.syntax().has_macro());
+    /// ```
     Parameter => Parameter,
     /// An EU4 undefined conditional parameter block
     /// ([`SyntaxKind::UndefinedParameter`]).
@@ -3615,6 +3905,23 @@ pub enum Item<'t, 'a> {
 }
 
 /// A value in value position (the RHS of a [`Field`] or a bare array element).
+///
+/// The coercions read a scalar value as a number or a boolean. They give
+/// `None` for a value that is not a scalar, or that has a different type:
+///
+/// ```
+/// use jomini::{Windows1252Encoding, text::lossless::parse};
+///
+/// let parse = parse(b"tax = 1.5 count = -3 core = yes name = \"Bretagne\" list = { 1 }");
+/// let values: Vec<_> = parse.ast().fields().map(|f| f.value().unwrap()).collect();
+///
+/// assert_eq!(values[0].to_f64(), Some(1.5));
+/// assert_eq!(values[1].to_i64(), Some(-3));
+/// assert_eq!(values[1].to_u64(), None);
+/// assert_eq!(values[2].to_bool(), Some(true));
+/// assert_eq!(values[3].decode(Windows1252Encoding::new()).unwrap(), "Bretagne");
+/// assert_eq!(values[4].to_f64(), None);
+/// ```
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub enum Value<'t, 'a> {
@@ -4331,6 +4638,15 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
 // ---------------------------------------------------------------------------
 
 /// Configuration for [`SyntaxTree::format`].
+///
+/// ```
+/// use jomini::text::lossless::{parse, FormatOptions};
+///
+/// let mut opts = FormatOptions::default();
+/// opts.indent = String::from("    ");
+/// let parse = parse(b"a = { b = 1 }");
+/// assert_eq!(parse.format(&opts), b"a = {\n    b = 1\n}\n");
+/// ```
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct FormatOptions {
@@ -4351,6 +4667,14 @@ impl Default for FormatOptions {
 ///
 /// The result reparses to the same significant tokens as `source` and is
 /// idempotent (`format(format(x)) == format(x)`).
+///
+/// ```
+/// use jomini::text::lossless::format;
+///
+/// let source = b"building={cost=100 # gold\nsize={1 2}}";
+/// let expected = "building = {\n\tcost = 100 # gold\n\tsize = { 1 2 }\n}\n";
+/// assert_eq!(String::from_utf8(format(source)).unwrap(), expected);
+/// ```
 pub fn format(source: &[u8]) -> Vec<u8> {
     parse(source).format(&FormatOptions::default())
 }
