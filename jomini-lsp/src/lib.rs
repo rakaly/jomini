@@ -8,6 +8,55 @@
 //!
 //! [`serve`] runs the protocol against any [`Connection`] (stdio in the binary, an
 //! in-memory pair in tests), so the whole server is driveable without a subprocess.
+//!
+//! # Examples
+//!
+//! Run the server on a different thread, open two files, and read the
+//! diagnostics that the server publishes:
+//!
+//! ```
+//! use lsp_server::{Connection, Message, Notification, Request, RequestId};
+//! use serde_json::json;
+//!
+//! let (server, client) = Connection::memory();
+//! let thread = std::thread::spawn(move || jomini_lsp::serve(&server).unwrap());
+//!
+//! let request = |id: i32, method: &str, params| {
+//!     let id = RequestId::from(id);
+//!     let request = Request { id, method: method.into(), params };
+//!     client.sender.send(Message::Request(request)).unwrap();
+//! };
+//! let notify = |method: &str, params| {
+//!     let notification = Notification { method: method.into(), params };
+//!     client.sender.send(Message::Notification(notification)).unwrap();
+//! };
+//! let open = |uri: &str, text: &str| {
+//!     let document = json!({ "uri": uri, "languageId": "paradox", "version": 1, "text": text });
+//!     notify("textDocument/didOpen", json!({ "textDocument": document }));
+//! };
+//!
+//! request(1, "initialize", json!({ "capabilities": {} }));
+//! notify("initialized", json!({}));
+//! open("file:///project/common/buildings/b.txt", "barracks = { cost = 100 }");
+//! open("file:///project/events/e.txt", "e = { add_building = baracks }");
+//!
+//! // Read the messages until the server reports the wrong building name.
+//! let message = loop {
+//!     let Message::Notification(n) = client.receiver.recv().unwrap() else { continue };
+//!     let diagnostics = &n.params["diagnostics"];
+//!     if n.params["uri"] == "file:///project/events/e.txt" && diagnostics[0].is_object() {
+//!         break diagnostics[0]["message"].clone();
+//!     }
+//! };
+//! assert_eq!(
+//!     message,
+//!     "no building named `baracks` is defined in any loaded file\ndid you mean `barracks`?"
+//! );
+//!
+//! request(2, "shutdown", json!(null));
+//! notify("exit", json!(null));
+//! thread.join().unwrap();
+//! ```
 
 mod convert;
 mod line_index;
