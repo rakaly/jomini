@@ -138,6 +138,16 @@ where
     Deserializer::new(tree, encoding).deserialize()
 }
 
+/// Read a whole tree into an owned value.
+pub(crate) fn tree_value<E: Encoding>(
+    tree: SyntaxTree<'_, '_>,
+    encoding: E,
+) -> super::value::Value {
+    let ctx = TreeCtx::new(tree, encoding);
+    let doc = TreeDoc::new(&ctx);
+    super::value::Value::Block(super::value::ValueBuilder::new(doc).block(doc.root()))
+}
+
 /// Add the line, the column, and the file name to an error.
 #[cold]
 pub(crate) fn finish(error: Error, source: &[u8], file: Option<&str>) -> Error {

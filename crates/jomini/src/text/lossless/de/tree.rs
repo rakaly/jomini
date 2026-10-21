@@ -369,6 +369,37 @@ impl Cursor {
     }
 }
 
+/// The scalar tokens of a block without child nodes. The braces and the
+/// other loose tokens are not values, as [`TreeItems`] skips them.
+#[derive(Clone)]
+pub(crate) struct TreeScalars<'c> {
+    tokens: &'c [Token],
+    index: u32,
+    end: u32,
+}
+
+impl Iterator for TreeScalars<'_> {
+    type Item = TreeNode;
+
+    #[inline]
+    fn next(&mut self) -> Option<TreeNode> {
+        while self.index < self.end {
+            let index = self.index;
+            self.index += 1;
+            if self.tokens[index as usize].kind.is_scalar() {
+                return Some(TreeNode::Token(index));
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // At most the two braces are not values.
+        let len = (self.end - self.index) as usize;
+        (len.saturating_sub(2), Some(len))
+    }
+}
+
 /// The entries of a container of the tree.
 pub(crate) struct TreeItems<'c, 'a, E> {
     doc: TreeDoc<'c, 'a, E>,
@@ -450,6 +481,7 @@ where
     type Scalar = TreeScalar;
     type Container = TreeContainer;
     type Items = TreeItems<'c, 'a, E>;
+    type Scalars = TreeScalars<'c>;
 
     #[inline]
     fn view(self, node: Self::Node) -> View<Self> {
@@ -541,6 +573,38 @@ where
 
     fn container_range(self, container: Self::Container) -> Option<TextRange> {
         Some(self.node(container.node).text_range())
+    }
+
+    #[inline]
+    fn scalars(self, container: Self::Container) -> Option<Self::Scalars> {
+        // A field, a block, a headered block, and a calculation are nodes, so
+        // a block without child nodes has only scalars and loose tokens.
+        let node = self.ctx.nodes[container.node as usize];
+        let leaf = container.kind == ContainerKind::Block && node.subtree_end == container.node + 1;
+        leaf.then_some(TreeScalars {
+            tokens: self.ctx.tokens,
+            index: node.first_token,
+            end: node.token_end,
+        })
+    }
+
+    fn len_hint(self, container: Self::Container) -> usize {
+        let mut cursor = self.cursor(container.node);
+        // Each child node or token outside a child node is at most one entry.
+        let children = if cursor.child == cursor.child_end {
+            (cursor.token_end - cursor.token) as usize
+        } else {
+            let mut count = 0;
+            while cursor.next(self.ctx.nodes).is_some() {
+                count += 1;
+            }
+            count
+        };
+        match container.kind {
+            // The braces are not entries.
+            ContainerKind::Block => children.saturating_sub(2),
+            ContainerKind::Root | ContainerKind::Parameter => children,
+        }
     }
 }
 

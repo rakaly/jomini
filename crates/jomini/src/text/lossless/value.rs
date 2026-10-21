@@ -50,6 +50,7 @@
 mod de;
 
 use super::SyntaxTree;
+use super::de::{Doc, Item as DocItem, View};
 use crate::{Encoding, Scalar, text::Operator};
 
 /// An owned value of a document.
@@ -129,7 +130,7 @@ impl Value {
     /// assert_eq!(value.get("b").unwrap().as_str(), Some("2"));
     /// ```
     pub fn from_tree<E: Encoding>(tree: SyntaxTree<'_, '_>, encoding: E) -> Value {
-        super::de::from_tree(tree, encoding).expect("a tree always gives a value")
+        super::de::tree_value(tree, encoding)
     }
 
     /// Make an unquoted scalar.
@@ -402,6 +403,61 @@ impl Parameter {
             name: name.into(),
             undefined,
             body,
+        }
+    }
+}
+
+/// Makes values from a document model. It gives the same values as the
+/// deserializer of [`Value`], but it does not use serde. Each block
+/// allocates its items one time, with the size hint of the model.
+pub(crate) struct ValueBuilder<D> {
+    doc: D,
+}
+
+impl<D: Doc> ValueBuilder<D> {
+    pub(crate) fn new(doc: D) -> Self {
+        ValueBuilder { doc }
+    }
+
+    /// The items of a container as a block.
+    pub(crate) fn block(&mut self, container: D::Container) -> Block {
+        let mut items = Vec::with_capacity(self.doc.len_hint(container));
+        for item in self.doc.items(container) {
+            items.push(self.item(item));
+        }
+        Block { items }
+    }
+
+    pub(crate) fn value(&mut self, node: D::Node) -> Value {
+        let doc = self.doc;
+        match doc.view(node) {
+            View::Scalar(s) if doc.quoted(s) => Value::Quoted(doc.string(s)),
+            View::Scalar(s) => Value::Unquoted(doc.string(s)),
+            View::Calc(s) => Value::Calc(doc.string(s)),
+            View::Block(c) => Value::Block(self.block(c)),
+            View::Headered(h, c) => Value::HeaderedBlock(doc.string(h), self.block(c)),
+        }
+    }
+
+    fn item(&mut self, item: DocItem<D>) -> Item {
+        let doc = self.doc;
+        match item {
+            DocItem::Field { key, op, value } => Item::Field(Field {
+                key: doc.string(key),
+                quoted_key: doc.quoted(key),
+                op,
+                value: self.value(value),
+            }),
+            DocItem::Value(node) => Item::Value(self.value(node)),
+            DocItem::Parameter {
+                name,
+                undefined,
+                body,
+            } => Item::Parameter(Parameter {
+                name: doc.string(name),
+                undefined,
+                body: self.block(body),
+            }),
         }
     }
 }

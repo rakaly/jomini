@@ -445,6 +445,7 @@ impl<'v, B> Doc for ValueDoc<'v, B> {
     type Scalar = ValueScalar<'v>;
     type Container = ValueContainer<'v>;
     type Items = ValueItems<'v, B>;
+    type Scalars = std::iter::Empty<&'v Value>;
 
     fn view(self, node: Self::Node) -> View<Self> {
         let scalar = |text: &'v str, quoted| ValueScalar { text, quoted };
@@ -498,6 +499,14 @@ impl<'v, B> Doc for ValueDoc<'v, B> {
     }
 
     fn container_range(self, _container: Self::Container) -> Option<TextRange> {
+        None
+    }
+
+    fn len_hint(self, container: Self::Container) -> usize {
+        container.items.len()
+    }
+
+    fn scalars(self, _container: Self::Container) -> Option<Self::Scalars> {
         None
     }
 }
