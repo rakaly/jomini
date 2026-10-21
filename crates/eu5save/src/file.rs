@@ -311,9 +311,7 @@ impl BinaryFlavor for Eu5Flavor {
     }
 
     fn visit_f64(&self, data: [u8; 8]) -> f64 {
-        let x = i64::from_le_bytes(data) as f64;
-        let eps = f64::from(f32::EPSILON);
-        (x + (eps * x.signum())).trunc() / 100_000.0
+        i64::from_le_bytes(data) as f64 / 100_000.0
     }
 }
 
@@ -378,5 +376,39 @@ mod tests {
         let flavor = Eu5Flavor::new();
         let result = flavor.visit_f64(input);
         assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn test_flavor_f64_matches_epsilon_trunc() {
+        fn old(data: [u8; 8]) -> f64 {
+            let x = i64::from_le_bytes(data) as f64;
+            let eps = f64::from(f32::EPSILON);
+            (x + (eps * x.signum())).trunc() / 100_000.0
+        }
+
+        let flavor = Eu5Flavor::new();
+        let mut values = vec![0, 1, -1, i64::MAX, i64::MIN, i64::MAX - 1, i64::MIN + 1];
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        for shift in 0..64 {
+            values.push(1i64 << shift);
+            values.push((1i64 << shift).wrapping_neg());
+            for _ in 0..1000 {
+                // xorshift for values of every magnitude
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                values.push((x >> shift) as i64);
+                values.push(((x >> shift) as i64).wrapping_neg());
+            }
+        }
+
+        for value in values {
+            let data = value.to_le_bytes();
+            assert_eq!(
+                flavor.visit_f64(data).to_bits(),
+                old(data).to_bits(),
+                "{value}"
+            );
+        }
     }
 }

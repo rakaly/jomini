@@ -1286,6 +1286,10 @@ where
 {
     type Error = Error;
 
+    // The access methods are inline, so that the visitor loop of a struct
+    // holds the read of each key and value. A call for each key and value took
+    // 14% of the time to deserialize an EU5 gamestate.
+    #[inline]
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Error>
     where
         K: DeserializeSeed<'de>,
@@ -1321,6 +1325,7 @@ where
         }
     }
 
+    #[inline]
     fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Error>
     where
         V: DeserializeSeed<'de>,
@@ -1377,6 +1382,7 @@ where
 {
     type Error = Error;
 
+    #[inline]
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Error>
     where
         T: DeserializeSeed<'de>,
@@ -1528,9 +1534,7 @@ mod tests {
         }
 
         fn visit_f64(&self, data: [u8; 8]) -> f64 {
-            let x = i64::from_le_bytes(data) as f64;
-            let eps = f64::from(f32::EPSILON);
-            (x + (eps * x.signum())).trunc() / 100_000.0
+            i64::from_le_bytes(data) as f64 / 100_000.0
         }
     }
 
