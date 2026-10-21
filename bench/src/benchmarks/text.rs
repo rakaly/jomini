@@ -86,8 +86,7 @@ pub(crate) fn deserialize_lossless_tape<'a, T: serde::Deserialize<'a>>(data: &'a
 #[inline(never)]
 pub(crate) fn deserialize_tree<'a, T: serde::Deserialize<'a>>(data: &'a [u8]) -> T {
     let parse = jomini::text::lossless::parse(data);
-    jomini::text::lossless::de::from_tree(parse.borrowed_tree(), jomini::Windows1252Encoding::new())
-        .unwrap()
+    jomini::text::lossless::de::from_tree(parse.tree(), jomini::Windows1252Encoding::new()).unwrap()
 }
 
 /// The EU4 save without the `EU4txt` header, for the `GameState` model.

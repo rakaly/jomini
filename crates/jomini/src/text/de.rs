@@ -1801,8 +1801,7 @@ mod tests {
     {
         let parse = crate::text::lossless::parse(data);
         let actual: T =
-            crate::text::lossless::de::from_tree(parse.borrowed_tree(), Windows1252Encoding::new())
-                .unwrap();
+            crate::text::lossless::de::from_tree(parse.tree(), Windows1252Encoding::new()).unwrap();
         assert_eq!(&actual, expected, "the syntax tree deserializer differs");
     }
 

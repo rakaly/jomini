@@ -75,7 +75,7 @@ pub(crate) use self::engine::{
 };
 
 use self::tree::{TreeCtx, TreeDoc};
-use super::{Flavor, Parse, SyntaxErrorKind, SyntaxTree, parse_with};
+use super::{Flavor, SyntaxErrorKind, SyntaxTree, parse_with};
 use crate::{Encoding, Utf8Encoding, Windows1252Encoding};
 use serde::de::{self, Deserialize, Visitor};
 
@@ -109,7 +109,7 @@ where
 {
     let parse = parse_with(source, flavor);
     check_errors(&parse.tree())?;
-    Deserializer::new(parse.borrowed_tree(), encoding).deserialize()
+    Deserializer::new(parse.tree(), encoding).deserialize()
 }
 
 /// Parse UTF-8 `source` and deserialize it into `T`.
@@ -130,6 +130,36 @@ where
 
 /// Deserialize a tree into `T`. This function does not examine the syntax
 /// errors of the tree.
+///
+/// Use this function to read a file that has syntax errors, such as a file
+/// that a person is changing in an editor. The parser recovers from the
+/// errors, so the data before and after an error is available:
+///
+/// ```
+/// use jomini::{Utf8Encoding, text::lossless::{parse, de::{from_tree, from_utf8_slice}}};
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Modifier {
+///     tax: u32,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Building {
+///     cost: u32,
+///     modifier: Modifier,
+/// }
+///
+/// // The block has no closing brace.
+/// let source = b"cost = 100\nmodifier = { tax = 1";
+/// assert!(from_utf8_slice::<Building>(source).is_err());
+///
+/// let parse = parse(source);
+/// assert_eq!(parse.errors()[0].message(), "unclosed '{'");
+/// let building: Building = from_tree(parse.tree(), Utf8Encoding::new())?;
+/// assert_eq!((building.cost, building.modifier.tax), (100, 1));
+/// # Ok::<(), jomini::text::lossless::de::Error>(())
+/// ```
 pub fn from_tree<'a, T, E>(tree: SyntaxTree<'_, 'a>, encoding: E) -> Result<T, Error>
 where
     T: Deserialize<'a>,
@@ -167,19 +197,6 @@ fn check_errors(tree: &SyntaxTree<'_, '_>) -> Result<(), Error> {
     match error {
         Some(error) => Err(Error::syntax(error).locate(tree.source())),
         None => Ok(()),
-    }
-}
-
-impl<'a> Parse<&'a [u8]> {
-    /// The [`SyntaxTree`] view with the lifetime of the borrowed source.
-    ///
-    /// The text of the tree can then live longer than the `Parse`, as the
-    /// data that the deserializer borrows from the source.
-    pub fn borrowed_tree(&self) -> SyntaxTree<'_, 'a> {
-        SyntaxTree {
-            data: &self.data,
-            source: self.source,
-        }
     }
 }
 

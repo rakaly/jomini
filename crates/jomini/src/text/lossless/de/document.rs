@@ -8,7 +8,7 @@ use crate::{
     text::{
         Operator,
         lossless::{
-            LineCol, LineIndex, SyntaxTree, TextRange,
+            LineCol, LineIndex, SyntaxTree, TextRange, TextSize,
             value::{Value, ValueBuilder},
         },
     },
@@ -80,7 +80,7 @@ impl<'t, 'a, E: Encoding> Document<'t, 'a, E> {
 
     /// The line and column of a byte offset. The first call makes the line
     /// index.
-    pub fn line_col(&self, offset: u32) -> LineCol {
+    pub fn line_col(&self, offset: TextSize) -> LineCol {
         self.lines
             .get_or_init(|| LineIndex::new(self.tree().source()))
             .line_col(offset)
@@ -126,6 +126,26 @@ impl<'t, 'a, E: Encoding> Document<'t, 'a, E> {
 }
 
 /// The items of the root, of a block, or of the block of a headered block.
+///
+/// A key can occur more than one time in a game file. [`get_all`](Self::get_all)
+/// gives each value of a key, and [`keys`](Self::keys) gives the keys in
+/// source order:
+///
+/// ```
+/// use jomini::{Windows1252Encoding, text::lossless::{parse, de::Document}};
+///
+/// let tree = parse(b"owner = FRA add_core = FRA add_core = BRI culture = breton");
+/// let doc = Document::new(tree.tree(), Windows1252Encoding::new());
+/// let root = doc.root();
+///
+/// let cores: Vec<String> = root
+///     .get_all("add_core")
+///     .map(|v| v.str().map(|s| s.into_owned()))
+///     .collect::<Result<_, _>>()?;
+/// assert_eq!(cores, ["FRA", "BRI"]);
+/// assert_eq!(root.keys().collect::<Vec<_>>(), ["owner", "add_core", "add_core", "culture"]);
+/// # Ok::<(), jomini::text::lossless::de::Error>(())
+/// ```
 pub struct BlockRef<'d, 'a, E> {
     document: &'d Document<'d, 'a, E>,
     container: TreeContainer,
@@ -142,6 +162,27 @@ impl<E> Clone for BlockRef<'_, '_, E> {
 impl<E> Copy for BlockRef<'_, '_, E> {}
 
 /// A field of a [`BlockRef`]: a key, an operator, and a value.
+///
+/// The operator is available, so a tool can read conditions that a serde
+/// type does not model:
+///
+/// ```
+/// use jomini::{Utf8Encoding, text::lossless::{parse, de::Document}};
+///
+/// let tree = parse(b"trigger = { num_of_cities >= 5 is_at_war = no }");
+/// let doc = Document::new(tree.tree(), Utf8Encoding::new());
+/// let trigger = doc.root().require("trigger")?.block()?;
+///
+/// let conditions: Vec<String> = trigger
+///     .fields()
+///     .map(|f| {
+///         let op = f.op().map_or("", |op| op.symbol());
+///         Ok(format!("{} {} {}", f.key(), op, f.value().str()?))
+///     })
+///     .collect::<Result<_, jomini::text::lossless::de::Error>>()?;
+/// assert_eq!(conditions, ["num_of_cities >= 5", "is_at_war = no"]);
+/// # Ok::<(), jomini::text::lossless::de::Error>(())
+/// ```
 pub struct FieldRef<'d, 'a, E> {
     document: &'d Document<'d, 'a, E>,
     key: TreeScalar,
@@ -159,6 +200,27 @@ impl<E> Copy for FieldRef<'_, '_, E> {}
 
 /// A value of a [`Document`]: a scalar, a block, a headered block, or a
 /// calculation.
+///
+/// A value tells the data that serde does not model, such as the quotes and
+/// the header, and where it is in the source:
+///
+/// ```
+/// use jomini::{Utf8Encoding, text::lossless::{parse, de::Document}};
+///
+/// let tree = parse(b"name = \"Bretagne\"\ncolor = rgb { 10 20 30 }");
+/// let doc = Document::new(tree.tree(), Utf8Encoding::new());
+/// let root = doc.root();
+///
+/// let name = root.require("name")?;
+/// assert!(name.is_quoted());
+/// assert_eq!(name.str()?, "Bretagne");
+///
+/// let color = root.require("color")?;
+/// assert_eq!(color.header().as_deref(), Some("rgb"));
+/// assert_eq!(color.block()?.deserialize::<Vec<u8>>()?, [10, 20, 30]);
+/// assert_eq!(color.line_col().to_string(), "2:9");
+/// # Ok::<(), jomini::text::lossless::de::Error>(())
+/// ```
 pub struct ValueRef<'d, 'a, E> {
     document: &'d Document<'d, 'a, E>,
     node: TreeNode,

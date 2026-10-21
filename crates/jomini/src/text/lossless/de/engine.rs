@@ -815,8 +815,8 @@ impl<'de, D: DocDe<'de>> de::Deserializer<'de> for ValueDe<D> {
                 Some(range) => visitor.visit_seq(PartsSeq::new(
                     doc,
                     [
-                        Part::U32(range.start()),
-                        Part::U32(range.end()),
+                        Part::U32(range.start().to_u32()),
+                        Part::U32(range.end().to_u32()),
                         Part::Value(self),
                     ],
                 )),
