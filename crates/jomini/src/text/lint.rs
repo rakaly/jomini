@@ -36,7 +36,8 @@
 #![allow(missing_docs)] // experimental surface; docs land as the API stabilizes
 
 use crate::text::lossless::{
-    self, Applicability, AstNode, Field, Flavor, LineCol, LineIndex, SyntaxNode, Value,
+    self, Applicability, AstNode, Field, Flavor, LineCol, LineIndex, Repair, SyntaxNode, TextRange,
+    Value,
 };
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -274,7 +275,7 @@ impl Schema {
 pub struct DefSite {
     pub kind: Kind,
     pub name: String,
-    pub range: (u32, u32),
+    pub range: TextRange,
 }
 
 /// A reference extracted from a file: a `(kind, name)` use site, plus whether
@@ -285,7 +286,7 @@ pub struct DefSite {
 pub struct RefSite {
     pub kind: Kind,
     pub name: String,
-    pub range: (u32, u32),
+    pub range: TextRange,
     pub in_error_subtree: bool,
 }
 
@@ -306,10 +307,10 @@ pub struct FileSummary {
 #[derive(Debug, Clone)]
 pub struct SyntaxDiagnosticSummary {
     pub message: String,
-    pub range: (u32, u32),
-    pub opening_range: Option<(u32, u32)>,
+    pub range: TextRange,
+    pub opening_range: Option<TextRange>,
     pub applicability: Option<Applicability>,
-    pub fix: Option<Fix>,
+    pub fix: Option<Repair>,
 }
 
 fn decode(s: crate::Scalar) -> String {
@@ -336,7 +337,7 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
                 defs.push(DefSite {
                     kind: kind.clone(),
                     name: decode(key.as_scalar()),
-                    range: key.text_range().into(),
+                    range: key.text_range(),
                 });
             }
         }
@@ -355,14 +356,14 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
             let fix = recovery
                 .filter(|r| r.order == 0)
                 .and_then(|r| repairs.iter().find(|f| f.range == r.insertion_range))
-                .map(|f| Fix {
-                    range: f.range.into(),
+                .map(|f| Repair {
+                    range: f.range,
                     replacement: f.replacement.clone(),
                 });
             SyntaxDiagnosticSummary {
                 message: e.message().to_owned(),
-                range: e.range.into(),
-                opening_range: recovery.map(|r| r.opening_range.into()),
+                range: e.range,
+                opening_range: recovery.map(|r| r.opening_range),
                 applicability: recovery.map(|r| tree.repair_applicability(r)),
                 fix,
             }
@@ -393,7 +394,7 @@ fn collect_refs(node: SyntaxNode<'_, '_>, schema: &Schema, in_error: bool, out: 
         out.push(RefSite {
             kind: kind.clone(),
             name: decode(tok.as_scalar()),
-            range: tok.text_range().into(),
+            range: tok.text_range(),
             in_error_subtree: in_error,
         });
     }
@@ -419,7 +420,7 @@ pub struct Definition {
     pub kind: Kind,
     pub name: String,
     pub file: FileId,
-    pub range: (u32, u32),
+    pub range: TextRange,
     pub winner: bool,
 }
 
@@ -460,7 +461,7 @@ impl Index {
     }
 
     /// Register one definition, returning its [`DefId`].
-    pub fn define(&mut self, kind: Kind, name: String, file: FileId, range: (u32, u32)) -> DefId {
+    pub fn define(&mut self, kind: Kind, name: String, file: FileId, range: TextRange) -> DefId {
         let id = self.definitions.len() as u32;
         let key = Key {
             kind: kind.clone(),
@@ -597,7 +598,7 @@ impl Index {
             }
         }
 
-        diags.sort_by_key(|d| (d.file, d.range.0));
+        diags.sort_by_key(|d| (d.file, d.range.start()));
         diags
     }
 }
@@ -665,20 +666,6 @@ pub enum Confidence {
     Strong,
 }
 
-/// A machine-applicable fix: replace the bytes in `range` with `replacement`.
-/// The range comes from a syntax element (a [`SyntaxToken`](lossless::SyntaxToken)
-/// the rule points at), so a fix is "rewrite this token" expressed as a text
-/// edit — the practical, conflict-checkable form of "splice the tree, then
-/// reprint". Apply with [`apply_fixes`]; the result is guaranteed to reparse,
-/// and you can run [`format`](lossless::format) over it for the house style.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Fix {
-    /// The half-open byte range to replace.
-    pub range: (u32, u32),
-    /// The text to substitute in.
-    pub replacement: String,
-}
-
 /// One finding: a stable id, the two axes, and a located message. Carries a
 /// [`FileId`] + range rather than a tree reference, so it long outlives the
 /// parse and is rendered later against the [`Fileset`]. May also carry a
@@ -690,12 +677,12 @@ pub struct Diagnostic {
     pub severity: Severity,
     pub confidence: Confidence,
     pub file: FileId,
-    pub range: (u32, u32),
+    pub range: TextRange,
     pub message: String,
     /// An optional secondary hint (e.g. "did you mean `barracks`?").
     pub help: Option<String>,
     /// An optional machine-applicable fix.
-    pub fix: Option<Fix>,
+    pub fix: Option<Repair>,
 }
 
 // ---------------------------------------------------------------------------
@@ -822,7 +809,7 @@ impl Linter {
                         let (help, fix) = match index.suggest(&r.kind, &r.name) {
                             Some(name) => (
                                 Some(format!("did you mean `{name}`?")),
-                                Some(Fix { range: r.range, replacement: name.to_string() }),
+                                Some(Repair { range: r.range, replacement: name.to_string() }),
                             ),
                             None => (None, None),
                         };
@@ -857,7 +844,7 @@ impl Linter {
             }
         }
 
-        diags.sort_by_key(|d| (d.file, d.range.0, d.range.1));
+        diags.sort_by_key(|d| (d.file, d.range.start(), d.range.end()));
         Analysis {
             fileset_tag: fileset.tag,
             index,
@@ -935,7 +922,7 @@ impl Analysis {
         summary
             .refs
             .iter()
-            .find(|r| r.range.0 <= offset && offset <= r.range.1)
+            .find(|r| r.range.start() <= offset && offset <= r.range.end())
     }
 
     /// The definition site (its name token) whose byte range covers `offset` in
@@ -945,7 +932,7 @@ impl Analysis {
         summary
             .defs
             .iter()
-            .find(|d| d.range.0 <= offset && offset <= d.range.1)
+            .find(|d| d.range.start() <= offset && offset <= d.range.end())
     }
 
     /// Go-to-definition for the token at `offset` in `file`: resolve a reference
@@ -1041,9 +1028,9 @@ fn severity_color(s: Severity) -> &'static str {
 /// diagnostic production and rendering apart): it touches only owned data + the
 /// source bytes, never a parsed tree.
 pub fn render(diag: &Diagnostic, fileset: &Fileset, color: bool) -> String {
-    let at = fileset.line_col(diag.file, diag.range.0);
+    let at = fileset.line_col(diag.file, diag.range.start());
     let (line, col) = (at.line + 1, at.col + 1);
-    let (line_src, line_start) = line_bytes(fileset, diag.file, diag.range.0);
+    let (line_src, line_start) = line_bytes(fileset, diag.file, diag.range.start());
     let line_text = String::from_utf8_lossy(line_src);
 
     let (reset, bold, dim) = if color {
@@ -1061,11 +1048,11 @@ pub fn render(diag: &Diagnostic, fileset: &Fileset, color: bool) -> String {
     };
 
     // Caret span within the line, clamped to the line's end.
-    let caret_col = diag.range.0 as usize - line_start;
+    let caret_col = diag.range.start() as usize - line_start;
     // `saturating_sub` guards a hand-built `Diagnostic` with an inverted range
     // (`Diagnostic`'s fields are public): a plain `-` would underflow-panic in
     // debug and balloon `"^".repeat(span)` in release.
-    let span = (diag.range.1.saturating_sub(diag.range.0)).max(1) as usize;
+    let span = (diag.range.end().saturating_sub(diag.range.start())).max(1) as usize;
     let span = span.min(line_src.len().saturating_sub(caret_col).max(1));
     let pad: String = line_src[..caret_col.min(line_src.len())]
         .iter()
@@ -1103,7 +1090,7 @@ pub fn render(diag: &Diagnostic, fileset: &Fileset, color: bool) -> String {
 // Autofix: apply machine-applicable fixes as a text-edit splice
 // ---------------------------------------------------------------------------
 
-/// Apply [`Fix`]es to `source`, returning the rewritten bytes. Fixes are sorted
+/// Apply [`Repair`]s to `source`, returning the rewritten bytes. Repairs are sorted
 /// by position and applied left-to-right. Equal zero-width edits keep their
 /// input order. Any fix that overlaps one already applied is skipped. The
 /// result is plain text; run [`format`](lossless::format) for house style.
@@ -1112,14 +1099,14 @@ pub fn render(diag: &Diagnostic, fileset: &Fileset, color: bool) -> String {
 /// fix targets a single element's byte range (e.g. a reference token), splicing
 /// text is equivalent to rebuilding the green subtree but needs no width
 /// recomputation — and it is exactly the LSP `TextEdit` model.
-pub fn apply_fixes(source: &[u8], fixes: &[Fix]) -> Vec<u8> {
-    let mut sorted: Vec<(usize, &Fix)> = fixes.iter().enumerate().collect();
-    sorted.sort_by_key(|(index, fix)| (fix.range.0, fix.range.1, *index));
+pub fn apply_repairs(source: &[u8], fixes: &[Repair]) -> Vec<u8> {
+    let mut sorted: Vec<(usize, &Repair)> = fixes.iter().enumerate().collect();
+    sorted.sort_by_key(|(index, fix)| (fix.range.start(), fix.range.end(), *index));
 
     let mut out = Vec::with_capacity(source.len());
     let mut cursor = 0u32; // bytes of `source` already copied
     for (_, fix) in sorted {
-        let (start, end) = fix.range;
+        let (start, end) = (fix.range.start(), fix.range.end());
         // Skip an out-of-order/overlapping or inverted edit rather than corrupt
         // the output.
         if start < cursor || end < start || end as usize > source.len() {
@@ -1174,7 +1161,7 @@ mod tests {
         (fs, schema)
     }
 
-    fn keys(analysis: &Analysis) -> Vec<(&'static str, FileId, (u32, u32))> {
+    fn keys(analysis: &Analysis) -> Vec<(&'static str, FileId, TextRange)> {
         analysis
             .diagnostics()
             .iter()
@@ -1278,7 +1265,7 @@ mod tests {
 
         // Applying the fix rewrites the typo in place; the result parses clean
         // and the bad token is gone (`barracks` now resolves against the index).
-        let fixed = apply_fixes(fs.source(d.file), std::slice::from_ref(fix));
+        let fixed = apply_repairs(fs.source(d.file), std::slice::from_ref(fix));
         let fixed_text = String::from_utf8_lossy(&fixed);
         assert!(fixed_text.contains("add_building = barracks"));
         assert!(!fixed_text.contains("baracks\n") && !fixed_text.contains("baracks ")); // no stray typo
@@ -1289,25 +1276,25 @@ mod tests {
     #[test]
     fn apply_fixes_splices_and_skips_overlap() {
         // A single in-range rename.
-        let renamed = apply_fixes(
+        let renamed = apply_repairs(
             b"add_building = baracks",
-            &[Fix {
-                range: (15, 22),
+            &[Repair {
+                range: TextRange::new(15, 22),
                 replacement: "barracks".into(),
             }],
         );
         assert_eq!(renamed, b"add_building = barracks");
 
         // Overlapping/out-of-order edits are skipped, never corrupting output.
-        let out = apply_fixes(
+        let out = apply_repairs(
             b"abcdef",
             &[
-                Fix {
-                    range: (0, 3),
+                Repair {
+                    range: TextRange::new(0, 3),
                     replacement: "X".into(),
                 },
-                Fix {
-                    range: (2, 5),
+                Repair {
+                    range: TextRange::new(2, 5),
                     replacement: "Y".into(),
                 }, // overlaps the first
             ],
@@ -1315,15 +1302,15 @@ mod tests {
         assert_eq!(out, b"Xdef");
 
         // Equal zero-width edits keep their input order.
-        let out = apply_fixes(
+        let out = apply_repairs(
             b"abc",
             &[
-                Fix {
-                    range: (3, 3),
+                Repair {
+                    range: TextRange::new(3, 3),
                     replacement: "]".into(),
                 },
-                Fix {
-                    range: (3, 3),
+                Repair {
+                    range: TextRange::new(3, 3),
                     replacement: "}".into(),
                 },
             ],
@@ -1414,12 +1401,9 @@ mod tests {
         let error = summary.syntax_errors.first().unwrap();
         assert_eq!(
             error.range,
-            (
-                fs.source(FileId(3)).len() as u32,
-                fs.source(FileId(3)).len() as u32
-            )
+            TextRange::empty(fs.source(FileId(3)).len() as u32)
         );
-        assert_eq!(error.opening_range, Some((9, 10)));
+        assert_eq!(error.opening_range, Some(TextRange::new(9, 10)));
         assert_eq!(error.applicability, Some(Applicability::MachineApplicable));
         assert_eq!(error.fix.as_ref().unwrap().replacement, "}");
 
@@ -1444,7 +1428,12 @@ mod tests {
             );
             fs
         };
-        index.define("building".into(), "castle".into(), FileId(0), (0, 6));
+        index.define(
+            "building".into(),
+            "castle".into(),
+            FileId(0),
+            TextRange::new(0, 6),
+        );
         index.finalize(&fs);
         assert!(matches!(
             index.resolve("building", "castle", false),
@@ -1464,10 +1453,10 @@ mod tests {
     fn render_is_panic_free_on_odd_ranges() {
         let mut fs = Fileset::new();
         let f = fs.add("a.txt", FileKind::Vanilla, b"a = 1\n".to_vec());
-        // An inverted range, a past-EOF range, and a zero-width range must all
-        // render without panicking (Diagnostic fields are public, so callers
-        // can construct any range).
-        for range in [(5, 2), (100, 200), (3, 3)] {
+        // A past-EOF range and a zero-width range must render without
+        // panicking (Diagnostic fields are public, so callers can construct
+        // any range).
+        for range in [TextRange::new(100, 200), TextRange::empty(3)] {
             let d = Diagnostic {
                 id: lints::SYNTAX_ERROR,
                 severity: Severity::Error,
