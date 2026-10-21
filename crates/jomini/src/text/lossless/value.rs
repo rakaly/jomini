@@ -75,6 +75,41 @@ pub enum Value {
 }
 
 /// The items of a block in source order.
+///
+/// A block keeps each field, also when a key occurs more than one time:
+///
+/// ```
+/// use jomini::text::lossless::{de::from_utf8_slice, value::Value};
+///
+/// let root: Value = from_utf8_slice(b"owner = FRA owner = BRI add_core = FRA")?;
+/// let root = root.as_block().unwrap();
+/// assert_eq!(root.get("owner").unwrap().as_str(), Some("FRA"));
+/// assert_eq!(root.get_last("owner").unwrap().as_str(), Some("BRI"));
+/// assert_eq!(root.get_all("owner").count(), 2);
+/// assert!(root.is_object());
+/// # Ok::<(), jomini::text::lossless::de::Error>(())
+/// ```
+///
+/// You can also make a block in code, and then deserialize it into a type:
+///
+/// ```
+/// use jomini::text::{Operator, lossless::value::{Block, Field, Value}};
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Province {
+///     owner: String,
+///     base_tax: u32,
+/// }
+///
+/// let mut block = Block::new();
+/// block.push(Field::new("owner", Some(Operator::Equal), Value::unquoted("FRA")));
+/// block.push(Field::new("base_tax", Some(Operator::Equal), Value::unquoted("3")));
+///
+/// let province = Province::deserialize(Value::from(block))?;
+/// assert_eq!((province.owner.as_str(), province.base_tax), ("FRA", 3));
+/// # Ok::<(), jomini::text::lossless::de::Error>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Block {
     items: Vec<Item>,

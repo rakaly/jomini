@@ -9,7 +9,10 @@
 //! the wrapper uses a fallback: no quotes, no operator, no header, no range.
 
 use super::engine::{HEADERED, QUOTED, SPANNED, WITH_OP};
-use crate::text::{Operator, lossless::TextRange};
+use crate::text::{
+    Operator,
+    lossless::{TextRange, TextSize},
+};
 use serde::de::{self, Deserialize, Deserializer, SeqAccess, Visitor};
 use std::{fmt, marker::PhantomData};
 
@@ -93,7 +96,11 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Spanned<T> {
                 let start: u32 = seq.next_element()?.ok_or_else(|| missing(0))?;
                 let end: u32 = seq.next_element()?.ok_or_else(|| missing(1))?;
                 let value: T = seq.next_element()?.ok_or_else(|| missing(2))?;
-                Ok(Spanned::new(Some(TextRange::new(start, end)), value))
+                if start > end {
+                    return Err(de::Error::custom("range start is greater than range end"));
+                }
+                let range = TextRange::new(TextSize::new(start), TextSize::new(end));
+                Ok(Spanned::new(Some(range), value))
             }
         }
 
