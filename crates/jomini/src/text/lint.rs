@@ -32,12 +32,48 @@
 //! what references an entity is a handful of hand-written rules ([`Schema`]),
 //! not a full per-game rule set, and names are compared as lossy-UTF-8 strings
 //! rather than encoding-aware (a documented follow-up).
+//!
+//! # Examples
+//!
+//! Find a reference to a building that no file defines. The base game
+//! defines `barracks`, and a mod event refers to `baracks`:
+//!
+//! ```
+//! use jomini::text::lint::{FileKind, Fileset, Linter, Schema, lints, render};
+//!
+//! let mut fileset = Fileset::new();
+//! fileset.add(
+//!     "common/buildings/00_buildings.txt",
+//!     FileKind::Vanilla,
+//!     b"barracks = { cost = 100 }\nwharf = { cost = 50 }\n".to_vec(),
+//! );
+//! let events = fileset.add(
+//!     "events/mod_events.txt",
+//!     FileKind::Mod(0),
+//!     b"my_event = {\n\tadd_building = baracks\n}\n".to_vec(),
+//! );
+//!
+//! let mut schema = Schema::new();
+//! schema
+//!     .define_dir("buildings", "building")
+//!     .reference_key("add_building", "building");
+//!
+//! let diagnostics = Linter::new(schema).run(&fileset);
+//! assert_eq!(diagnostics.len(), 1);
+//! let diagnostic = &diagnostics[0];
+//! assert_eq!(diagnostic.id, lints::UNDEFINED_REFERENCE);
+//! assert_eq!(diagnostic.file, events);
+//! assert_eq!(diagnostic.help.as_deref(), Some("did you mean `barracks`?"));
+//!
+//! let report = render(diagnostic, &fileset, false);
+//! assert!(report.contains("--> events/mod_events.txt:2:17"));
+//! ```
 
 #![allow(missing_docs)] // experimental surface; docs land as the API stabilizes
 
 use crate::text::lossless::{
     self, Applicability, AstNode, Field, Flavor, LineCol, LineIndex, Repair, SyntaxNode, TextRange,
-    Value,
+    TextSize, Value,
 };
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -170,7 +206,7 @@ impl Fileset {
     }
 
     /// The line and column of `offset` in a file.
-    pub fn line_col(&self, id: FileId, offset: u32) -> LineCol {
+    pub fn line_col(&self, id: FileId, offset: TextSize) -> LineCol {
         self.line_index(id).line_col(offset)
     }
 
@@ -331,9 +367,8 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
     // references in the same error subtree are suppressed for the same reason.
     if let Some(kind) = schema.definition_kind(fileset.path(file)) {
         for field in tree.ast().fields() {
-            if !field.syntax().has_error()
-                && let Some(key) = field.key()
-            {
+            if !field.syntax().has_error() {
+                let key = field.key();
                 defs.push(DefSite {
                     kind: kind.clone(),
                     name: decode(key.as_scalar()),
@@ -387,8 +422,8 @@ fn collect_refs(node: SyntaxNode<'_, '_>, schema: &Schema, in_error: bool, out: 
     let in_error = in_error || node.has_error();
 
     if let Some(field) = Field::cast(node)
-        && let (Some(key), Some(value)) = (field.key(), field.value())
-        && let Some(kind) = schema.reference_keys.get(&decode(key.as_scalar()))
+        && let Some(value) = field.value()
+        && let Some(kind) = schema.reference_keys.get(&decode(field.key().as_scalar()))
         && let Value::Scalar(tok) = value
     {
         out.push(RefSite {
@@ -740,6 +775,28 @@ impl Linter {
     ///
     /// `analysis` must come from this linter. When it comes from a different
     /// fileset, all the files are parsed.
+    ///
+    /// An editor calls this function after each change to a file:
+    ///
+    /// ```
+    /// use jomini::text::lint::{FileKind, Fileset, Linter, Schema};
+    ///
+    /// let mut fileset = Fileset::new();
+    /// fileset.add("common/buildings/b.txt", FileKind::Vanilla, b"barracks = {}".to_vec());
+    /// let events = fileset.add("events/e.txt", FileKind::Mod(0), b"add_building = barracks".to_vec());
+    ///
+    /// let mut schema = Schema::new();
+    /// schema.define_dir("buildings", "building").reference_key("add_building", "building");
+    /// let linter = Linter::new(schema);
+    ///
+    /// let mut analysis = linter.analyze(&fileset);
+    /// assert!(analysis.diagnostics().is_empty());
+    ///
+    /// // The person types a name that no file defines.
+    /// fileset.set_source(events, b"add_building = stables".to_vec());
+    /// linter.reanalyze(&fileset, &mut analysis);
+    /// assert_eq!(analysis.diagnostics().len(), 1);
+    /// ```
     pub fn reanalyze(&self, fileset: &Fileset, analysis: &mut Analysis) {
         if analysis.fileset_tag != fileset.tag {
             *analysis = self.analyze(fileset);
@@ -869,6 +926,45 @@ impl Linter {
 /// it is fully **owned** — it holds no borrow on any parse tree or on the
 /// [`Fileset`] — so it can live in a long-running server. When a file changes,
 /// [`Linter::reanalyze`] makes the next analysis from it.
+///
+/// Go to the definition of a reference, and find all of the references to a
+/// definition:
+///
+/// ```
+/// use jomini::text::lint::{FileKind, Fileset, Linter, Schema};
+/// use jomini::text::lossless::TextSize;
+///
+/// let mut fileset = Fileset::new();
+/// let vanilla = fileset.add(
+///     "common/buildings/00_buildings.txt",
+///     FileKind::Vanilla,
+///     b"barracks = { cost = 100 }".to_vec(),
+/// );
+/// let modded = fileset.add(
+///     "common/buildings/01_mod_buildings.txt",
+///     FileKind::Mod(0),
+///     b"barracks = { cost = 80 }".to_vec(),
+/// );
+/// let source = b"a = { add_building = barracks }\nb = { add_building = barracks }";
+/// let events = fileset.add("events/mod_events.txt", FileKind::Mod(0), source.to_vec());
+///
+/// let mut schema = Schema::new();
+/// schema
+///     .define_dir("buildings", "building")
+///     .reference_key("add_building", "building");
+/// let analysis = Linter::new(schema).analyze(&fileset);
+///
+/// // The mod definition overrides the vanilla one, so it is the target.
+/// let offset = source.windows(8).position(|w| w == b"barracks").unwrap();
+/// let offset = TextSize::try_from(offset).unwrap();
+/// let definition = analysis.definition_for(events, offset).unwrap();
+/// assert_eq!(definition.file, modded);
+/// assert_ne!(definition.file, vanilla);
+///
+/// let references: Vec<_> = analysis.references_to("building", "barracks").collect();
+/// assert_eq!(references.len(), 2);
+/// assert!(references.iter().all(|(file, _)| *file == events));
+/// ```
 pub struct Analysis {
     /// The tag of the [`Fileset`] that the summaries come from.
     fileset_tag: u64,
@@ -917,22 +1013,22 @@ impl Analysis {
     /// the last character of a token still hits it (references are sparse, so this
     /// never double-matches). The hit-test is a linear scan — fine for the small
     /// game files this layer targets; a spatial index is a later optimization.
-    pub fn reference_at(&self, file: FileId, offset: u32) -> Option<&RefSite> {
+    pub fn reference_at(&self, file: FileId, offset: TextSize) -> Option<&RefSite> {
         let summary = self.summary(file)?;
         summary
             .refs
             .iter()
-            .find(|r| r.range.start() <= offset && offset <= r.range.end())
+            .find(|r| r.range.contains_inclusive(offset))
     }
 
     /// The definition site (its name token) whose byte range covers `offset` in
     /// `file`, if any. Inclusive at both ends, like [`reference_at`].
-    pub fn definition_at(&self, file: FileId, offset: u32) -> Option<&DefSite> {
+    pub fn definition_at(&self, file: FileId, offset: TextSize) -> Option<&DefSite> {
         let summary = self.summary(file)?;
         summary
             .defs
             .iter()
-            .find(|d| d.range.start() <= offset && offset <= d.range.end())
+            .find(|d| d.range.contains_inclusive(offset))
     }
 
     /// Go-to-definition for the token at `offset` in `file`: resolve a reference
@@ -941,7 +1037,7 @@ impl Analysis {
     /// shadowed definition lands on the one that actually wins). `None` when there
     /// is nothing resolvable under the cursor (plain syntax, or an *undefined*
     /// reference, which resolves to no definition).
-    pub fn definition_for(&self, file: FileId, offset: u32) -> Option<&Definition> {
+    pub fn definition_for(&self, file: FileId, offset: TextSize) -> Option<&Definition> {
         if let Some(r) = self.reference_at(file, offset) {
             return self.winning_definition(&r.kind, &r.name);
         }
@@ -994,14 +1090,14 @@ impl Analysis {
 /// The bytes of the line that holds `offset`, without the line break, and the
 /// offset of the start of the line. Carbon's lazy location model: positions are
 /// plain offsets, and become lines only when a diagnostic is rendered.
-fn line_bytes(fileset: &Fileset, file: FileId, offset: u32) -> (&[u8], usize) {
+fn line_bytes(fileset: &Fileset, file: FileId, offset: TextSize) -> (&[u8], usize) {
     let index = fileset.line_index(file);
     let range = index
         .line_range(index.line_col(offset).line)
         .expect("the line of an offset exists");
-    let line = &fileset.source(file)[range.to_range()];
+    let line = &fileset.source(file)[range];
     let line = line.strip_suffix(b"\n").unwrap_or(line);
-    (line, range.start() as usize)
+    (line, range.start().to_usize())
 }
 
 fn severity_label(s: Severity) -> &'static str {
@@ -1048,11 +1144,9 @@ pub fn render(diag: &Diagnostic, fileset: &Fileset, color: bool) -> String {
     };
 
     // Caret span within the line, clamped to the line's end.
-    let caret_col = diag.range.start() as usize - line_start;
-    // `saturating_sub` guards a hand-built `Diagnostic` with an inverted range
-    // (`Diagnostic`'s fields are public): a plain `-` would underflow-panic in
-    // debug and balloon `"^".repeat(span)` in release.
-    let span = (diag.range.end().saturating_sub(diag.range.start())).max(1) as usize;
+    let caret_col = diag.range.start().to_usize() - line_start;
+    // A `TextRange` cannot be inverted, so its length does not underflow.
+    let span = diag.range.len().to_usize().max(1);
     let span = span.min(line_src.len().saturating_sub(caret_col).max(1));
     let pad: String = line_src[..caret_col.min(line_src.len())]
         .iter()
@@ -1099,24 +1193,50 @@ pub fn render(diag: &Diagnostic, fileset: &Fileset, color: bool) -> String {
 /// fix targets a single element's byte range (e.g. a reference token), splicing
 /// text is equivalent to rebuilding the green subtree but needs no width
 /// recomputation — and it is exactly the LSP `TextEdit` model.
+///
+/// Apply the fixes of the diagnostics of one file:
+///
+/// ```
+/// use jomini::text::lint::{FileKind, Fileset, Linter, Schema, apply_repairs};
+///
+/// let mut fileset = Fileset::new();
+/// fileset.add("common/buildings/b.txt", FileKind::Vanilla, b"barracks = {}".to_vec());
+/// let events = fileset.add(
+///     "events/e.txt",
+///     FileKind::Mod(0),
+///     b"a = { add_building = baracks } # keep this comment".to_vec(),
+/// );
+///
+/// let mut schema = Schema::new();
+/// schema.define_dir("buildings", "building").reference_key("add_building", "building");
+/// let diagnostics = Linter::new(schema).run(&fileset);
+///
+/// let fixes: Vec<_> = diagnostics
+///     .iter()
+///     .filter(|d| d.file == events)
+///     .filter_map(|d| d.fix.clone())
+///     .collect();
+/// let fixed = apply_repairs(fileset.source(events), &fixes);
+/// assert_eq!(fixed, b"a = { add_building = barracks } # keep this comment");
+/// ```
 pub fn apply_repairs(source: &[u8], fixes: &[Repair]) -> Vec<u8> {
     let mut sorted: Vec<(usize, &Repair)> = fixes.iter().enumerate().collect();
     sorted.sort_by_key(|(index, fix)| (fix.range.start(), fix.range.end(), *index));
 
     let mut out = Vec::with_capacity(source.len());
-    let mut cursor = 0u32; // bytes of `source` already copied
+    let mut cursor = 0; // bytes of `source` already copied
     for (_, fix) in sorted {
-        let (start, end) = (fix.range.start(), fix.range.end());
-        // Skip an out-of-order/overlapping or inverted edit rather than corrupt
-        // the output.
-        if start < cursor || end < start || end as usize > source.len() {
+        let (start, end) = (fix.range.start().to_usize(), fix.range.end().to_usize());
+        // Skip an out-of-order or overlapping edit rather than corrupt the
+        // output.
+        if start < cursor || end > source.len() {
             continue;
         }
-        out.extend_from_slice(&source[cursor as usize..start as usize]);
+        out.extend_from_slice(&source[cursor..start]);
         out.extend_from_slice(fix.replacement.as_bytes());
         cursor = end;
     }
-    out.extend_from_slice(&source[cursor as usize..]);
+    out.extend_from_slice(&source[cursor..]);
     out
 }
 
@@ -1182,7 +1302,11 @@ mod tests {
         );
         linter.reanalyze(&fs, &mut analysis);
         assert_eq!(keys(&analysis), keys(&linter.analyze(&fs)));
-        assert!(analysis.reference_at(FileId(2), 60).is_some());
+        assert!(
+            analysis
+                .reference_at(FileId(2), TextSize::new(60))
+                .is_some()
+        );
 
         // Remove `fortress` from the mod buildings. The events file does not
         // change, but its reference to `fortress` is now undefined.
@@ -1279,7 +1403,7 @@ mod tests {
         let renamed = apply_repairs(
             b"add_building = baracks",
             &[Repair {
-                range: TextRange::new(15, 22),
+                range: TextRange::span(15, 22),
                 replacement: "barracks".into(),
             }],
         );
@@ -1290,11 +1414,11 @@ mod tests {
             b"abcdef",
             &[
                 Repair {
-                    range: TextRange::new(0, 3),
+                    range: TextRange::span(0, 3),
                     replacement: "X".into(),
                 },
                 Repair {
-                    range: TextRange::new(2, 5),
+                    range: TextRange::span(2, 5),
                     replacement: "Y".into(),
                 }, // overlaps the first
             ],
@@ -1306,11 +1430,11 @@ mod tests {
             b"abc",
             &[
                 Repair {
-                    range: TextRange::new(3, 3),
+                    range: TextRange::span(3, 3),
                     replacement: "]".into(),
                 },
                 Repair {
-                    range: TextRange::new(3, 3),
+                    range: TextRange::span(3, 3),
                     replacement: "}".into(),
                 },
             ],
@@ -1401,9 +1525,9 @@ mod tests {
         let error = summary.syntax_errors.first().unwrap();
         assert_eq!(
             error.range,
-            TextRange::empty(fs.source(FileId(3)).len() as u32)
+            TextRange::empty(TextSize::of(fs.source(FileId(3))))
         );
-        assert_eq!(error.opening_range, Some(TextRange::new(9, 10)));
+        assert_eq!(error.opening_range, Some(TextRange::span(9, 10)));
         assert_eq!(error.applicability, Some(Applicability::MachineApplicable));
         assert_eq!(error.fix.as_ref().unwrap().replacement, "}");
 
@@ -1432,7 +1556,7 @@ mod tests {
             "building".into(),
             "castle".into(),
             FileId(0),
-            TextRange::new(0, 6),
+            TextRange::span(0, 6),
         );
         index.finalize(&fs);
         assert!(matches!(
@@ -1456,7 +1580,10 @@ mod tests {
         // A past-EOF range and a zero-width range must render without
         // panicking (Diagnostic fields are public, so callers can construct
         // any range).
-        for range in [TextRange::new(100, 200), TextRange::empty(3)] {
+        for range in [
+            TextRange::span(100, 200),
+            TextRange::empty(TextSize::new(3)),
+        ] {
             let d = Diagnostic {
                 id: lints::SYNTAX_ERROR,
                 severity: Severity::Error,
@@ -1475,9 +1602,9 @@ mod tests {
     fn line_col_follows_set_source() {
         let mut fs = Fileset::new();
         let id = fs.add("a.txt", FileKind::Vanilla, b"a = 1\nbb = 2\n".to_vec());
-        assert_eq!(fs.line_col(id, 9).to_string(), "2:4");
+        assert_eq!(fs.line_col(id, TextSize::new(9)).to_string(), "2:4");
         fs.set_source(id, b"bb = 2\n".to_vec());
-        assert_eq!(fs.line_col(id, 3).to_string(), "1:4");
+        assert_eq!(fs.line_col(id, TextSize::new(3)).to_string(), "1:4");
     }
 
     #[test]
@@ -1502,7 +1629,7 @@ mod tests {
         // The events file (FileId 2) references building `fortress`.
         let events = FileId(2);
         let fref = analysis
-            .reference_at(events, 35) // inside `fortress` (the add_building value)
+            .reference_at(events, TextSize::new(35)) // inside `fortress` (the add_building value)
             .expect("a reference under the cursor");
         assert_eq!(
             (fref.kind.as_str(), fref.name.as_str()),
@@ -1512,7 +1639,7 @@ mod tests {
         // Go-to-definition lands on the *winning* fortress definition, which lives
         // in the mod buildings file (FileId 1) — a jump no single-file view affords.
         let def = analysis
-            .definition_for(events, 35)
+            .definition_for(events, TextSize::new(35))
             .expect("a definition to jump to");
         assert_eq!(
             (def.kind.as_str(), def.name.as_str()),
@@ -1523,11 +1650,11 @@ mod tests {
 
         // An undefined reference (`baracks`, the typo) resolves to no definition.
         let baracks = analysis
-            .reference_at(events, 60)
+            .reference_at(events, TextSize::new(60))
             .filter(|r| r.name == "baracks")
             .expect("the baracks reference");
         assert_eq!(baracks.name, "baracks");
-        assert!(analysis.definition_for(events, 60).is_none());
+        assert!(analysis.definition_for(events, TextSize::new(60)).is_none());
     }
 
     #[test]
@@ -1537,7 +1664,7 @@ mod tests {
         // Cursor on the *vanilla* `temple` definition key (FileId 0, offset 2)
         // jumps to whichever `temple` actually wins — the mod override (FileId 1).
         let def = analysis
-            .definition_for(FileId(0), 2)
+            .definition_for(FileId(0), TextSize::new(2))
             .expect("temple resolves");
         assert_eq!(def.name, "temple");
         assert!(def.winner);
