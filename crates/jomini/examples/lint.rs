@@ -23,8 +23,9 @@
 //! ```
 
 use jomini::text::lint::{
-    FileKind, Fileset, Fix, Linter, Schema, Severity, apply_fixes, lints, render,
+    FileKind, Fileset, Linter, Schema, Severity, apply_repairs, lints, render,
 };
+use jomini::text::lossless::Repair;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -131,7 +132,7 @@ fn main() {
 }
 
 /// Group the fixes by file, show each as `old -> new` at its location, and —
-/// with `--write` — splice them into the file on disk via `apply_fixes`.
+/// with `--write` — splice them into the file on disk via `apply_repairs`.
 fn apply_and_report(
     fileset: &Fileset,
     diagnostics: &[jomini::text::lint::Diagnostic],
@@ -140,7 +141,7 @@ fn apply_and_report(
     dim: &str,
     reset: &str,
 ) {
-    let mut by_file: BTreeMap<_, Vec<&Fix>> = BTreeMap::new();
+    let mut by_file: BTreeMap<_, Vec<&Repair>> = BTreeMap::new();
     for d in diagnostics {
         if let Some(fix) = &d.fix {
             by_file.entry(d.file).or_default().push(fix);
@@ -157,13 +158,13 @@ fn apply_and_report(
         let src = fileset.source(*file);
         let path = fileset.path(*file);
         for f in fixes {
-            let at = fileset.line_col(*file, f.range.0);
-            let old = String::from_utf8_lossy(&src[f.range.0 as usize..f.range.1 as usize]);
+            let at = fileset.line_col(*file, f.range.start());
+            let old = String::from_utf8_lossy(&src[f.range.to_range()]);
             println!("  {}:{at}  `{old}` -> `{}`", path.display(), f.replacement);
         }
         if write {
-            let owned: Vec<Fix> = fixes.iter().map(|f| (*f).clone()).collect();
-            let fixed = apply_fixes(src, &owned);
+            let owned: Vec<Repair> = fixes.iter().map(|f| (*f).clone()).collect();
+            let fixed = apply_repairs(src, &owned);
             match std::fs::write(path, &fixed) {
                 Ok(()) => println!("  {dim}wrote {}{reset}", path.display()),
                 Err(e) => eprintln!("  failed to write {}: {e}", path.display()),
