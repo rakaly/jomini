@@ -7,7 +7,10 @@ use crate::{
     Encoding,
     text::{
         Operator,
-        lossless::{LineCol, LineIndex, SyntaxTree, TextRange, value::Value},
+        lossless::{
+            LineCol, LineIndex, SyntaxTree, TextRange,
+            value::{Value, ValueBuilder},
+        },
     },
 };
 use serde::de::{Deserialize, Error as _};
@@ -347,8 +350,7 @@ impl<'d, 'a, E: Encoding> ValueRef<'d, 'a, E> {
 
     /// Copy the value into an owned [`Value`].
     pub fn to_value(&self) -> Value {
-        self.deserialize::<Value>()
-            .expect("a tree always gives a value")
+        ValueBuilder::new(self.doc()).value(self.node)
     }
 
     /// The byte range of the value in the source.
