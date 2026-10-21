@@ -35,7 +35,7 @@
 
 mod fast;
 
-use super::{Flavor, Sink, SyntaxKind, Token, operator, run, strip_quotes};
+use super::{Flavor, Sink, SyntaxKind, Token, operator, run_items, strip_quotes};
 use crate::{Scalar, TextTape, TextToken, text::Operator};
 
 /// Parse `source` with the lossless grammar into a [`TextTape`].
@@ -58,11 +58,21 @@ use crate::{Scalar, TextTape, TextToken, text::Operator};
 /// let (_key, _op, value) = fields.next().unwrap();
 /// assert_eq!(value.read_array().unwrap().len(), 2);
 /// ```
+///
+/// # Panics
+///
+/// Panics if `source` is 4 GiB or larger, because the offsets are `u32`.
+#[must_use]
 pub fn parse_tape(source: &[u8]) -> TextTape<'_> {
     parse_tape_with(source, Flavor::default())
 }
 
 /// Parse `source` into a [`TextTape`] with a specific [`Flavor`].
+///
+/// # Panics
+///
+/// Panics if `source` is 4 GiB or larger, because the offsets are `u32`.
+#[must_use]
 pub fn parse_tape_with(source: &[u8], flavor: Flavor) -> TextTape<'_> {
     assert!(
         u32::try_from(source.len()).is_ok(),
@@ -72,13 +82,15 @@ pub fn parse_tape_with(source: &[u8], flavor: Flavor) -> TextTape<'_> {
     let tape = Vec::with_capacity(source.len() / 5);
     let level = fearless_simd::Level::new();
     let fast = fearless_simd::dispatch!(level, simd => fast::parse(simd, source, flavor, tape));
-    let mut tape = match fast {
+    let (mut tape, at) = match fast {
         Ok(tape) => return TextTape::from_parts(tape, bom),
-        Err(tape) => tape,
+        Err(stop) => stop,
     };
-    // The fast path stopped. Keep its memory for the full grammar.
-    tape.clear();
-    let p = run(source, flavor, TapeSink::new(source, tape));
+    // The fast path stopped. Keep the tape of the root items before the
+    // checkpoint, and continue with the full grammar from there.
+    tape.truncate(at.len);
+    let sink = TapeSink::resume(source, tape, at);
+    let p = run_items(source, flavor, at.pos, sink);
     TextTape::from_parts(p.sink.tape, bom)
 }
 
@@ -222,6 +234,17 @@ impl<'a> TapeSink<'a> {
             frames: Vec::with_capacity(16),
             skip: 0,
         }
+    }
+
+    /// Make a sink that has an open root node with the state of `at`. The
+    /// tape must hold the tokens before `at`.
+    fn resume(source: &'a [u8], tape: Vec<TextToken<'a>>, at: fast::Checkpoint) -> Self {
+        let mut sink = TapeSink::new(source, tape);
+        let mut root = Container::new(ContainerKind::Root, NO_OPEN, Shape::Object, OnEmpty::Keep);
+        root.mixed = at.mixed;
+        root.entries = u32::from(!at.empty);
+        sink.frames.push(Frame::Container(root));
+        sink
     }
 
     #[inline]
@@ -813,6 +836,7 @@ impl Sink for TapeSink<'_> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::run;
     use super::*;
     use quickcheck_macros::quickcheck;
 
@@ -822,6 +846,52 @@ mod tests {
             && fast::parse(fearless_simd::Fallback::new(), source, flavor, Vec::new())
                 .ok()
                 .is_none_or(|tape| tape == expected.sink.tape)
+            && resumes_match_grammar(source, flavor, &expected.sink.tape)
+    }
+
+    /// Continue the full grammar from each checkpoint of the fast path. The
+    /// result must be the same as the `expected` tape of a full parse.
+    fn resumes_match_grammar(source: &[u8], flavor: Flavor, expected: &[TextToken]) -> bool {
+        let (checkpoints, tape) = fast::checkpoints(source, flavor);
+        checkpoints.into_iter().all(|at| {
+            let prefix = &expected[..at.len.min(expected.len())];
+            if tape.get(..at.len) != Some(prefix) {
+                return false;
+            }
+            let sink = TapeSink::resume(source, prefix.to_vec(), at);
+            run_items(source, flavor, at.pos, sink).sink.tape == expected
+        })
+    }
+
+    #[test]
+    fn resume_after_root_block() {
+        let source = b"a={1} b={c=d} e=f [[x] g=h ] i={j}";
+        let (checkpoints, _) = fast::checkpoints(source, Flavor::default());
+        assert_eq!(checkpoints.len(), 3);
+        assert!(matches_grammar(source, Flavor::default()));
+        let source = b"\xef\xbb\xbfa b {1} c=d [[x] e=f ]";
+        assert!(matches_grammar(source, Flavor::default()));
+    }
+
+    /// The fast path reads these constructs from real saves. It does not
+    /// give them to the full grammar.
+    #[test]
+    fn fast_path_constructs() {
+        let sources: &[&[u8]] = &[
+            b"x={ y=\"hanafi_school\"\n{\n}\n1398.1.1={ a=b } }",
+            b"x={ y=\"a\" { 1 } z=w }",
+            b"needed={ { demand=pop masonry=0.1 }={ 1 2 3 } { a=b }={ 4 } }",
+            b"{ a=b }={ 1 } c=d",
+            b"x={ = } y={ a=b = c }",
+            b"a = $A$ { b } c = @v { d } e = $E$ { }",
+        ];
+        for source in sources {
+            for flavor in [Flavor::default(), Flavor::hoi4()] {
+                let fast = fast::parse(fearless_simd::Fallback::new(), source, flavor, Vec::new());
+                assert!(fast.is_ok(), "input: {}", String::from_utf8_lossy(source));
+                assert!(matches_grammar(source, flavor));
+            }
+        }
     }
 
     #[quickcheck]
@@ -864,6 +934,16 @@ mod tests {
             b"a=]=b",
             b"x={a=b",
             b"x={1 c={{} d=3} e=4}",
+            b"a=\"b\" {}",
+            b"a=\"b\" {1}",
+            b"x={a=\"b\" {c=d} e}",
+            b"{a=b}={1}",
+            b"x={{a=b}={1 2}}",
+            b"x={ = }",
+            b"a=b=c",
+            b"x=$v$ {}",
+            b"x={1 a=@v {2}}",
+            b"}",
         ];
         let mut source = Vec::new();
         for entry in entries {
@@ -936,6 +1016,8 @@ mod tests {
         same(b"foo = { color = rgb { 1 2 3 } }");
         same(b"foo = { rgb { 1 2 3 } }");
         same(b"foo = LIST { \"a\" \"b\" }");
+        same(b"a = $A$ { b }");
+        same(b"a = @v { b }");
     }
 
     #[test]
@@ -970,6 +1052,13 @@ mod tests {
     #[test]
     fn object_template() {
         same(b"obj = { { a = b } = { c = d } }");
+        same(b"needed = { { demand = pop } = { 1 2 } { a = b } = { 3 } }");
+    }
+
+    #[test]
+    fn quoted_value_before_block() {
+        // The form in an EU4 save.
+        same(b"x={\n\ty=\"hanafi_school\"\n{\n\t}\n\t1398.1.1={\n\t\ta=b\n\t}\n}");
     }
 
     #[test]

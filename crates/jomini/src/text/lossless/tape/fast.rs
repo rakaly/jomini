@@ -1,6 +1,6 @@
-//! Read ordinary fields and blocks directly into the tape. Return `None` for
-//! bracket constructs and recovery cases. The full grammar then reads the
-//! source again. Both paths use the same scalar and trivia scans.
+//! Read ordinary fields and blocks directly into the tape. Stop at bracket
+//! constructs and recovery cases. The full grammar then continues from the
+//! last checkpoint. Both paths use the same scalar and trivia scans.
 
 use super::{Flavor, Leaf, NO_OPEN, OnEmpty, Shape};
 use crate::{Scalar, TextToken};
@@ -8,31 +8,49 @@ use fearless_simd::Simd;
 
 use super::super::{
     BOM, CLASS, CLASS_BANG, CLASS_CLOSE_BRACE, CLASS_CLOSE_BRACKET, CLASS_COMMENT,
-    CLASS_OPEN_BRACE, CLASS_OPEN_BRACKET, CLASS_OPERATOR, CLASS_QUOTE, MAX_DEPTH, classify_run,
-    find_line_end, is_ws, scan_quoted, scan_unquoted, skip_whitespace, strip_quotes,
+    CLASS_OPEN_BRACE, CLASS_OPEN_BRACKET, CLASS_OPERATOR, CLASS_QUOTE, MAX_DEPTH, find_line_end,
+    is_ws, scan_quoted, scan_unquoted, skip_whitespace, strip_quotes,
 };
 
+/// The state between two root items. The full grammar can continue from this
+/// state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Checkpoint {
+    /// The byte offset after the last complete root item.
+    pub(super) pos: usize,
+    /// The tape length at `pos`. The tape before this length is complete.
+    pub(super) len: usize,
+    /// The root is mixed.
+    pub(super) mixed: bool,
+    /// The root has no entries.
+    pub(super) empty: bool,
+}
+
 /// Write the tape of `source` into `tape`, which must be empty. On `Err`, the
-/// tape has a partial result. Clear it and give it to the full grammar.
+/// tape has a partial result. Truncate it to the checkpoint length and give it
+/// to the full grammar.
 #[inline(always)]
 pub(super) fn parse<'a, S: Simd>(
     simd: S,
     source: &'a [u8],
     flavor: Flavor,
     tape: Vec<TextToken<'a>>,
-) -> Result<Vec<TextToken<'a>>, Vec<TextToken<'a>>> {
-    let mut p = Parser {
-        simd,
-        source,
-        flavor,
-        pos: if source.starts_with(BOM) { 3 } else { 0 },
-        tape,
-        stack: Vec::new(),
-    };
+) -> Result<Vec<TextToken<'a>>, (Vec<TextToken<'a>>, Checkpoint)> {
+    let mut p = Parser::new(simd, source, flavor, tape);
     match p.items() {
         Some(()) => Ok(p.tape),
-        None => Err(p.tape),
+        None => Err((p.tape, p.checkpoint)),
     }
+}
+
+/// Give each checkpoint that the fast path records for `source`, and the
+/// tape that it writes.
+#[cfg(test)]
+pub(super) fn checkpoints(source: &[u8], flavor: Flavor) -> (Vec<Checkpoint>, Vec<TextToken<'_>>) {
+    let mut p = Parser::new(fearless_simd::Fallback::new(), source, flavor, Vec::new());
+    p.log.push(p.checkpoint);
+    let _ = p.items();
+    (p.log, p.tape)
 }
 
 struct Container {
@@ -74,9 +92,33 @@ struct Parser<'a, S> {
     pos: usize,
     tape: Vec<TextToken<'a>>,
     stack: Vec<Container>,
+    /// The state after the last `}` at the root, or at the start.
+    checkpoint: Checkpoint,
+    #[cfg(test)]
+    log: Vec<Checkpoint>,
 }
 
 impl<'a, S: Simd> Parser<'a, S> {
+    fn new(simd: S, source: &'a [u8], flavor: Flavor, tape: Vec<TextToken<'a>>) -> Self {
+        let pos = if source.starts_with(BOM) { 3 } else { 0 };
+        Parser {
+            simd,
+            source,
+            flavor,
+            pos,
+            tape,
+            stack: Vec::new(),
+            checkpoint: Checkpoint {
+                pos,
+                len: 0,
+                mixed: false,
+                empty: true,
+            },
+            #[cfg(test)]
+            log: Vec::new(),
+        }
+    }
+
     #[inline(always)]
     fn trivia(&mut self) -> Option<u8> {
         loop {
@@ -143,6 +185,18 @@ impl<'a, S: Simd> Parser<'a, S> {
         let op = super::operator(&self.source[start..start + len])?;
         self.pos += len;
         Some(op)
+    }
+
+    /// Read an operator in item position, as in `{ a=b }={ c }`. The tape
+    /// has no token for it, but a block that has it is not empty. Return
+    /// `None` when no operator is at the position.
+    #[cold]
+    fn stray_operator(&mut self, current: &mut Container) -> Option<()> {
+        self.operator()?;
+        if current.open != NO_OPEN {
+            current.empty = false;
+        }
+        Some(())
     }
 
     #[inline(always)]
@@ -229,6 +283,18 @@ impl<'a, S: Simd> Parser<'a, S> {
             if b == b'}' {
                 self.pos += 1;
                 self.close(&mut current);
+                if self.stack.is_empty() {
+                    // A root item ends here. The grammar does not look back
+                    // past a `}`, thus it can continue from this position.
+                    self.checkpoint = Checkpoint {
+                        pos: self.pos,
+                        len: self.tape.len(),
+                        mixed: current.mixed,
+                        empty: current.empty,
+                    };
+                    #[cfg(test)]
+                    self.log.push(self.checkpoint);
+                }
                 next = self.trivia();
                 continue;
             }
@@ -258,7 +324,13 @@ impl<'a, S: Simd> Parser<'a, S> {
                 next = self.trivia();
                 continue;
             }
-            let key = self.scalar(b, true)?;
+            let start = self.pos;
+            let Some(key) = self.scalar(b, true) else {
+                self.pos = start;
+                self.stray_operator(&mut current)?;
+                next = self.trivia();
+                continue;
+            };
             current.entry(true);
             next = self.trivia();
             let op = self.operator();
@@ -297,16 +369,10 @@ impl<'a, S: Simd> Parser<'a, S> {
                     if next == Some(b'[') {
                         return None;
                     }
-                    if next == Some(b'{') {
-                        let Leaf::Unquoted(scalar) = value else {
-                            return None;
-                        };
-                        let text = scalar.as_bytes();
-                        if classify_run(text, text.contains(&b'$'), self.flavor)
-                            != super::SyntaxKind::Unquoted
-                        {
-                            return None;
-                        }
+                    if next == Some(b'{') && matches!(value, Leaf::Unquoted(_)) {
+                        // The grammar reads an unquoted scalar, a macro
+                        // parameter, and a variable before `{` as a header.
+                        // After a quoted value, the block is the next item.
                         let len = self.tape.len();
                         self.tape.push(if header_ok {
                             TextToken::Header(value.scalar())

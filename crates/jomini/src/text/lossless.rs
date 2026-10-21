@@ -23,17 +23,24 @@
 //! *between* two significant tokens. A cursor lexes such a gap again when it
 //! must show trivia. The gap between two tokens belongs to their nearest
 //! common ancestor node, so the cursors give a complete lossless tree. This
-//! layout is the same as the one that Carbon uses. Trivia is approximately 40%
-//! of all leaves in a save file, so the tree does not pay to store it.
+//! layout is similar to the one that Carbon uses, but Carbon keeps its nodes in
+//! post-order. Trivia is approximately 40% of all leaves in a save file, so the
+//! tree does not pay to store it.
 //!
-//! Offsets are absolute. Parent links are calculated only when a cursor asks
-//! for them. The [`SyntaxNode`]/[`SyntaxToken`] cursors are small `Copy` handles.
+//! Offsets are absolute [`TextSize`] values, and ranges are [`TextRange`]
+//! values. Parent links are calculated only when a cursor asks for them. The
+//! [`SyntaxNode`]/[`SyntaxToken`] cursors are small `Copy` handles. Because the
+//! nodes of a subtree are adjacent in pre-order, [`SyntaxNode::descendants`],
+//! [`SyntaxNode::preorder`], and the sibling queries do not allocate.
+//! [`SyntaxTree::token_at_offset`] and [`SyntaxTree::covering_element`] find
+//! the element at a position with a binary search.
 //!
 //! The tree holds only offsets, not the source. A [`Parse`] holds the tree
-//! and a source of any type that gives bytes: `&[u8]`, `Vec<u8>`, `Arc<[u8]>`,
-//! or a memory map. Thus the caller decides who owns the bytes, and the parser
-//! does not copy them. The [`SyntaxTree`] view and the cursors have two
-//! lifetimes: `'t` for the tree and `'a` for the source.
+//! and the source, and the parser does not copy the source. [`parse`] borrows
+//! the bytes, so the text of each token has the lifetime of the source and can
+//! outlive the `Parse`. [`Parse::owned`] keeps an [`OwnedSource`] such as a
+//! `Vec<u8>` or an `Arc<[u8]>`. The [`SyntaxTree`] view and the cursors have
+//! two lifetimes: `'t` for the tree and `'a` for the source.
 //!
 //! # Parsing
 //!
@@ -82,13 +89,13 @@
 //! discovered_by = { western eastern }
 //! trigger = { num_of_cities >= 5 }
 //! ";
-//! let parse = parse(&source[..]);
+//! let parse = parse(source);
 //! assert!(parse.errors().is_empty());
 //!
 //! let root = parse.ast();
 //! let field = |key: &[u8]| {
 //!     root.fields()
-//!         .find(|f| f.key().is_some_and(|k| k.text() == key))
+//!         .find(|f| f.key().as_scalar().as_bytes() == key)
 //!         .unwrap()
 //! };
 //!
@@ -111,22 +118,35 @@
 //! use jomini::text::lossless::{parse, Value};
 //!
 //! let source = b"# Set by the history file\nbase_tax = 3 # was 2\nbase_production = 2\n";
-//! let parse = parse(&source[..]);
+//! let parse = parse(source);
 //! let field = parse
 //!     .ast()
 //!     .fields()
-//!     .find(|f| f.key().is_some_and(|k| k.text() == b"base_tax"))
+//!     .find(|f| f.key().as_scalar().as_bytes() == b"base_tax")
 //!     .unwrap();
 //! let Some(Value::Scalar(token)) = field.value() else {
 //!     panic!("expected a scalar");
 //! };
 //!
 //! let mut edited = source.to_vec();
-//! edited.splice(token.text_range().to_range(), b"5".iter().copied());
+//! edited.splice(token.text_range().to_range(), *b"5");
 //! assert_eq!(
 //!     edited,
 //!     b"# Set by the history file\nbase_tax = 5 # was 2\nbase_production = 2\n"
 //! );
+//! ```
+//!
+//! # Debugging
+//!
+//! [`SyntaxTree::debug_tree`] shows the tree with the kind and the byte range
+//! of each node and token. The `lossless` example prints it for a file or for
+//! stdin, and it can also print the tokens, the formatted file, and the
+//! syntax errors at their line and column:
+//!
+//! ```sh
+//! printf 'building = { cost = 100 } # wood\n' | cargo run --features lossless --example lossless -- --tree --no-trivia
+//! cargo run --features lossless --example lossless -- --tokens --no-trivia FILE
+//! cargo run --features lossless --example lossless -- --help
 //! ```
 //!
 //! [`TextTape`]: crate::TextTape
@@ -136,6 +156,7 @@
 use crate::{Encoding, Scalar, text::Operator};
 use fearless_simd::{Level, Simd, dispatch, mask8x16, prelude::*, u8x16};
 use std::borrow::Cow;
+use std::fmt;
 use std::sync::OnceLock;
 
 mod line_index;
@@ -331,60 +352,218 @@ impl SyntaxKind {
 // Text ranges
 // ---------------------------------------------------------------------------
 
-/// A half-open byte range `start..end` in the source.
+/// A byte offset in the source.
 ///
-/// Use [`to_range`](TextRange::to_range) to get the bytes of the range from
-/// the source:
+/// The offset is a `u32`, so a source must be smaller than 4 GiB. Use
+/// [`TextSize::to_usize`] or `usize::from` to index the source.
 ///
 /// ```
-/// use jomini::text::lossless::parse;
+/// use jomini::text::lossless::TextSize;
 ///
-/// let source = b"name = Jean";
-/// let parse = parse(&source[..]);
-/// let key = parse.ast().fields().next().unwrap().key().unwrap();
-/// let range = key.text_range();
-/// assert_eq!((range.start(), range.end()), (0, 4));
-/// assert_eq!(&source[range.to_range()], b"name");
+/// let start = TextSize::new(4);
+/// let end = start + TextSize::of(b"name");
+/// assert_eq!(u32::from(end), 8);
+/// assert_eq!(end.to_string(), "8");
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
+pub struct TextSize(u32);
+
+impl TextSize {
+    /// Make an offset from a raw `u32`.
+    #[inline]
+    pub const fn new(offset: u32) -> Self {
+        TextSize(offset)
+    }
+
+    /// The length of `bytes` as an offset.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bytes` is 4 GiB or larger.
+    #[inline]
+    pub fn of(bytes: &[u8]) -> Self {
+        match u32::try_from(bytes.len()) {
+            Ok(len) => TextSize(len),
+            Err(_) => panic!("text is larger than 4 GiB"),
+        }
+    }
+
+    /// The offset as a `u32`.
+    #[inline]
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
+
+    /// The offset as a `usize`, to index the source.
+    #[inline]
+    pub const fn to_usize(self) -> usize {
+        self.0 as usize
+    }
+
+    /// Add `other`, or return `None` on overflow.
+    #[inline]
+    pub const fn checked_add(self, other: TextSize) -> Option<TextSize> {
+        match self.0.checked_add(other.0) {
+            Some(sum) => Some(TextSize(sum)),
+            None => None,
+        }
+    }
+
+    /// Subtract `other`, or return `None` when `other` is larger.
+    #[inline]
+    pub const fn checked_sub(self, other: TextSize) -> Option<TextSize> {
+        match self.0.checked_sub(other.0) {
+            Some(diff) => Some(TextSize(diff)),
+            None => None,
+        }
+    }
+}
+
+impl fmt::Display for TextSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<u32> for TextSize {
+    #[inline]
+    fn from(offset: u32) -> Self {
+        TextSize(offset)
+    }
+}
+
+impl From<TextSize> for u32 {
+    #[inline]
+    fn from(size: TextSize) -> Self {
+        size.0
+    }
+}
+
+impl From<TextSize> for usize {
+    #[inline]
+    fn from(size: TextSize) -> Self {
+        size.to_usize()
+    }
+}
+
+impl TryFrom<usize> for TextSize {
+    type Error = std::num::TryFromIntError;
+
+    #[inline]
+    fn try_from(offset: usize) -> Result<Self, Self::Error> {
+        u32::try_from(offset).map(TextSize)
+    }
+}
+
+impl std::ops::Add for TextSize {
+    type Output = TextSize;
+
+    /// # Panics
+    ///
+    /// Panics on overflow when debug assertions are on, the same as `u32`.
+    #[inline]
+    fn add(self, rhs: TextSize) -> TextSize {
+        TextSize(self.0 + rhs.0)
+    }
+}
+
+impl std::ops::Sub for TextSize {
+    type Output = TextSize;
+
+    #[inline]
+    fn sub(self, rhs: TextSize) -> TextSize {
+        TextSize(self.0 - rhs.0)
+    }
+}
+
+impl std::ops::AddAssign for TextSize {
+    #[inline]
+    fn add_assign(&mut self, rhs: TextSize) {
+        self.0 += rhs.0;
+    }
+}
+
+impl std::ops::SubAssign for TextSize {
+    #[inline]
+    fn sub_assign(&mut self, rhs: TextSize) {
+        self.0 -= rhs.0;
+    }
+}
+
+/// A half-open byte range `start..end` in the source.
+///
+/// Index the source with the range to get its bytes:
+///
+/// ```
+/// use jomini::text::lossless::{parse, TextRange, TextSize};
+///
+/// let source = b"name = Jean";
+/// let parse = parse(source);
+/// let key = parse.ast().fields().next().unwrap().key();
+/// let range = key.text_range();
+/// assert_eq!(range, TextRange::new(TextSize::new(0), TextSize::new(4)));
+/// assert_eq!(&source[range], b"name");
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct TextRange {
     start: u32,
     end: u32,
 }
 
 impl TextRange {
-    /// Make a range. `start` must not be greater than `end`.
+    /// Make a range.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `start` is greater than `end`.
     #[inline]
-    pub const fn new(start: u32, end: u32) -> Self {
-        assert!(start <= end, "range start is greater than range end");
-        TextRange { start, end }
+    pub const fn new(start: TextSize, end: TextSize) -> Self {
+        assert!(start.0 <= end.0, "range start is greater than range end");
+        TextRange {
+            start: start.0,
+            end: end.0,
+        }
+    }
+
+    /// Make a range of `len` bytes at `offset`.
+    #[inline]
+    pub const fn at(offset: TextSize, len: TextSize) -> Self {
+        TextRange::new(offset, TextSize(offset.0 + len.0))
     }
 
     /// Make a zero-width range at `offset`.
     #[inline]
-    pub const fn empty(offset: u32) -> Self {
+    pub const fn empty(offset: TextSize) -> Self {
         TextRange {
-            start: offset,
-            end: offset,
+            start: offset.0,
+            end: offset.0,
         }
+    }
+
+    /// Make a range from raw offsets. The caller makes sure that
+    /// `start <= end`.
+    #[inline]
+    pub(crate) const fn span(start: u32, end: u32) -> Self {
+        debug_assert!(start <= end);
+        TextRange { start, end }
     }
 
     /// The first byte offset of the range.
     #[inline]
-    pub const fn start(self) -> u32 {
-        self.start
+    pub const fn start(self) -> TextSize {
+        TextSize(self.start)
     }
 
     /// The byte offset after the last byte of the range.
     #[inline]
-    pub const fn end(self) -> u32 {
-        self.end
+    pub const fn end(self) -> TextSize {
+        TextSize(self.end)
     }
 
     /// The number of bytes in the range.
     #[inline]
-    pub const fn len(self) -> u32 {
-        self.end - self.start
+    pub const fn len(self) -> TextSize {
+        TextSize(self.end - self.start)
     }
 
     /// Return `true` when the range has no bytes.
@@ -395,14 +574,14 @@ impl TextRange {
 
     /// Return `true` when `offset` is in `start..end`.
     #[inline]
-    pub const fn contains(self, offset: u32) -> bool {
-        self.start <= offset && offset < self.end
+    pub const fn contains(self, offset: TextSize) -> bool {
+        self.start <= offset.0 && offset.0 < self.end
     }
 
     /// Return `true` when `offset` is in `start..=end`.
     #[inline]
-    pub const fn contains_inclusive(self, offset: u32) -> bool {
-        self.start <= offset && offset <= self.end
+    pub const fn contains_inclusive(self, offset: TextSize) -> bool {
+        self.start <= offset.0 && offset.0 <= self.end
     }
 
     /// Return `true` when `other` is fully inside this range.
@@ -411,17 +590,55 @@ impl TextRange {
         self.start <= other.start && other.end <= self.end
     }
 
+    /// The smallest range that contains this range and `other`.
+    ///
+    /// ```
+    /// use jomini::text::lossless::{TextRange, TextSize};
+    ///
+    /// let a = TextRange::at(TextSize::new(2), TextSize::new(3));
+    /// let b = TextRange::empty(TextSize::new(9));
+    /// assert_eq!(a.cover(b).to_string(), "2..9");
+    /// ```
+    #[inline]
+    pub const fn cover(self, other: TextRange) -> TextRange {
+        let start = if self.start < other.start {
+            self.start
+        } else {
+            other.start
+        };
+        let end = if self.end > other.end {
+            self.end
+        } else {
+            other.end
+        };
+        TextRange { start, end }
+    }
+
+    /// The bytes that are in both ranges, or `None` when the ranges have no
+    /// common offset. Two ranges that only touch give an empty range.
+    #[inline]
+    pub const fn intersect(self, other: TextRange) -> Option<TextRange> {
+        let start = if self.start > other.start {
+            self.start
+        } else {
+            other.start
+        };
+        let end = if self.end < other.end {
+            self.end
+        } else {
+            other.end
+        };
+        if start <= end {
+            Some(TextRange { start, end })
+        } else {
+            None
+        }
+    }
+
     /// The range as a `usize` range, to index the source.
     #[inline]
     pub const fn to_range(self) -> std::ops::Range<usize> {
         self.start as usize..self.end as usize
-    }
-}
-
-impl From<TextRange> for (u32, u32) {
-    #[inline]
-    fn from(range: TextRange) -> Self {
-        (range.start, range.end)
     }
 }
 
@@ -432,9 +649,35 @@ impl From<TextRange> for std::ops::Range<usize> {
     }
 }
 
-impl std::fmt::Display for TextRange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::ops::Index<TextRange> for [u8] {
+    type Output = [u8];
+
+    #[inline]
+    fn index(&self, range: TextRange) -> &[u8] {
+        &self[range.to_range()]
+    }
+}
+
+impl std::ops::Index<TextRange> for str {
+    type Output = str;
+
+    #[inline]
+    fn index(&self, range: TextRange) -> &str {
+        &self[range.to_range()]
+    }
+}
+
+/// Write the range as `start..end`.
+impl fmt::Display for TextRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}..{}", self.start, self.end)
+    }
+}
+
+/// Write the range as `start..end`, the same as [`Display`](fmt::Display).
+impl fmt::Debug for TextRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -480,22 +723,57 @@ pub struct Flavor {
 
 impl Default for Flavor {
     fn default() -> Self {
-        Flavor {
-            newline_terminated_strings: false,
-            variables: true,
-            macros: true,
-        }
+        Flavor::DEFAULT
     }
 }
 
 impl Flavor {
+    /// The permissive superset. This is the same as [`Flavor::default`].
+    pub const DEFAULT: Flavor = Flavor {
+        newline_terminated_strings: false,
+        variables: true,
+        macros: true,
+    };
+
     /// Hearts of Iron IV: newline-terminated strings, no `@vars`/`$macros$`.
-    pub fn hoi4() -> Self {
+    pub const fn hoi4() -> Self {
         Flavor {
             newline_terminated_strings: true,
             variables: false,
             macros: false,
         }
+    }
+
+    /// Set [`newline_terminated_strings`](Flavor::newline_terminated_strings).
+    ///
+    /// The struct is `#[non_exhaustive]`, so other crates cannot use the
+    /// struct update syntax. Use these methods to change one field:
+    ///
+    /// ```
+    /// use jomini::text::lossless::Flavor;
+    ///
+    /// const FLAVOR: Flavor = Flavor::DEFAULT.with_macros(false);
+    /// assert!(!FLAVOR.macros);
+    /// assert!(FLAVOR.variables);
+    /// ```
+    #[must_use]
+    pub const fn with_newline_terminated_strings(mut self, value: bool) -> Self {
+        self.newline_terminated_strings = value;
+        self
+    }
+
+    /// Set [`variables`](Flavor::variables).
+    #[must_use]
+    pub const fn with_variables(mut self, value: bool) -> Self {
+        self.variables = value;
+        self
+    }
+
+    /// Set [`macros`](Flavor::macros).
+    #[must_use]
+    pub const fn with_macros(mut self, value: bool) -> Self {
+        self.macros = value;
+        self
     }
 }
 
@@ -521,7 +799,7 @@ impl Token {
 
     #[inline]
     fn range(self) -> TextRange {
-        TextRange::new(self.start, self.end())
+        TextRange::span(self.start, self.end())
     }
 }
 
@@ -642,6 +920,19 @@ impl Lexer {
         }
     }
 
+    /// Make a lexer that starts at the byte `offset`. A token or the trivia
+    /// before a token must start at `offset`.
+    fn at(source: &[u8], flavor: Flavor, offset: usize) -> Self {
+        Lexer {
+            level: Level::new(),
+            flavor,
+            offset,
+            flags: 0,
+            done: offset >= source.len(),
+            unclosed_quote: None,
+        }
+    }
+
     /// Append at least `min` tokens to `out`, or all the remaining tokens.
     #[inline(never)]
     fn fill(&mut self, source: &[u8], out: &mut Vec<Token>, min: usize) {
@@ -668,7 +959,7 @@ impl Lexer {
             && t.kind == SyntaxKind::Quoted
             && t.flags & TOKEN_ERROR != 0
         {
-            self.unclosed_quote = Some(TextRange::new(t.start, t.start + 1));
+            self.unclosed_quote = Some(TextRange::span(t.start, t.start + 1));
         }
     }
 
@@ -1100,8 +1391,9 @@ fn lex_calc<S: Simd>(
             i = scan_number(source, i);
             kind = SyntaxKind::Number;
         } else {
-            // An operand identifier (`tier`, `leopard_x`, `@var`) — or, in
-            // malformed input, any other non-stop byte. Always consumes >= 1.
+            // An operand name, as in `tier`, `leopard_x` or `@var`. In
+            // incorrect input, this is any other byte that is not a stop
+            // byte. This branch always consumes one or more bytes.
             i += 1;
             while i < n && !is_calc_stop(source[i]) {
                 i += 1;
@@ -1202,8 +1494,8 @@ impl SyntaxErrorKind {
     }
 }
 
-impl std::fmt::Display for SyntaxErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for SyntaxErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.message())
     }
 }
@@ -1241,8 +1533,8 @@ impl SyntaxError {
     }
 }
 
-impl std::fmt::Display for SyntaxError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for SyntaxError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} at {}", self.message(), self.range)
     }
 }
@@ -1313,10 +1605,12 @@ pub struct Repair {
 /// error, a calc, or a macro parameter. You do not have to walk the subtree.
 /// swift-syntax (`RecursiveRawSyntaxFlags`) and Carbon (`has_error`) use the
 /// same method.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct NodeFlags(u8);
 
 impl NodeFlags {
+    /// No bits.
+    pub const EMPTY: NodeFlags = NodeFlags(0);
     /// The subtree contains at least one [`SyntaxKind::Comment`].
     pub const HAS_COMMENT: NodeFlags = NodeFlags(1 << 0);
     /// The subtree contains a syntax error or recovery element.
@@ -1327,12 +1621,45 @@ impl NodeFlags {
     pub const HAS_MACRO: NodeFlags = NodeFlags(1 << 3);
 
     /// Whether every bit set in `other` is also set in `self`.
-    pub fn contains(self, other: NodeFlags) -> bool {
+    pub const fn contains(self, other: NodeFlags) -> bool {
         self.0 & other.0 == other.0
+    }
+
+    /// Whether at least one bit set in `other` is also set in `self`.
+    ///
+    /// ```
+    /// use jomini::text::lossless::{parse, NodeFlags};
+    ///
+    /// let parse = parse(b"a = { b = $B$ }");
+    /// let flags = parse.root().flags();
+    /// assert!(flags.intersects(NodeFlags::HAS_CALC | NodeFlags::HAS_MACRO));
+    /// assert!(!flags.contains(NodeFlags::HAS_CALC | NodeFlags::HAS_MACRO));
+    /// ```
+    pub const fn intersects(self, other: NodeFlags) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    /// Whether no bit is set.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
     }
 
     fn insert(&mut self, other: NodeFlags) {
         self.0 |= other.0;
+    }
+}
+
+impl std::ops::BitOr for NodeFlags {
+    type Output = NodeFlags;
+
+    fn bitor(self, rhs: NodeFlags) -> NodeFlags {
+        NodeFlags(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for NodeFlags {
+    fn bitor_assign(&mut self, rhs: NodeFlags) {
+        self.insert(rhs);
     }
 }
 
@@ -1394,10 +1721,17 @@ struct TreeData {
 
 /// A source and its lossless syntax tree.
 ///
-/// The source type `S` decides who owns the bytes. A `Parse<&[u8]>` borrows
-/// them. A `Parse<Vec<u8>>` or a `Parse<Arc<[u8]>>` owns them, so you can keep
-/// it in a struct, a cache, or a map, or send it to a different thread. The
-/// parser does not copy the source.
+/// The source type `S` decides who owns the bytes, and the parser does not
+/// copy them:
+///
+/// - [`parse`] borrows the bytes and gives a `Parse<&[u8]>`. The text of its
+///   tokens has the lifetime of the source, so the text can outlive the
+///   `Parse`.
+/// - [`Parse::owned`] takes an [`OwnedSource`], such as a `Vec<u8>`, an
+///   `Arc<[u8]>`, or a different buffer type in [`Owned`]. You can keep such
+///   a `Parse` in a struct, a cache, or a map,
+///   or send it to a different thread. The text of its tokens borrows the
+///   `Parse`.
 ///
 /// Use [`tree`](Parse::tree) to get the [`SyntaxTree`] view. The methods of
 /// the view are also available on the `Parse`.
@@ -1406,8 +1740,15 @@ struct TreeData {
 /// use jomini::text::lossless::{parse, Parse};
 /// use std::sync::Arc;
 ///
+/// // The keys borrow the source, not the parse.
+/// fn keys(source: &[u8]) -> Vec<&[u8]> {
+///     let parse = parse(source);
+///     parse.ast().fields().map(|f| f.key().text()).collect()
+/// }
+/// assert_eq!(keys(b"a = 1 b = 2"), [&b"a"[..], &b"b"[..]]);
+///
 /// let source: Arc<[u8]> = Arc::from(&b"a = 1"[..]);
-/// let parse: Parse<Arc<[u8]>> = parse(source);
+/// let parse: Parse<Arc<[u8]>> = Parse::owned(source);
 /// assert_eq!(parse.root().children().count(), 1);
 /// assert!(parse.errors().is_empty());
 /// ```
@@ -1415,6 +1756,64 @@ struct TreeData {
 pub struct Parse<S> {
     source: S,
     data: TreeData,
+}
+
+/// A source that a [`Parse`] owns.
+///
+/// The bytes from [`AsRef::as_ref`] must be the same for each call. If they
+/// change, the tree does not match them: the cursors can then give wrong text
+/// or panic, but they do not cause undefined behavior.
+///
+/// To parse a memory map or a different buffer type, put it in [`Owned`], or
+/// parse a borrowed slice with [`parse`].
+pub trait OwnedSource: AsRef<[u8]> {}
+
+impl OwnedSource for Vec<u8> {}
+impl OwnedSource for Box<[u8]> {}
+impl OwnedSource for String {}
+impl OwnedSource for std::sync::Arc<[u8]> {}
+impl OwnedSource for std::rc::Rc<[u8]> {}
+impl OwnedSource for Cow<'static, [u8]> {}
+impl<T: AsRef<[u8]>> OwnedSource for Owned<T> {}
+
+/// An [`OwnedSource`] for any buffer type that gives bytes, such as a memory
+/// map.
+///
+/// `OwnedSource` does not have an implementation for each `AsRef<[u8]>` type,
+/// because a borrowed `&[u8]` is also such a type, and [`parse`] gives the
+/// borrowed tree. This wrapper selects the owned tree for a different type.
+///
+/// ```
+/// use jomini::text::lossless::{Owned, Parse};
+///
+/// // A buffer type from a different crate, such as `memmap2::Mmap`.
+/// struct Buffer(Vec<u8>);
+/// impl AsRef<[u8]> for Buffer {
+///     fn as_ref(&self) -> &[u8] {
+///         &self.0
+///     }
+/// }
+///
+/// let parse: Parse<Owned<Buffer>> = Parse::owned(Owned(Buffer(b"a = 1".to_vec())));
+/// assert_eq!(parse.ast().fields().count(), 1);
+/// let Owned(buffer) = parse.into_source();
+/// assert_eq!(buffer.0, b"a = 1");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Owned<T>(pub T);
+
+impl<T> Owned<T> {
+    /// Return the buffer.
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T: AsRef<[u8]>> AsRef<[u8]> for Owned<T> {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
 }
 
 /// A view of a lossless syntax tree and its source bytes.
@@ -1430,6 +1829,9 @@ pub struct SyntaxTree<'t, 'a> {
 
 /// Parse `source` into a lossless syntax tree using the permissive superset.
 ///
+/// The tree borrows `source`. Use [`Parse::owned`] to give the source to the
+/// tree.
+///
 /// ```
 /// use jomini::text::lossless::parse;
 ///
@@ -1437,24 +1839,117 @@ pub struct SyntaxTree<'t, 'a> {
 /// let keys: Vec<&[u8]> = parse
 ///     .ast()
 ///     .fields()
-///     .filter_map(|f| f.key())
-///     .map(|k| k.text())
+///     .map(|f| f.key().text())
 ///     .collect();
 /// assert_eq!(keys, [&b"owner"[..], &b"controller"[..]]);
 /// ```
-pub fn parse<S: AsRef<[u8]>>(source: S) -> Parse<S> {
+///
+/// # Panics
+///
+/// Panics if `source` is 4 GiB or larger, because the offsets are `u32`.
+#[must_use]
+pub fn parse(source: &[u8]) -> Parse<&[u8]> {
     parse_with(source, Flavor::default())
 }
 
 /// Parse `source` into a lossless syntax tree with a specific [`Flavor`].
-pub fn parse_with<S: AsRef<[u8]>>(source: S, flavor: Flavor) -> Parse<S> {
-    let data = parse_data(source.as_ref(), flavor);
+///
+/// # Panics
+///
+/// Panics if `source` is 4 GiB or larger, because the offsets are `u32`.
+#[must_use]
+pub fn parse_with(source: &[u8], flavor: Flavor) -> Parse<&[u8]> {
+    let data = parse_data(source, flavor);
     Parse { source, data }
 }
 
-impl<S: AsRef<[u8]>> Parse<S> {
-    /// The [`SyntaxTree`] view of the tree and the source.
+impl<S: OwnedSource> Parse<S> {
+    /// Parse `source` and keep it in the `Parse`, with the permissive
+    /// superset.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `source` is 4 GiB or larger, because the offsets are `u32`.
+    #[must_use]
+    pub fn owned(source: S) -> Self {
+        Parse::owned_with(source, Flavor::default())
+    }
+
+    /// Parse `source` and keep it in the `Parse`, with a specific [`Flavor`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `source` is 4 GiB or larger, because the offsets are `u32`.
+    #[must_use]
+    pub fn owned_with(source: S, flavor: Flavor) -> Self {
+        let data = parse_data(source.as_ref(), flavor);
+        Parse { source, data }
+    }
+}
+
+/// The methods that give cursors. A borrowed source gives cursors whose text
+/// has the lifetime `$a` of the source. An owned source gives cursors that
+/// borrow the `Parse`.
+macro_rules! parse_cursors {
+    ($a:lifetime) => {
+        /// See [`SyntaxTree::root`].
+        pub fn root(&self) -> SyntaxNode<'_, $a> {
+            self.tree().root()
+        }
+
+        /// See [`SyntaxTree::ast`].
+        pub fn ast(&self) -> Root<'_, $a> {
+            self.tree().ast()
+        }
+
+        /// See [`SyntaxTree::tokens`].
+        pub fn tokens(&self) -> Tokens<'_, $a> {
+            self.tree().tokens()
+        }
+
+        /// See [`SyntaxTree::significant_tokens`].
+        pub fn significant_tokens(&self) -> impl Iterator<Item = SyntaxToken<'_, $a>> {
+            self.tree().significant_tokens()
+        }
+
+        /// See [`SyntaxTree::token_at_offset`].
+        pub fn token_at_offset(&self, offset: TextSize) -> TokenAtOffset<SyntaxToken<'_, $a>> {
+            self.tree().token_at_offset(offset)
+        }
+
+        /// See [`SyntaxTree::covering_element`].
+        pub fn covering_element(&self, range: TextRange) -> SyntaxElement<'_, $a> {
+            self.tree().covering_element(range)
+        }
+    };
+}
+
+impl<'a> Parse<&'a [u8]> {
+    /// The [`SyntaxTree`] view of the tree and the source. The text of the
+    /// view has the lifetime `'a` of the source.
+    pub fn tree(&self) -> SyntaxTree<'_, 'a> {
+        SyntaxTree {
+            data: &self.data,
+            source: self.source,
+        }
+    }
+
+    parse_cursors!('a);
+}
+
+impl<S: OwnedSource> Parse<S> {
+    /// The [`SyntaxTree`] view of the tree and the source. The view borrows
+    /// the `Parse`.
     pub fn tree(&self) -> SyntaxTree<'_, '_> {
+        self.view()
+    }
+
+    parse_cursors!('_);
+}
+
+impl<S: AsRef<[u8]>> Parse<S> {
+    /// The view for the methods that do not give cursors.
+    fn view(&self) -> SyntaxTree<'_, '_> {
         SyntaxTree {
             data: &self.data,
             source: self.source.as_ref(),
@@ -1471,16 +1966,6 @@ impl<S: AsRef<[u8]>> Parse<S> {
         self.source
     }
 
-    /// See [`SyntaxTree::root`].
-    pub fn root(&self) -> SyntaxNode<'_, '_> {
-        self.tree().root()
-    }
-
-    /// See [`SyntaxTree::ast`].
-    pub fn ast(&self) -> Root<'_, '_> {
-        self.tree().ast()
-    }
-
     /// See [`SyntaxTree::errors`].
     pub fn errors(&self) -> &[SyntaxError] {
         &self.data.errors
@@ -1488,43 +1973,34 @@ impl<S: AsRef<[u8]>> Parse<S> {
 
     /// See [`SyntaxTree::repair_applicability`].
     pub fn repair_applicability(&self, delimiter: &MissingDelimiter) -> Applicability {
-        self.tree().repair_applicability(delimiter)
+        self.view().repair_applicability(delimiter)
     }
 
     /// See [`SyntaxTree::repairs`].
     pub fn repairs(&self) -> Vec<Repair> {
-        self.tree().repairs()
+        self.view().repairs()
     }
 
     /// See [`SyntaxTree::repaired_source`].
+    #[must_use]
     pub fn repaired_source(&self) -> Vec<u8> {
-        self.tree().repaired_source()
-    }
-
-    /// See [`SyntaxTree::tokens`].
-    pub fn tokens(&self) -> Tokens<'_, '_> {
-        self.tree().tokens()
-    }
-
-    /// See [`SyntaxTree::significant_tokens`].
-    pub fn significant_tokens(&self) -> impl Iterator<Item = SyntaxToken<'_, '_>> {
-        self.tree().significant_tokens()
+        self.view().repaired_source()
     }
 
     /// See [`SyntaxTree::reconstruct`].
     #[cfg(test)]
     pub fn reconstruct(&self) -> Vec<u8> {
-        self.tree().reconstruct()
+        self.view().reconstruct()
     }
 
     /// See [`SyntaxTree::debug_tree`].
     pub fn debug_tree(&self) -> String {
-        self.tree().debug_tree()
+        self.view().debug_tree()
     }
 
     /// See [`SyntaxTree::format`].
     pub fn format(&self, opts: &FormatOptions) -> Vec<u8> {
-        self.tree().format(opts)
+        self.view().format(opts)
     }
 }
 
@@ -1558,7 +2034,7 @@ fn run<S: Sink>(source: &[u8], flavor: Flavor, sink: S) -> Parser<'_, S> {
         u32::try_from(source.len()).is_ok(),
         "source is larger than 4 GiB"
     );
-    let mut p = Parser::new(source, flavor, sink);
+    let mut p = Parser::new(source, Lexer::new(source, flavor), sink);
     p.sink.start_node(SyntaxKind::Root);
     p.parse_items(false);
     if S::KEEP_TOKENS
@@ -1570,6 +2046,18 @@ fn run<S: Sink>(source: &[u8], flavor: Flavor, sink: S) -> Parser<'_, S> {
             recovery: None,
         });
     }
+    p.sink.finish_node();
+    p
+}
+
+/// Send the events of the grammar for the root items that start at the byte
+/// `offset` to `sink`. The sink must have an open root node, with the state
+/// that it has at `offset` in a full parse. The parser does not have the
+/// tokens before `offset`, thus the grammar must not look back at them. This
+/// is true after a `}` token. The diagnostics are not complete.
+fn run_items<S: Sink>(source: &[u8], flavor: Flavor, offset: usize, sink: S) -> Parser<'_, S> {
+    let mut p = Parser::new(source, Lexer::at(source, flavor, offset), sink);
+    p.parse_items(false);
     p.sink.finish_node();
     p
 }
@@ -1611,12 +2099,12 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     /// An editor can show each repair as a quick fix:
     ///
     /// ```
-    /// use jomini::text::lossless::parse;
+    /// use jomini::text::lossless::{parse, TextSize};
     ///
     /// let parse = parse(b"country = { tag = FRA");
     /// let repairs = parse.repairs();
     /// assert_eq!(repairs.len(), 1);
-    /// assert_eq!(repairs[0].range.start(), 21);
+    /// assert_eq!(repairs[0].range.start(), TextSize::new(21));
     /// assert_eq!(repairs[0].replacement, "}");
     /// ```
     pub fn repairs(&self) -> Vec<Repair> {
@@ -1634,6 +2122,7 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     /// let parse = parse(b"country = { tag = FRA # unclosed");
     /// assert_eq!(parse.repaired_source(), b"country = { tag = FRA # unclosed\n}");
     /// ```
+    #[must_use]
     pub fn repaired_source(&self) -> Vec<u8> {
         apply_repairs(self.source, self.repairs())
     }
@@ -1641,11 +2130,19 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     fn repairs_valid(&self) -> bool {
         *self.data.repairs_valid.get_or_init(|| {
             let candidate = apply_repairs(self.source, self.local_fixes());
-            candidate == self.source
-                || !parse_data(&candidate, self.data.flavor)
-                    .errors
-                    .iter()
-                    .any(|error| error.recovery.is_some())
+            // The parser cannot read a source of 4 GiB or more.
+            if u32::try_from(candidate.len()).is_err() {
+                return false;
+            }
+            if candidate == self.source {
+                return true;
+            }
+            // The repairs must remove every missing delimiter and must not
+            // add a different error.
+            let errors = &self.data.errors;
+            let kept = errors.iter().filter(|e| e.recovery.is_none()).count();
+            let reparsed = parse_data(&candidate, self.data.flavor).errors;
+            reparsed.len() <= kept && reparsed.iter().all(|e| e.recovery.is_none())
         })
     }
 
@@ -1685,7 +2182,7 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     /// use jomini::text::lossless::{parse, SyntaxKind};
     ///
     /// let source = b"size = 3 # small";
-    /// let parse = parse(&source[..]);
+    /// let parse = parse(source);
     ///
     /// // Give each token a highlight class.
     /// let classes: Vec<(&str, &[u8])> = parse
@@ -1716,6 +2213,7 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
         Tokens {
             tree: *self,
             next: 0,
+            end: self.data.tokens.len() as u32,
             prev_end: 0,
             gap: Gap::EMPTY,
             pending: None,
@@ -1723,9 +2221,12 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
         }
     }
 
-    /// Every significant (non-trivia) leaf [`SyntaxToken`] in document order.
-    pub fn significant_tokens(self) -> impl Iterator<Item = SyntaxToken<'t, 'a>> {
-        (0..self.data.tokens.len() as u32).map(move |i| self.token(i))
+    /// Every leaf [`SyntaxToken`] that is not trivia, in document order. The
+    /// zero-width tokens that the parser inserts for a missing delimiter are
+    /// included.
+    pub fn significant_tokens(&self) -> impl Iterator<Item = SyntaxToken<'t, 'a>> + use<'t, 'a> {
+        let tree = *self;
+        (0..self.data.tokens.len() as u32).map(move |i| tree.token(i))
     }
 
     /// Reconstruct the source by walking the tree's leaves via the cursor API.
@@ -1746,25 +2247,54 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
         out
     }
 
-    /// An indented S-expression dump of the tree, for debugging and tests.
+    /// An indented dump of the tree, for debugging and tests.
+    ///
+    /// Each line shows the kind and the byte range of one node or token, in
+    /// the same form as rust-analyzer. A token also shows its text. The dump
+    /// includes the trivia and the zero-width recovery tokens.
+    ///
+    /// ```
+    /// use jomini::text::lossless::parse;
+    ///
+    /// let parse = parse(b"building = { cost = 100 } # wood\n");
+    /// assert_eq!(parse.debug_tree(), r##"Root@0..33
+    ///   Field@0..25
+    ///     Unquoted@0..8 "building"
+    ///     Whitespace@8..9 " "
+    ///     Operator@9..10 "="
+    ///     Whitespace@10..11 " "
+    ///     Block@11..25
+    ///       OpenBrace@11..12 "{"
+    ///       Whitespace@12..13 " "
+    ///       Field@13..23
+    ///         Unquoted@13..17 "cost"
+    ///         Whitespace@17..18 " "
+    ///         Operator@18..19 "="
+    ///         Whitespace@19..20 " "
+    ///         Unquoted@20..23 "100"
+    ///       Whitespace@23..24 " "
+    ///       CloseBrace@24..25 "}"
+    ///   Whitespace@25..26 " "
+    ///   Comment@26..32 "# wood"
+    ///   Whitespace@32..33 "\n"
+    /// "##);
+    /// ```
     pub fn debug_tree(&self) -> String {
+        use fmt::Write;
+
         fn go(el: SyntaxElement<'_, '_>, depth: usize, out: &mut String) {
             for _ in 0..depth {
                 out.push_str("  ");
             }
             match el {
                 SyntaxElement::Node(n) => {
-                    out.push_str(&format!("{:?}\n", n.kind()));
+                    let _ = writeln!(out, "{n:?}");
                     for c in n.children() {
                         go(c, depth + 1, out);
                     }
                 }
                 SyntaxElement::Token(t) => {
-                    out.push_str(&format!(
-                        "{:?} {:?}\n",
-                        t.kind(),
-                        String::from_utf8_lossy(t.text())
-                    ));
+                    let _ = writeln!(out, "{t:?}");
                 }
             }
         }
@@ -1788,7 +2318,7 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
         SyntaxToken {
             tree: *self,
             kind,
-            range: TextRange::new(start, start + len),
+            range: TextRange::span(start, start + len),
             idx: next,
             trivia: true,
         }
@@ -1833,6 +2363,110 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
         })
     }
 
+    /// The byte range of the gap before significant token `next`. For
+    /// `next == tokens.len()`, it is the gap after the last token.
+    fn gap_before(&self, next: u32) -> Gap {
+        let tokens = &self.data.tokens;
+        let start = match next.checked_sub(1) {
+            Some(prev) => tokens[prev as usize].end(),
+            None => 0,
+        };
+        let end = tokens
+            .get(next as usize)
+            .map_or(self.source.len() as u32, |t| t.start);
+        Gap { start, end, next }
+    }
+
+    /// The leaf that contains the byte at `offset`, or `None` when `offset`
+    /// is not before the end of the source. A zero-width token contains no
+    /// byte, so this function does not give one.
+    fn leaf_at(&self, offset: u32) -> Option<SyntaxToken<'t, 'a>> {
+        if offset as usize >= self.source.len() {
+            return None;
+        }
+        let tokens = &self.data.tokens;
+        let next = tokens.partition_point(|t| t.end() <= offset);
+        if let Some(token) = tokens.get(next)
+            && token.start <= offset
+        {
+            return Some(self.token(next as u32));
+        }
+        // Lex the gap from its start, because a comment can begin before
+        // `offset`.
+        let mut gap = self.gap_before(next as u32);
+        while let Some(token) = gap.next_token(*self) {
+            if token.range.end > offset {
+                return Some(token);
+            }
+        }
+        None
+    }
+
+    /// The leaves at `offset`. When `offset` is between two leaves, the
+    /// result has both.
+    ///
+    /// ```
+    /// use jomini::text::lossless::{parse, SyntaxKind, TextSize, TokenAtOffset};
+    ///
+    /// let parse = parse(b"a=b # c");
+    /// let tree = parse.tree();
+    /// let TokenAtOffset::Between(left, right) = tree.token_at_offset(TextSize::new(1)) else {
+    ///     panic!("expected two tokens");
+    /// };
+    /// assert_eq!((left.text(), right.text()), (&b"a"[..], &b"="[..]));
+    ///
+    /// let comment = tree.token_at_offset(TextSize::new(6)).right_biased().unwrap();
+    /// assert_eq!(comment.kind(), SyntaxKind::Comment);
+    /// ```
+    pub fn token_at_offset(&self, offset: TextSize) -> TokenAtOffset<SyntaxToken<'t, 'a>> {
+        let offset = offset.0;
+        if offset as usize > self.source.len() {
+            return TokenAtOffset::None;
+        }
+        let right = self.leaf_at(offset);
+        let left = offset.checked_sub(1).and_then(|o| self.leaf_at(o));
+        match (left, right) {
+            (Some(left), Some(right)) if left != right => TokenAtOffset::Between(left, right),
+            (Some(token), _) | (None, Some(token)) => TokenAtOffset::Single(token),
+            (None, None) => TokenAtOffset::None,
+        }
+    }
+
+    /// The smallest node or token that contains all of `range`. For an empty
+    /// range, the search starts at the token after the offset. When `range`
+    /// is not inside the source, the result is the root.
+    ///
+    /// ```
+    /// use jomini::text::lossless::{parse, SyntaxKind, TextRange, TextSize};
+    ///
+    /// let parse = parse(b"a = { b = c }");
+    /// let tree = parse.tree();
+    /// let token = tree.covering_element(TextRange::at(TextSize::new(6), TextSize::new(1)));
+    /// assert_eq!(token.kind(), SyntaxKind::Unquoted);
+    /// let field = tree.covering_element(TextRange::new(TextSize::new(6), TextSize::new(11)));
+    /// assert_eq!(field.kind(), SyntaxKind::Field);
+    /// assert_eq!(field.text(), b"b = c");
+    /// ```
+    pub fn covering_element(&self, range: TextRange) -> SyntaxElement<'t, 'a> {
+        let root = SyntaxElement::Node(self.root());
+        if range.end as usize > self.source.len() {
+            return root;
+        }
+        let leaf = self
+            .token_at_offset(range.start())
+            .right_biased()
+            .or_else(|| self.token_at_offset(range.start()).left_biased());
+        let Some(leaf) = leaf else {
+            return root;
+        };
+        if leaf.range.contains_range(range) {
+            return SyntaxElement::Token(leaf);
+        }
+        leaf.ancestors()
+            .find(|node| node.text_range().contains_range(range))
+            .map_or(root, SyntaxElement::Node)
+    }
+
     /// The node that owns the gap before token `next`: the nearest common
     /// ancestor of the tokens on the two sides of the gap.
     fn gap_owner(&self, next: u32) -> u32 {
@@ -1840,20 +2474,22 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
             return 0;
         }
         let parents = self.parents();
-        let mut left = Vec::new();
-        let mut node = parents.tokens[next as usize - 1];
-        while node != NO_PARENT {
-            left.push(node);
-            node = parents.nodes[node as usize];
-        }
-        let mut node = parents.tokens[next as usize];
-        while node != NO_PARENT {
-            if left.contains(&node) {
-                return node;
+        let mut left = parents.tokens[next as usize - 1];
+        let mut right = parents.tokens[next as usize];
+        // The nodes are in pre-order, so an ancestor has a smaller index than
+        // its descendants. The node with the larger index cannot be the
+        // common ancestor, thus move it to its parent.
+        while left != right {
+            if left == NO_PARENT || right == NO_PARENT {
+                return 0;
             }
-            node = parents.nodes[node as usize];
+            if left > right {
+                left = parents.nodes[left as usize];
+            } else {
+                right = parents.nodes[right as usize];
+            }
         }
-        0
+        if left == NO_PARENT { 0 } else { left }
     }
 }
 
@@ -2120,6 +2756,8 @@ struct Parser<'t, S: Sink> {
     recovery_barrier: u32,
     /// Number of missing delimiters inserted at EOF.
     eof_repairs: u32,
+    /// A missing delimiter was emitted at EOF.
+    missing_at_eof: bool,
     /// The sorted indexes of the `[` tokens that start an interpolation,
     /// for the `[` tokens before `resolved_until`.
     interpolations: Vec<u32>,
@@ -2127,7 +2765,7 @@ struct Parser<'t, S: Sink> {
 }
 
 impl<'t, S: Sink> Parser<'t, S> {
-    fn new(source: &'t [u8], flavor: Flavor, sink: S) -> Self {
+    fn new(source: &'t [u8], lexer: Lexer, sink: S) -> Self {
         // Save files average approximately five bytes per significant token.
         let capacity = if S::KEEP_TOKENS {
             source.len() / 5 + 16
@@ -2136,7 +2774,7 @@ impl<'t, S: Sink> Parser<'t, S> {
         };
         let mut parser = Parser {
             source,
-            lexer: Lexer::new(source, flavor),
+            lexer,
             tokens: Vec::with_capacity(capacity),
             base: 0,
             lexed: 0,
@@ -2150,6 +2788,7 @@ impl<'t, S: Sink> Parser<'t, S> {
             code_depth: 0,
             recovery_barrier: 0,
             eof_repairs: 0,
+            missing_at_eof: false,
             interpolations: Vec::new(),
             resolved_until: 0,
         };
@@ -2228,21 +2867,19 @@ impl<'t, S: Sink> Parser<'t, S> {
             };
             repair_text.insert_str(0, newline);
         }
-        let unsafe_quote = self.lexed > 0 && {
-            let last = self.tok(self.lexed - 1);
-            last.kind == SyntaxKind::Quoted
-                && last.end() == at
-                && !quote_is_closed(self.token_text(self.lexed - 1))
-        };
+        // The lexer is done at EOF, so it already knows if the last token is
+        // a quoted string without a closing quote. Do not scan it again for
+        // each missing delimiter.
+        let unsafe_quote = self.lexer.unclosed_quote.is_some();
         self.errors.push(SyntaxError {
             kind,
-            range: TextRange::empty(at),
+            range: TextRange::empty(TextSize(at)),
             recovery: Some(MissingDelimiter {
                 expected: missing.expected_kind().unwrap(),
                 missing,
                 construct,
                 opening_range: self.tok(open).range(),
-                insertion_range: TextRange::empty(at),
+                insertion_range: TextRange::empty(TextSize(at)),
                 repair_text,
                 order,
                 local_applicability: if unsafe_quote {
@@ -2257,11 +2894,19 @@ impl<'t, S: Sink> Parser<'t, S> {
     /// Send a zero-width token at EOF to the sink. The window does not hold
     /// it: the sink records where it goes.
     fn push_missing(&mut self, kind: SyntaxKind) {
+        // A comment at EOF comes before the first missing delimiter. Mark it
+        // there, so that the nodes that own the comment get its flag.
+        let flags = if !self.missing_at_eof && self.lexer.trailing_comment() {
+            TOKEN_COMMENT_BEFORE
+        } else {
+            0
+        };
+        self.missing_at_eof = true;
         let token = Token {
             start: self.source.len() as u32,
             len: 0,
             kind,
-            flags: 0,
+            flags,
         };
         self.sink.token(token);
     }
@@ -2455,15 +3100,21 @@ impl<'t, S: Sink> Parser<'t, S> {
             Some(SyntaxKind::CalcOpen) => self.parse_calc(),
             Some(SyntaxKind::OpenBracket) => self.parse_open_bracket(),
             Some(SyntaxKind::Unquoted) if self.is_code_statement() => self.parse_code_statement(),
-            Some(SyntaxKind::Unquoted)
+            Some(SyntaxKind::Unquoted | SyntaxKind::MacroParam | SyntaxKind::Variable)
                 if self.kind_at(self.pos + 1) == Some(SyntaxKind::OpenBrace) =>
             {
-                // headered block: `rgb { ... }`, `hsv { ... }`, tag { ... }
+                // headered block: `rgb { ... }`, `hsv { ... }`, tag { ... }.
+                // TextTape also accepts `$NAME$ { ... }` and `@name { ... }`.
                 self.sink.start_node(SyntaxKind::HeaderedBlock);
                 self.bump(); // header scalar
                 self.parse_block();
                 self.sink.finish_node();
             }
+            // A `]` that closes a parameter body or a code payload is not a
+            // value, as in `[[p] a = ]`.
+            Some(SyntaxKind::CloseBracket)
+                if (self.parameter_depth > 0 && self.bracket_depth == 0)
+                    || (self.code_depth > 0 && self.is_code_close(self.pos)) => {}
             Some(k) if k != SyntaxKind::CloseBrace => self.bump(),
             // missing value (e.g. `a =` at EOF, or `a = }`): emit nothing.
             _ => {}
@@ -2683,6 +3334,8 @@ impl<'t, S: Sink> Parser<'t, S> {
         }
 
         let mut closed = false;
+        // The index of the last lone `]` that the payload took directly.
+        let mut lone_close = usize::MAX;
         loop {
             match self.peek() {
                 Some(SyntaxKind::CloseBracket) if self.is_code_close(self.pos) => {
@@ -2703,18 +3356,23 @@ impl<'t, S: Sink> Parser<'t, S> {
                     self.bump();
                 }
                 None => break,
-                Some(_) => self.parse_item(),
+                Some(kind) => {
+                    if kind == SyntaxKind::CloseBracket {
+                        lone_close = self.pos;
+                    }
+                    self.parse_item();
+                }
             }
         }
         self.code_depth -= 1;
 
         if !closed {
             if self.peek().is_none() && self.recovery_barrier == barrier {
-                let missing_count = if self.pos.checked_sub(1).is_some_and(|index| {
-                    let token = self.tok(index);
-                    token.kind == SyntaxKind::CloseBracket
-                        && token.end() == self.source.len() as u32
-                }) {
+                // Only a lone `]` of the payload is the first half of `]]`.
+                // A `]` that closes an interpolation is not, as in `a[b]`.
+                let missing_count = if self.pos.checked_sub(1) == Some(lone_close)
+                    && self.tok(lone_close).end() == self.source.len() as u32
+                {
                     1
                 } else {
                     2
@@ -2839,10 +3497,10 @@ impl<'t, S: Sink> Parser<'t, S> {
         self.depth += 1;
         if self.depth >= MAX_DEPTH {
             self.recovery_barrier += 1;
-            // Pathologically deep nesting. Rather than recurse (and risk a
-            // stack overflow), consume the rest of this block — including
-            // everything nested inside it — as flat leaf tokens. The tree
-            // stays lossless; it just loses structure past this point.
+            // The nesting is too deep. Do not recurse, because recursion can
+            // cause a stack overflow. Consume the remaining tokens of this
+            // block as flat tokens. The nested blocks are also flat. The tree
+            // keeps all bytes, but it has no structure after this point.
             self.error_at(open, SyntaxErrorKind::BlockDepthExceeded);
             self.flatten_to_block_close();
         } else {
@@ -2853,8 +3511,8 @@ impl<'t, S: Sink> Parser<'t, S> {
                 && self.parameter_depth > 0
                 && self.bracket_depth == 0
             {
-                // The parameter delimiter can close a block body that is
-                // intentionally continued by a later parameter block.
+                // The `]` of a parameter can close a block body. A later
+                // parameter block continues that block body.
             } else if self.peek() == Some(SyntaxKind::CloseBracket) {
                 self.recovery_barrier += 1;
                 self.error_at(open, SyntaxErrorKind::UnclosedBlock);
@@ -2873,11 +3531,11 @@ impl<'t, S: Sink> Parser<'t, S> {
         self.sink.finish_node();
     }
 
-    /// Consume the remainder of the current block — including any nested braces
-    /// — as flat leaf tokens, stopping just after the matching `}` (or at EOF).
-    /// The opening `{` has already been consumed, so brace depth starts at 1.
-    /// Used by the depth guard to bound recursion without sacrificing
-    /// losslessness (every token is still emitted, just unstructured).
+    /// Consume the remaining tokens of the current block as flat tokens. The
+    /// nested braces are also flat. Stop after the matching `}` or at EOF.
+    /// The caller consumed the `{`, thus the brace depth starts at 1. The
+    /// depth guard uses this function to limit recursion. The parser emits
+    /// all tokens, thus the tree keeps all bytes.
     fn flatten_to_block_close(&mut self) {
         let mut balance = 1u32;
         while let Some(k) = self.peek() {
@@ -2891,8 +3549,8 @@ impl<'t, S: Sink> Parser<'t, S> {
                 return; // emitted the matching `}`
             }
         }
-        // EOF before the block closed — the flatten diagnostic already covers
-        // it, so no separate "unclosed" diagnostic is added here.
+        // The block did not close before EOF. The depth diagnostic covers
+        // this block, thus do not add an "unclosed" diagnostic.
     }
 
     /// Parse a `@[ ... ]` calc. The current token is [`SyntaxKind::CalcOpen`].
@@ -2944,13 +3602,13 @@ impl<'t, S: Sink> Parser<'t, S> {
                 self.eof_repairs += 1;
                 self.errors.push(SyntaxError {
                     kind: SyntaxErrorKind::UnclosedCalcParen,
-                    range: TextRange::empty(at),
+                    range: TextRange::empty(TextSize(at)),
                     recovery: Some(MissingDelimiter {
                         expected: SyntaxKind::CloseParen,
                         missing: SyntaxKind::MissingCloseParen,
                         construct: RecoveryConstruct::CalcParen,
                         opening_range: self.tok(paren_open as usize).range(),
-                        insertion_range: TextRange::empty(at),
+                        insertion_range: TextRange::empty(TextSize(at)),
                         repair_text: ")".into(),
                         order,
                         local_applicability: Applicability::MachineApplicable,
@@ -3063,14 +3721,15 @@ fn resolve_interpolations(
 }
 
 // ---------------------------------------------------------------------------
-// Calc expression grammar (interior of `@[ ... ]`).
+// The grammar of a calc expression, the interior of `@[ ... ]`.
 //
 // operands : Number | CalcIdent | `(` expr `)` | (`-`|`+`) operand
-// binary   : `+` `-` (looser) and `*` `/` (tighter), left-associative
+// binary   : `+` `-` (lower precedence) and `*` `/` (higher precedence),
+//            left-associative
 //
-// Parsed precedence-climbing into a temporary `CalcElem` tree, which is then
-// walked in pre-order to emit tokens/nodes. Interior whitespace stays in the
-// gaps between tokens, so the region round-trips byte-for-byte.
+// A precedence-climbing parser makes a temporary `CalcElem` tree. A pre-order
+// walk of the tree emits the tokens and nodes. The whitespace in the interior
+// stays in the gaps between tokens, thus the output keeps all bytes.
 // ---------------------------------------------------------------------------
 
 /// A node in the temporary calc tree (see [`parse_calc_interior`]).
@@ -3289,7 +3948,7 @@ impl CalcCursor<'_> {
 /// assert_eq!(comment.text(), b"# keep");
 /// assert_eq!(comment.parent().unwrap().kind(), SyntaxKind::Block);
 /// ```
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SyntaxNode<'t, 'a> {
     tree: SyntaxTree<'t, 'a>,
     idx: u32,
@@ -3297,7 +3956,7 @@ pub struct SyntaxNode<'t, 'a> {
 
 /// A handle to a leaf token in a [`SyntaxTree`]. It is a significant token from
 /// the token buffer, or a trivia token made from a gap.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SyntaxToken<'t, 'a> {
     tree: SyntaxTree<'t, 'a>,
     kind: SyntaxKind,
@@ -3309,10 +3968,64 @@ pub struct SyntaxToken<'t, 'a> {
 }
 
 /// Either a [`SyntaxNode`] or a [`SyntaxToken`].
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SyntaxElement<'t, 'a> {
     Node(SyntaxNode<'t, 'a>),
     Token(SyntaxToken<'t, 'a>),
+}
+
+/// Two views are equal when they refer to the same tree and the same source.
+/// The comparison does not look at the contents.
+impl PartialEq for SyntaxTree<'_, '_> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.data, other.data) && std::ptr::eq(self.source, other.source)
+    }
+}
+
+impl Eq for SyntaxTree<'_, '_> {}
+
+impl std::hash::Hash for SyntaxTree<'_, '_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::ptr::hash(self.data, state);
+        std::ptr::hash(self.source.as_ptr(), state);
+    }
+}
+
+impl fmt::Debug for SyntaxTree<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SyntaxTree")
+            .field("root", &self.root())
+            .field("errors", &self.errors().len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Write the [`SyntaxTree`] view of the parse.
+impl<S: AsRef<[u8]>> fmt::Debug for Parse<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.view().fmt(f)
+    }
+}
+
+/// Write the node as `Kind@start..end`, the same as [`SyntaxTree::debug_tree`].
+impl fmt::Debug for SyntaxNode<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}@{}", self.kind(), self.text_range())
+    }
+}
+
+/// Write the token as `Kind@start..end "text"`, the same as
+/// [`SyntaxTree::debug_tree`].
+impl fmt::Debug for SyntaxToken<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:?}@{} \"{}\"",
+            self.kind(),
+            self.text_range(),
+            self.text().escape_ascii()
+        )
+    }
 }
 
 impl<'t, 'a> SyntaxNode<'t, 'a> {
@@ -3331,10 +4044,10 @@ impl<'t, 'a> SyntaxNode<'t, 'a> {
     pub fn text_range(&self) -> TextRange {
         let node = self.data();
         if self.idx == 0 {
-            return TextRange::new(0, self.tree.source.len() as u32);
+            return TextRange::span(0, self.tree.source.len() as u32);
         }
         let tokens = &self.tree.data.tokens;
-        TextRange::new(
+        TextRange::span(
             tokens[node.first_token as usize].start,
             tokens[node.token_end as usize - 1].end(),
         )
@@ -3427,7 +4140,272 @@ impl<'t, 'a> SyntaxNode<'t, 'a> {
     ) -> impl Iterator<Item = SyntaxToken<'t, 'a>> + use<'t, 'a> {
         self.significant_children().filter_map(|el| el.as_token())
     }
+
+    #[inline]
+    fn node(&self, idx: u32) -> SyntaxNode<'t, 'a> {
+        SyntaxNode {
+            tree: self.tree,
+            idx,
+        }
+    }
+
+    /// This node and all the nodes in its subtree, in pre-order.
+    ///
+    /// The nodes of a subtree are adjacent in the tree, so this iterator does
+    /// not allocate. To get one type of node, cast each node:
+    ///
+    /// ```
+    /// use jomini::text::lossless::{parse, AstNode, Field};
+    ///
+    /// let parse = parse(b"a = { b = 1 c = { d = 2 } }");
+    /// let keys: Vec<&[u8]> = parse
+    ///     .root()
+    ///     .descendants()
+    ///     .filter_map(Field::cast)
+    ///     .map(|f| f.key().text())
+    ///     .collect();
+    /// assert_eq!(keys, [&b"a"[..], b"b", b"c", b"d"]);
+    /// ```
+    pub fn descendants(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = SyntaxNode<'t, 'a>> + ExactSizeIterator + use<'t, 'a> {
+        let node = *self;
+        (self.idx..self.data().subtree_end).map(move |idx| node.node(idx))
+    }
+
+    /// An [`Enter`](WalkEvent::Enter) and a [`Leave`](WalkEvent::Leave) event
+    /// for each node of the subtree, in pre-order. Use the events to keep a
+    /// depth or a stack of scopes.
+    ///
+    /// ```
+    /// use jomini::text::lossless::{parse, WalkEvent};
+    ///
+    /// let parse = parse(b"a = { b = 1 }");
+    /// let mut depth = 0;
+    /// let mut max = 0;
+    /// for event in parse.root().preorder() {
+    ///     match event {
+    ///         WalkEvent::Enter(_) => depth += 1,
+    ///         WalkEvent::Leave(_) => depth -= 1,
+    ///     }
+    ///     max = max.max(depth);
+    /// }
+    /// assert_eq!((depth, max), (0, 4)); // Root, Field, Block, Field
+    /// ```
+    pub fn preorder(&self) -> Preorder<'t, 'a> {
+        Preorder {
+            node: *self,
+            next: Some(WalkEvent::Enter(self.idx)),
+        }
+    }
+
+    /// This node and its ancestors, from this node to the root.
+    pub fn ancestors(&self) -> impl Iterator<Item = SyntaxNode<'t, 'a>> + use<'t, 'a> {
+        std::iter::successors(Some(*self), |node| node.parent())
+    }
+
+    /// The first child node.
+    pub fn first_child(&self) -> Option<SyntaxNode<'t, 'a>> {
+        let child = self.idx + 1;
+        (child < self.data().subtree_end).then(|| self.node(child))
+    }
+
+    /// The last child node.
+    pub fn last_child(&self) -> Option<SyntaxNode<'t, 'a>> {
+        let mut child = self.first_child()?;
+        while let Some(next) = child.next_sibling() {
+            child = next;
+        }
+        Some(child)
+    }
+
+    /// The next node that has the same parent.
+    pub fn next_sibling(&self) -> Option<SyntaxNode<'t, 'a>> {
+        let parent = self.parent()?;
+        let next = self.data().subtree_end;
+        (next < parent.data().subtree_end).then(|| self.node(next))
+    }
+
+    /// The previous node that has the same parent. This walks the siblings
+    /// before this node, so it takes linear time.
+    pub fn prev_sibling(&self) -> Option<SyntaxNode<'t, 'a>> {
+        let mut child = self.parent()?.first_child()?;
+        let mut prev = None;
+        while child.idx != self.idx {
+            prev = Some(child);
+            child = self.node(child.data().subtree_end);
+        }
+        prev
+    }
+
+    /// The first leaf of the subtree. Only the root can start with trivia.
+    pub fn first_token(&self) -> Option<SyntaxToken<'t, 'a>> {
+        if self.idx == 0 {
+            return self.tree.tokens().next();
+        }
+        Some(self.tree.token(self.data().first_token))
+    }
+
+    /// The last leaf of the subtree. Only the root can end with trivia.
+    pub fn last_token(&self) -> Option<SyntaxToken<'t, 'a>> {
+        let tree = self.tree;
+        if self.idx == 0 {
+            let mut gap = tree.gap_before(tree.data.tokens.len() as u32);
+            let mut last = None;
+            while let Some(token) = gap.next_token(tree) {
+                last = Some(token);
+            }
+            return last.or_else(|| {
+                tree.data
+                    .tokens
+                    .len()
+                    .checked_sub(1)
+                    .map(|i| tree.token(i as u32))
+            });
+        }
+        Some(tree.token(self.data().token_end - 1))
+    }
+
+    /// Every leaf of the subtree in document order, trivia included.
+    pub fn tokens(&self) -> Tokens<'t, 'a> {
+        if self.idx == 0 {
+            return self.tree.tokens();
+        }
+        let node = self.data();
+        Tokens {
+            tree: self.tree,
+            next: node.first_token,
+            end: node.token_end,
+            // A node does not own the gaps before and after it.
+            prev_end: self.tree.data.tokens[node.first_token as usize].start,
+            gap: Gap::EMPTY,
+            pending: None,
+            trailing_done: true,
+        }
+    }
 }
+
+/// An event of a [`SyntaxNode::preorder`] walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WalkEvent<T> {
+    /// The walk goes into the node, before its children.
+    Enter(T),
+    /// The walk goes out of the node, after its children.
+    Leave(T),
+}
+
+impl<T> WalkEvent<T> {
+    /// Change the value of the event.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> WalkEvent<U> {
+        match self {
+            WalkEvent::Enter(value) => WalkEvent::Enter(f(value)),
+            WalkEvent::Leave(value) => WalkEvent::Leave(f(value)),
+        }
+    }
+}
+
+/// Iterator over the [`WalkEvent`]s of a subtree (see
+/// [`SyntaxNode::preorder`]).
+///
+/// The walk uses the parent table of the tree, so it does not allocate after
+/// the first parent query of the tree.
+#[derive(Debug, Clone)]
+pub struct Preorder<'t, 'a> {
+    /// The root of the walk.
+    node: SyntaxNode<'t, 'a>,
+    next: Option<WalkEvent<u32>>,
+}
+
+impl<'t, 'a> Iterator for Preorder<'t, 'a> {
+    type Item = WalkEvent<SyntaxNode<'t, 'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let event = self.next.take()?;
+        let nodes = &self.node.tree.data.nodes;
+        self.next = match event {
+            WalkEvent::Enter(idx) => {
+                // In pre-order, the first child is the next node.
+                if idx + 1 < nodes[idx as usize].subtree_end {
+                    Some(WalkEvent::Enter(idx + 1))
+                } else {
+                    Some(WalkEvent::Leave(idx))
+                }
+            }
+            WalkEvent::Leave(idx) if idx == self.node.idx => None,
+            WalkEvent::Leave(idx) => {
+                let parent = self.node.tree.parents().nodes[idx as usize];
+                let sibling = nodes[idx as usize].subtree_end;
+                if sibling < nodes[parent as usize].subtree_end {
+                    Some(WalkEvent::Enter(sibling))
+                } else {
+                    Some(WalkEvent::Leave(parent))
+                }
+            }
+        };
+        Some(event.map(|idx| self.node.node(idx)))
+    }
+}
+
+impl std::iter::FusedIterator for Preorder<'_, '_> {}
+
+/// The leaves at an offset (see [`SyntaxTree::token_at_offset`]).
+///
+/// The value is also an iterator over the leaves, from left to right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TokenAtOffset<T> {
+    /// The offset is after the end of the source, or the source is empty.
+    None,
+    /// The offset is inside one leaf, or at the start or the end of the
+    /// source.
+    Single(T),
+    /// The offset is between two leaves: the leaf that ends at the offset and
+    /// the leaf that starts at it.
+    Between(T, T),
+}
+
+impl<T> TokenAtOffset<T> {
+    /// The leaf that ends at the offset, when there are two.
+    pub fn left_biased(self) -> Option<T> {
+        match self {
+            TokenAtOffset::None => None,
+            TokenAtOffset::Single(value) | TokenAtOffset::Between(value, _) => Some(value),
+        }
+    }
+
+    /// The leaf that starts at the offset, when there are two.
+    pub fn right_biased(self) -> Option<T> {
+        match self {
+            TokenAtOffset::None => None,
+            TokenAtOffset::Single(value) | TokenAtOffset::Between(_, value) => Some(value),
+        }
+    }
+
+    /// Change each value.
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> TokenAtOffset<U> {
+        match self {
+            TokenAtOffset::None => TokenAtOffset::None,
+            TokenAtOffset::Single(value) => TokenAtOffset::Single(f(value)),
+            TokenAtOffset::Between(left, right) => TokenAtOffset::Between(f(left), f(right)),
+        }
+    }
+}
+
+impl<T> Iterator for TokenAtOffset<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        match std::mem::replace(self, TokenAtOffset::None) {
+            TokenAtOffset::None => None,
+            TokenAtOffset::Single(value) => Some(value),
+            TokenAtOffset::Between(left, right) => {
+                *self = TokenAtOffset::Single(right);
+                Some(left)
+            }
+        }
+    }
+}
+
+impl<T> std::iter::FusedIterator for TokenAtOffset<T> {}
 
 impl<'t, 'a> SyntaxToken<'t, 'a> {
     /// This token's kind.
@@ -3480,6 +4458,48 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
             tree: self.tree,
             idx: p,
         })
+    }
+
+    /// The ancestors of this token, from its parent to the root.
+    pub fn ancestors(&self) -> impl Iterator<Item = SyntaxNode<'t, 'a>> + use<'t, 'a> {
+        std::iter::successors(self.parent(), |node| node.parent())
+    }
+
+    /// The next leaf in document order, trivia included.
+    ///
+    /// ```
+    /// use jomini::text::lossless::parse;
+    ///
+    /// let parse = parse(b"a = b");
+    /// let first = parse.root().first_token().unwrap();
+    /// let texts: Vec<&[u8]> = std::iter::successors(Some(first), |t| t.next_token())
+    ///     .map(|t| t.text())
+    ///     .collect();
+    /// assert_eq!(texts, [&b"a"[..], b" ", b"=", b" ", b"b"]);
+    /// ```
+    pub fn next_token(&self) -> Option<SyntaxToken<'t, 'a>> {
+        let tree = self.tree;
+        // For a significant token, the next gap is before the next token. For
+        // trivia, it is the rest of the gap of this token.
+        let next = if self.trivia { self.idx } else { self.idx + 1 };
+        let mut gap = tree.gap_before(next);
+        gap.start = self.range.end;
+        gap.next_token(tree)
+            .or_else(|| ((next as usize) < tree.data.tokens.len()).then(|| tree.token(next)))
+    }
+
+    /// The previous leaf in document order, trivia included.
+    pub fn prev_token(&self) -> Option<SyntaxToken<'t, 'a>> {
+        let tree = self.tree;
+        // The gap before this token: all of it for a significant token, the
+        // part before this token for trivia.
+        let mut gap = tree.gap_before(self.idx);
+        gap.end = self.range.start;
+        let mut last = None;
+        while let Some(token) = gap.next_token(tree) {
+            last = Some(token);
+        }
+        last.or_else(|| self.idx.checked_sub(1).map(|prev| tree.token(prev)))
     }
 
     /// If this is an [`SyntaxKind::Operator`] token, the concrete [`Operator`].
@@ -3535,6 +4555,19 @@ impl<'t, 'a> SyntaxElement<'t, 'a> {
             SyntaxElement::Node(n) => n.text(),
             SyntaxElement::Token(t) => t.text(),
         }
+    }
+
+    /// The parent node, or `None` for the root.
+    pub fn parent(&self) -> Option<SyntaxNode<'t, 'a>> {
+        match self {
+            SyntaxElement::Node(n) => n.parent(),
+            SyntaxElement::Token(t) => t.parent(),
+        }
+    }
+
+    /// The ancestors of this element, from its parent to the root.
+    pub fn ancestors(&self) -> impl Iterator<Item = SyntaxNode<'t, 'a>> + use<'t, 'a> {
+        std::iter::successors(self.parent(), |node| node.parent())
     }
 
     /// Unwrap to a node, or `None` if this is a token.
@@ -3662,11 +4695,15 @@ impl<'t, 'a> Iterator for Children<'t, 'a> {
     }
 }
 
+impl std::iter::FusedIterator for Children<'_, '_> {}
+
 /// Iterator over every leaf token of a tree, trivia included (see
 /// [`SyntaxTree::tokens`]).
 pub struct Tokens<'t, 'a> {
     tree: SyntaxTree<'t, 'a>,
     next: u32,
+    /// The index after the last significant token to give.
+    end: u32,
     prev_end: u32,
     gap: Gap,
     pending: Option<SyntaxToken<'t, 'a>>,
@@ -3685,7 +4722,7 @@ impl<'t, 'a> Iterator for Tokens<'t, 'a> {
                 return Some(token);
             }
             let tree = self.tree;
-            if (self.next as usize) < tree.data.tokens.len() {
+            if self.next < self.end {
                 let index = self.next;
                 self.next += 1;
                 let token = tree.data.tokens[index as usize];
@@ -3712,6 +4749,8 @@ impl<'t, 'a> Iterator for Tokens<'t, 'a> {
     }
 }
 
+impl std::iter::FusedIterator for Tokens<'_, '_> {}
+
 // ---------------------------------------------------------------------------
 // Typed AST: "ungrammar-style" strongly-typed views over the cursors. Each
 // wrapper is a thin newtype around a `SyntaxNode` of a fixed `SyntaxKind`, with
@@ -3734,7 +4773,7 @@ impl<'t, 'a> Iterator for Tokens<'t, 'a> {
 /// let parse = parse(b"a = 1");
 /// let node = parse.root().child_nodes().next().unwrap();
 /// let field = Field::cast(node).unwrap();
-/// assert_eq!(field.key().unwrap().text(), b"a");
+/// assert_eq!(field.key().text(), b"a");
 /// assert_eq!(field.syntax().kind(), SyntaxKind::Field);
 /// assert!(Field::cast(parse.root()).is_none());
 /// ```
@@ -3748,7 +4787,7 @@ pub trait AstNode<'t, 'a>: Sized {
 macro_rules! ast_nodes {
     ($($(#[$m:meta])* $name:ident => $kind:ident),+ $(,)?) => {$(
         $(#[$m])*
-        #[derive(Clone, Copy)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub struct $name<'t, 'a>(SyntaxNode<'t, 'a>);
 
         impl<'t, 'a> AstNode<'t, 'a> for $name<'t, 'a> {
@@ -3784,7 +4823,7 @@ ast_nodes! {
     /// assert_eq!(fields[0].op_token().unwrap().text(), b">=");
     /// assert_eq!(fields[0].value().unwrap().to_i64(), Some(5));
     ///
-    /// assert_eq!(fields[1].key().unwrap().text(), b"modifier");
+    /// assert_eq!(fields[1].key().text(), b"modifier");
     /// assert_eq!(fields[1].op(), None);
     /// assert!(fields[1].value().unwrap().as_block().is_some());
     /// ```
@@ -3863,7 +4902,7 @@ ast_nodes! {
     /// assert_eq!(parameter.name().unwrap().text(), b"scaled");
     ///
     /// let field = parameter.fields().next().unwrap();
-    /// assert_eq!(field.key().unwrap().text(), b"add_prestige");
+    /// assert_eq!(field.key().text(), b"add_prestige");
     /// assert!(field.syntax().has_macro());
     /// ```
     Parameter => Parameter,
@@ -3883,7 +4922,7 @@ ast_nodes! {
 }
 
 /// An item in a [`Root`], [`Block`], [`Parameter`], [`UndefinedParameter`], or [`Code`].
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Item<'t, 'a> {
     /// A `key <op> value` field.
@@ -3922,7 +4961,7 @@ pub enum Item<'t, 'a> {
 /// assert_eq!(values[3].decode(Windows1252Encoding::new()).unwrap(), "Bretagne");
 /// assert_eq!(values[4].to_f64(), None);
 /// ```
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Value<'t, 'a> {
     /// A scalar token: [`SyntaxKind::Unquoted`], [`SyntaxKind::Quoted`],
@@ -3945,7 +4984,7 @@ pub enum Value<'t, 'a> {
 }
 
 /// An arithmetic expression inside a [`Calc`].
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Expr<'t, 'a> {
     /// `lhs <op> rhs`.
@@ -4008,30 +5047,10 @@ fn child_items<'t, 'a>(
 }
 
 fn item_from_element<'t, 'a>(el: SyntaxElement<'t, 'a>) -> Option<Item<'t, 'a>> {
-    let kind = el.kind();
-    if kind.is_trivia()
-        || kind.is_missing()
-        || matches!(kind, SyntaxKind::OpenBrace | SyntaxKind::CloseBrace)
-    {
+    if el.kind() == SyntaxKind::CloseBrace {
         return None;
     }
-    match el {
-        SyntaxElement::Node(n) => match n.kind() {
-            SyntaxKind::Field => Field::cast(n).map(Item::Field),
-            SyntaxKind::Parameter => Parameter::cast(n).map(Item::Parameter),
-            SyntaxKind::UndefinedParameter => {
-                UndefinedParameter::cast(n).map(Item::UndefinedParameter)
-            }
-            SyntaxKind::Code => Code::cast(n).map(Item::Code),
-            SyntaxKind::Interpolation => Interpolation::cast(n).map(Item::Interpolation),
-            _ => Value::cast_element(el)
-                .map(Item::Value)
-                .or(Some(Item::Other(el))),
-        },
-        _ => Value::cast_element(el)
-            .map(Item::Value)
-            .or(Some(Item::Other(el))),
-    }
+    parameter_body_item(el)
 }
 
 /// The closing bracket of the parameter body. The body closes with the last
@@ -4090,6 +5109,8 @@ fn parameter_items<'t, 'a>(
     })
 }
 
+/// Convert an element to an item. A `}` is an item, because a parameter body
+/// can close a brace that an earlier parameter opens.
 fn parameter_body_item<'t, 'a>(el: SyntaxElement<'t, 'a>) -> Option<Item<'t, 'a>> {
     if el.kind().is_trivia() || el.kind().is_missing() || el.kind() == SyntaxKind::OpenBrace {
         return None;
@@ -4152,11 +5173,16 @@ impl<'t, 'a> Root<'t, 'a> {
 }
 
 impl<'t, 'a> Field<'t, 'a> {
-    /// The key scalar token (the left-hand side).
-    pub fn key(&self) -> Option<SyntaxToken<'t, 'a>> {
+    /// The key scalar token (the left-hand side). The parser opens a field
+    /// only at a scalar token, so each field has a key.
+    ///
+    /// The text of a quoted key includes the quotes. Use
+    /// [`SyntaxToken::as_scalar`] to compare a key without them.
+    pub fn key(&self) -> SyntaxToken<'t, 'a> {
         self.syntax()
             .significant_child_tokens()
-            .find(|t| t.kind().is_scalar())
+            .next()
+            .expect("a field starts with its key token")
     }
 
     /// The operator token (`=`, `==`, `?=`, `<`, …), or `None` for a
@@ -4675,6 +5701,7 @@ impl Default for FormatOptions {
 /// let expected = "building = {\n\tcost = 100 # gold\n\tsize = { 1 2 }\n}\n";
 /// assert_eq!(String::from_utf8(format(source)).unwrap(), expected);
 /// ```
+#[must_use]
 pub fn format(source: &[u8]) -> Vec<u8> {
     parse(source).format(&FormatOptions::default())
 }
@@ -4694,10 +5721,16 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     }
 }
 
-/// Number of newline bytes in `bytes` (used to detect line breaks and the
-/// author's blank lines within a whitespace run).
+/// Count the line breaks in `bytes`. A line break is `\n`, `\r\n`, or a `\r`
+/// alone, the same as for the lexer.
 fn count_newlines(bytes: &[u8]) -> usize {
-    bytes.iter().filter(|&&b| b == b'\n').count()
+    let lf = bytes.iter().filter(|&&b| b == b'\n').count();
+    let lone_cr = bytes
+        .iter()
+        .enumerate()
+        .filter(|&(i, &b)| b == b'\r' && bytes.get(i + 1) != Some(&b'\n'))
+        .count();
+    lf + lone_cr
 }
 
 /// Whether a quoted token's bytes (`text` begins with `"`) are properly closed
@@ -4806,7 +5839,7 @@ impl Fmt<'_> {
         };
         let mut gap = Gap {
             start: last.end(),
-            end: node.text_range().end(),
+            end: node.text_range().end,
             next: 0,
         };
         let mut last_trivia = None;
@@ -4824,7 +5857,9 @@ impl Fmt<'_> {
 
     /// Emit a newline (two for a preserved blank line), reopening the line.
     fn line_break(&mut self, blank: bool) {
-        if self.out.last() != Some(&b'\n') {
+        // An open quoted string can end with an escaped `\n`. That byte is
+        // part of the string, so it does not end the line.
+        if self.quote_open || self.out.last() != Some(&b'\n') {
             self.out.push(b'\n');
         }
         if blank && !self.out.ends_with(b"\n\n") {
@@ -4848,7 +5883,16 @@ impl Fmt<'_> {
                 self.push(el.text());
                 1
             }
-            _ => 0,
+            _ => {
+                // The formatter removes leading whitespace. If the first token
+                // starts with the bytes of a BOM, the lexer would then read
+                // them as a BOM. Keep one space before the token.
+                let first = root.tree.significant_tokens().next();
+                if first.is_some_and(|t| t.text().starts_with(BOM)) {
+                    self.push_byte(b' ');
+                }
+                0
+            }
         };
         self.fmt_items(&children[start..], 0, true);
     }
@@ -4878,7 +5922,8 @@ impl Fmt<'_> {
                 SyntaxKind::Comment => {
                     // Keep it trailing only if the previous item is on this very
                     // line and that line is not already closed by a comment.
-                    let trailing = !first && !ws_had_newline && !self.comment_open;
+                    let trailing =
+                        !first && !ws_had_newline && !self.comment_open && !self.quote_open;
                     if trailing {
                         self.push_byte(b' ');
                     } else {
@@ -4956,7 +6001,14 @@ impl Fmt<'_> {
                 SyntaxKind::Whitespace | SyntaxKind::Bom | SyntaxKind::Comment => {}
                 _ => {
                     if !first {
-                        self.push_byte(b' ');
+                        if self.quote_open {
+                            // A newline closes this quoted string. A space
+                            // would put the next token inside it.
+                            self.line_break(false);
+                            self.write_indent(indent);
+                        } else {
+                            self.push_byte(b' ');
+                        }
                     }
                     first = false;
                     self.fmt_item(el, indent);
@@ -5093,7 +6145,7 @@ mod tests {
             at = t.end();
         }
         let tree = parse_with(data, flavor);
-        let mut at = 0u32;
+        let mut at = TextSize::new(0);
         for t in tree.tokens() {
             assert_eq!(
                 t.text_range().start(),
@@ -5104,7 +6156,147 @@ mod tests {
             );
             at = t.text_range().end();
         }
-        assert_eq!(at as usize, data.len(), "tokens do not reach end of input");
+        assert_eq!(
+            at.to_usize(),
+            data.len(),
+            "tokens do not reach end of input"
+        );
+    }
+
+    /// Check the navigation API against the iterators: each query must agree
+    /// with a walk over `tokens()`, `children()`, and the node tape.
+    fn assert_navigation(data: &[u8], flavor: Flavor) {
+        let parse = parse_with(data, flavor);
+        let tree = parse.tree();
+        let root = tree.root();
+        let leaves: Vec<SyntaxToken<'_, '_>> = tree.tokens().collect();
+
+        // `next_token` and `prev_token` walk the same leaves as `tokens()`.
+        let forward: Vec<_> =
+            std::iter::successors(root.first_token(), |t| t.next_token()).collect();
+        assert_eq!(forward, leaves, "next_token in {data:?}");
+        let mut backward: Vec<_> =
+            std::iter::successors(root.last_token(), |t| t.prev_token()).collect();
+        backward.reverse();
+        assert_eq!(backward, leaves, "prev_token in {data:?}");
+
+        // Each byte belongs to exactly one leaf.
+        for leaf in leaves.iter().filter(|t| !t.text_range().is_empty()) {
+            let range = leaf.text_range();
+            for offset in range.start().to_u32()..range.end().to_u32() {
+                let at = tree.token_at_offset(TextSize::new(offset));
+                assert_eq!(
+                    at.right_biased(),
+                    Some(*leaf),
+                    "offset {offset} in {data:?}"
+                );
+                if offset > range.start().to_u32() {
+                    assert_eq!(at, TokenAtOffset::Single(*leaf));
+                }
+            }
+            assert_eq!(tree.covering_element(range), SyntaxElement::Token(*leaf));
+        }
+        assert_eq!(
+            tree.token_at_offset(TextSize::of(data) + TextSize::new(1)),
+            TokenAtOffset::None
+        );
+
+        // `descendants` and the `Enter` events of `preorder` give every node in
+        // pre-order, and each `Enter` has a `Leave` in nested order.
+        let nodes: Vec<_> = root.descendants().collect();
+        assert_eq!(nodes.len(), tree.data.nodes.len());
+        let mut stack = Vec::new();
+        let mut entered = Vec::new();
+        for event in root.preorder() {
+            match event {
+                WalkEvent::Enter(node) => {
+                    if let Some(&parent) = stack.last() {
+                        assert_eq!(node.parent(), Some(parent));
+                    }
+                    stack.push(node);
+                    entered.push(node);
+                }
+                WalkEvent::Leave(node) => assert_eq!(stack.pop(), Some(node)),
+            }
+        }
+        assert!(stack.is_empty());
+        assert_eq!(entered, nodes);
+
+        for node in nodes {
+            let children: Vec<_> = node.child_nodes().collect();
+            assert_eq!(node.first_child(), children.first().copied());
+            assert_eq!(node.last_child(), children.last().copied());
+            for pair in children.windows(2) {
+                assert_eq!(pair[0].next_sibling(), Some(pair[1]));
+                assert_eq!(pair[1].prev_sibling(), Some(pair[0]));
+            }
+            if let (Some(first), Some(last)) = (children.first(), children.last()) {
+                assert_eq!(first.prev_sibling(), None);
+                assert_eq!(last.next_sibling(), None);
+            }
+            assert_eq!(node.ancestors().next(), Some(node));
+            assert_eq!(node.ancestors().last(), Some(root));
+
+            // The leaves of a subtree are the leaves inside its range.
+            let own: Vec<_> = node.tokens().collect();
+            let inside: Vec<_> = leaves
+                .iter()
+                .copied()
+                .filter(|t| node.text_range().contains_range(t.text_range()))
+                .filter(|t| node == root || t.ancestors().any(|a| a == node))
+                .collect();
+            assert_eq!(own, inside, "tokens of {node:?} in {data:?}");
+            assert_eq!(node.first_token(), own.first().copied());
+            assert_eq!(node.last_token(), own.last().copied());
+            let text: Vec<u8> = own.iter().flat_map(|t| t.text()).copied().collect();
+            assert_eq!(text, node.text());
+
+            // No child covers the range of the element that covers a node.
+            let range = node.text_range();
+            let cover = tree.covering_element(range);
+            assert!(cover.text_range().contains_range(range));
+            if let SyntaxElement::Node(cover) = cover {
+                assert!(
+                    cover
+                        .children()
+                        .all(|c| !c.text_range().contains_range(range) || range.is_empty()),
+                    "covering_element of {range:?} in {data:?}"
+                );
+            }
+        }
+    }
+
+    #[quickcheck]
+    fn prop_navigation(data: Vec<u8>) -> bool {
+        assert_navigation(&data, Flavor::default());
+        assert_navigation(&data, Flavor::hoi4());
+        true
+    }
+
+    #[quickcheck]
+    fn prop_navigation_alphabet(data: Vec<u8>) -> bool {
+        const ALPHABET: &[u8] = b"ab{}[]()=<>#\"@$ \t\n\r";
+        let data: Vec<u8> = data
+            .iter()
+            .map(|b| ALPHABET[*b as usize % ALPHABET.len()])
+            .collect();
+        assert_navigation(&data, Flavor::default());
+        assert_navigation(&data, Flavor::hoi4());
+        true
+    }
+
+    #[test]
+    fn navigation_examples() {
+        for source in [
+            &b""[..],
+            b"   ",
+            b"\xef\xbb\xbf# c\n",
+            b"a = { b = 1 c = { d = 2 } } # end",
+            b"x = { \"unclosed",
+            b"a = { [[x] b = $X$ ] @[1 + 2] }",
+        ] {
+            assert_navigation(source, Flavor::default());
+        }
     }
 
     /// Parse, then assert byte-exact round-trip via the cursor traversal.
@@ -5317,7 +6509,7 @@ mod tests {
                 data: &data,
                 source,
             };
-            tree.ast().fields().next().unwrap().key().unwrap().text()
+            tree.ast().fields().next().unwrap().key().text()
         }
         assert_eq!(first_key(b"a = 1"), b"a");
     }
@@ -5326,14 +6518,14 @@ mod tests {
     fn owned_parse() {
         fn assert_send_sync<T: Send + Sync + 'static>(_: &T) {}
 
-        let parse = parse(std::sync::Arc::<[u8]>::from(&b"a = { b = 1 }"[..]));
+        let parse = Parse::owned(std::sync::Arc::<[u8]>::from(&b"a = { b = 1 }"[..]));
         assert_send_sync(&parse);
         let count = std::thread::spawn(move || parse.root().children().count())
             .join()
             .unwrap();
         assert_eq!(count, 1);
 
-        let parse = super::parse(b"a = 1".to_vec());
+        let parse = Parse::owned(b"a = 1".to_vec());
         assert_eq!(parse.reconstruct(), b"a = 1");
         assert_eq!(parse.into_source(), b"a = 1");
     }
@@ -5344,7 +6536,7 @@ mod tests {
         let tree = parse(source);
         let kinds: Vec<_> = tree.errors().iter().map(|e| e.kind).collect();
         assert_eq!(kinds, vec![SyntaxErrorKind::UnclosedQuote]);
-        assert_eq!(tree.errors()[0].range, TextRange::new(4, 5));
+        assert_eq!(tree.errors()[0].range, TextRange::span(4, 5));
         assert!(tree.root().has_error());
         assert_eq!(tree.reconstruct(), source);
 
@@ -5424,16 +6616,16 @@ mod tests {
         let recovery = error.recovery.as_ref().unwrap();
         assert_eq!(recovery.expected, SyntaxKind::CloseBrace);
         assert_eq!(recovery.missing, SyntaxKind::MissingCloseBrace);
-        assert_eq!(recovery.opening_range, TextRange::new(4, 5));
+        assert_eq!(recovery.opening_range, TextRange::span(4, 5));
         assert_eq!(
             recovery.insertion_range,
-            TextRange::empty(source.len() as u32)
+            TextRange::empty(TextSize::of(source))
         );
 
         let missing = tree.tokens().find(|token| token.is_missing()).unwrap();
         assert_eq!(missing.kind(), SyntaxKind::MissingCloseBrace);
         assert_eq!(missing.text(), b"");
-        assert_eq!(missing.text_range(), TextRange::empty(source.len() as u32));
+        assert_eq!(missing.text_range(), TextRange::empty(TextSize::of(source)));
         assert!(missing.has_error());
         assert_eq!(missing.parent().unwrap().kind(), SyntaxKind::Block);
         assert!(missing.parent().unwrap().has_error());
@@ -5453,7 +6645,7 @@ mod tests {
         assert_eq!(
             tree.repairs(),
             [Repair {
-                range: TextRange::empty(7),
+                range: TextRange::empty(TextSize::new(7)),
                 replacement: "}".into()
             }]
         );
@@ -5725,7 +6917,7 @@ mod tests {
     fn bang_equal_splits_from_a_scalar() {
         let tree = parse(b"a!=1");
         let field = tree.ast().fields().next().unwrap();
-        assert_eq!(field.key().unwrap().text(), b"a");
+        assert_eq!(field.key().text(), b"a");
         assert_eq!(field.op(), Some(Operator::NotEqual));
         assert_eq!(tree.reconstruct(), b"a!=1");
     }
@@ -5770,10 +6962,7 @@ mod tests {
         assert!(tree.errors().is_empty());
         let field = tree.ast().fields().next().unwrap();
         let block = field.value().unwrap().as_block().unwrap();
-        let keys: Vec<_> = block
-            .fields()
-            .map(|f| f.key().unwrap().text().to_vec())
-            .collect();
+        let keys: Vec<_> = block.fields().map(|f| f.key().text().to_vec()).collect();
         assert_eq!(keys, vec![b"]".to_vec(), b"defensive_ideas".to_vec()]);
         assert_eq!(tree.reconstruct(), source);
     }
@@ -5879,7 +7068,7 @@ mod tests {
         // value, and array element), so `$P$ = $Q$` is a Field.
         let tree = parse(b"$P$ = $Q$");
         let field = tree.ast().fields().next().expect("a Field");
-        assert_eq!(field.key().unwrap().text(), b"$P$");
+        assert_eq!(field.key().text(), b"$P$");
         assert_eq!(
             field.value().unwrap().as_scalar().unwrap().as_bytes(),
             b"$Q$"
@@ -5892,7 +7081,7 @@ mod tests {
     fn ast_field_key_op_value() {
         let tree = parse(b"name = \"Ragusa\"");
         let field = tree.ast().fields().next().unwrap();
-        assert_eq!(field.key().unwrap().text(), b"name");
+        assert_eq!(field.key().text(), b"name");
         assert_eq!(field.op(), Some(Operator::Equal));
         let value = field.value().unwrap();
         // Quoted value: as_scalar() strips the surrounding quotes.
@@ -5980,7 +7169,7 @@ mod tests {
         let tree = parse(b"@half = @[1 / 2]");
         let field = tree.ast().fields().next().unwrap();
 
-        let key = field.key().unwrap();
+        let key = field.key();
         assert_eq!(key.kind(), SyntaxKind::Variable);
         assert_eq!(key.text(), b"@half");
         assert_eq!(field.op(), Some(Operator::Equal));
@@ -6106,10 +7295,7 @@ mod tests {
         );
         assert_eq!(parameter.name().unwrap().text(), b"scaled_skill");
         assert_eq!(parameter.fields().count(), 1);
-        assert_eq!(
-            parameter.fields().next().unwrap().key().unwrap().text(),
-            b"a"
-        );
+        assert_eq!(parameter.fields().next().unwrap().key().text(), b"a");
     }
 
     #[test]
@@ -6125,10 +7311,7 @@ mod tests {
         };
         assert_eq!(parameter.syntax().kind(), SyntaxKind::UndefinedParameter);
         assert_eq!(parameter.name().unwrap().text(), b"scaled_skill");
-        assert_eq!(
-            parameter.fields().next().unwrap().key().unwrap().text(),
-            b"a"
-        );
+        assert_eq!(parameter.fields().next().unwrap().key().text(), b"a");
     }
 
     #[test]
@@ -6192,10 +7375,7 @@ mod tests {
             code.syntax().text(),
             b"code [[\n\tvalue = { name = wall }\n]]"
         );
-        assert_eq!(
-            code.fields().next().unwrap().key().unwrap().text(),
-            b"value"
-        );
+        assert_eq!(code.fields().next().unwrap().key().text(), b"value");
         assert!(
             code.fields()
                 .next()
@@ -6218,7 +7398,7 @@ mod tests {
             })
             .unwrap();
         let code = compact_block.fields().next().unwrap();
-        assert_eq!(code.key().unwrap().text(), b"code");
+        assert_eq!(code.key().text(), b"code");
         assert_eq!(code.op(), Some(Operator::Equal));
         let payload = code.value().unwrap().as_code().unwrap();
         assert!(payload.keyword().is_none());
@@ -6327,6 +7507,50 @@ mod tests {
                     .any(|error| error.message().contains("unclosed code payload"))
             );
         }
+    }
+
+    #[test]
+    fn close_bracket_is_not_a_field_value() {
+        for source in [b"[[p] a = ]\nb = 1".as_slice(), b"x = { code [[ a = ]] }"] {
+            let tree = parse(source);
+            assert_eq!(tree.reconstruct(), source);
+            assert!(
+                !tree.errors().iter().any(|error| {
+                    let message = error.message();
+                    message.contains("unclosed parameter block")
+                        || message.contains("unclosed code payload")
+                }),
+                "source={source:?}"
+            );
+        }
+
+        let tree = parse(b"[[p] a = ]\nb = 1");
+        let parameter = tree
+            .root()
+            .child_nodes()
+            .find(|node| node.kind() == SyntaxKind::Parameter)
+            .unwrap();
+        assert_eq!(parameter.text(), b"[[p] a = ]");
+    }
+
+    #[test]
+    fn interpolation_close_is_not_half_of_code_close() {
+        let tree = parse(b"x = { code [[ a[b]");
+        let repaired = tree.repaired_source();
+        assert_eq!(repaired, b"x = { code [[ a[b]]]}");
+        assert!(parse(&repaired).errors().is_empty());
+    }
+
+    #[test]
+    fn trailing_comment_flags_the_unclosed_block() {
+        let tree = parse(b"a = { b = 1 # c");
+        let field = tree.root().child_nodes().next().unwrap();
+        let block = field
+            .child_nodes()
+            .find(|node| node.kind() == SyntaxKind::Block)
+            .unwrap();
+        assert!(field.has_comment());
+        assert!(block.has_comment());
     }
 
     #[test]
@@ -6454,7 +7678,13 @@ mod tests {
                 .map(|t| (t.kind(), t.text().to_vec()))
                 .collect()
         };
-        for src in [&b"x = { \"abc\n 1 }"[..], b"x = { \"abc\n}"] {
+        for src in [
+            &b"x = { \"abc\n 1 }"[..],
+            b"x = { \"abc\n}",
+            b"\"a\n= b",
+            b"\"x\r#c",
+            b"{ \"a\\\n\n}",
+        ] {
             let out = parse_with(src, Flavor::hoi4()).format(&FormatOptions::default());
             assert_eq!(
                 tokens(&out),
@@ -6537,6 +7767,14 @@ mod tests {
     }
 
     #[test]
+    fn fmt_bom_bytes_in_first_token_stay_a_token() {
+        let source = b" \xef\xbb\xbf = 1";
+        let out = format(source);
+        assert_eq!(significant(source), significant(&out));
+        assert_eq!(format(&out), out);
+    }
+
+    #[test]
     fn fmt_empty_input() {
         assert_eq!(format(b""), b"");
         assert_eq!(format(b"   \n\t "), b"");
@@ -6593,7 +7831,7 @@ mod tests {
         // Only leaves, never nodes.
         assert!(tree.tokens().all(|t| !t.kind().is_node()));
         // In document order, contiguous, covering the whole source.
-        let mut at = 0u32;
+        let mut at = TextSize::new(0);
         let mut joined = Vec::new();
         for t in tree.tokens() {
             assert_eq!(t.text_range().start(), at);
@@ -6916,7 +8154,7 @@ mod tests {
         for source in [b"a=@[(1 2".as_slice(), b"a=@[((1 2", b"a={b=@[(1 2 "] {
             let tree = parse(source);
             assert_eq!(tree.reconstruct(), source);
-            let mut previous_end = 0;
+            let mut previous_end = TextSize::new(0);
             for token in tree.significant_tokens() {
                 assert!(token.text_range().start() >= previous_end);
                 previous_end = token.text_range().end();
@@ -7278,17 +8516,17 @@ mod tests {
         let fields: Vec<_> = tree.ast().fields().collect();
         assert_eq!(fields.len(), 2);
 
-        assert_eq!(fields[0].key().unwrap().text(), b"foo");
+        assert_eq!(fields[0].key().text(), b"foo");
         assert!(fields[0].op_token().is_none());
         assert!(fields[0].op().is_none());
         let block = fields[0].value().unwrap().as_block().unwrap();
-        assert_eq!(block.fields().next().unwrap().key().unwrap().text(), b"bar");
+        assert_eq!(block.fields().next().unwrap().key().text(), b"bar");
 
         // In item position, a header such as `rgb` is a field too. The
         // semantic layer decides that it is a header.
         let inner = fields[1].value().unwrap().as_block().unwrap();
         let rgb = inner.fields().next().unwrap();
-        assert_eq!(rgb.key().unwrap().text(), b"rgb");
+        assert_eq!(rgb.key().text(), b"rgb");
         let values = rgb.value().unwrap().as_block().unwrap().values().count();
         assert_eq!(values, 3);
 
@@ -7342,7 +8580,9 @@ mod tests {
         // The space after `{` belongs to the block.
         let space = tree
             .tokens()
-            .find(|t| t.kind() == SyntaxKind::Whitespace && t.text_range().start() == 21)
+            .find(|t| {
+                t.kind() == SyntaxKind::Whitespace && t.text_range().start() == TextSize::new(21)
+            })
             .unwrap();
         assert_eq!(space.parent().unwrap().kind(), SyntaxKind::Block);
 
