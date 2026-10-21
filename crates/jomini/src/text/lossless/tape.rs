@@ -47,7 +47,7 @@ use crate::{Scalar, TextTape, TextToken, text::Operator};
 /// diagnostics.
 ///
 /// ```
-/// use jomini::text::syntax::parse_tape;
+/// use jomini::text::lossless::parse_tape;
 ///
 /// let tape = parse_tape(b"name = Jean core = { FRA BUR }");
 /// let reader = tape.windows1252_reader();

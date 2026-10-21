@@ -33,11 +33,11 @@ impl std::fmt::Display for LineCol {
 /// source or a cache.
 ///
 /// ```
-/// use jomini::text::syntax::{LineCol, LineIndex};
+/// use jomini::text::lossless::{LineCol, LineIndex};
 ///
 /// let source = b"a = 1\nb = \"x";
 /// let index = LineIndex::new(source);
-/// let tree = jomini::text::syntax::parse(source);
+/// let tree = jomini::text::lossless::parse(source);
 /// let error = &tree.errors()[0];
 /// let at = index.line_col(error.range.start());
 /// assert_eq!(at, LineCol { line: 1, col: 4 });
@@ -143,7 +143,7 @@ mod tests {
         let index = LineIndex::new(source);
         assert_eq!(index.line_count(), 2);
         assert_eq!(index.line_col(6), LineCol { line: 1, col: 0 });
-        let tree = crate::text::syntax::parse(source);
+        let tree = crate::text::lossless::parse(source);
         let at = index.line_col(tree.errors()[0].range.start());
         assert_eq!(at.to_string(), "2:5");
     }

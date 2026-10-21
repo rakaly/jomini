@@ -117,9 +117,6 @@ pub enum SyntaxKind {
     Bang,
     /// An operator: `=` `==` `?=` `!=` `<` `<=` `>` `>=`.
     Operator,
-    /// Reserved for explicit error tokens (the current lexer classifies every
-    /// byte, worst case as [`SyntaxKind::Unquoted`], so it is not emitted yet).
-    Error,
     /// A synthetic, zero-width `}` inserted after an unclosed block at EOF.
     MissingCloseBrace,
     /// A synthetic, zero-width `]` inserted after an unclosed bracket construct.
@@ -341,7 +338,7 @@ impl TextRange {
 
     /// The range as a `usize` range, to index the source.
     #[inline]
-    pub const fn to_usize(self) -> std::ops::Range<usize> {
+    pub const fn to_range(self) -> std::ops::Range<usize> {
         self.start as usize..self.end as usize
     }
 }
@@ -356,7 +353,7 @@ impl From<TextRange> for (u32, u32) {
 impl From<TextRange> for std::ops::Range<usize> {
     #[inline]
     fn from(range: TextRange) -> Self {
-        range.to_usize()
+        range.to_range()
     }
 }
 
@@ -400,11 +397,6 @@ impl Default for Flavor {
 }
 
 impl Flavor {
-    /// The permissive cross-game superset (same as [`Flavor::default`]).
-    pub fn superset() -> Self {
-        Flavor::default()
-    }
-
     /// Hearts of Iron IV: newline-terminated strings, no `@vars`/`$macros$`.
     pub fn hoi4() -> Self {
         Flavor {
@@ -1075,9 +1067,9 @@ pub enum SyntaxErrorKind {
     UnclosedInterpolation,
     UnclosedParameterHeader,
     UnclosedParameter,
-    UnclosedCodePayload,
-    CodePayloadMissingFirstBracket,
-    CodePayloadMissingSecondBracket,
+    UnclosedCode,
+    CodeMissingFirstBracket,
+    CodeMissingSecondBracket,
     UnclosedCalc,
     UnclosedCalcParen,
     BlockDepthExceeded,
@@ -1101,9 +1093,9 @@ impl SyntaxErrorKind {
             Self::UnclosedInterpolation => "unclosed bracket interpolation",
             Self::UnclosedParameterHeader => "unclosed parameter header",
             Self::UnclosedParameter => "unclosed parameter block",
-            Self::UnclosedCodePayload => "unclosed code payload",
-            Self::CodePayloadMissingFirstBracket => "unclosed code payload (missing first ']')",
-            Self::CodePayloadMissingSecondBracket => "unclosed code payload (missing second ']')",
+            Self::UnclosedCode => "unclosed code payload",
+            Self::CodeMissingFirstBracket => "unclosed code payload (missing first ']')",
+            Self::CodeMissingSecondBracket => "unclosed code payload (missing second ']')",
             Self::UnclosedCalc => "unclosed '@['",
             Self::UnclosedCalcParen => "unclosed parenthesized calculation",
             Self::BlockDepthExceeded => "maximum nesting depth exceeded; structure flattened",
@@ -1158,16 +1150,16 @@ pub enum RecoveryConstruct {
     Block,
     Interpolation,
     Parameter,
-    Calculation,
-    CodePayload,
-    ParenthesizedCalculation,
+    Calc,
+    Code,
+    CalcParen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Applicability {
     MachineApplicable,
-    Unsafe,
+    MaybeIncorrect,
 }
 
 impl Applicability {
@@ -1190,6 +1182,8 @@ pub struct MissingDelimiter {
     pub opening_range: TextRange,
     pub insertion_range: TextRange,
     pub repair_text: String,
+    /// The position of this repair among the repairs at the same offset.
+    /// [`SyntaxTree::repairs`] joins them into the repair of position 0.
     pub order: u32,
     /// The parser's local decision, before the reparse check.
     local_applicability: Applicability,
@@ -1244,8 +1238,7 @@ impl NodeFlags {
 fn own_flag_bits(kind: SyntaxKind) -> NodeFlags {
     match kind {
         SyntaxKind::Comment => NodeFlags::HAS_COMMENT,
-        SyntaxKind::Error
-        | SyntaxKind::Bogus
+        SyntaxKind::Bogus
         | SyntaxKind::MissingCloseBrace
         | SyntaxKind::MissingCloseBracket
         | SyntaxKind::MissingCalcClose
@@ -1305,7 +1298,7 @@ struct TreeData {
 /// the view are also available on the `Parse`.
 ///
 /// ```
-/// use jomini::text::syntax::{parse, Parse};
+/// use jomini::text::lossless::{parse, Parse};
 /// use std::sync::Arc;
 ///
 /// let source: Arc<[u8]> = Arc::from(&b"a = 1"[..]);
@@ -1380,14 +1373,14 @@ impl<S: AsRef<[u8]>> Parse<S> {
         self.tree().repair_applicability(delimiter)
     }
 
-    /// See [`SyntaxTree::repair_fixes`].
-    pub fn repair_fixes(&self) -> Vec<Repair> {
-        self.tree().repair_fixes()
+    /// See [`SyntaxTree::repairs`].
+    pub fn repairs(&self) -> Vec<Repair> {
+        self.tree().repairs()
     }
 
-    /// See [`SyntaxTree::repair`].
-    pub fn repair(&self) -> Vec<u8> {
-        self.tree().repair()
+    /// See [`SyntaxTree::repaired_source`].
+    pub fn repaired_source(&self) -> Vec<u8> {
+        self.tree().repaired_source()
     }
 
     /// See [`SyntaxTree::tokens`].
@@ -1401,6 +1394,7 @@ impl<S: AsRef<[u8]>> Parse<S> {
     }
 
     /// See [`SyntaxTree::reconstruct`].
+    #[cfg(test)]
     pub fn reconstruct(&self) -> Vec<u8> {
         self.tree().reconstruct()
     }
@@ -1490,12 +1484,12 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
         if delimiter.local_applicability.is_machine_applicable() && self.repairs_valid() {
             Applicability::MachineApplicable
         } else {
-            Applicability::Unsafe
+            Applicability::MaybeIncorrect
         }
     }
 
     /// Coalesced, machine-applicable delimiter insertions in source order.
-    pub fn repair_fixes(&self) -> Vec<Repair> {
+    pub fn repairs(&self) -> Vec<Repair> {
         if !self.repairs_valid() {
             return Vec::new();
         }
@@ -1503,8 +1497,8 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     }
 
     /// Apply all safe virtual delimiter repairs without changing other bytes.
-    pub fn repair(&self) -> Vec<u8> {
-        apply_repairs(self.source, self.repair_fixes())
+    pub fn repaired_source(&self) -> Vec<u8> {
+        apply_repairs(self.source, self.repairs())
     }
 
     fn repairs_valid(&self) -> bool {
@@ -1568,6 +1562,7 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     /// Reconstruct the source by walking the tree's leaves via the cursor API.
     ///
     /// Equals [`SyntaxTree::source`] for any tree; the lossless invariant.
+    #[cfg(test)]
     pub fn reconstruct(&self) -> Vec<u8> {
         fn collect(node: SyntaxNode<'_, '_>, out: &mut Vec<u8>) {
             for el in node.children() {
@@ -1696,7 +1691,7 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
 fn apply_repairs(source: &[u8], fixes: Vec<Repair>) -> Vec<u8> {
     let mut out = source.to_vec();
     for fix in fixes.into_iter().rev() {
-        out.splice(fix.range.to_usize(), fix.replacement.bytes());
+        out.splice(fix.range.to_range(), fix.replacement.bytes());
     }
     out
 }
@@ -2082,7 +2077,7 @@ impl<'t, S: Sink> Parser<'t, S> {
                 repair_text,
                 order,
                 local_applicability: if unsafe_quote {
-                    Applicability::Unsafe
+                    Applicability::MaybeIncorrect
                 } else {
                     Applicability::MachineApplicable
                 },
@@ -2380,7 +2375,7 @@ impl<'t, S: Sink> Parser<'t, S> {
     }
 
     fn token_text(&self, index: usize) -> &'t [u8] {
-        &self.source[self.tok(index).range().to_usize()]
+        &self.source[self.tok(index).range().to_range()]
     }
 
     fn preceded_by_code(&self, open: usize) -> bool {
@@ -2557,19 +2552,19 @@ impl<'t, S: Sink> Parser<'t, S> {
                 };
                 for index in 0..missing_count {
                     let kind = if missing_count == 1 || index == 1 {
-                        SyntaxErrorKind::CodePayloadMissingSecondBracket
+                        SyntaxErrorKind::CodeMissingSecondBracket
                     } else {
-                        SyntaxErrorKind::CodePayloadMissingFirstBracket
+                        SyntaxErrorKind::CodeMissingFirstBracket
                     };
                     self.missing(
                         open,
                         SyntaxKind::MissingCloseBracket,
-                        RecoveryConstruct::CodePayload,
+                        RecoveryConstruct::Code,
                         kind,
                     );
                 }
             } else {
-                self.error_at(open, SyntaxErrorKind::UnclosedCodePayload);
+                self.error_at(open, SyntaxErrorKind::UnclosedCode);
             }
         }
     }
@@ -2784,7 +2779,7 @@ impl<'t, S: Sink> Parser<'t, S> {
                     recovery: Some(MissingDelimiter {
                         expected: SyntaxKind::CloseParen,
                         missing: SyntaxKind::MissingCloseParen,
-                        construct: RecoveryConstruct::ParenthesizedCalculation,
+                        construct: RecoveryConstruct::CalcParen,
                         opening_range: self.tok(paren_open as usize).range(),
                         insertion_range: TextRange::empty(at),
                         repair_text: ")".into(),
@@ -2805,7 +2800,7 @@ impl<'t, S: Sink> Parser<'t, S> {
             self.missing(
                 open,
                 SyntaxKind::MissingCalcClose,
-                RecoveryConstruct::Calculation,
+                RecoveryConstruct::Calc,
                 SyntaxErrorKind::UnclosedCalc,
             );
         } else if !at_eof {
@@ -3157,7 +3152,7 @@ impl<'t, 'a> SyntaxNode<'t, 'a> {
 
     /// The source bytes this node spans (a lossless slice of the subtree).
     pub fn text(&self) -> &'a [u8] {
-        &self.tree.source[self.text_range().to_usize()]
+        &self.tree.source[self.text_range().to_range()]
     }
 
     /// The parent node, or `None` for the root.
@@ -3187,12 +3182,12 @@ impl<'t, 'a> SyntaxNode<'t, 'a> {
     }
 
     /// Whether this subtree contains a `@[ ... ]` calc (O(1); see [`NodeFlags`]).
-    pub fn contains_calc(&self) -> bool {
+    pub fn has_calc(&self) -> bool {
         self.flags().contains(NodeFlags::HAS_CALC)
     }
 
     /// Whether this subtree contains a `$macro$` parameter (O(1); see [`NodeFlags`]).
-    pub fn contains_macro(&self) -> bool {
+    pub fn has_macro(&self) -> bool {
         self.flags().contains(NodeFlags::HAS_MACRO)
     }
 
@@ -3228,21 +3223,19 @@ impl<'t, 'a> SyntaxNode<'t, 'a> {
 
     /// Direct child nodes only.
     pub fn child_nodes(&self) -> impl Iterator<Item = SyntaxNode<'t, 'a>> + use<'t, 'a> {
-        self.significant_children()
-            .filter_map(SyntaxElement::into_node)
+        self.significant_children().filter_map(|el| el.as_node())
     }
 
     /// Direct child tokens only, trivia included.
     pub fn child_tokens(&self) -> impl Iterator<Item = SyntaxToken<'t, 'a>> + use<'t, 'a> {
-        self.children().filter_map(SyntaxElement::into_token)
+        self.children().filter_map(|el| el.as_token())
     }
 
     /// Direct significant child tokens only.
     pub fn significant_child_tokens(
         &self,
     ) -> impl Iterator<Item = SyntaxToken<'t, 'a>> + use<'t, 'a> {
-        self.significant_children()
-            .filter_map(SyntaxElement::into_token)
+        self.significant_children().filter_map(|el| el.as_token())
     }
 }
 
@@ -3283,7 +3276,7 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
 
     /// The raw source bytes of this token.
     pub fn text(&self) -> &'a [u8] {
-        &self.tree.source[self.range.to_usize()]
+        &self.tree.source[self.range.to_range()]
     }
 
     /// The parent node. A trivia token's parent is the node that owns its gap.
@@ -3300,7 +3293,7 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
     }
 
     /// If this is an [`SyntaxKind::Operator`] token, the concrete [`Operator`].
-    pub fn operator(&self) -> Option<Operator> {
+    pub fn op(&self) -> Option<Operator> {
         if self.kind() != SyntaxKind::Operator {
             return None;
         }
@@ -3355,16 +3348,16 @@ impl<'t, 'a> SyntaxElement<'t, 'a> {
     }
 
     /// Unwrap to a node, or `None` if this is a token.
-    pub fn into_node(self) -> Option<SyntaxNode<'t, 'a>> {
-        match self {
+    pub fn as_node(&self) -> Option<SyntaxNode<'t, 'a>> {
+        match *self {
             SyntaxElement::Node(n) => Some(n),
             SyntaxElement::Token(_) => None,
         }
     }
 
     /// Unwrap to a token, or `None` if this is a node.
-    pub fn into_token(self) -> Option<SyntaxToken<'t, 'a>> {
-        match self {
+    pub fn as_token(&self) -> Option<SyntaxToken<'t, 'a>> {
+        match *self {
             SyntaxElement::Token(t) => Some(t),
             SyntaxElement::Node(_) => None,
         }
@@ -3599,7 +3592,7 @@ ast_nodes! {
     ParenExpr => ParenExpr,
 }
 
-/// An entry within a [`Root`] or [`Block`].
+/// An item in a [`Root`], [`Block`], [`Parameter`], [`UndefinedParameter`], or [`Code`].
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub enum Item<'t, 'a> {
@@ -3631,7 +3624,7 @@ pub enum Value<'t, 'a> {
     /// A `{ ... }` block.
     Block(Block<'t, 'a>),
     /// A tagged block such as `rgb { 1 2 3 }`.
-    Headered(HeaderedBlock<'t, 'a>),
+    HeaderedBlock(HeaderedBlock<'t, 'a>),
     /// A `@[ ... ]` calculation.
     Calc(Calc<'t, 'a>),
     /// An EU4 conditional parameter block.
@@ -3686,7 +3679,7 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
     /// The encoding removes the escape characters of a quoted string.
     ///
     /// ```
-    /// use jomini::{Windows1252Encoding, text::syntax::parse};
+    /// use jomini::{Windows1252Encoding, text::lossless::parse};
     ///
     /// let tree = parse(b"name = \"Kr\xe4ftig \\\"Leo\\\"\"");
     /// let field = tree.ast().fields().next().unwrap();
@@ -3840,14 +3833,14 @@ fn code_items<'t, 'a>(
 }
 
 impl<'t, 'a> Root<'t, 'a> {
-    /// Every top-level entry, in source order (trivia skipped).
+    /// Every top-level item, in source order (trivia skipped).
     pub fn items(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
         child_items(self.syntax())
     }
 
     /// The top-level `key = value` fields.
     pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + use<'t, 'a> {
-        self.items().filter_map(Item::into_field)
+        self.items().filter_map(|el| el.as_field())
     }
 }
 
@@ -3869,7 +3862,7 @@ impl<'t, 'a> Field<'t, 'a> {
 
     /// The concrete [`Operator`], re-derived from the operator token's text.
     pub fn op(&self) -> Option<Operator> {
-        self.op_token().and_then(|t| t.operator())
+        self.op_token().and_then(|t| t.op())
     }
 
     /// The value (the right-hand side), or `None` if it is missing.
@@ -3887,24 +3880,24 @@ impl<'t, 'a> Field<'t, 'a> {
 }
 
 impl<'t, 'a> Block<'t, 'a> {
-    /// Every entry between the braces, in source order (trivia skipped).
-    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
+    /// Every item between the braces, in source order (trivia skipped).
+    pub fn items(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
         child_items(self.syntax())
     }
 
     /// The `key = value` fields directly inside this block.
     pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + use<'t, 'a> {
-        self.entries().filter_map(Item::into_field)
+        self.items().filter_map(|el| el.as_field())
     }
 
     /// The bare values (array elements) directly inside this block.
     pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + use<'t, 'a> {
-        self.entries().filter_map(Item::into_value)
+        self.items().filter_map(|el| el.as_value())
     }
 
     /// Whether the block has no entries (only braces, whitespace, comments).
     pub fn is_empty(&self) -> bool {
-        self.entries().next().is_none()
+        self.items().next().is_none()
     }
 
     /// Return the physical closing brace, if the source contains one.
@@ -3926,19 +3919,19 @@ impl<'t, 'a> Parameter<'t, 'a> {
         parameter_name(self.syntax())
     }
 
-    /// The entries in the parameter body.
-    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
+    /// The items in the parameter body.
+    pub fn items(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
         parameter_items(self.syntax())
     }
 
     /// The fields directly inside the parameter body.
     pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + use<'t, 'a> {
-        self.entries().filter_map(Item::into_field)
+        self.items().filter_map(|el| el.as_field())
     }
 
     /// The bare values directly inside the parameter body.
     pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + use<'t, 'a> {
-        self.entries().filter_map(Item::into_value)
+        self.items().filter_map(|el| el.as_value())
     }
 
     /// Return the physical body closing bracket, if the source contains one.
@@ -3958,19 +3951,19 @@ impl<'t, 'a> UndefinedParameter<'t, 'a> {
         parameter_name(self.syntax())
     }
 
-    /// The entries in the parameter body.
-    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
+    /// The items in the parameter body.
+    pub fn items(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
         parameter_items(self.syntax())
     }
 
     /// The fields directly inside the parameter body.
     pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + use<'t, 'a> {
-        self.entries().filter_map(Item::into_field)
+        self.items().filter_map(|el| el.as_field())
     }
 
     /// The bare values directly inside the parameter body.
     pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + use<'t, 'a> {
-        self.entries().filter_map(Item::into_value)
+        self.items().filter_map(|el| el.as_value())
     }
 
     /// Return the physical body closing bracket, if the source contains one.
@@ -3999,19 +3992,19 @@ impl<'t, 'a> Code<'t, 'a> {
             .find(|token| token.kind() == SyntaxKind::Operator)
     }
 
-    /// The entries in the code payload.
-    pub fn entries(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
+    /// The items in the code payload.
+    pub fn items(&self) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
         code_items(self.syntax())
     }
 
     /// The fields directly inside the code payload.
     pub fn fields(&self) -> impl Iterator<Item = Field<'t, 'a>> + use<'t, 'a> {
-        self.entries().filter_map(Item::into_field)
+        self.items().filter_map(|el| el.as_field())
     }
 
     /// The bare values directly inside the code payload.
     pub fn values(&self) -> impl Iterator<Item = Value<'t, 'a>> + use<'t, 'a> {
-        self.entries().filter_map(Item::into_value)
+        self.items().filter_map(|el| el.as_value())
     }
 
     /// Return `true` when the payload has two physical closing brackets.
@@ -4124,49 +4117,49 @@ impl<'t, 'a> ParenExpr<'t, 'a> {
 }
 
 impl<'t, 'a> Item<'t, 'a> {
-    /// The [`Field`] if this entry is one.
-    pub fn into_field(self) -> Option<Field<'t, 'a>> {
-        match self {
+    /// The [`Field`] if this item is one.
+    pub fn as_field(&self) -> Option<Field<'t, 'a>> {
+        match *self {
             Item::Field(f) => Some(f),
             _ => None,
         }
     }
 
-    /// The [`Parameter`] if this entry is one.
-    pub fn into_parameter(self) -> Option<Parameter<'t, 'a>> {
-        match self {
+    /// The [`Parameter`] if this item is one.
+    pub fn as_parameter(&self) -> Option<Parameter<'t, 'a>> {
+        match *self {
             Item::Parameter(parameter) => Some(parameter),
             _ => None,
         }
     }
 
-    /// The [`UndefinedParameter`] if this entry is one.
-    pub fn into_undefined_parameter(self) -> Option<UndefinedParameter<'t, 'a>> {
-        match self {
+    /// The [`UndefinedParameter`] if this item is one.
+    pub fn as_undefined_parameter(&self) -> Option<UndefinedParameter<'t, 'a>> {
+        match *self {
             Item::UndefinedParameter(parameter) => Some(parameter),
             _ => None,
         }
     }
 
-    /// The [`Code`] if this entry is one.
-    pub fn into_code(self) -> Option<Code<'t, 'a>> {
-        match self {
+    /// The [`Code`] if this item is one.
+    pub fn as_code(&self) -> Option<Code<'t, 'a>> {
+        match *self {
             Item::Code(code) => Some(code),
             _ => None,
         }
     }
 
-    /// The [`Interpolation`] if this entry is one.
-    pub fn into_interpolation(self) -> Option<Interpolation<'t, 'a>> {
-        match self {
+    /// The [`Interpolation`] if this item is one.
+    pub fn as_interpolation(&self) -> Option<Interpolation<'t, 'a>> {
+        match *self {
             Item::Interpolation(interpolation) => Some(interpolation),
             _ => None,
         }
     }
 
-    /// The [`Value`] if this entry is a bare value.
-    pub fn into_value(self) -> Option<Value<'t, 'a>> {
-        match self {
+    /// The [`Value`] if this item is a bare value.
+    pub fn as_value(&self) -> Option<Value<'t, 'a>> {
+        match *self {
             Item::Value(v) => Some(v),
             _ => None,
         }
@@ -4181,7 +4174,7 @@ impl<'t, 'a> Value<'t, 'a> {
             SyntaxElement::Token(_) => None,
             SyntaxElement::Node(n) => match n.kind() {
                 SyntaxKind::Block => Block::cast(n).map(Value::Block),
-                SyntaxKind::HeaderedBlock => HeaderedBlock::cast(n).map(Value::Headered),
+                SyntaxKind::HeaderedBlock => HeaderedBlock::cast(n).map(Value::HeaderedBlock),
                 SyntaxKind::Calc => Calc::cast(n).map(Value::Calc),
                 SyntaxKind::Parameter => Parameter::cast(n).map(Value::Parameter),
                 SyntaxKind::UndefinedParameter => {
@@ -4210,10 +4203,10 @@ impl<'t, 'a> Value<'t, 'a> {
         }
     }
 
-    /// The headered block, if this is [`Value::Headered`].
-    pub fn as_headered(&self) -> Option<HeaderedBlock<'t, 'a>> {
+    /// The headered block, if this is [`Value::HeaderedBlock`].
+    pub fn as_headered_block(&self) -> Option<HeaderedBlock<'t, 'a>> {
         match self {
-            Value::Headered(h) => Some(*h),
+            Value::HeaderedBlock(h) => Some(*h),
             _ => None,
         }
     }
@@ -4500,7 +4493,7 @@ impl Fmt<'_> {
             Some(kind) => self.comment_open = kind == SyntaxKind::Comment,
             None => {
                 self.quote_open = last.kind == SyntaxKind::Quoted
-                    && !quote_is_closed(&tree.source[last.range().to_usize()]);
+                    && !quote_is_closed(&tree.source[last.range().to_range()]);
             }
         }
     }
@@ -4903,7 +4896,7 @@ mod tests {
 
         let toks: Vec<_> = field.child_tokens().collect();
         assert_eq!(toks[0].text(), b"a");
-        assert_eq!(toks[2].operator(), Some(Operator::Equal));
+        assert_eq!(toks[2].op(), Some(Operator::Equal));
         assert_eq!(toks[4].text(), b"b");
         assert_eq!(field.text(), b"a = b");
         assert!(tree.errors().is_empty());
@@ -4964,7 +4957,7 @@ mod tests {
             .child_tokens()
             .find(|t| t.kind() == SyntaxKind::Operator)
             .unwrap();
-        assert_eq!(op.operator(), Some(Operator::GreaterThan));
+        assert_eq!(op.op(), Some(Operator::GreaterThan));
     }
 
     #[test]
@@ -5134,14 +5127,14 @@ mod tests {
         assert!(!block.is_closed_in_source());
         assert!(block.close_brace().is_none());
         assert_eq!(
-            tree.repair_fixes(),
+            tree.repairs(),
             [Repair {
                 range: TextRange::empty(7),
                 replacement: "}".into()
             }]
         );
-        assert_eq!(tree.repair(), b"a = { b}");
-        assert!(parse(&tree.repair()).errors().is_empty());
+        assert_eq!(tree.repaired_source(), b"a = { b}");
+        assert!(parse(&tree.repaired_source()).errors().is_empty());
         assert_eq!(tree.reconstruct(), source);
         assert!(!format(source).contains(&b'}'));
     }
@@ -5159,9 +5152,12 @@ mod tests {
             missing,
             [SyntaxKind::MissingCloseBrace, SyntaxKind::MissingCloseBrace]
         );
-        assert_eq!(tree.repair_fixes()[0].replacement, "}}".to_string());
-        assert_eq!(tree.repair(), b"outer = { clean = {} bad = { value}}");
-        assert!(parse(&tree.repair()).errors().is_empty());
+        assert_eq!(tree.repairs()[0].replacement, "}}".to_string());
+        assert_eq!(
+            tree.repaired_source(),
+            b"outer = { clean = {} bad = { value}}"
+        );
+        assert!(parse(&tree.repaired_source()).errors().is_empty());
 
         let outer = tree
             .ast()
@@ -5192,10 +5188,7 @@ mod tests {
                     .iter()
                     .any(|error| error.message().contains("unclosed"))
             );
-            assert!(
-                tree.repair_fixes().is_empty(),
-                "unexpected fix for {source:?}"
-            );
+            assert!(tree.repairs().is_empty(), "unexpected fix for {source:?}");
             assert!(tree.errors().iter().all(|error| {
                 error.recovery.as_ref().is_none_or(|recovery| {
                     !tree.repair_applicability(recovery).is_machine_applicable()
@@ -5231,10 +5224,10 @@ mod tests {
                 .iter()
                 .any(|error| error.message().contains("unclosed '@['"))
         );
-        assert!(interrupted_calc.repair_fixes().is_empty());
+        assert!(interrupted_calc.repairs().is_empty());
 
         let ambiguous_bracket = parse(b"a = { [");
-        assert!(ambiguous_bracket.repair_fixes().is_empty());
+        assert!(ambiguous_bracket.repairs().is_empty());
     }
 
     #[test]
@@ -5247,9 +5240,9 @@ mod tests {
         ];
         for (source, replacement) in cases {
             let tree = parse(source);
-            assert_eq!(tree.repair_fixes()[0].replacement.as_bytes(), replacement);
+            assert_eq!(tree.repairs()[0].replacement.as_bytes(), replacement);
             assert!(
-                parse(&tree.repair()).errors().is_empty(),
+                parse(&tree.repaired_source()).errors().is_empty(),
                 "source={source:?}"
             );
         }
@@ -5259,10 +5252,10 @@ mod tests {
             b"a = { \"escaped\\\"".as_slice(),
         ] {
             let tree = parse(source);
-            assert!(tree.repair_fixes().is_empty());
+            assert!(tree.repairs().is_empty());
             assert!(tree.errors().iter().any(|error| {
                 error.recovery.as_ref().is_some_and(|recovery| {
-                    tree.repair_applicability(recovery) == Applicability::Unsafe
+                    tree.repair_applicability(recovery) == Applicability::MaybeIncorrect
                 })
             }));
         }
@@ -5271,7 +5264,11 @@ mod tests {
     #[test]
     fn unclosed_parameter_with_inner_bracket_is_not_closed() {
         let tree = parse(b"[[x] [ } ]");
-        let parameter = tree.ast().items().find_map(Item::into_parameter).unwrap();
+        let parameter = tree
+            .ast()
+            .items()
+            .find_map(|item| item.as_parameter())
+            .unwrap();
         assert!(!parameter.is_closed_in_source(), "{}", tree.debug_tree());
 
         let tree = parse(b"[[!x] [ } ]");
@@ -5286,7 +5283,11 @@ mod tests {
         assert!(!parameter.is_closed_in_source(), "{}", tree.debug_tree());
 
         let tree = parse(b"[[x] a = b ]");
-        let parameter = tree.ast().items().find_map(Item::into_parameter).unwrap();
+        let parameter = tree
+            .ast()
+            .items()
+            .find_map(|item| item.as_parameter())
+            .unwrap();
         assert!(parameter.is_closed_in_source());
     }
 
@@ -5303,8 +5304,8 @@ mod tests {
             .unwrap();
         assert_eq!(parameter_node.values().count(), 1);
         assert!(parameter_node.close_bracket().is_none());
-        assert_eq!(parameter.repair_fixes()[0].replacement, "]");
-        assert!(parse(&parameter.repair()).errors().is_empty());
+        assert_eq!(parameter.repairs()[0].replacement, "]");
+        assert!(parse(&parameter.repaired_source()).errors().is_empty());
 
         let header = parse(b"[[name");
         assert!(
@@ -5313,18 +5314,18 @@ mod tests {
                 .items()
                 .any(|item| matches!(item, Item::Parameter(_)))
         );
-        assert_eq!(header.repair_fixes()[0].replacement, "]]".to_string());
-        assert!(parse(&header.repair()).errors().is_empty());
+        assert_eq!(header.repairs()[0].replacement, "]]".to_string());
+        assert!(parse(&header.repaired_source()).errors().is_empty());
 
         let one = parse(b"code [[value]");
-        assert_eq!(one.repair_fixes()[0].replacement, "]");
+        assert_eq!(one.repairs()[0].replacement, "]");
         assert_eq!(one.tokens().filter(|token| token.is_missing()).count(), 1);
-        assert!(parse(&one.repair()).errors().is_empty());
+        assert!(parse(&one.repaired_source()).errors().is_empty());
 
         let both = parse(b"code [[value");
-        assert_eq!(both.repair_fixes()[0].replacement, "]]".to_string());
+        assert_eq!(both.repairs()[0].replacement, "]]".to_string());
         assert_eq!(both.tokens().filter(|token| token.is_missing()).count(), 2);
-        assert!(parse(&both.repair()).errors().is_empty());
+        assert!(parse(&both.repaired_source()).errors().is_empty());
     }
 
     #[test]
@@ -5344,8 +5345,8 @@ mod tests {
                 SyntaxKind::MissingCloseBrace
             ]
         );
-        assert_eq!(tree.repair_fixes()[0].replacement, ")]}");
-        assert!(parse(&tree.repair()).errors().is_empty());
+        assert_eq!(tree.repairs()[0].replacement, ")]}");
+        assert!(parse(&tree.repaired_source()).errors().is_empty());
         assert_eq!(tree.reconstruct(), source);
     }
 
@@ -5369,9 +5370,9 @@ mod tests {
                 .body()
                 .any(|element| element.kind() == SyntaxKind::Unquoted)
         );
-        assert_eq!(tree.repair_fixes()[0].replacement, "]");
-        assert_eq!(tree.repair(), b"value = [ROOT.GetName]");
-        assert!(parse(&tree.repair()).errors().is_empty());
+        assert_eq!(tree.repairs()[0].replacement, "]");
+        assert_eq!(tree.repaired_source(), b"value = [ROOT.GetName]");
+        assert!(parse(&tree.repaired_source()).errors().is_empty());
     }
 
     #[test]
@@ -5412,7 +5413,7 @@ mod tests {
             let kinds: Vec<_> = tree.errors().iter().map(|e| e.kind).collect();
             assert_eq!(kinds, vec![SyntaxErrorKind::UnexpectedOpenBracket]);
             assert!(tree.errors()[0].recovery.is_none());
-            assert!(tree.repair_fixes().is_empty());
+            assert!(tree.repairs().is_empty());
             assert_eq!(tree.reconstruct(), source);
         }
 
@@ -5435,7 +5436,7 @@ mod tests {
 
         // The `]` refuses the virtual `}` at EOF.
         let tree = parse(b"a = { b ] c");
-        assert!(tree.repair_fixes().is_empty());
+        assert!(tree.repairs().is_empty());
     }
 
     #[test]
@@ -5585,7 +5586,7 @@ mod tests {
     }
 
     #[test]
-    fn ast_block_entries_fields_and_values() {
+    fn ast_block_items_fields_and_values() {
         let tree = parse(b"obj = { a = 1 b = 2 } arr = { x y z }");
         let mut fields = tree.ast().fields();
         let obj = fields.next().unwrap().value().unwrap().as_block().unwrap();
@@ -5628,7 +5629,7 @@ mod tests {
             .unwrap()
             .value()
             .unwrap()
-            .as_headered()
+            .as_headered_block()
             .unwrap();
         assert_eq!(rgb.header().unwrap().text(), b"rgb");
         let channels: Vec<_> = rgb
@@ -5644,7 +5645,7 @@ mod tests {
             .unwrap()
             .value()
             .unwrap()
-            .as_headered()
+            .as_headered_block()
             .unwrap();
         assert_eq!(custom.header().unwrap().text(), b"tag");
         assert_eq!(custom.block().unwrap().fields().count(), 1);
@@ -5679,7 +5680,7 @@ mod tests {
             .unwrap()
             .value()
             .unwrap()
-            .as_headered()
+            .as_headered_block()
             .unwrap();
         assert_eq!(headered.header().unwrap().text(), b"rgb");
 
@@ -5770,7 +5771,7 @@ mod tests {
             .unwrap()
             .as_block()
             .unwrap();
-        let entries = block.entries().collect::<Vec<_>>();
+        let entries = block.items().collect::<Vec<_>>();
         let [Item::Parameter(parameter)] = entries.as_slice() else {
             panic!("expected one parameter entry");
         };
@@ -5818,7 +5819,7 @@ mod tests {
             panic!("expected one empty parameter entry");
         };
         assert_eq!(parameter.name().unwrap().text(), b"dip_reward");
-        assert_eq!(parameter.entries().count(), 0);
+        assert_eq!(parameter.items().count(), 0);
     }
 
     #[test]
@@ -5857,7 +5858,7 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        let entries = block.entries().collect::<Vec<_>>();
+        let entries = block.items().collect::<Vec<_>>();
         let [Item::Code(code)] = entries.as_slice() else {
             panic!("expected one code payload");
         };
@@ -5911,7 +5912,7 @@ mod tests {
             let [Item::Code(code)] = entries.as_slice() else {
                 panic!("expected a code payload");
             };
-            assert_eq!(code.entries().count(), 0);
+            assert_eq!(code.items().count(), 0);
         }
 
         for source in [b"code = [[]]".as_slice(), b"code = [[ ]]".as_slice()] {
@@ -5919,10 +5920,7 @@ mod tests {
             assert!(tree.errors().is_empty());
             assert_eq!(tree.reconstruct(), source);
             let field = tree.ast().fields().next().unwrap();
-            assert_eq!(
-                field.value().unwrap().as_code().unwrap().entries().count(),
-                0
-            );
+            assert_eq!(field.value().unwrap().as_code().unwrap().items().count(), 0);
         }
     }
 
@@ -6071,7 +6069,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             outer
-                .entries()
+                .items()
                 .filter(|entry| matches!(entry, Item::Parameter(_)))
                 .count(),
             2
@@ -6288,7 +6286,7 @@ mod tests {
         // *whole* subtree, derived in finish() with no per-query walk.
         let tree = parse(b"outer = { # hi\n a = $P$ inner = { b = c } } c = @[1+2]");
         let root = tree.root();
-        assert!(root.has_comment() && root.contains_macro() && root.contains_calc());
+        assert!(root.has_comment() && root.has_macro() && root.has_calc());
         assert!(!root.has_error());
 
         let mut fields = tree.ast().fields();
@@ -6301,9 +6299,9 @@ mod tests {
             .unwrap()
             .syntax();
         assert!(outer_block.has_comment());
-        assert!(outer_block.contains_macro());
+        assert!(outer_block.has_macro());
         assert!(
-            !outer_block.contains_calc(),
+            !outer_block.has_calc(),
             "the calc is in a sibling, not here"
         );
 
@@ -6314,11 +6312,11 @@ mod tests {
             .map(|b| b.syntax())
             .next()
             .expect("the `inner` block");
-        assert!(!inner.has_comment() && !inner.contains_macro() && !inner.contains_calc());
+        assert!(!inner.has_comment() && !inner.has_macro() && !inner.has_calc());
 
         // The calc sibling carries HAS_CALC and nothing spurious.
         let calc_block = fields.next().unwrap().syntax();
-        assert!(calc_block.contains_calc() && !calc_block.has_comment());
+        assert!(calc_block.has_calc() && !calc_block.has_comment());
 
         // A `Bogus` recovery node sets HAS_ERROR all the way to the root.
         // Virtual missing delimiters also set HAS_ERROR through their ancestors.
@@ -6528,9 +6526,9 @@ mod tests {
             calc.child_nodes()
                 .any(|n| n.kind() == SyntaxKind::BinaryExpr)
         );
-        assert_eq!(tree.repair_fixes()[0].replacement, "]");
+        assert_eq!(tree.repairs()[0].replacement, "]");
         assert!(calc.has_error());
-        assert!(parse(&tree.repair()).errors().is_empty());
+        assert!(parse(&tree.repaired_source()).errors().is_empty());
     }
 
     #[test]
@@ -6552,7 +6550,7 @@ mod tests {
             );
             assert!(tree.root().has_error());
             assert_eq!(tree.reconstruct(), source);
-            assert!(tree.repair_fixes().is_empty());
+            assert!(tree.repairs().is_empty());
             let mut stack = vec![(tree.root(), 0)];
             while let Some((node, depth)) = stack.pop() {
                 assert!(depth <= MAX_DEPTH + 3);
@@ -6577,7 +6575,7 @@ mod tests {
             );
             assert!(tree.errors().iter().all(|e| e.recovery.is_none()));
             assert!(tree.root().has_error());
-            assert!(tree.repair_fixes().is_empty());
+            assert!(tree.repairs().is_empty());
             assert_eq!(tree.reconstruct(), source);
             let mut stack = vec![tree.root()];
             while let Some(node) = stack.pop() {
@@ -6973,7 +6971,7 @@ mod tests {
         // In value position, a header is still a headered block.
         let tree = parse(b"color = rgb { 1 2 3 }");
         let value = tree.ast().fields().next().unwrap().value().unwrap();
-        assert!(value.as_headered().is_some());
+        assert!(value.as_headered_block().is_some());
     }
 
     #[test]
@@ -6995,7 +6993,7 @@ mod tests {
         let field = tree.ast().fields().next().unwrap();
         let value = field.value().unwrap().as_scalar().unwrap();
         assert_eq!(value.as_bytes(), b"$a$_b");
-        assert!(tree.root().contains_macro());
+        assert!(tree.root().has_macro());
         assert_eq!(tree.root().child_nodes().count(), 1);
 
         // HoI4 has no macros.

@@ -122,17 +122,20 @@ impl TextTapeParser {
     }
 
     /// Parse the text format into the given tape.
-    #[cfg_attr(all(jomini_lossless_tape, feature = "syntax"), allow(unreachable_code))]
+    #[cfg_attr(
+        all(jomini_lossless_tape, feature = "lossless"),
+        allow(unreachable_code)
+    )]
     pub fn parse_slice_into_tape<'a>(
         self,
         data: &'a [u8],
         tape: &mut TextTape<'a>,
     ) -> Result<(), Error> {
         // Test the readers and the deserializer on the lossless parser:
-        // RUSTFLAGS="--cfg jomini_lossless_tape" cargo test -p jomini --features syntax
-        #[cfg(all(jomini_lossless_tape, feature = "syntax"))]
+        // RUSTFLAGS="--cfg jomini_lossless_tape" cargo test -p jomini --features lossless
+        #[cfg(all(jomini_lossless_tape, feature = "lossless"))]
         {
-            *tape = crate::text::syntax::parse_tape(data);
+            *tape = crate::text::lossless::parse_tape(data);
             return Ok(());
         }
 
@@ -436,7 +439,7 @@ impl<'a> TextTape<'a> {
     }
 
     /// Make a tape from tokens that another parser wrote.
-    #[cfg(feature = "syntax")]
+    #[cfg(feature = "lossless")]
     pub(crate) fn from_parts(token_tape: Vec<TextToken<'a>>, utf8_bom: bool) -> Self {
         TextTape {
             token_tape,
@@ -1679,7 +1682,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(jomini_lossless_tape, feature = "syntax"),
+        all(jomini_lossless_tape, feature = "lossless"),
         ignore = "the lossless parser recovers from this error"
     )]
     fn test_regression() {
@@ -1696,7 +1699,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // too slow
     #[cfg_attr(
-        all(jomini_lossless_tape, feature = "syntax"),
+        all(jomini_lossless_tape, feature = "lossless"),
         ignore = "the lossless parser recovers from this error"
     )]
     fn test_too_heavily_nested() {
@@ -1833,7 +1836,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(jomini_lossless_tape, feature = "syntax"),
+        all(jomini_lossless_tape, feature = "lossless"),
         ignore = "the lossless lexer reads a leading `==` as an operator"
     )]
     fn test_equal_identifier() {
@@ -2106,7 +2109,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(jomini_lossless_tape, feature = "syntax"),
+        all(jomini_lossless_tape, feature = "lossless"),
         ignore = "the lossless parser recovers from this error"
     )]
     fn test_operator_early_eof() {
@@ -2885,7 +2888,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(jomini_lossless_tape, feature = "syntax"),
+        all(jomini_lossless_tape, feature = "lossless"),
         ignore = "the lossless parser recovers from this error"
     )]
     fn test_parameter_eof() {
@@ -2895,7 +2898,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(jomini_lossless_tape, feature = "syntax"),
+        all(jomini_lossless_tape, feature = "lossless"),
         ignore = "the lossless parser recovers from this error"
     )]
     fn incomplete_object_fail_to_parse() {

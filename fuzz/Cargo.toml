@@ -17,7 +17,7 @@ serde = { version = "1.0", features = ["derive"] }
 
 [dependencies.jomini]
 path = "../crates/jomini"
-features = ["envelope", "syntax"]
+features = ["envelope", "lossless"]
 
 [dependencies.eu4save]
 path = "../crates/eu4save"

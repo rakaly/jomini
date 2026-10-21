@@ -264,7 +264,7 @@ jobs:
     # Run the reader and deserializer tests again on the tapes that the
     # lossless parser writes.
     - name: Run lossless tape tests
-      run: ${{ env.CARGO }} test --features syntax -p jomini --verbose ${{ env.TARGET }}
+      run: ${{ env.CARGO }} test --features lossless -p jomini --verbose ${{ env.TARGET }}
       env:
         RUSTFLAGS: --cfg jomini_lossless_tape
     - name: Run serde-only tests (no derive macros)
