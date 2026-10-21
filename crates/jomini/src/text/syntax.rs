@@ -705,7 +705,29 @@ fn lex_simd<S: Simd>(
                     end -= 1;
                 }
                 i = end;
-                classify_run(&source[start..i], dollar, flavor)
+                let kind = classify_run(&source[start..i], dollar, flavor);
+                // Most keys have the form `key = `. Lex the operator here,
+                // because a branch is easier to predict than the jump table.
+                if let Some(&[b' ', b'=', after]) = source.get(i..i + 3)
+                    && is_ws(after)
+                {
+                    out.push(Token {
+                        start: start as u32,
+                        len: (i - start) as u32,
+                        kind,
+                        flags,
+                    });
+                    out.push(Token {
+                        start: i as u32 + 1,
+                        len: 1,
+                        kind: SyntaxKind::Operator,
+                        flags: 0,
+                    });
+                    flags = 0;
+                    i += 2;
+                    continue;
+                }
+                kind
             }
         };
 
@@ -1726,8 +1748,12 @@ trait Sink {
 /// Build the node tape and record the positions of missing tokens.
 struct Builder {
     nodes: Vec<Node>,
-    /// The open nodes and the flags collected for each.
+    /// The open nodes. Each entry holds the index of a node and the flags
+    /// of its parent. The flags of the innermost open node are in `flags`,
+    /// because each token changes them.
     stack: Vec<(u32, NodeFlags)>,
+    /// The flags collected for the innermost open node.
+    flags: NodeFlags,
     /// The index of the next token.
     next_token: u32,
     missing_tokens: Vec<(u32, Token)>,
@@ -1739,8 +1765,39 @@ impl Builder {
         Builder {
             nodes: Vec::with_capacity(tokens / 2 + 1),
             stack: Vec::new(),
+            flags: NodeFlags(0),
             next_token: 0,
             missing_tokens: Vec::new(),
+        }
+    }
+
+    /// Record the diagnostic and the comment of a token.
+    #[cold]
+    #[inline(never)]
+    fn token_flags(&mut self, token: Token, index: u32) {
+        if token.flags & TOKEN_ERROR != 0 {
+            self.flags.insert(NodeFlags::HAS_ERROR);
+        }
+        if token.flags & TOKEN_COMMENT_BEFORE != 0 {
+            // The comment belongs to the deepest open node that also holds
+            // the previous token. The root holds a leading comment.
+            let nodes = &self.nodes;
+            let owner = self
+                .stack
+                .iter()
+                .rposition(|(node, _)| nodes[*node as usize].first_token < index)
+                .unwrap_or(0);
+            if !self.stack.is_empty() {
+                self.open_flags(owner).insert(NodeFlags::HAS_COMMENT);
+            }
+        }
+    }
+
+    /// The flags of the open node at `depth` in the stack.
+    fn open_flags(&mut self, depth: usize) -> &mut NodeFlags {
+        match self.stack.get_mut(depth + 1) {
+            Some((_, parent)) => parent,
+            None => &mut self.flags,
         }
     }
 
@@ -1801,9 +1858,7 @@ impl Sink for Builder {
             token_end: self.next_token,
             subtree_end,
         });
-        if let Some((_, parent)) = self.stack.last_mut() {
-            parent.insert(flags);
-        }
+        self.flags.insert(flags);
     }
 
     #[inline]
@@ -1816,7 +1871,8 @@ impl Sink for Builder {
             token_end: 0,
             subtree_end: 0,
         });
-        self.stack.push((idx, own_flag_bits(kind)));
+        self.stack.push((idx, self.flags));
+        self.flags = own_flag_bits(kind);
     }
 
     #[inline]
@@ -1826,45 +1882,28 @@ impl Sink for Builder {
         if token.kind.is_missing() {
             self.missing_tokens.push((index, token));
         }
-        if let Some((_, flags)) = self.stack.last_mut() {
-            flags.insert(own_flag_bits(token.kind));
-            if token.flags & TOKEN_ERROR != 0 {
-                flags.insert(NodeFlags::HAS_ERROR);
-            }
-        }
-        if token.flags & TOKEN_COMMENT_BEFORE != 0 {
-            // The comment belongs to the deepest open node that also holds
-            // the previous token. The root holds a leading comment.
-            let nodes = &self.nodes;
-            let owner = self
-                .stack
-                .iter_mut()
-                .rev()
-                .find(|(node, _)| nodes[*node as usize].first_token < index);
-            if let Some((_, flags)) = owner {
-                flags.insert(NodeFlags::HAS_COMMENT);
-            } else if let Some((_, flags)) = self.stack.first_mut() {
-                flags.insert(NodeFlags::HAS_COMMENT);
-            }
+        self.flags.insert(own_flag_bits(token.kind));
+        if token.flags & (TOKEN_ERROR | TOKEN_COMMENT_BEFORE) != 0 {
+            self.token_flags(token, index);
         }
     }
 
     #[inline]
     fn finish_node(&mut self) {
-        let (idx, flags) = self.stack.pop().expect("finish_node without start_node");
+        let (idx, parent) = self.stack.pop().expect("finish_node without start_node");
+        let flags = self.flags;
         let subtree_end = self.nodes.len() as u32;
         let node = &mut self.nodes[idx as usize];
         node.flags = flags;
         node.token_end = self.next_token;
         node.subtree_end = subtree_end;
-        if let Some((_, parent)) = self.stack.last_mut() {
-            parent.insert(flags);
-        }
+        self.flags = parent;
+        self.flags.insert(flags);
     }
 
     fn error(&mut self) {
-        if let Some((_, flags)) = self.stack.last_mut() {
-            flags.insert(NodeFlags::HAS_ERROR);
+        if !self.stack.is_empty() {
+            self.flags.insert(NodeFlags::HAS_ERROR);
         }
     }
 }
