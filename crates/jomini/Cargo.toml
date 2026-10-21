@@ -35,7 +35,7 @@ envelope = ["dep:rawzip", "dep:flate2"]
 faster_writer = ["dep:itoa"]
 json = ["serde", "serde_json"]
 serde = ["dep:serde", "serde/derive"]
-syntax = ["dep:fearless_simd"]
+lossless = ["dep:fearless_simd"]
 zstd_c = ["envelope", "dep:zstd"]
 zstd_rust = ["envelope", "dep:ruzstd"]
 

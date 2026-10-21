@@ -1,7 +1,7 @@
 #![no_main]
 use jomini::{
     TextToken,
-    text::{ObjectReader, ValueReader, syntax},
+    text::{ObjectReader, ValueReader, lossless},
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -28,14 +28,25 @@ fn read_object(reader: ObjectReader<jomini::Windows1252Encoding>) {
     }
 }
 
+fn collect_text(node: lossless::SyntaxNode, out: &mut Vec<u8>) {
+    for element in node.children() {
+        match element {
+            lossless::SyntaxElement::Token(token) => out.extend_from_slice(token.text()),
+            lossless::SyntaxElement::Node(node) => collect_text(node, out),
+        }
+    }
+}
+
 fuzz_target!(|data: &[u8]| {
     // The tree keeps every byte of the source.
-    let tree = syntax::parse(data);
-    assert_eq!(tree.reconstruct(), data);
+    let tree = lossless::parse(data);
+    let mut text = Vec::with_capacity(data.len());
+    collect_text(tree.root(), &mut text);
+    assert_eq!(text, data);
 
     // The lossless parser does not have to write the same tape as `TextTape`
     // for malformed input, but the tape must always be valid.
-    let tape = syntax::parse_tape(data);
+    let tape = lossless::parse_tape(data);
     let tokens = tape.tokens();
     for (i, token) in tokens.iter().enumerate() {
         match token {

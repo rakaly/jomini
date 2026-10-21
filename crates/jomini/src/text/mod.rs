@@ -25,10 +25,10 @@
 pub mod de;
 mod dom;
 mod fnv;
+#[cfg(feature = "lossless")]
+pub mod lossless;
 mod operator;
 mod reader;
-#[cfg(feature = "syntax")]
-pub mod syntax;
 mod tape;
 mod writer;
 
