@@ -1,4 +1,4 @@
-use jomini::{binary::BinaryFlavor, Encoding, Windows1252Encoding};
+use jomini::{binary::BinaryFlavor, Encoding, Utf8Encoding, Windows1252Encoding};
 
 /// The eu4 binary flavor and text encoding
 ///
@@ -118,6 +118,84 @@ pub fn decode_eu4_escaped_text(mut input: &[u8]) -> String {
     result
 }
 
+/// Decodes UTF-8 text and EU4dll escapes in a string.
+///
+/// The mod names can use UTF-8. Player names can mix UTF-8 text and EU4dll
+/// escapes. Other byte sequences use Windows-1252.
+pub(crate) fn decode_eu4_mixed_text(data: &[u8]) -> String {
+    if !data.iter().any(|&b| is_eu4dll_escape(b)) {
+        if std::str::from_utf8(data).is_ok() {
+            return Utf8Encoding::new().decode(data).into_owned();
+        }
+        return Eu4Flavor::new().decode(data).into_owned();
+    }
+
+    const ELLIPSIS: u32 = '…' as u32;
+    let mut wide_chars = Vec::with_capacity(data.len());
+    let mut segment_start = 0;
+    let mut cursor = 0;
+
+    while cursor < data.len() {
+        let marker = data[cursor];
+        if !is_eu4dll_escape(marker) {
+            cursor += 1;
+            continue;
+        }
+
+        append_text_segment(&mut wide_chars, &data[segment_start..cursor]);
+        if cursor + 2 >= data.len() {
+            wide_chars.push(ELLIPSIS as u16);
+            cursor += 1;
+            segment_start = cursor;
+            continue;
+        }
+
+        let low = data[cursor + 1];
+        let high = data[cursor + 2];
+        let mut code_point = (u32::from(high) << 8) + u32::from(low);
+        code_point = match marker {
+            0x10 => code_point,
+            0x11 => code_point.saturating_sub(0xE),
+            0x12 => code_point.saturating_add(0x900),
+            0x13 => code_point.saturating_add(0x8F2),
+            _ => unreachable!(),
+        };
+        wide_chars.push(if code_point > 0xFFFF {
+            ELLIPSIS as u16
+        } else {
+            code_point as u16
+        });
+
+        cursor += 3;
+        segment_start = cursor;
+    }
+
+    append_text_segment(&mut wide_chars, &data[segment_start..]);
+
+    let mut result = String::from_utf16_lossy(&wide_chars);
+    let trimmed_len = result
+        .trim_end_matches(|c: char| c.is_ascii_whitespace())
+        .len();
+    result.truncate(trimmed_len);
+    result
+}
+
+fn append_text_segment(output: &mut Vec<u16>, data: &[u8]) {
+    if let Ok(text) = std::str::from_utf8(data) {
+        for c in text.chars().filter(|&c| c != '\\') {
+            let mut encoded = [0; 2];
+            output.extend_from_slice(c.encode_utf16(&mut encoded));
+        }
+    } else {
+        output.extend(
+            data.iter()
+                .copied()
+                .filter(|&b| b != b'\\')
+                .map(|b| cp1252_to_ucs2(b) as u16),
+        );
+    }
+}
+
 /// Converts a CP1252 byte to its UCS-2 equivalent
 fn cp1252_to_ucs2(cp: u8) -> u32 {
     match cp {
@@ -182,5 +260,27 @@ mod tests {
 
         // The trailing space is the high byte of the em dash escape
         assert_eq!(flavor.decode(b"a\x10\x14\x20"), "a\u{2014}");
+    }
+
+    #[test]
+    fn eu4_mixed_text_decodes_utf8_mod_names() {
+        let actual = decode_eu4_mixed_text("女仆事件框/Maid Event Window".as_bytes());
+        assert_eq!(actual, "女仆事件框/Maid Event Window");
+    }
+
+    #[test]
+    fn eu4_mixed_text_decodes_utf8_and_escaped_player_names() {
+        let data = b"\xe5\x8d\x83\xe5\x88\x83\xe4\xb8\x87\xe6\xb6\x9b\xe6\x9f\x93\xe6\xa1\x83\x10\x07\x7f\x10\x05Z4";
+        let actual = decode_eu4_mixed_text(data);
+        assert_eq!(actual, "千刃万涛染桃缇娅4");
+    }
+
+    #[test]
+    fn eu4_mixed_text_keeps_legacy_decoding() {
+        assert_eq!(decode_eu4_mixed_text(b"Caf\xe9"), "Café");
+        assert_eq!(
+            decode_eu4_mixed_text(b"\\\"Foo\\\" \x10\x8a\x96"),
+            "\"Foo\" 隊"
+        );
     }
 }
