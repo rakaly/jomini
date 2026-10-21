@@ -52,6 +52,9 @@ pub(crate) trait Doc: Copy {
     type Container: Copy;
     /// The entries of a container in source order.
     type Items: Iterator<Item = Item<Self>> + Clone;
+    /// The values of a container that has only scalars. See
+    /// [`Doc::scalars`].
+    type Scalars: Iterator<Item = Self::Node> + Clone;
 
     fn view(self, node: Self::Node) -> View<Self>;
     fn items(self, container: Self::Container) -> Self::Items;
@@ -66,6 +69,15 @@ pub(crate) trait Doc: Copy {
     fn node_range(self, node: Self::Node) -> Option<TextRange>;
     fn scalar_range(self, scalar: Self::Scalar) -> Option<TextRange>;
     fn container_range(self, container: Self::Container) -> Option<TextRange>;
+    /// The number of entries of a container, or a number a little larger.
+    /// A map or a sequence gives it to serde as a size hint, so that a
+    /// collection can allocate one time.
+    fn len_hint(self, container: Self::Container) -> usize;
+    /// The values of a block that can have only scalar values, such as
+    /// `{ 1 2 3 }`. Each entry of such a block is a part of its sequence, so
+    /// a sequence can skip the general rules. Return `None` for a container
+    /// that can have different entries.
+    fn scalars(self, container: Self::Container) -> Option<Self::Scalars>;
 
     fn is_empty(self, container: Self::Container) -> bool {
         self.items(container).next().is_none()
@@ -242,6 +254,7 @@ fn param_val<D: Doc>(doc: D, body: D::Container) -> Val<D> {
 /// The parts of the entries of a container, as a sequence gives them.
 pub(crate) struct Flatten<D: Doc> {
     doc: D,
+    container: D::Container,
     /// The entries from the start of the sequence.
     start: Rest<D>,
     items: Rest<D>,
@@ -267,6 +280,7 @@ impl<D: Doc> Clone for Flatten<D> {
     fn clone(&self) -> Self {
         Flatten {
             doc: self.doc,
+            container: self.container,
             start: self.start.clone(),
             items: self.items.clone(),
             object: self.object,
@@ -284,6 +298,7 @@ impl<D: Doc> Flatten<D> {
     fn new(doc: D, container: D::Container, items: Rest<D>, object: bool, mixed: bool) -> Self {
         Flatten {
             doc,
+            container,
             start: items.clone(),
             items,
             object,
@@ -326,6 +341,12 @@ impl<D: Doc> Flatten<D> {
     /// object.
     fn remainder(doc: D, container: D::Container, items: Rest<D>) -> Self {
         Flatten::new(doc, container, items, true, true)
+    }
+
+    /// The size hint of the sequence. Only a sequence over an array has
+    /// one, because each entry of an array is one part.
+    fn size_hint(&self) -> Option<usize> {
+        (!self.object && !self.mixed).then(|| self.doc.len_hint(self.container))
     }
 
     /// Return `true` when the sequence has no parts.
@@ -439,9 +460,29 @@ impl<D: Doc> Iterator for Flatten<D> {
 
 /// The elements of a sequence.
 pub(crate) enum Elems<D: Doc> {
+    /// The values of a block that has only scalars.
+    Scalars(D::Scalars),
     Flatten(Flatten<D>),
     /// A header and its block.
     Pair(std::array::IntoIter<Val<D>, 2>),
+}
+
+impl<D: Doc> Elems<D> {
+    /// The elements of a block.
+    fn of(doc: D, container: D::Container) -> Self {
+        match doc.scalars(container) {
+            Some(scalars) => Elems::Scalars(scalars),
+            None => Elems::Flatten(Flatten::of(doc, container)),
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        match self {
+            Elems::Scalars(x) => Some(x.size_hint().0),
+            Elems::Flatten(x) => x.size_hint(),
+            Elems::Pair(x) => Some(x.len()),
+        }
+    }
 }
 
 impl<D: Doc> Iterator for Elems<D> {
@@ -449,6 +490,7 @@ impl<D: Doc> Iterator for Elems<D> {
 
     fn next(&mut self) -> Option<Val<D>> {
         match self {
+            Elems::Scalars(x) => x.next().map(Val::Node),
             Elems::Flatten(x) => x.next(),
             Elems::Pair(x) => x.next(),
         }
@@ -518,13 +560,13 @@ impl<D: Doc> ValueDe<D> {
     fn elems(&self) -> Option<Elems<D>> {
         match &self.val {
             Val::Node(node) => match self.doc.view(*node) {
-                View::Block(c) => Some(Elems::Flatten(Flatten::of(self.doc, c))),
+                View::Block(c) => Some(Elems::of(self.doc, c)),
                 View::Headered(h, c) => {
                     Some(Elems::Pair([Val::Scalar(h), Val::Container(c)].into_iter()))
                 }
                 _ => None,
             },
-            Val::Container(c) => Some(Elems::Flatten(Flatten::of(self.doc, *c))),
+            Val::Container(c) => Some(Elems::of(self.doc, *c)),
             Val::Remainder(f) => Some(Elems::Flatten((**f).clone())),
             _ => None,
         }
@@ -549,6 +591,9 @@ impl<D: Doc> ValueDe<D> {
     where
         D: DocDe<'de>,
     {
+        if let Some(scalars) = self.doc.scalars(container) {
+            return visitor.visit_seq(SeqDe::new(self.doc, Elems::Scalars(scalars)));
+        }
         let (object, items) = classify(self.doc, container);
         if object {
             visitor.visit_map(MapDe::classified(self.doc, container, object, items))
@@ -1036,6 +1081,13 @@ impl<'de, D: DocDe<'de>> de::MapAccess<'de> for MapDe<D> {
             Pending::None => Err(de::Error::custom("a map value without a key")),
         }
     }
+
+    fn size_hint(&self) -> Option<usize> {
+        match self.pending {
+            Pending::None if self.object && !self.done => Some(self.doc.len_hint(self.container)),
+            _ => None,
+        }
+    }
 }
 
 /// The elements of a sequence.
@@ -1073,6 +1125,14 @@ impl<'de, D: DocDe<'de>> de::SeqAccess<'de> for SeqDe<D> {
         seed.deserialize(de)
             .map(Some)
             .map_err(|e| e.or_range(range.get(doc)).in_index(index))
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        if self.index == 0 {
+            self.elems.size_hint()
+        } else {
+            None
+        }
     }
 }
 
