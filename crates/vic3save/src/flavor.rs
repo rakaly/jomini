@@ -23,8 +23,6 @@ impl BinaryFlavor for Vic3Flavor {
     }
 
     fn visit_f64(&self, data: [u8; 8]) -> f64 {
-        let x = i64::from_le_bytes(data) as f64;
-        let eps = f64::from(f32::EPSILON);
-        (x + (eps * x.signum())).trunc() / 100_000.0
+        i64::from_le_bytes(data) as f64 / 100_000.0
     }
 }
