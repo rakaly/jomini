@@ -54,6 +54,10 @@ serde_with = "3.8.1"
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(jomini_lossless_tape)"] }
 
+[[example]]
+name = "lossless"
+required-features = ["lossless"]
+
 [[bin]]
 name = "json"
 required-features = ["json"]
