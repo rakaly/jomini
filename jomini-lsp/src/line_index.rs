@@ -20,8 +20,8 @@ use lsp_types::{Position, PositionEncodingKind};
 pub enum PositionEncoding {
     /// LSP's default: `character` counts UTF-16 code units.
     Utf16,
-    /// Negotiated when the client advertises it: `character` counts UTF-8 bytes,
-    /// so the mapping is a straight subtraction (rust-analyzer prefers this).
+    /// The client supports it: `character` counts UTF-8 bytes, the same as a
+    /// byte column.
     Utf8,
 }
 
@@ -69,17 +69,13 @@ impl<'a> LineIndex<'a> {
             return TextSize::of(self.text);
         };
         let line_start = range.start().to_usize();
-        let mut line_end = range.end().to_usize();
-        // Exclude the line terminator from the slice, so a column past the visible
-        // content clamps to end-of-line rather than jumping onto the next line's
-        // first byte (the rust-analyzer convention).
-        if line_end > line_start && self.text[line_end - 1] == b'\n' {
-            line_end -= 1;
-            if line_end > line_start && self.text[line_end - 1] == b'\r' {
-                line_end -= 1;
-            }
-        }
-        let col_bytes = self.decode_col(&self.text[line_start..line_end], position.character);
+        // Remove the line break (`\n`, `\r\n`, or `\r`), so a column after the
+        // end of the text clamps to the end of this line, not to the start of
+        // the next line.
+        let line = &self.text[line_start..range.end().to_usize()];
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let col_bytes = self.decode_col(line, position.character);
         TextSize::new((line_start + col_bytes) as u32)
     }
 
@@ -88,8 +84,8 @@ impl<'a> LineIndex<'a> {
         self.position(TextSize::of(self.text))
     }
 
-    /// Code units (per the encoding) spanned by `slice` — i.e. the column of the
-    /// offset at the end of `slice` within its line.
+    /// The number of code units of the encoding in `slice`, which is the
+    /// column at the end of `slice` when `slice` starts at the line start.
     fn encode_col(&self, slice: &[u8]) -> u32 {
         match self.encoding {
             PositionEncoding::Utf8 => slice.len() as u32,
@@ -102,9 +98,10 @@ impl<'a> LineIndex<'a> {
         }
     }
 
-    /// Inverse of [`encode_col`]: the byte length of the prefix of `line` spanning
-    /// `character` code units (clamped to the line; a column landing inside a
-    /// multi-unit char rounds up to that char's end).
+    /// The inverse of [`encode_col`](Self::encode_col): the number of bytes in
+    /// the first `character` code units of `line`. The result is at most the
+    /// length of the line. A column inside a character moves to the end of
+    /// that character.
     fn decode_col(&self, line: &[u8], character: u32) -> usize {
         match self.encoding {
             PositionEncoding::Utf8 => (character as usize).min(line.len()),
@@ -190,16 +187,17 @@ mod tests {
 
     #[test]
     fn out_of_range_column_clamps_to_end_of_line_not_next_line() {
-        // A column past the visible content of line 0 must land at end-of-content
-        // (byte 1, after 'a'), NOT at the start of line 1 (byte 3, the 'b'). The
-        // line terminator (\r\n) is excluded from the clamp.
+        // A column after the text of line 0 goes to byte 1, after `a`, not to
+        // byte 3, the `b` of line 1.
         let lines = lossless::LineIndex::new(b"a\r\nb");
         let li = LineIndex::new(b"a\r\nb", &lines, PositionEncoding::Utf16);
         assert_eq!(li.offset(pos(0, 99)), TextSize::new(1));
         assert_eq!(li.offset(pos(0, 1)), TextSize::new(1)); // in-range columns are unchanged
-        // A '\n'-only line behaves the same.
-        let lines = lossless::LineIndex::new(b"abc\ndef");
-        let li = LineIndex::new(b"abc\ndef", &lines, PositionEncoding::Utf16);
-        assert_eq!(li.offset(pos(0, 99)), TextSize::new(3)); // end of "abc", before '\n'
+        // A `\n` or a lone `\r` line break is the same.
+        for text in [&b"abc\ndef"[..], b"abc\rdef"] {
+            let lines = lossless::LineIndex::new(text);
+            let li = LineIndex::new(text, &lines, PositionEncoding::Utf16);
+            assert_eq!(li.offset(pos(0, 99)), TextSize::new(3), "{text:?}");
+        }
     }
 }

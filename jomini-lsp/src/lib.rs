@@ -139,15 +139,15 @@ fn main_loop(connection: &Connection, server: &mut Server) -> Result<(), DynErro
                 }
                 server.on_notification(not);
             }
-            // We issue no server→client requests yet, so any response is ignored.
+            // The server sends no requests, so a response is not expected.
             Message::Response(_) => {}
         }
     }
     Ok(())
 }
 
-/// Prefer UTF-8 columns when the client supports them (a straight byte mapping);
-/// otherwise the LSP default, UTF-16.
+/// Use UTF-8 columns when the client supports them, because they are byte
+/// columns. Else use UTF-16, the LSP default.
 fn negotiate_encoding(init: &InitializeParams) -> PositionEncoding {
     let supports_utf8 = init
         .capabilities
