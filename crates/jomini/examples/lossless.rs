@@ -10,6 +10,8 @@
 //! - `--tokens` prints one token on each line.
 //! - `--no-trivia` hides whitespace and comments from `--tree` and `--tokens`.
 //! - `--format` prints the file in the house style of the formatter.
+//! - `--hoi4` parses with [`Flavor::hoi4`], in which a newline closes a quoted
+//!   string.
 //!
 //! Each mode then writes a footer to stderr: the round-trip check and each
 //! syntax error at its line and column.
@@ -23,7 +25,9 @@
 //! printf 'rate = @[ (1 - x) * 2 ]\n' | cargo run --features lossless --example lossless -- --tree
 //! ```
 
-use jomini::text::lossless::{FormatOptions, LineIndex, SyntaxElement, SyntaxKind, parse};
+use jomini::text::lossless::{
+    Flavor, FormatOptions, LineIndex, SyntaxElement, SyntaxKind, parse_with,
+};
 use std::io::{Read, Write};
 
 #[derive(PartialEq)]
@@ -39,6 +43,7 @@ fn main() {
     let mut mode = Mode::Highlight;
     let mut trivia = true;
     let mut color = true;
+    let mut flavor = Flavor::DEFAULT;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--tree" => mode = Mode::Tree,
@@ -46,9 +51,10 @@ fn main() {
             "--format" => mode = Mode::Format,
             "--no-trivia" => trivia = false,
             "--no-color" => color = false,
+            "--hoi4" => flavor = Flavor::hoi4(),
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: lossless [--tree | --tokens | --format] [--no-trivia] [--no-color] [FILE]\n\
+                    "usage: lossless [--tree | --tokens | --format] [--no-trivia] [--no-color] [--hoi4] [FILE]\n\
                      (reads stdin if no FILE)"
                 );
                 return;
@@ -69,7 +75,7 @@ fn main() {
         }
     };
 
-    let tree = parse(&source[..]);
+    let tree = parse_with(&source[..], flavor);
     let mut out = std::io::stdout().lock();
 
     match mode {

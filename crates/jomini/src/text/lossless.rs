@@ -5744,8 +5744,10 @@ impl Default for FormatOptions {
     }
 }
 
-/// Parse `source` and reformat it with the default [`FormatOptions`]. See
-/// [`SyntaxTree::format`] for the style.
+/// Parse `source` with the default [`Flavor`] and reformat it with the
+/// default [`FormatOptions`]. See [`SyntaxTree::format`] for the style. For a
+/// different flavor, such as the newline-terminated strings of HoI4, use
+/// [`parse_with`] and [`SyntaxTree::format`].
 ///
 /// ```
 /// use jomini::text::lossless::format;
