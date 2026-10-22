@@ -89,8 +89,6 @@ impl Server {
         }
     }
 
-    // --- request / notification dispatch -----------------------------------
-
     pub fn on_request(&mut self, req: Request) {
         match req.method.as_str() {
             lsp_types::request::Formatting::METHOD => {
@@ -158,8 +156,6 @@ impl Server {
         }
     }
 
-    // --- document lifecycle -------------------------------------------------
-
     fn did_open(&mut self, params: DidOpenTextDocumentParams) {
         let doc = params.text_document;
         let bytes = doc.text.into_bytes();
@@ -214,15 +210,12 @@ impl Server {
         self.publish_all();
     }
 
-    // --- diagnostics --------------------------------------------------------
-
     /// Publish diagnostics for every file that has any, and clear the set for any
     /// file that had diagnostics last time but no longer does. Publishing for
     /// *all* files (not just open ones) is the point of a cross-file linter — an
     /// undefined reference often lives in a file the user has not opened.
     ///
-    /// Called once after the `initialize` handshake (which `lsp_server` consumes
-    /// the `initialized` notification within) and again after every edit.
+    /// Called after the `initialize` handshake and after each edit.
     pub fn publish_all(&mut self) {
         let (payloads, now_published) = {
             let mut grouped: HashMap<FileId, Vec<&jomini::text::lint::Diagnostic>> = HashMap::new();
@@ -265,11 +258,9 @@ impl Server {
         }
     }
 
-    // --- features -----------------------------------------------------------
-
-    /// `textDocument/formatting` → one whole-document edit from [`lossless::format`].
-    /// Formatting a file with syntax errors is safe: the formatter round-trips
-    /// every token losslessly, regenerating only whitespace.
+    /// `textDocument/formatting` → one edit that replaces the whole document.
+    /// The formatter changes only whitespace, so a file with syntax errors is
+    /// safe to format.
     fn formatting(&mut self, params: DocumentFormattingParams) -> Option<Vec<TextEdit>> {
         let id = self.file_for_url(&params.text_document.uri)?;
         let src = self.fileset.source(id);
@@ -427,9 +418,9 @@ impl Server {
         Some(WorkspaceSymbolResponse::Flat(infos))
     }
 
-    /// `textDocument/codeAction` → a quick fix for each fixable diagnostic that
-    /// overlaps the requested range. The lint [`Fix`] maps 1:1 to an LSP
-    /// `TextEdit`, and because the tree is lossless the edit is byte-faithful.
+    /// `textDocument/codeAction` → a quick fix for each diagnostic with a
+    /// [`Repair`](jomini::text::lossless::Repair) that overlaps the requested
+    /// range, and one fix-all action for all the syntax repairs of the file.
     // `WorkspaceEdit.changes` is keyed by `Uri`, whose `fluent-uri` internals carry
     // a cache `Cell` (interior mutability) that never affects hashing — the key
     // type is mandated by lsp-types, so the lint is a false positive here.
@@ -529,10 +520,6 @@ impl Server {
         Some(actions)
     }
 
-    // --- helpers ------------------------------------------------------------
-
-    /// A [`Location`] for a byte range within `file`, building that file's
-    /// [`LineIndex`] from its current (overlaid) bytes.
     /// The position conversion for `file`, on the line index that the fileset
     /// keeps for it.
     fn line_index(&self, file: FileId) -> LineIndex<'_> {
@@ -543,6 +530,7 @@ impl Server {
         )
     }
 
+    /// The [`Location`] of a byte range in `file`.
     fn location(&self, file: FileId, range: TextRange) -> Option<Location> {
         let url = self.url_for_file(file)?;
         let li = self.line_index(file);
@@ -607,10 +595,9 @@ fn workspace_roots(init: &InitializeParams) -> Vec<PathBuf> {
     Vec::new()
 }
 
-/// The prototype rule set: which directories define entities and which field keys
-/// reference them. This stands in for a real per-game schema (a `.cwt`-config or
-/// richer hand-written front-end is the follow-up); it mirrors `examples/lint.rs`
-/// so the bundled `crates/jomini/examples/mod-demo` corpus lights up end-to-end in an editor.
+/// The rules for buildings from `examples/lint.rs`, so the server works on
+/// the `crates/jomini/examples/mod-demo` project. A real server needs the
+/// rules of each game.
 fn demo_schema() -> Schema {
     let mut schema = Schema::new();
     schema

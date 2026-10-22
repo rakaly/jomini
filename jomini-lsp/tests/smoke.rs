@@ -1,7 +1,6 @@
-//! End-to-end smoke test: drive the real server (via [`jomini_lsp::serve`]) over
-//! an in-memory [`Connection`] against the bundled `crates/jomini/examples/mod-demo` corpus —
-//! the same two-layer vanilla+mod project `examples/lint.rs` uses. No subprocess,
-//! no wire framing: the client and server share a process over channel pairs.
+//! Run the server with [`jomini_lsp::serve`] over an in-memory [`Connection`]
+//! on the `crates/jomini/examples/mod-demo` project, the base game and mod
+//! layers that `examples/lint.rs` also uses.
 
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use serde_json::{Value, json};
@@ -111,7 +110,7 @@ fn server_serves_the_mod_demo_project() {
         next_id: 1,
     };
 
-    // --- initialize: workspace = the mod dir, with the vanilla base as an option.
+    // initialize: workspace = the mod dir, with the vanilla base as an option.
     let init = client.request(
         "initialize",
         json!({
@@ -134,7 +133,7 @@ fn server_serves_the_mod_demo_project() {
     let mod_events_text = std::fs::read_to_string(&mod_events).unwrap();
     let mod_buildings_text = std::fs::read_to_string(&mod_buildings).unwrap();
 
-    // --- document symbols: the vanilla buildings file defines four buildings.
+    // document symbols: the vanilla buildings file defines four buildings.
     let syms = client.request(
         "textDocument/documentSymbol",
         json!({ "textDocument": { "uri": file_uri(&vanilla_buildings) } }),
@@ -151,7 +150,7 @@ fn server_serves_the_mod_demo_project() {
         "document symbols"
     );
 
-    // --- the cross-file diagnostic: `baracks` is undefined (published, by now).
+    // the cross-file diagnostic: `baracks` is undefined (published, by now).
     let diags = client.published_diagnostics();
     let baracks = diags.iter().find_map(|(uri, ds)| {
         ds.as_array()?.iter().find(|d| {
@@ -180,7 +179,7 @@ fn server_serves_the_mod_demo_project() {
         "ghost_building must be suppressed, not a hard undefined-reference"
     );
 
-    // --- go-to-definition: `fortress` (used in mod_events) is defined in the mod
+    // go-to-definition: `fortress` (used in mod_events) is defined in the mod
     //     buildings file — a cross-file jump.
     let def = client.request(
         "textDocument/definition",
@@ -195,8 +194,8 @@ fn server_serves_the_mod_demo_project() {
         "jumps to the mod buildings file: {def_uri}"
     );
 
-    // --- find-references: `castle` is referenced in the mod (upgrades_from) and
-    //     in vanilla (has_building); with the declaration that is at least three.
+    // find-references: `castle` has a reference in the mod (`upgrades_from`)
+    // and in vanilla (`has_building`), and one declaration.
     let refs = client.request(
         "textDocument/references",
         json!({
@@ -205,9 +204,24 @@ fn server_serves_the_mod_demo_project() {
             "context": { "includeDeclaration": true },
         }),
     );
-    assert!(
-        refs.as_array().unwrap().len() >= 3,
-        "castle references: {refs}"
+    let mut castle: Vec<(String, u64)> = refs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            let uri = l["uri"].as_str().unwrap();
+            let file = uri.rsplit('/').next().unwrap().to_string();
+            (file, l["range"]["start"]["line"].as_u64().unwrap())
+        })
+        .collect();
+    castle.sort();
+    assert_eq!(
+        castle,
+        [
+            (String::from("00_buildings.txt"), 6),
+            (String::from("01_mod_buildings.txt"), 11),
+            (String::from("court_events.txt"), 3),
+        ]
     );
 
     // `temple` is overridden (declared in vanilla AND the mod). With
@@ -240,7 +254,7 @@ fn server_serves_the_mod_demo_project() {
         "the winning mod temple declaration must be included: {temple_uris:?}"
     );
 
-    // --- code action: a quick fix on the `baracks` typo offers `barracks`.
+    // code action: a quick fix on the `baracks` typo offers `barracks`.
     let start = pos_of(&mod_events_text, "baracks");
     let end = {
         let mut e = start.clone();
@@ -256,12 +270,12 @@ fn server_serves_the_mod_demo_project() {
         }),
     );
     let has_fix = actions.as_array().unwrap().iter().any(|a| {
-        a["title"].as_str().unwrap_or("").contains("barracks")
-            && a["edit"]["changes"] != Value::Null
+        a["title"] == json!("did you mean `barracks`?")
+            && a["edit"]["changes"][&file_uri(&mod_events)][0]["newText"] == json!("barracks")
     });
     assert!(has_fix, "a quick fix offering `barracks`: {actions}");
 
-    // --- syntax repair: the broken event gets an EOF quick fix and a fix-all.
+    // syntax repair: the broken event gets an EOF quick fix and a fix-all.
     let broken = mod_dir.join("events/broken_events.txt");
     let broken_text = std::fs::read_to_string(&broken).unwrap();
     let broken_line = broken_text.matches('\n').count() as u64;
@@ -303,7 +317,7 @@ fn server_serves_the_mod_demo_project() {
         "a syntax fix-all action: {repair_actions}"
     );
 
-    // --- edits: fixing the typo in an open document clears its diagnostic.
+    // edits: fixing the typo in an open document clears its diagnostic.
     let events_uri = file_uri(&mod_events);
     let mentions_typo = |client: &Client| {
         let (_, diags) = client
@@ -336,17 +350,31 @@ fn server_serves_the_mod_demo_project() {
     );
     assert!(!mentions_typo(&client), "the typo diagnostic is cleared");
 
-    // --- formatting: returns an edit list (possibly empty) without erroring.
+    // formatting: one edit replaces the document, with the indent of the
+    // options. The file is new, so the server adds it.
+    let scratch_uri = file_uri(&mod_dir.join("common/scratch.txt"));
+    client.notify(
+        "textDocument/didOpen",
+        json!({ "textDocument": {
+            "uri": scratch_uri, "languageId": "paradox", "version": 1, "text": "a={b=1}"
+        } }),
+    );
     let fmt = client.request(
         "textDocument/formatting",
         json!({
-            "textDocument": { "uri": file_uri(&vanilla_buildings) },
-            "options": { "tabSize": 4, "insertSpaces": false }
+            "textDocument": { "uri": scratch_uri },
+            "options": { "tabSize": 2, "insertSpaces": true }
         }),
     );
-    assert!(fmt.is_array(), "formatting returns a TextEdit list: {fmt}");
+    assert_eq!(
+        fmt,
+        json!([{
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 7 } },
+            "newText": "a = {\n  b = 1\n}\n"
+        }])
+    );
 
-    // --- shutdown / exit: the loop returns and the thread joins cleanly.
+    // shutdown / exit: the loop returns and the thread joins cleanly.
     let _ = client.request("shutdown", Value::Null);
     client.notify("exit", Value::Null);
     handle.join().unwrap().expect("server loop exits Ok");
