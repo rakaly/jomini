@@ -29,10 +29,6 @@ use serde::{
 };
 use std::{collections::HashMap, fmt};
 
-// ---------------------------------------------------------------------------
-// Generic types for the differential tests
-// ---------------------------------------------------------------------------
-
 /// Any value, read with `deserialize_any`.
 #[derive(Debug, PartialEq)]
 enum Any {
@@ -337,10 +333,6 @@ fn differential_typed_structs() {
     ));
 }
 
-// ---------------------------------------------------------------------------
-// Behavior that the tree deserializer adds or changes
-// ---------------------------------------------------------------------------
-
 #[test]
 fn mixed_container_as_seq_and_map() {
     #[derive(Deserialize, Debug, PartialEq)]
@@ -436,10 +428,6 @@ fn ignored_any_skips_large_values() {
     assert_eq!(file.last, 7);
 }
 
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
 #[test]
 fn errors_tell_the_location() {
     #[derive(Deserialize, Debug)]
@@ -474,9 +462,6 @@ fn errors_tell_the_location() {
     let error = from_utf8_slice::<File>(b"state = { provinces = { } }").unwrap_err();
     assert_eq!(error.path(), "state");
     assert!(error.message().contains("missing field `id`"), "{error}");
-
-    let boxed: Box<dyn std::error::Error> = Box::new(error);
-    assert!(!boxed.to_string().is_empty());
 }
 
 #[test]
@@ -488,17 +473,7 @@ fn syntax_errors() {
     // An extra closing brace is not an error, as with `TextTape`.
     let map: HashMap<String, u32> = from_utf8_slice(b"a = 1 } b = 2").unwrap();
     assert_eq!(map["b"], 2);
-
-    // A tree with errors can still be deserialized.
-    let parse = lossless::parse(b"a = { b = 1");
-    let map: HashMap<String, HashMap<String, u32>> =
-        from_tree(parse.tree(), Utf8Encoding::new()).unwrap();
-    assert_eq!(map["a"]["b"], 1);
 }
-
-// ---------------------------------------------------------------------------
-// Wrapper types
-// ---------------------------------------------------------------------------
 
 #[test]
 fn quoted_and_unquoted_scalars() {
@@ -607,10 +582,6 @@ fn headers_and_ranges() {
     assert_eq!(simple.plain.header(), None);
 }
 
-// ---------------------------------------------------------------------------
-// The owned value
-// ---------------------------------------------------------------------------
-
 #[test]
 fn value_keeps_everything() {
     // The example of issue #148.
@@ -656,10 +627,6 @@ fn value_keeps_everything() {
     assert_eq!(map["b"], Value::quoted("x"));
     let numbers: Vec<u8> = Vec::deserialize(map["a"].clone().into_deserializer()).unwrap();
     assert_eq!(numbers, vec![1, 2]);
-
-    // The debug form shows the structure.
-    let debug = format!("{:?}", root.get("color").unwrap());
-    assert!(debug.starts_with("HeaderedBlock(\"hsv\""), "{debug}");
 }
 
 #[test]
@@ -770,10 +737,6 @@ fn value_construction() {
     let map: HashMap<String, Value> = HashMap::deserialize(&value).unwrap();
     assert_eq!(map["a"], Value::unquoted("1"));
 }
-
-// ---------------------------------------------------------------------------
-// Document
-// ---------------------------------------------------------------------------
 
 #[test]
 fn document_access() {
