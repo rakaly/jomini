@@ -1,18 +1,18 @@
-//! A **cross-file** linter for Clausewitz game files, built on the lossless
-//! syntax tree's new project/semantic layer ([`jomini::text::lint`]).
+//! Lint a mod and its base game together with [`jomini::text::lint`].
 //!
-//! This is the thing a single-file parser fundamentally *cannot* do: it loads a
-//! whole "mod" plus its "vanilla" base, builds a project-wide symbol table, and
-//! then resolves every building reference against it. A reference to a building
-//! defined in no file — possibly a typo — becomes an error with a precise
-//! location *and a "did you mean?" fix*; a mod definition that shadows a vanilla
-//! one is noted; a building defined twice in one layer is a warning; and a
-//! reference inside a block with a syntax error is suppressed instead of
-//! generating cascade noise.
+//! The example loads the base game files and the mod files as two layers, and
+//! resolves each building reference against the buildings of both layers. It
+//! reports:
 //!
-//! Because the tree is **lossless**, fixes are byte-faithful: the typo is
-//! rewritten in place and everything else is preserved exactly — something a
-//! lossy validator structurally cannot offer.
+//! - an error for a reference to a building that no file defines, with a
+//!   "did you mean?" fix when a defined name is near,
+//! - a note for a mod building that overrides a base game building,
+//! - a warning for a building that one layer defines two times,
+//! - a weak note, not an error, for a reference in a block that has a syntax
+//!   error.
+//!
+//! A fix replaces only the bytes of the name. The comments and the layout of
+//! the file do not change.
 //!
 //! ```sh
 //! cargo run --features lossless --example lint                 # lint the bundled examples/mod-demo
@@ -46,8 +46,8 @@ fn main() {
         }
     }
 
-    // Default to the bundled two-layer demo corpus (resolved relative to the
-    // crate so `cargo run --features lossless --example lint` works from anywhere).
+    // With no directories, use the demo in `examples/mod-demo`. The path comes
+    // from the crate, so the example works from any directory.
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let (vanilla_dir, mod_dir) = match dirs.as_slice() {
         [] => (
@@ -61,7 +61,7 @@ fn main() {
         }
     };
 
-    // 1. Project model: load each directory tree as a load-order layer.
+    // Each directory is one load-order layer.
     let mut fileset = Fileset::new();
     let vanilla = fileset
         .load_dir(&vanilla_dir, FileKind::Vanilla)
@@ -76,8 +76,6 @@ fn main() {
             std::process::exit(1);
         });
 
-    // 2. Schema: the (hand-written) rules of what defines and references a
-    //    building. A real linter would carry a per-game rule set here.
     let mut schema = Schema::new();
     schema
         .define_dir("buildings", "building")
@@ -86,7 +84,6 @@ fn main() {
         .reference_key("remove_building", "building")
         .reference_key("upgrades_from", "building");
 
-    // 3. Two-pass lint: collect all definitions, then resolve all references.
     let diagnostics = Linter::new(schema).run(&fileset);
 
     let bold = if color { "\x1b[1m" } else { "" };
@@ -104,14 +101,12 @@ fn main() {
         println!();
     }
 
-    // Summary, broken down by the Severity axis.
     let count = |s: Severity| diagnostics.iter().filter(|d| d.severity == s).count();
     let errors = count(Severity::Error);
     let warnings = count(Severity::Warning);
     let notes = count(Severity::Tip);
     println!("{bold}Summary:{reset} {errors} error(s), {warnings} warning(s), {notes} note(s)");
 
-    // The punchline: the undefined-reference catch is impossible per-file.
     if diagnostics
         .iter()
         .any(|d| d.id == lints::UNDEFINED_REFERENCE)
@@ -122,8 +117,6 @@ fn main() {
         );
     }
 
-    // 4. Autofix: apply each diagnostic's machine-applicable fix. The lossless
-    //    tree makes this byte-faithful — only the offending token changes.
     if fix_mode {
         apply_and_report(&fileset, &diagnostics, write_mode, bold, dim, reset);
     }
@@ -131,8 +124,8 @@ fn main() {
     std::process::exit(if errors > 0 && !write_mode { 1 } else { 0 });
 }
 
-/// Group the fixes by file, show each as `old -> new` at its location, and —
-/// with `--write` — splice them into the file on disk via `apply_repairs`.
+/// Show each fix as `old -> new` at its location. With `write`, also apply
+/// the fixes to the files on disk.
 fn apply_and_report(
     fileset: &Fileset,
     diagnostics: &[jomini::text::lint::Diagnostic],
