@@ -4922,7 +4922,11 @@ pub enum Item<'t, 'a> {
 /// A value in value position (the RHS of a [`Field`] or a bare array element).
 ///
 /// The coercions read a scalar value as a number or a boolean. They give
-/// `None` for a value that is not a scalar, or that has a different type:
+/// `None` for a value that is not a scalar, or that has a different type. To
+/// know why a coercion failed, use the [`Scalar`] from
+/// [`as_scalar`](Value::as_scalar), which gives a [`ScalarError`]. Use
+/// [`syntax`](Value::syntax) or [`text_range`](Value::text_range) to find any
+/// value in the source:
 ///
 /// ```
 /// use jomini::{Windows1252Encoding, text::lossless::parse};
@@ -4936,7 +4940,12 @@ pub enum Item<'t, 'a> {
 /// assert_eq!(values[2].to_bool(), Some(true));
 /// assert_eq!(values[3].decode(Windows1252Encoding::new()).unwrap(), "Bretagne");
 /// assert_eq!(values[4].to_f64(), None);
+/// assert!(values[4].as_scalar().is_none());
+/// assert!(values[1].as_scalar().unwrap().to_u64().is_err());
+/// assert_eq!(values[4].syntax().text(), b"{ 1 }");
 /// ```
+///
+/// [`ScalarError`]: crate::ScalarError
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Value<'t, 'a> {
@@ -4987,6 +4996,10 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
     /// surrounding quotes stripped for a [`SyntaxKind::Quoted`] token (escapes
     /// inside the quotes are left as-is). This is the right input for the
     /// numeric/boolean coercions on [`Scalar`].
+    ///
+    /// The function does not examine the kind of the token. Thus for a token
+    /// that is not a scalar, such as `{`, the result holds the bytes of the
+    /// token. Use [`SyntaxKind::is_scalar`] to examine the kind first.
     pub fn as_scalar(&self) -> Scalar<'a> {
         let text = self.text();
         let bytes = if self.kind() == SyntaxKind::Quoted {
@@ -5426,6 +5439,24 @@ impl<'t, 'a> ParenExpr<'t, 'a> {
 }
 
 impl<'t, 'a> Item<'t, 'a> {
+    /// The untyped element of this item.
+    pub fn syntax(&self) -> SyntaxElement<'t, 'a> {
+        match *self {
+            Item::Field(field) => SyntaxElement::Node(field.syntax()),
+            Item::Parameter(parameter) => SyntaxElement::Node(parameter.syntax()),
+            Item::UndefinedParameter(parameter) => SyntaxElement::Node(parameter.syntax()),
+            Item::Code(code) => SyntaxElement::Node(code.syntax()),
+            Item::Interpolation(interpolation) => SyntaxElement::Node(interpolation.syntax()),
+            Item::Value(value) => value.syntax(),
+            Item::Other(el) => el,
+        }
+    }
+
+    /// The byte range of this item in the source.
+    pub fn text_range(&self) -> TextRange {
+        self.syntax().text_range()
+    }
+
     /// The [`Field`] if this item is one.
     pub fn as_field(&self) -> Option<Field<'t, 'a>> {
         match *self {
@@ -5496,7 +5527,35 @@ impl<'t, 'a> Value<'t, 'a> {
         }
     }
 
+    /// The untyped element of this value.
+    pub fn syntax(&self) -> SyntaxElement<'t, 'a> {
+        match *self {
+            Value::Scalar(token) => SyntaxElement::Token(token),
+            Value::Block(block) => SyntaxElement::Node(block.syntax()),
+            Value::HeaderedBlock(block) => SyntaxElement::Node(block.syntax()),
+            Value::Calc(calc) => SyntaxElement::Node(calc.syntax()),
+            Value::Parameter(parameter) => SyntaxElement::Node(parameter.syntax()),
+            Value::UndefinedParameter(parameter) => SyntaxElement::Node(parameter.syntax()),
+            Value::Code(code) => SyntaxElement::Node(code.syntax()),
+            Value::Interpolation(interpolation) => SyntaxElement::Node(interpolation.syntax()),
+        }
+    }
+
+    /// The byte range of this value in the source.
+    pub fn text_range(&self) -> TextRange {
+        self.syntax().text_range()
+    }
+
     /// The scalar token, if this is [`Value::Scalar`].
+    pub fn as_token(&self) -> Option<SyntaxToken<'t, 'a>> {
+        match *self {
+            Value::Scalar(token) => Some(token),
+            _ => None,
+        }
+    }
+
+    /// The scalar value of the token, if this is [`Value::Scalar`]. The
+    /// quotes of a quoted string are removed (see [`SyntaxToken::as_scalar`]).
     pub fn as_scalar(&self) -> Option<Scalar<'a>> {
         match self {
             Value::Scalar(t) => Some(t.as_scalar()),
@@ -5591,6 +5650,21 @@ impl<'t, 'a> Value<'t, 'a> {
 }
 
 impl<'t, 'a> Expr<'t, 'a> {
+    /// The untyped element of this expression.
+    pub fn syntax(&self) -> SyntaxElement<'t, 'a> {
+        match *self {
+            Expr::Binary(expr) => SyntaxElement::Node(expr.syntax()),
+            Expr::Unary(expr) => SyntaxElement::Node(expr.syntax()),
+            Expr::Paren(expr) => SyntaxElement::Node(expr.syntax()),
+            Expr::Number(token) | Expr::Ident(token) => SyntaxElement::Token(token),
+        }
+    }
+
+    /// The byte range of this expression in the source.
+    pub fn text_range(&self) -> TextRange {
+        self.syntax().text_range()
+    }
+
     /// Classify a child element as a calc expression, or `None`.
     fn cast_element(el: SyntaxElement<'t, 'a>) -> Option<Self> {
         match el {
