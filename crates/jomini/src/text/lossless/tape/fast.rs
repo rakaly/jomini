@@ -53,12 +53,19 @@ pub(super) fn checkpoints(source: &[u8], flavor: Flavor) -> (Vec<Checkpoint>, Ve
     (p.log, p.tape)
 }
 
+/// The fast-path form of [`super::Container`].
 struct Container {
     shape: Shape,
+    /// After a [`TextToken::MixedContainer`], each operator is a token.
     mixed: bool,
     empty: bool,
+    /// The first entry starts with a scalar. When this block closes in a
+    /// mixed parent, the parent stays mixed.
     first_scalar: bool,
+    /// The mixed flag that `TextTape` keeps in the open token. When a child
+    /// block closes, the mixed mode comes from this flag again.
     flag: bool,
+    /// The index of the open token, or `NO_OPEN` for the root.
     open: usize,
     on_empty: OnEmpty,
 }
