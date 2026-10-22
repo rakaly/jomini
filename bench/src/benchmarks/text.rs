@@ -30,6 +30,18 @@ pub(crate) fn lossless_parse(data: &[u8]) -> usize {
     black_box(tree.root().children().count())
 }
 
+/// Visit every node and every leaf of `tree`, trivia included.
+#[inline(never)]
+pub(crate) fn lossless_walk(tree: &jomini::text::lossless::Parse<&[u8]>) -> usize {
+    fn walk(node: jomini::text::lossless::SyntaxNode<'_, '_>) -> usize {
+        node.children()
+            .map(|child| child.as_node().map_or(1, walk))
+            .sum::<usize>()
+            + 1
+    }
+    black_box(walk(tree.root()))
+}
+
 #[inline(never)]
 pub(crate) fn reader_count_equals(data: &[u8]) -> i32 {
     let mut reader = jomini::text::TokenReader::from_slice(data);
@@ -108,6 +120,10 @@ pub mod criterion_benches {
             });
             group.bench_function(BenchmarkId::new("lossless", game), |b| {
                 b.iter(|| lossless_parse(data))
+            });
+            let tree = jomini::text::lossless::parse(data);
+            group.bench_function(BenchmarkId::new("lossless_walk", game), |b| {
+                b.iter(|| lossless_walk(&tree))
             });
         }
         group.finish();
