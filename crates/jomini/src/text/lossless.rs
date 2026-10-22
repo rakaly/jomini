@@ -8419,6 +8419,24 @@ mod tests {
         assert_eq!(field.significant_children().count(), 3);
     }
 
+    /// The parent of each leaf is the node whose children hold the leaf, on
+    /// random input of structural bytes.
+    #[quickcheck]
+    fn prop_leaf_parent_holds_the_leaf(data: Vec<u8>) -> bool {
+        const ALPHABET: &[u8] = b"{}[]()=@# \n\"ab1+";
+        let source: Vec<u8> = data
+            .iter()
+            .map(|b| ALPHABET[*b as usize % ALPHABET.len()])
+            .collect();
+        fn walk(node: SyntaxNode<'_, '_>) -> bool {
+            node.children().all(|child| match child {
+                SyntaxElement::Token(token) => token.parent() == Some(node),
+                SyntaxElement::Node(child) => child.parent() == Some(node) && walk(child),
+            })
+        }
+        walk(parse(&source[..]).root())
+    }
+
     #[test]
     fn every_leaf_parent_holds_the_leaf() {
         let source = b"# c\na = { b = @[ (1 + x) * 2 ] [[p] c = d ] } e { f } g\n";
