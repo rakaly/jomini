@@ -266,7 +266,7 @@ pub enum SyntaxKind {
 
 impl SyntaxKind {
     /// Return `true` for a synthetic recovery token.
-    pub fn is_missing(self) -> bool {
+    pub const fn is_missing(self) -> bool {
         matches!(
             self,
             Self::MissingCloseBrace
@@ -277,7 +277,7 @@ impl SyntaxKind {
     }
 
     /// Return the physical token that a missing token represents.
-    pub fn expected_kind(self) -> Option<SyntaxKind> {
+    pub const fn expected_kind(self) -> Option<SyntaxKind> {
         Some(match self {
             Self::MissingCloseBrace => Self::CloseBrace,
             Self::MissingCloseBracket => Self::CloseBracket,
@@ -288,7 +288,7 @@ impl SyntaxKind {
     }
 
     /// Return the source spelling for a missing token.
-    pub fn missing_text(self) -> Option<&'static str> {
+    pub const fn missing_text(self) -> Option<&'static str> {
         Some(match self {
             Self::MissingCloseBrace => "}",
             Self::MissingCloseBracket | Self::MissingCalcClose => "]",
@@ -298,7 +298,7 @@ impl SyntaxKind {
     }
 
     /// Return `true` when this kind is a physical closing delimiter.
-    pub fn is_physical_close(self) -> bool {
+    pub const fn is_physical_close(self) -> bool {
         matches!(
             self,
             Self::CloseBrace | Self::CloseBracket | Self::CalcClose | Self::CloseParen
@@ -307,7 +307,7 @@ impl SyntaxKind {
 
     /// Return `true` for whitespace, a comment, or the BOM. These tokens have
     /// no effect on the structure, but the tree keeps their bytes.
-    pub fn is_trivia(self) -> bool {
+    pub const fn is_trivia(self) -> bool {
         matches!(
             self,
             SyntaxKind::Whitespace | SyntaxKind::Comment | SyntaxKind::Bom
@@ -318,7 +318,7 @@ impl SyntaxKind {
     /// single definition of "scalar" shared by key detection, [`Value::Scalar`],
     /// and the formatter: `$macro$` parameters count, since in template files
     /// they appear in key, value, and array-element position alike.
-    pub fn is_scalar(self) -> bool {
+    pub const fn is_scalar(self) -> bool {
         matches!(
             self,
             SyntaxKind::Unquoted
@@ -329,7 +329,7 @@ impl SyntaxKind {
     }
 
     /// Whether this kind labels an interior node (rather than a leaf token).
-    pub fn is_node(self) -> bool {
+    pub const fn is_node(self) -> bool {
         matches!(
             self,
             SyntaxKind::Root
@@ -1533,27 +1533,37 @@ impl fmt::Display for SyntaxError {
 
 impl std::error::Error for SyntaxError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The construct that a [`MissingDelimiter`] closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum RecoveryConstruct {
+    /// A `{ ... }` block.
     Block,
+    /// A single-bracket interpolation `[ ... ]`.
     Interpolation,
+    /// An EU4 conditional parameter block `[[name] ... ]` or `[[!name] ... ]`.
     Parameter,
+    /// A `@[ ... ]` calculation.
     Calc,
+    /// An EU5 code payload `[[ ... ]]`.
     Code,
+    /// A `( ... )` group inside a calculation.
     CalcParen,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Tells if a client can apply a repair without a check by a person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Applicability {
+    /// A client can apply the repair automatically.
     MachineApplicable,
+    /// The repair can be incorrect. A person must examine it.
     MaybeIncorrect,
 }
 
 impl Applicability {
     /// Return `true` when a client may apply the repair automatically.
-    pub fn is_machine_applicable(self) -> bool {
+    pub const fn is_machine_applicable(self) -> bool {
         matches!(self, Self::MachineApplicable)
     }
 }
@@ -1896,7 +1906,11 @@ macro_rules! parse_cursors {
         }
 
         /// See [`SyntaxTree::significant_tokens`].
-        pub fn significant_tokens(&self) -> impl Iterator<Item = SyntaxToken<'_, $a>> {
+        pub fn significant_tokens(
+            &self,
+        ) -> impl ExactSizeIterator<Item = SyntaxToken<'_, $a>>
+        + DoubleEndedIterator
+        + std::iter::FusedIterator {
             self.tree().significant_tokens()
         }
 
@@ -2211,7 +2225,12 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     /// Every leaf [`SyntaxToken`] that is not trivia, in document order. The
     /// zero-width tokens that the parser inserts for a missing delimiter are
     /// included.
-    pub fn significant_tokens(&self) -> impl Iterator<Item = SyntaxToken<'t, 'a>> + use<'t, 'a> {
+    pub fn significant_tokens(
+        &self,
+    ) -> impl ExactSizeIterator<Item = SyntaxToken<'t, 'a>>
+    + DoubleEndedIterator
+    + std::iter::FusedIterator
+    + use<'t, 'a> {
         let tree = *self;
         (0..self.data.tokens.len() as u32).map(move |i| tree.token(i))
     }
@@ -4572,7 +4591,7 @@ impl<'t, 'a> SyntaxElement<'t, 'a> {
 }
 
 /// The part of a gap that is not yet lexed into trivia tokens.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Gap {
     start: u32,
     end: u32,
@@ -4600,6 +4619,7 @@ impl Gap {
 }
 
 /// Iterator over a node's direct children (see [`SyntaxNode::children`]).
+#[derive(Debug, Clone)]
 pub struct Children<'t, 'a> {
     tree: SyntaxTree<'t, 'a>,
     next_token: u32,
@@ -4683,6 +4703,7 @@ impl std::iter::FusedIterator for Children<'_, '_> {}
 
 /// Iterator over every leaf token of a tree, trivia included (see
 /// [`SyntaxTree::tokens`]).
+#[derive(Debug, Clone)]
 pub struct Tokens<'t, 'a> {
     tree: SyntaxTree<'t, 'a>,
     next: u32,
@@ -4696,6 +4717,13 @@ pub struct Tokens<'t, 'a> {
 
 impl<'t, 'a> Iterator for Tokens<'t, 'a> {
     type Item = SyntaxToken<'t, 'a>;
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // Each significant token that is left comes out. The number of trivia
+        // tokens is not known before the gaps are lexed.
+        let left = self.end.saturating_sub(self.next) as usize;
+        (left + usize::from(self.pending.is_some()), None)
+    }
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -5700,7 +5728,7 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
 /// let parse = parse(b"a = { b = 1 }");
 /// assert_eq!(parse.format(&opts), b"a = {\n    b = 1\n}\n");
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct FormatOptions {
     /// The string emitted once per nesting level of indentation. Defaults to a
@@ -8435,6 +8463,20 @@ mod tests {
             })
         }
         walk(parse(&source[..]).root())
+    }
+
+    #[test]
+    fn iterators_are_fused_and_sized() {
+        let tree = parse(b"a = { b } # c");
+        let mut tokens = tree.tokens();
+        assert_eq!(tokens.size_hint(), (5, None));
+        assert_eq!(tokens.clone().count(), 11);
+        tokens.by_ref().for_each(drop);
+        assert_eq!((tokens.next(), tokens.next()), (None, None));
+
+        let mut significant = tree.significant_tokens();
+        assert_eq!(significant.len(), 5);
+        assert_eq!(significant.next_back().unwrap().text(), b"}");
     }
 
     #[test]
