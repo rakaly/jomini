@@ -29,6 +29,9 @@ pub(super) struct Checkpoint {
 /// Write the tape of `source` into `tape`, which must be empty. On `Err`, the
 /// tape has a partial result. Truncate it to the checkpoint length and give it
 /// to the full grammar.
+///
+/// This function and its helpers use `#[inline(always)]`, so that they compile
+/// with the target features of the `dispatch!` caller.
 #[inline(always)]
 pub(super) fn parse<'a, S: Simd>(
     simd: S,

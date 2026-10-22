@@ -987,6 +987,11 @@ fn lex(source: &[u8], flavor: Flavor) -> Lexed {
 /// are always trivia. It accepts all input: each byte that matches no other
 /// rule starts an unquoted run, and each branch moves forward one or more
 /// bytes.
+///
+/// This function and the other generic `S: Simd` helpers use
+/// `#[inline(always)]`. They must inline into the function that `dispatch!`
+/// makes for each target feature, or they compile without the vector
+/// instructions.
 #[inline(always)]
 fn lex_simd<S: Simd>(
     simd: S,
@@ -3049,6 +3054,8 @@ impl<'t, S: Sink> Parser<'t, S> {
         }
     }
 
+    // Without `always`, the `text/lossless` benchmark is 7% slower on EU4 and
+    // 1% slower on CK3.
     #[inline(always)]
     fn parse_item(&mut self) {
         match self.peek() {
