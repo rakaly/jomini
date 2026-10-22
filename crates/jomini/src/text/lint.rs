@@ -1,37 +1,32 @@
-//! **Experimental** cross-file linting layer over the [`lossless`] tree.
+//! **Experimental** cross-file linting over the [`lossless`] tree.
 //!
-//! A single [`SyntaxTree`](lossless::SyntaxTree) describes *one* file. But the
-//! interesting bugs in a Paradox mod are *cross-file*: a building that references
-//! a culture defined in another file, or in no file at all. Catching those needs
-//! a project-wide view, so this module adds the layers a per-file parser cannot
-//! provide — mirroring how rust-analyzer, Roslyn, swift-syntax, and Carbon all
-//! keep name resolution in a layer *above* a purely syntactic tree:
+//! A [`SyntaxTree`](lossless::SyntaxTree) describes one file, but many errors
+//! in a mod are in the relation between files: a building that refers to a
+//! culture that a different file defines, or that no file defines. This
+//! module finds such errors in these steps:
 //!
-//! 1. [`Fileset`] — the project model. Every source file plus a [`FileKind`]
-//!    load-order layer, so a mod definition overrides a vanilla one (rust-analyzer's
-//!    `vfs`/`FileId` shape plus Paradox override semantics).
-//! 2. [`FileSummary`] — an *ItemTree-style* summary. Each file is parsed once and
-//!    lowered into a small, **owned**, position-independent list of definitions
-//!    and references (with source ranges). The tree is then dropped: a summary
-//!    is much smaller than a tree, so a whole game fits in memory, and
-//!    [`Linter::reanalyze`] summarizes again only the files that changed.
-//! 3. [`Index`] — the symbol table. A flat arena of [`Definition`]s keyed by
-//!    `(kind, name)`, with override/duplicate resolution by load order.
-//! 4. [`Resolution`] / [`Linter`] — the two-pass resolver. Collect *all*
-//!    definitions, *then* resolve every reference; a miss is an undefined-reference
-//!    [`Diagnostic`]. Resolution is a three-way [`Resolution`] (Carbon's
-//!    `Found`/`NotFound`/`Poisoned` shape) so a reference inside a subtree the
-//!    parser already flagged as malformed is *suppressed* rather than piling a
-//!    semantic error on top of a syntactic one.
+//! 1. A [`Fileset`] holds the source files. Each file has a [`FileKind`]
+//!    that gives its load-order layer, so a mod definition overrides a base
+//!    game definition.
+//! 2. [`summarize`] parses each file into a [`FileSummary`]: the definitions,
+//!    the references, and the syntax errors of the file. The summary owns its
+//!    data and holds no tree, so the summaries of all the files of a game fit
+//!    in memory, and [`Linter::reanalyze`] parses again only the files that
+//!    changed.
+//! 3. An [`Index`] holds the definitions of all the files by `(kind, name)`,
+//!    and picks the definition that wins in the load order.
+//! 4. The [`Linter`] resolves each reference with the index. A reference that
+//!    resolves to nothing is an undefined-reference [`Diagnostic`]. When the
+//!    reference is in a node that has a syntax error, the linter gives a weak
+//!    diagnostic instead, because the syntax error is the cause.
 //!
-//! Diagnostics carry both a [`Severity`] and a [`Confidence`] (tiger's two-axis
-//! model) so a young rule set can ship its uncertain findings without drowning
-//! the user. See `examples/lint.rs` for an end-to-end demo.
+//! Each diagnostic has a [`Severity`] and a [`Confidence`]. See
+//! `examples/lint.rs` for a full example.
 //!
-//! This is a deliberately small **prototype**: the "schema" of what defines and
-//! what references an entity is a handful of hand-written rules ([`Schema`]),
-//! not a full per-game rule set, and names are compared as lossy-UTF-8 strings
-//! rather than encoding-aware (a documented follow-up).
+//! The [`Schema`] of which files define an entity and which keys refer to an
+//! entity is a small set of rules written by hand, not a full rule set for a
+//! game. The linter compares names as lossy UTF-8 strings, not with the
+//! encoding of the game.
 //!
 //! # Examples
 //!
@@ -81,20 +76,14 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-// ---------------------------------------------------------------------------
-// Project model: files + load order
-// ---------------------------------------------------------------------------
-
-/// An opaque handle to a file in a [`Fileset`]. Cheap to copy and hash; the
-/// path and bytes are recovered through the [`Fileset`] (never carried around,
-/// mirroring rust-analyzer's `FileId`).
+/// A handle to a file in a [`Fileset`]. Use the fileset to get the path and
+/// the source of the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FileId(pub u32);
 
-/// Where a file sits in the Paradox load order. Ordered so that a later layer
-/// overrides an earlier one for the same `(kind, name)`: `Vanilla < Dlc < Mod`
-/// (and `Mod(0) < Mod(1)` for sub-mods). This is the minimal slice of tiger's
-/// richer `FileKind` overlay that the prototype needs.
+/// The load-order layer of a file. A definition in a later layer overrides a
+/// definition of the same `(kind, name)` in an earlier layer. The order is
+/// `Vanilla < Dlc < Mod`, and `Mod(0) < Mod(1)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FileKind {
     /// Base game files.
@@ -115,9 +104,8 @@ struct FileEntry {
     lines: OnceLock<LineIndex>,
 }
 
-/// The set of source files under consideration, each tagged with its load-order
-/// [`FileKind`]. **Owns** the file bytes. An [`Analysis`] holds owned summaries,
-/// not trees, so the trees come and go while the project model stays alive.
+/// The source files of a project, each with its load-order [`FileKind`]. The
+/// fileset owns the bytes of each file.
 pub struct Fileset {
     /// Identifies this fileset, so that [`Linter::reanalyze`] does not reuse
     /// the summaries of a different fileset.
@@ -141,8 +129,7 @@ impl Fileset {
         Fileset::default()
     }
 
-    /// Add one file's bytes at `path` in load-order layer `kind`, returning its
-    /// [`FileId`].
+    /// Add a file at `path` in the layer `kind`, and return its [`FileId`].
     pub fn add(&mut self, path: impl Into<PathBuf>, kind: FileKind, source: Vec<u8>) -> FileId {
         let id = FileId(self.files.len() as u32);
         self.files.push(FileEntry {
@@ -155,19 +142,18 @@ impl Fileset {
         id
     }
 
-    /// Recursively add every `*.txt` file under `root` to layer `kind`. Files
-    /// are added in **globally path-sorted** order, so that [`FileId`] assignment
-    /// — which same-layer override resolution uses as the load order (last wins)
-    /// — matches Paradox's lexicographic load order, regardless of directory
-    /// traversal. Directory **symlinks are not followed** (no cycle risk). The
-    /// stored path is the real filesystem path, used for display in diagnostics.
+    /// Add each `*.txt` file under `root` to the layer `kind`, and return their
+    /// ids.
+    ///
+    /// The function adds the files in path order. Inside a layer, the last
+    /// definition of a name wins, so the ids must follow the load order of the
+    /// game, which is path order. The function does not follow a symbolic link
+    /// to a directory.
     pub fn load_dir(
         &mut self,
         root: impl AsRef<Path>,
         kind: FileKind,
     ) -> std::io::Result<Vec<FileId>> {
-        // Collect first, then sort the whole set, then assign ids — rather than
-        // letting the DFS traversal order decide ids.
         let mut paths: Vec<PathBuf> = Vec::new();
         let mut stack = vec![root.as_ref().to_path_buf()];
         while let Some(dir) = stack.pop() {
@@ -225,10 +211,10 @@ impl Fileset {
         (0..self.files.len() as u32).map(FileId)
     }
 
-    /// The [`FileId`] previously assigned to `path` (by exact path match), if the
-    /// file is in the set. An editor uses this to map an on-disk path back to its
-    /// handle so it can overlay the unsaved buffer with
-    /// [`set_source`](Fileset::set_source) instead of rebuilding the whole set.
+    /// The [`FileId`] of the file at `path`, when the set has one. The paths
+    /// must be equal. An editor uses this to find the file of an open
+    /// document, and then gives the unsaved text to
+    /// [`set_source`](Fileset::set_source).
     pub fn id_for_path(&self, path: impl AsRef<Path>) -> Option<FileId> {
         let path = path.as_ref();
         self.files
@@ -237,10 +223,9 @@ impl Fileset {
             .map(|i| FileId(i as u32))
     }
 
-    /// Replace a file's source bytes in place, keeping its [`FileId`], path, and
-    /// layer. This is the editor-overlay hook: an LSP server swaps in the unsaved
-    /// buffer on a keystroke and re-analyzes, without disturbing any other file's
-    /// handle. Run [`Linter::reanalyze`] afterwards to refresh the snapshot.
+    /// Replace the source of a file. The [`FileId`], the path, and the layer
+    /// do not change. Then call [`Linter::reanalyze`] to update an
+    /// [`Analysis`].
     pub fn set_source(&mut self, id: FileId, source: Vec<u8>) {
         let file = &mut self.files[id.0 as usize];
         file.source = source;
@@ -249,18 +234,12 @@ impl Fileset {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Schema: the (tiny, hand-written) notion of what defines / references an entity
-// ---------------------------------------------------------------------------
-
-/// The entity kind of a definition or reference, e.g. `"building"`. A
-/// real linter would intern these; the prototype keeps them as owned strings
-/// for clarity.
+/// The kind of the entity of a definition or a reference, such as
+/// `"building"`.
 pub type Kind = String;
 
-/// A minimal, hand-written description of which files *define* entities and
-/// which field keys *reference* them — the prototype's stand-in for a full
-/// per-game rule set (the "rules-as-code" v1 from the design analysis).
+/// The rules that tell which files define entities and which field keys
+/// refer to entities.
 #[derive(Default)]
 pub struct Schema {
     /// Directory component (e.g. `"buildings"`) → the [`Kind`] that each
@@ -276,17 +255,16 @@ impl Schema {
         Schema::default()
     }
 
-    /// Declare that top-level keys in any file located under a `dir` directory
-    /// component define an entity of kind `kind` (e.g. `("buildings",
-    /// "building")`).
+    /// Each top-level key of a file in a directory named `dir` defines an
+    /// entity of kind `kind`, as in `define_dir("buildings", "building")`.
     pub fn define_dir(&mut self, dir: &str, kind: &str) -> &mut Self {
         self.definition_dirs
             .insert(dir.to_string(), kind.to_string());
         self
     }
 
-    /// Declare that a field whose key is `key` references an entity of kind
-    /// `kind` (e.g. `("add_building", "building")`).
+    /// The value of a field with the key `key` refers to an entity of kind
+    /// `kind`, as in `reference_key("add_building", "building")`.
     pub fn reference_key(&mut self, key: &str, kind: &str) -> &mut Self {
         self.reference_keys
             .insert(key.to_string(), kind.to_string());
@@ -302,11 +280,7 @@ impl Schema {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Per-file summary (the "ItemTree": owned, position-independent, tree-free)
-// ---------------------------------------------------------------------------
-
-/// A definition extracted from a file: a `(kind, name)` plus where it sits.
+/// A definition in a file: its kind, its name, and the range of its key.
 #[derive(Debug, Clone)]
 pub struct DefSite {
     pub kind: Kind,
@@ -314,10 +288,9 @@ pub struct DefSite {
     pub range: TextRange,
 }
 
-/// A reference extracted from a file: a `(kind, name)` use site, plus whether
-/// it lives inside a subtree the parser flagged as malformed (so resolution can
-/// suppress a cascade — this is what the new [`NodeFlags`](lossless::NodeFlags)
-/// `HAS_ERROR` bit buys us, looked up in O(1)).
+/// A reference in a file: the kind and the name that it refers to, and the
+/// range of the value. `in_error_subtree` is `true` when a node that holds the
+/// reference has a syntax error.
 #[derive(Debug, Clone)]
 pub struct RefSite {
     pub kind: Kind,
@@ -326,11 +299,8 @@ pub struct RefSite {
     pub in_error_subtree: bool,
 }
 
-/// The owned, tree-free summary of one file: its definitions, references, and
-/// any syntax errors. Produced by [`summarize`], after which the parsed
-/// [`SyntaxTree`](lossless::SyntaxTree) is dropped — the summary outlives it. This
-/// is the invalidation barrier rust-analyzer's `ItemTree` provides: it depends
-/// only on the items in the file, not on byte offsets within value bodies.
+/// The definitions, the references, and the syntax errors of one file. The
+/// summary owns its data and holds no tree.
 pub struct FileSummary {
     pub file: FileId,
     /// The [`Fileset`] revision of the source that this summary comes from.
@@ -340,6 +310,7 @@ pub struct FileSummary {
     pub syntax_errors: Vec<SyntaxDiagnosticSummary>,
 }
 
+/// A syntax error of a file, and its repair when the parser has one.
 #[derive(Debug, Clone)]
 pub struct SyntaxDiagnosticSummary {
     pub message: String,
@@ -353,10 +324,7 @@ fn decode(s: crate::Scalar) -> String {
     String::from_utf8_lossy(s.as_bytes()).into_owned()
 }
 
-/// Parse one file and lower it into a [`FileSummary`]. The [`SyntaxTree`] is
-/// local to this function — every datum kept is owned — so no tree outlives the
-/// call, and the whole project's worth of summaries can be held at once without
-/// the borrow-one-slice lifetime headache.
+/// Parse one file and make its [`FileSummary`].
 pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummary {
     let source = fileset.source(file);
     let tree = lossless::parse_with(source, Flavor::default());
@@ -414,10 +382,8 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
     }
 }
 
-/// Recursively collect reference uses. `in_error` carries down whether any
-/// enclosing subtree was flagged malformed by the parser, so a reference inside
-/// a broken block is recorded as suppressible. The O(1) [`SyntaxNode::has_error`]
-/// check means we learn this without re-walking the subtree.
+/// Collect the references in `node` and its descendants. `in_error` is `true`
+/// when an ancestor of `node` has a syntax error.
 fn collect_refs(node: SyntaxNode<'_, '_>, schema: &Schema, in_error: bool, out: &mut Vec<RefSite>) {
     let in_error = in_error || node.has_error();
 
@@ -439,17 +405,12 @@ fn collect_refs(node: SyntaxNode<'_, '_>, schema: &Schema, in_error: bool, out: 
     }
 }
 
-// ---------------------------------------------------------------------------
-// Symbol table (the Index): a flat arena of definitions, keyed by (kind, name)
-// ---------------------------------------------------------------------------
-
-/// An index into [`Index::definitions`]; a Carbon-style typed handle into a flat
-/// arena rather than a pointer.
+/// An index into [`Index::definitions`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DefId(pub u32);
 
-/// A registered definition: a `(kind, name)` plus the file and range it came
-/// from. `winner` marks the definition that wins after override resolution.
+/// A definition in the [`Index`]. `winner` is `true` for the definition that
+/// wins in the load order.
 #[derive(Debug, Clone)]
 pub struct Definition {
     pub kind: Kind,
@@ -465,23 +426,21 @@ struct Key {
     name: String,
 }
 
-/// The outcome of resolving a reference against the [`Index`]. The third arm —
-/// Carbon's `Poisoned` — distinguishes "genuinely undefined" from "the
-/// reference sits in a region the parser already marked broken", which the
-/// resolver suppresses to avoid cascade noise.
+/// The result of resolving a reference with the [`Index`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
     /// The name resolves to a definition.
     Found(DefId),
-    /// No definition of this `(kind, name)` exists in any loaded file.
+    /// No file defines this `(kind, name)`.
     NotFound,
-    /// Unresolved, but inside a malformed subtree — suppress the diagnostic.
+    /// No file defines this `(kind, name)`, but the reference is in a node
+    /// that has a syntax error. The syntax error can be the cause.
     UpstreamError,
 }
 
-/// The project-wide symbol table: a flat arena of [`Definition`]s plus a
-/// `(kind, name)` → definitions map. Built by registering every definition from
-/// every [`FileSummary`], then [`finalize`](Index::finalize)d to pick winners.
+/// The definitions of all the files, by `(kind, name)`. Add each definition
+/// with [`define`](Index::define), then call [`finalize`](Index::finalize) to
+/// pick the definition that wins for each name.
 #[derive(Default)]
 pub struct Index {
     definitions: Vec<Definition>,
@@ -495,7 +454,7 @@ impl Index {
         Index::default()
     }
 
-    /// Register one definition, returning its [`DefId`].
+    /// Add a definition, and return its [`DefId`].
     pub fn define(&mut self, kind: Kind, name: String, file: FileId, range: TextRange) -> DefId {
         let id = self.definitions.len() as u32;
         let key = Key {
@@ -513,14 +472,15 @@ impl Index {
         DefId(id)
     }
 
-    /// All registered definitions (read-only).
+    /// All the definitions.
     pub fn definitions(&self) -> &[Definition] {
         &self.definitions
     }
 
-    /// Resolve a reference. A present `(kind, name)` is [`Resolution::Found`];
-    /// an absent one is [`Resolution::NotFound`], or [`Resolution::UpstreamError`]
-    /// when the use site is inside a malformed subtree.
+    /// Resolve a reference to the definition that wins. When no file defines
+    /// the name and `in_error_subtree` is set, the result is
+    /// [`Resolution::UpstreamError`]. Call [`finalize`](Index::finalize)
+    /// first.
     pub fn resolve(&self, kind: &str, name: &str, in_error_subtree: bool) -> Resolution {
         let key = Key {
             kind: kind.to_string(),
@@ -533,15 +493,13 @@ impl Index {
         }
     }
 
-    /// The closest *winning* definition name of the same `kind` within a small
-    /// edit distance of `name` — the "did you mean?" candidate for an undefined
-    /// reference. Returns `None` if nothing is close enough. Only winners are
-    /// suggested, so the proposed name is one that would actually resolve. Must
-    /// run after [`finalize`](Index::finalize).
+    /// The defined name of the same `kind` that is nearest to `name`, for a
+    /// "did you mean?" hint. Return `None` when no name is near enough. Only a
+    /// name that wins is a candidate, so the suggested name resolves. Call
+    /// [`finalize`](Index::finalize) first.
     pub fn suggest(&self, kind: &str, name: &str) -> Option<&str> {
-        // A length-scaled threshold: tight for short identifiers, looser (capped
-        // at 3) for long ones, so `baracks`→`barracks` (1) is offered but
-        // unrelated names are not.
+        // A longer name can have more edits, from 1 to 3. Thus `baracks` gets
+        // `barracks`, but a short name does not get an unrelated name.
         let threshold = (name.len() / 3).clamp(1, 3);
         self.definitions
             .iter()
@@ -557,13 +515,9 @@ impl Index {
             .map(|(_, candidate)| candidate)
     }
 
-    /// Resolve override/duplicate conflicts across the load order and pick a
-    /// winner per `(kind, name)`. Emits informational diagnostics for mod-over-
-    /// vanilla overrides and warnings for duplicate definitions within one layer.
-    ///
-    /// This is the closest the prototype comes to cwtools' fixpoint index build,
-    /// kept as a clean single pass (tiger-style) since no subtype-style
-    /// conditional classification is involved.
+    /// Pick the definition that wins for each `(kind, name)`: the last one in
+    /// the highest layer. Return a tip for each definition that overrides a
+    /// lower layer, and a warning for each duplicate definition in one layer.
     pub fn finalize(&mut self, fileset: &Fileset) -> Vec<Diagnostic> {
         let mut diags = Vec::new();
 
@@ -638,9 +592,8 @@ impl Index {
     }
 }
 
-/// Levenshtein edit distance between two byte strings (the classic two-row DP).
-/// Used by [`Index::suggest`]; inputs are short identifiers, so the O(n·m) cost
-/// is negligible.
+/// The Levenshtein edit distance between two byte strings. The names are
+/// short, so the O(n·m) time is not a problem.
 fn levenshtein(a: &[u8], b: &[u8]) -> usize {
     if a.is_empty() {
         return b.len();
@@ -658,13 +611,8 @@ fn levenshtein(a: &[u8], b: &[u8]) -> usize {
     prev[b.len()]
 }
 
-// ---------------------------------------------------------------------------
-// Diagnostics: stable id + Severity + Confidence (Roslyn descriptor + tiger axes)
-// ---------------------------------------------------------------------------
-
-/// Stable lint ids. A real linter would attach a description/category/default-
-/// severity to each (Roslyn's `DiagnosticDescriptor`); the prototype keeps just
-/// the stable string id that users would reference to configure or suppress.
+/// The stable ids of the lints. A user can refer to an id to configure or
+/// suppress a lint.
 pub mod lints {
     pub const UNDEFINED_REFERENCE: &str = "undefined-reference";
     pub const SUPPRESSED_REFERENCE: &str = "undefined-reference-suppressed";
@@ -678,22 +626,20 @@ pub mod lints {
 pub enum Severity {
     /// An informational note.
     Tip,
-    /// A style/tidiness nit.
+    /// A problem of style.
     Untidy,
     /// Probably wrong.
     Warning,
     /// Almost certainly wrong.
     Error,
-    /// Fatal — the file cannot be meaningfully processed further.
+    /// The linter cannot continue with the file.
     Fatal,
 }
 
-/// How sure the linter is that a finding is real — tiger's second axis, the
-/// dial that lets a young rule set surface uncertain findings without crying
-/// wolf.
+/// How sure the linter is that a finding is correct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Confidence {
-    /// Likely a false positive; show only when asked.
+    /// Possibly a false positive. Show it only when the user asks.
     Weak,
     /// A reasonable finding.
     Reasonable,
@@ -701,11 +647,8 @@ pub enum Confidence {
     Strong,
 }
 
-/// One finding: a stable id, the two axes, and a located message. Carries a
-/// [`FileId`] + range rather than a tree reference, so it long outlives the
-/// parse and is rendered later against the [`Fileset`]. May also carry a
-/// human-readable [`help`](Diagnostic::help) note and a machine-applicable
-/// [`fix`](Diagnostic::fix).
+/// One finding. A diagnostic holds a [`FileId`] and a range, not a tree, so
+/// it can outlive the parse. Use [`render`] to show it.
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub id: &'static str,
@@ -714,19 +657,14 @@ pub struct Diagnostic {
     pub file: FileId,
     pub range: TextRange,
     pub message: String,
-    /// An optional secondary hint (e.g. "did you mean `barracks`?").
+    /// A hint, such as "did you mean `barracks`?".
     pub help: Option<String>,
-    /// An optional machine-applicable fix.
+    /// A repair that a tool can apply automatically.
     pub fix: Option<Repair>,
 }
 
-// ---------------------------------------------------------------------------
-// The linter: the two-pass orchestration
-// ---------------------------------------------------------------------------
-
-/// The cross-file linter: a [`Schema`] plus the two-pass `collect → resolve`
-/// run. Holds no per-file state — everything flows through the [`Fileset`] and
-/// the [`Index`].
+/// The cross-file linter. It collects the definitions of all the files, and
+/// then it resolves each reference.
 pub struct Linter {
     schema: Schema,
 }
@@ -737,27 +675,17 @@ impl Linter {
         Linter { schema }
     }
 
-    /// Lint a whole [`Fileset`], returning just the diagnostics (sorted by file
-    /// then position). A convenience wrapper over [`analyze`](Linter::analyze) for
-    /// batch callers who only want the findings; an editor/LSP should call
-    /// `analyze` instead and keep the [`Analysis`] around to answer navigation
-    /// queries off the same data.
+    /// Lint a [`Fileset`], and return the diagnostics in order of file and
+    /// position. An editor calls [`analyze`](Linter::analyze) instead, and
+    /// keeps the [`Analysis`] for navigation.
     pub fn run(&self, fileset: &Fileset) -> Vec<Diagnostic> {
         self.analyze(fileset).into_diagnostics()
     }
 
-    /// Lint a whole [`Fileset`] and **retain** the working state — the [`Index`]
-    /// and every per-file [`FileSummary`] — in a queryable [`Analysis`].
-    ///
-    /// Pass 1 summarizes every file and builds the [`Index`]; pass 2 surfaces
-    /// syntax errors, resolves every reference, and (unlike [`run`](Linter::run))
-    /// records each use site in a `(kind, name)` → use-sites reverse map. The
-    /// diagnostics produced are identical to `run`; the difference is that the
-    /// definitions, reference use-sites, and that reverse map survive the call —
-    /// so go-to-definition / find-references / symbol queries cost a lookup
-    /// rather than a re-lint.
+    /// Lint a [`Fileset`], and keep the [`Index`] and the summary of each file
+    /// in an [`Analysis`]. Go to definition and find references then read the
+    /// analysis, and do not lint again.
     pub fn analyze(&self, fileset: &Fileset) -> Analysis {
-        // Pass 1: lower every file to a summary.
         let summaries: Vec<FileSummary> = fileset
             .ids()
             .map(|id| summarize(fileset, &self.schema, id))
@@ -826,8 +754,7 @@ impl Linter {
         }
         let mut diags = index.finalize(fileset);
 
-        // Pass 2: surface syntax errors, resolve references, and build the
-        // reverse use-site map that find-references reads.
+        // Also record the references of each name for find references.
         let mut refs_by_name: HashMap<Key, Vec<(FileId, u32)>> = HashMap::new();
         for s in &summaries {
             for error in &s.syntax_errors {
@@ -860,9 +787,8 @@ impl Linter {
                 match index.resolve(&r.kind, &r.name, r.in_error_subtree) {
                     Resolution::Found(_) => {}
                     Resolution::NotFound => {
-                        // Offer the nearest defined name of the same kind as a
-                        // "did you mean?" hint, and — since a reference is a
-                        // single token — a machine-applicable rename fix.
+                        // A reference is one token, so the nearest name is
+                        // also a safe replacement.
                         let (help, fix) = match index.suggest(&r.kind, &r.name) {
                             Some(name) => (
                                 Some(format!("did you mean `{name}`?")),
@@ -912,20 +838,13 @@ impl Linter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Analysis: the retained, queryable result an editor/LSP reads
-// ---------------------------------------------------------------------------
-
-/// A queryable snapshot of a linted project: the diagnostics, plus the retained
-/// [`Index`] and per-file [`FileSummary`]s that produced them. Built by
-/// [`Linter::analyze`].
+/// The result of [`Linter::analyze`]: the diagnostics, the [`Index`], and the
+/// summary of each file.
 ///
-/// This is the editor/LSP substrate. [`Linter::run`] discards its working state;
-/// `Analysis` keeps it, so go-to-definition, find-references, and document/
-/// workspace symbols are all reads off this one structure. Like [`FileSummary`]
-/// it is fully **owned** — it holds no borrow on any parse tree or on the
-/// [`Fileset`] — so it can live in a long-running server. When a file changes,
-/// [`Linter::reanalyze`] makes the next analysis from it.
+/// An editor reads go to definition, find references, and the symbols from
+/// the analysis. The analysis owns its data and does not borrow the
+/// [`Fileset`], so a server can keep it. When a file changes,
+/// [`Linter::reanalyze`] updates it.
 ///
 /// Go to the definition of a reference, and find all of the references to a
 /// definition:
@@ -969,24 +888,21 @@ pub struct Analysis {
     /// The tag of the [`Fileset`] that the summaries come from.
     fileset_tag: u64,
     index: Index,
-    /// `summaries[i]` is the summary of `FileId(i)` (built in `fileset.ids()`
-    /// order, which is `0..len`).
+    /// `summaries[i]` is the summary of `FileId(i)`.
     summaries: Vec<FileSummary>,
     diagnostics: Vec<Diagnostic>,
-    /// `(kind, name)` → the use sites of that name, each `(file, index into that
-    /// file's `summary.refs`)`. The reverse of the forward resolution the
-    /// [`Index`] does, and the thing find-references needs.
+    /// The references to each `(kind, name)`, as the file and the index into
+    /// the `refs` of the summary of the file.
     refs_by_name: HashMap<Key, Vec<(FileId, u32)>>,
 }
 
 impl Analysis {
-    /// All diagnostics, sorted by file then position (identical to what
-    /// [`Linter::run`] returns).
+    /// The diagnostics, in order of file and position.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
     }
 
-    /// Consume the analysis, yielding just its diagnostics.
+    /// Discard all but the diagnostics.
     pub fn into_diagnostics(self) -> Vec<Diagnostic> {
         self.diagnostics
     }
@@ -996,23 +912,20 @@ impl Analysis {
         &self.index
     }
 
-    /// Every registered [`Definition`] — the workspace-symbol source.
+    /// All the [`Definition`]s, for the workspace symbols.
     pub fn definitions(&self) -> &[Definition] {
         self.index.definitions()
     }
 
-    /// The owned [`FileSummary`] of `file` (its defs, refs, and syntax errors),
-    /// or `None` if `file` is not in the analyzed set. The per-file
-    /// document-symbol source is `summary(file).defs`.
+    /// The [`FileSummary`] of `file`, or `None` when the analysis does not have
+    /// the file. The `defs` of the summary are the document symbols.
     pub fn summary(&self, file: FileId) -> Option<&FileSummary> {
         self.summaries.get(file.0 as usize)
     }
 
-    /// The reference use site whose byte range covers `offset` in `file`, if any.
-    /// Ranges are matched inclusively at both ends so a cursor resting just after
-    /// the last character of a token still hits it (references are sparse, so this
-    /// never double-matches). The hit-test is a linear scan — fine for the small
-    /// game files this layer targets; a spatial index is a later optimization.
+    /// The reference at `offset` in `file`. The range includes its end, so a
+    /// cursor directly after a name finds it. Two references are never
+    /// adjacent, so one offset cannot find two. The search is linear.
     pub fn reference_at(&self, file: FileId, offset: TextSize) -> Option<&RefSite> {
         let summary = self.summary(file)?;
         summary
@@ -1021,8 +934,8 @@ impl Analysis {
             .find(|r| r.range.contains_inclusive(offset))
     }
 
-    /// The definition site (its name token) whose byte range covers `offset` in
-    /// `file`, if any. Inclusive at both ends, like [`reference_at`].
+    /// The definition key at `offset` in `file`. The range includes its end,
+    /// as in [`reference_at`](Analysis::reference_at).
     pub fn definition_at(&self, file: FileId, offset: TextSize) -> Option<&DefSite> {
         let summary = self.summary(file)?;
         summary
@@ -1031,12 +944,10 @@ impl Analysis {
             .find(|d| d.range.contains_inclusive(offset))
     }
 
-    /// Go-to-definition for the token at `offset` in `file`: resolve a reference
-    /// there to its winning [`Definition`], or — if `offset` rests on a
-    /// definition's own name — return that entity's winner (so jumping from a
-    /// shadowed definition lands on the one that actually wins). `None` when there
-    /// is nothing resolvable under the cursor (plain syntax, or an *undefined*
-    /// reference, which resolves to no definition).
+    /// Go to definition from `offset` in `file`. On a reference, return the
+    /// [`Definition`] that wins for its name. On a definition key, also return
+    /// the definition that wins, which can be a different one that overrides
+    /// it. Return `None` for other text and for an undefined reference.
     pub fn definition_for(&self, file: FileId, offset: TextSize) -> Option<&Definition> {
         if let Some(r) = self.reference_at(file, offset) {
             return self.winning_definition(&r.kind, &r.name);
@@ -1055,10 +966,9 @@ impl Analysis {
         }
     }
 
-    /// Find-references: every use site of `(kind, name)` across the whole project,
-    /// as `(file, &RefSite)`. Because overrides share a single name, every use of
-    /// that name conceptually targets the winning definition, so this is exactly
-    /// the set find-references should return. Empty if the name is used nowhere.
+    /// Find references: each reference to `(kind, name)` in all the files.
+    /// All the definitions of a name share the references, because each
+    /// reference resolves to the definition that wins.
     pub fn references_to<'s>(
         &'s self,
         kind: &str,
@@ -1083,13 +993,8 @@ impl Analysis {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering: lazy line/column + a compiler-style console report
-// ---------------------------------------------------------------------------
-
 /// The bytes of the line that holds `offset`, without the line break, and the
-/// offset of the start of the line. Carbon's lazy location model: positions are
-/// plain offsets, and become lines only when a diagnostic is rendered.
+/// offset of the start of the line.
 fn line_bytes(fileset: &Fileset, file: FileId, offset: TextSize) -> (&[u8], usize) {
     let index = fileset.line_index(file);
     let range = index
@@ -1118,11 +1023,9 @@ fn severity_color(s: Severity) -> &'static str {
     }
 }
 
-/// Render one diagnostic as a multi-line, compiler-style report against the
-/// fileset's source. With `color`, severity labels and the caret are ANSI-
-/// colored. This is the separate *rendering* layer (Roslyn / rust-analyzer keep
-/// diagnostic production and rendering apart): it touches only owned data + the
-/// source bytes, never a parsed tree.
+/// Write a diagnostic as a report in the style of a compiler, with the line
+/// of the source and a caret under the range. With `color`, the severity and
+/// the caret have ANSI colors.
 pub fn render(diag: &Diagnostic, fileset: &Fileset, color: bool) -> String {
     let at = fileset.line_col(diag.file, diag.range.start());
     let (line, col) = (at.line + 1, at.col + 1);
@@ -1143,7 +1046,7 @@ pub fn render(diag: &Diagnostic, fileset: &Fileset, color: bool) -> String {
         Confidence::Strong => "",
     };
 
-    // Caret span within the line, clamped to the line's end.
+    // The caret stops at the end of the line.
     let caret_col = diag.range.start().to_usize() - line_start;
     // A `TextRange` cannot be inverted, so its length does not underflow.
     let span = diag.range.len().to_usize().max(1);
@@ -1168,7 +1071,6 @@ pub fn render(diag: &Diagnostic, fileset: &Fileset, color: bool) -> String {
         msg = diag.message,
         path = fileset.path(diag.file).display(),
     );
-    // A "did you mean?" hint, and a marker when an automatic fix is available.
     if let Some(help) = &diag.help {
         let fixable = if diag.fix.is_some() {
             " (fixable with --fix)"
@@ -1180,19 +1082,11 @@ pub fn render(diag: &Diagnostic, fileset: &Fileset, color: bool) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
-// Autofix: apply machine-applicable fixes as a text-edit splice
-// ---------------------------------------------------------------------------
-
-/// Apply [`Repair`]s to `source`, returning the rewritten bytes. Repairs are sorted
-/// by position and applied left-to-right. Equal zero-width edits keep their
-/// input order. Any fix that overlaps one already applied is skipped. The
-/// result is plain text; run [`format`](lossless::format) for house style.
-///
-/// This is the deliberately simple, robust form of tree rewriting: because each
-/// fix targets a single element's byte range (e.g. a reference token), splicing
-/// text is equivalent to rebuilding the green subtree but needs no width
-/// recomputation — and it is exactly the LSP `TextEdit` model.
+/// Apply [`Repair`]s to `source`, and return the result. The function applies
+/// the repairs in order of position. Zero-width repairs at the same offset
+/// keep their input order. A repair that overlaps an applied repair, or that
+/// goes past the end of the source, is skipped. To format the result, use
+/// [`format`](lossless::format).
 ///
 /// Apply the fixes of the diagnostics of one file:
 ///
@@ -1224,11 +1118,10 @@ pub fn apply_repairs(source: &[u8], fixes: &[Repair]) -> Vec<u8> {
     sorted.sort_by_key(|(index, fix)| (fix.range.start(), fix.range.end(), *index));
 
     let mut out = Vec::with_capacity(source.len());
-    let mut cursor = 0; // bytes of `source` already copied
+    // The number of bytes of `source` that are in `out`.
+    let mut cursor = 0;
     for (_, fix) in sorted {
         let (start, end) = (fix.range.start().to_usize(), fix.range.end().to_usize());
-        // Skip an out-of-order or overlapping edit rather than corrupt the
-        // output.
         if start < cursor || end > source.len() {
             continue;
         }
@@ -1244,9 +1137,8 @@ pub fn apply_repairs(source: &[u8], fixes: &[Repair]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// Build a tiny two-layer fileset: vanilla buildings + a mod that overrides
-    /// and references them, plus a broken file. Returns the fileset and the
-    /// demo schema.
+    /// A fileset with base game buildings, a mod that overrides and refers to
+    /// them, and a file with a syntax error.
     fn demo() -> (Fileset, Schema) {
         let mut fs = Fileset::new();
         fs.add(
@@ -1351,50 +1243,36 @@ mod tests {
     }
 
     #[test]
-    fn detects_cross_file_undefined_reference() {
-        let (fs, schema) = demo();
-        let diags = Linter::new(schema).run(&fs);
+    fn undefined_reference_suggests_the_nearest_name() {
+        let (mut fs, schema) = demo();
+        let linter = Linter::new(schema);
+        let diags = linter.run(&fs);
 
-        // `baracks` is referenced but defined nowhere → an undefined-reference.
+        // Only `baracks` is undefined. `ghost_building` is in a broken block.
         let undef: Vec<_> = diags
             .iter()
             .filter(|d| d.id == lints::UNDEFINED_REFERENCE)
             .collect();
+        assert_eq!(undef.len(), 1, "{diags:#?}");
+        let d = undef[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(&fs.source(d.file)[d.range], b"baracks");
+        assert_eq!(d.help.as_deref(), Some("did you mean `barracks`?"));
+
+        // The fix replaces only the name, and the result has no diagnostic
+        // for it.
+        let fixed = apply_repairs(fs.source(d.file), d.fix.as_slice());
         assert_eq!(
-            undef.len(),
-            1,
-            "exactly one undefined reference: {diags:#?}"
+            fixed,
+            b"e = { effect = { add_building = fortress\n add_building = barracks\n remove_building = temple } }\n"
         );
-        assert!(undef[0].message.contains("baracks"));
-        assert_eq!(undef[0].severity, Severity::Error);
-    }
-
-    #[test]
-    fn suggests_and_offers_fix_for_typo() {
-        let (fs, schema) = demo();
-        let diags = Linter::new(schema).run(&fs);
-        let d = diags
-            .iter()
-            .find(|d| d.id == lints::UNDEFINED_REFERENCE)
-            .expect("the undefined-reference diagnostic");
-
-        // The nearest defined building name is suggested as a help + a fix.
+        fs.set_source(d.file, fixed);
         assert!(
-            d.help.as_deref().unwrap_or("").contains("barracks"),
-            "help: {:?}",
-            d.help
+            !linter
+                .run(&fs)
+                .iter()
+                .any(|d| d.id == lints::UNDEFINED_REFERENCE)
         );
-        let fix = d.fix.as_ref().expect("a machine-applicable fix");
-        assert_eq!(fix.replacement, "barracks");
-
-        // Applying the fix rewrites the typo in place; the result parses clean
-        // and the bad token is gone (`barracks` now resolves against the index).
-        let fixed = apply_repairs(fs.source(d.file), std::slice::from_ref(fix));
-        let fixed_text = String::from_utf8_lossy(&fixed);
-        assert!(fixed_text.contains("add_building = barracks"));
-        assert!(!fixed_text.contains("baracks\n") && !fixed_text.contains("baracks ")); // no stray typo
-        // The fix reparses without errors (a rename of one token stays well-formed).
-        assert!(lossless::parse(&fixed).errors().is_empty());
     }
 
     #[test]
@@ -1440,22 +1318,6 @@ mod tests {
             ],
         );
         assert_eq!(out, b"abc]}");
-    }
-
-    #[test]
-    fn resolves_cross_layer_definitions() {
-        let (fs, schema) = demo();
-        let diags = Linter::new(schema).run(&fs);
-        // `fortress` (mod), `castle` (vanilla, from the mod's upgrades_from), and
-        // `temple` (mod override) all resolve, so none appear as undefined.
-        for name in ["fortress", "castle", "temple"] {
-            assert!(
-                !diags
-                    .iter()
-                    .any(|d| d.id == lints::UNDEFINED_REFERENCE && d.message.contains(name)),
-                "`{name}` should resolve across files/layers"
-            );
-        }
     }
 
     #[test]
@@ -1608,20 +1470,6 @@ mod tests {
     }
 
     #[test]
-    fn analyze_diagnostics_match_run() {
-        // `analyze` must produce exactly the diagnostics `run` does — `run` is now
-        // a thin wrapper over it.
-        let (fs, schema) = demo();
-        let via_run = Linter::new(schema).run(&fs);
-        let (fs2, schema2) = demo();
-        let via_analyze = Linter::new(schema2).analyze(&fs2).into_diagnostics();
-        assert_eq!(via_run.len(), via_analyze.len());
-        for (a, b) in via_run.iter().zip(&via_analyze) {
-            assert_eq!((a.id, a.file, a.range), (b.id, b.file, b.range));
-        }
-    }
-
-    #[test]
     fn goto_definition_jumps_cross_file_to_the_winner() {
         let (fs, schema) = demo();
         let analysis = Linter::new(schema).analyze(&fs);
@@ -1636,8 +1484,7 @@ mod tests {
             ("building", "fortress")
         );
 
-        // Go-to-definition lands on the *winning* fortress definition, which lives
-        // in the mod buildings file (FileId 1) — a jump no single-file view affords.
+        // Go to definition finds the `fortress` that wins, in a different file.
         let def = analysis
             .definition_for(events, TextSize::new(35))
             .expect("a definition to jump to");
@@ -1649,11 +1496,13 @@ mod tests {
         assert!(def.winner);
 
         // An undefined reference (`baracks`, the typo) resolves to no definition.
-        let baracks = analysis
-            .reference_at(events, TextSize::new(60))
-            .filter(|r| r.name == "baracks")
-            .expect("the baracks reference");
-        assert_eq!(baracks.name, "baracks");
+        assert_eq!(
+            analysis
+                .reference_at(events, TextSize::new(60))
+                .unwrap()
+                .name,
+            "baracks"
+        );
         assert!(analysis.definition_for(events, TextSize::new(60)).is_none());
     }
 
@@ -1661,8 +1510,8 @@ mod tests {
     fn goto_definition_on_a_definition_resolves_the_override_winner() {
         let (fs, schema) = demo();
         let analysis = Linter::new(schema).analyze(&fs);
-        // Cursor on the *vanilla* `temple` definition key (FileId 0, offset 2)
-        // jumps to whichever `temple` actually wins — the mod override (FileId 1).
+        // From the vanilla `temple` key, go to the mod `temple` that overrides
+        // it.
         let def = analysis
             .definition_for(FileId(0), TextSize::new(2))
             .expect("temple resolves");
@@ -1706,36 +1555,31 @@ mod tests {
     }
 
     #[test]
-    fn overlay_set_source_then_reanalyze_resolves_the_typo() {
+    fn new_definition_in_one_file_resolves_a_reference_in_another() {
         let (mut fs, schema) = demo();
         let linter = Linter::new(schema);
 
-        // Path → id round-trip, and a miss for an unknown path.
         let buildings = fs
             .id_for_path("vanilla/common/buildings/00_buildings.txt")
             .expect("the vanilla buildings file is in the set");
         assert_eq!(buildings, FileId(0));
         assert!(fs.id_for_path("nope.txt").is_none());
 
-        // Before: `baracks` (typo) is referenced but defined nowhere.
-        let before = linter.analyze(&fs);
+        let mut analysis = linter.analyze(&fs);
         assert!(
-            before
+            analysis
                 .diagnostics()
                 .iter()
                 .any(|d| d.id == lints::UNDEFINED_REFERENCE && d.message.contains("baracks"))
         );
 
-        // Overlay an edit that *defines* `baracks`, as an editor would on a
-        // keystroke, then re-analyze the same fileset.
+        // Define `baracks` in the buildings file. Only that file changes.
         let mut edited = fs.source(buildings).to_vec();
         edited.extend_from_slice(b"baracks = { cost = 1 }\n");
         fs.set_source(buildings, edited);
-        let after = linter.analyze(&fs);
-
-        // The undefined reference is gone — the overlay fed straight into the index.
+        linter.reanalyze(&fs, &mut analysis);
         assert!(
-            !after
+            !analysis
                 .diagnostics()
                 .iter()
                 .any(|d| d.id == lints::UNDEFINED_REFERENCE && d.message.contains("baracks"))
