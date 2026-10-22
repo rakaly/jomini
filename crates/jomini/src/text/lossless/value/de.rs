@@ -20,10 +20,6 @@ use serde::de::{
 };
 use std::{fmt, marker::PhantomData};
 
-// ---------------------------------------------------------------------------
-// Deserialize for Value
-// ---------------------------------------------------------------------------
-
 impl<'de> Deserialize<'de> for Value {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         deserializer.deserialize_newtype_struct(VALUE, ValueVisitor)
@@ -347,10 +343,6 @@ impl<'de> Visitor<'de> for AnyVisitor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The model of a Value for the shared serde rules
-// ---------------------------------------------------------------------------
-
 /// The scalars of a value can be borrowed for the deserializer.
 #[derive(Clone, Copy)]
 pub(crate) struct Borrowed;
@@ -362,6 +354,8 @@ pub(crate) struct Copied;
 /// The lifetime of the value and the mode, with no data.
 type Mode<'v, B> = PhantomData<(&'v (), fn() -> B)>;
 
+/// The [`Doc`] model of a [`Value`]. A value then deserializes with the same
+/// rules as the syntax tree.
 pub(crate) struct ValueDoc<'v, B> {
     mode: Mode<'v, B>,
 }
