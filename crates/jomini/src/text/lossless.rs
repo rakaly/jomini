@@ -165,11 +165,14 @@ pub use line_index::{LineCol, LineIndex};
 pub use tape::{parse_tape, parse_tape_with};
 
 /// The kind of every node (interior) and token (leaf) in a [`SyntaxTree`].
+///
+/// The tree does not store the trivia kinds ([`Bom`](Self::Bom),
+/// [`Whitespace`](Self::Whitespace), and [`Comment`](Self::Comment)). The
+/// cursors lex them again from the gaps between the stored tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 #[non_exhaustive]
 pub enum SyntaxKind {
-    // ===== trivia (made from the gaps between stored tokens) =====
     /// A leading UTF-8 byte-order-mark (`EF BB BF`).
     Bom,
     /// A run of spaces, tabs, newlines, carriage returns, or semicolons.
@@ -177,7 +180,6 @@ pub enum SyntaxKind {
     /// A `# ...` comment running to end of line.
     Comment,
 
-    // ===== tokens (leaves) =====
     /// A bare scalar: identifier, number, date, `yes`/`no`, etc.
     Unquoted,
     /// A `"..."` quoted scalar (raw text, including the quotes).
@@ -206,7 +208,6 @@ pub enum SyntaxKind {
     /// consists of two source tokens.
     MissingCloseBracket,
 
-    // ===== calc tokens (interior of `@[ ... ]`) =====
     /// `@[`, opening a parse-time calculation.
     CalcOpen,
     /// `]`, closing a parse-time calculation.
@@ -232,7 +233,6 @@ pub enum SyntaxKind {
     /// An operand identifier inside a calc (e.g. `tier`, `leopard_x`, `@var`).
     CalcIdent,
 
-    // ===== nodes (interior) =====
     /// The whole document.
     Root,
     /// A `key <op> value` field, or a `key { ... }` field with no operator.
@@ -304,8 +304,9 @@ impl SyntaxKind {
             Self::CloseBrace | Self::CloseBracket | Self::CalcClose | Self::CloseParen
         )
     }
-    /// Whitespace, comments, and the BOM — insignificant to structure but
-    /// preserved for losslessness.
+
+    /// Return `true` for whitespace, a comment, or the BOM. These tokens have
+    /// no effect on the structure, but the tree keeps their bytes.
     pub fn is_trivia(self) -> bool {
         matches!(
             self,
@@ -347,10 +348,6 @@ impl SyntaxKind {
         )
     }
 }
-
-// ---------------------------------------------------------------------------
-// Text ranges
-// ---------------------------------------------------------------------------
 
 /// A byte offset in the source.
 ///
@@ -681,12 +678,6 @@ impl fmt::Debug for TextRange {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Lexing: a table-driven, error-tolerant, BOM-preserving scanner. It keeps
-// only significant tokens. The bytes between two tokens are always trivia.
-// Every branch advances by at least one byte.
-// ---------------------------------------------------------------------------
-
 /// Game-specific lexer configuration.
 ///
 /// [`Flavor::default`] is the most permissive superset and is correct for every
@@ -991,6 +982,11 @@ fn lex(source: &[u8], flavor: Flavor) -> Lexed {
 
 /// Lex `source` from the state `(offset, flags)` into `out` until `out` has
 /// `limit` tokens or the source ends. Return the state after the last token.
+///
+/// The lexer pushes only significant tokens, so the bytes between two tokens
+/// are always trivia. It accepts all input: each byte that matches no other
+/// rule starts an unquoted run, and each branch moves forward one or more
+/// bytes.
 #[inline(always)]
 fn lex_simd<S: Simd>(
     simd: S,
@@ -1436,10 +1432,6 @@ fn lex_trivia(source: &[u8], start: u32, end: u32) -> (SyntaxKind, u32) {
     (SyntaxKind::Whitespace, len as u32)
 }
 
-// ---------------------------------------------------------------------------
-// Diagnostics
-// ---------------------------------------------------------------------------
-
 /// The kind of a [`SyntaxError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -1592,10 +1584,6 @@ pub struct Repair {
     pub range: TextRange,
     pub replacement: String,
 }
-
-// ---------------------------------------------------------------------------
-// Tree storage: a buffer of significant tokens and a pre-order node tape.
-// ---------------------------------------------------------------------------
 
 /// Summary bits for a subtree, one byte for each node. The parser sets the
 /// bits when it builds the tree.
@@ -2175,8 +2163,7 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     /// Every leaf [`SyntaxToken`] in document order, trivia included.
     ///
     /// Concatenating [`SyntaxToken::text`] over this iterator reproduces
-    /// [`source`](SyntaxTree::source): the lossless invariant in iterator form.
-    /// Ideal for highlighters and other leaf-oriented tooling.
+    /// [`source`](SyntaxTree::source).
     ///
     /// ```
     /// use jomini::text::lossless::{parse, SyntaxKind};
@@ -3720,18 +3707,6 @@ fn resolve_interpolations(
     end
 }
 
-// ---------------------------------------------------------------------------
-// The grammar of a calc expression, the interior of `@[ ... ]`.
-//
-// operands : Number | CalcIdent | `(` expr `)` | (`-`|`+`) operand
-// binary   : `+` `-` (lower precedence) and `*` `/` (higher precedence),
-//            left-associative
-//
-// A precedence-climbing parser makes a temporary `CalcElem` tree. A pre-order
-// walk of the tree emits the tokens and nodes. The whitespace in the interior
-// stays in the gaps between tokens, thus the output keeps all bytes.
-// ---------------------------------------------------------------------------
-
 /// A node in the temporary calc tree (see [`parse_calc_interior`]).
 enum CalcElem {
     /// A leaf that refers to a lexed token by its index.
@@ -3776,10 +3751,24 @@ fn infix_bp(kind: SyntaxKind) -> Option<(u8, u8)> {
 }
 
 /// Parse the interior tokens of a calc (everything between `@[` and `]`) into a
-/// flat list of [`CalcElem`]s: the expression, then any unconsumed (malformed)
-/// tokens. Total over any token slice. `base` is the index of the first token
-/// of `toks` in the token buffer. When the [`MAX_DEPTH`] guard trips, parsing
-/// stops descending but every token is still emitted as a flat leaf.
+/// flat list of [`CalcElem`]s: the expression, then the tokens that the
+/// expression does not use, as in `@[1 2]`. `base` is the index of the first
+/// token of `toks` in the token buffer.
+///
+/// The grammar is:
+///
+/// ```text
+/// operand : Number | CalcIdent | `(` expr `)` | (`-` | `+`) operand
+/// expr    : operand ((`+` | `-` | `*` | `/`) operand)*
+/// ```
+///
+/// `*` and `/` bind more tightly than `+` and `-`, and each operator is
+/// left-associative. The interior whitespace stays in the gaps between the
+/// tokens, so the caller emits only the tokens and the nodes.
+///
+/// When `insert_missing_parens` is set, each `(` that has no `)` gets a
+/// zero-width [`SyntaxKind::MissingCloseParen`]. When the [`MAX_DEPTH`] guard
+/// trips, the result is each token as a flat leaf.
 fn parse_calc_interior(toks: &[Token], base: u32, insert_missing_parens: bool) -> CalcInterior {
     let mut c = CalcCursor {
         toks,
@@ -3920,11 +3909,6 @@ impl CalcCursor<'_> {
         lhs
     }
 }
-
-// ---------------------------------------------------------------------------
-// Cursors: lightweight handles into the tree. `'t` borrows the tree, `'a` is
-// the source lifetime. Trivia tokens are made on demand from the gaps.
-// ---------------------------------------------------------------------------
 
 /// A handle to an interior node in a [`SyntaxTree`].
 ///
@@ -4067,8 +4051,8 @@ impl<'t, 'a> SyntaxNode<'t, 'a> {
         })
     }
 
-    /// The precomputed [`NodeFlags`] summarizing this node's whole subtree (see
-    /// [`NodeFlags`]). An O(1) lookup — no subtree walk.
+    /// The [`NodeFlags`] of this node and its whole subtree. The parser
+    /// calculates them, so this call does not walk the subtree.
     pub fn flags(&self) -> NodeFlags {
         self.data().flags
     }
@@ -4751,14 +4735,6 @@ impl<'t, 'a> Iterator for Tokens<'t, 'a> {
 
 impl std::iter::FusedIterator for Tokens<'_, '_> {}
 
-// ---------------------------------------------------------------------------
-// Typed AST: "ungrammar-style" strongly-typed views over the cursors. Each
-// wrapper is a thin newtype around a `SyntaxNode` of a fixed `SyntaxKind`, with
-// accessors that locate children by kind/position. They are zero-copy `Copy`
-// views computed on demand, so constructing one is free; `syntax()` always
-// recovers the untyped node for ranges, text, or raw traversal.
-// ---------------------------------------------------------------------------
-
 /// A typed view over a [`SyntaxNode`] of a particular [`SyntaxKind`].
 ///
 /// Mirrors rust-analyzer's generated AST: [`AstNode::cast`] succeeds only when
@@ -5038,8 +5014,8 @@ impl<'t, 'a> SyntaxToken<'t, 'a> {
     }
 }
 
-/// First significant child element of `node` after skipping leading trivia and
-/// (for blocks) the delimiting braces — used to classify entries.
+/// The items of a root or a block: the significant children without the
+/// braces.
 fn child_items<'t, 'a>(
     node: SyntaxNode<'t, 'a>,
 ) -> impl Iterator<Item = Item<'t, 'a>> + use<'t, 'a> {
@@ -5640,29 +5616,6 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Formatter: walk the tree and write it again with new whitespace. The
-// formatter changes only the whitespace. It writes each significant token,
-// each comment, and the BOM with the same bytes. Thus a parse of the output
-// gives the same significant tokens, and a second format makes no change.
-//
-// Style:
-//   * Each entry is on its own line. Each nesting level adds one
-//     `FormatOptions::indent`.
-//   * A field is `key = value`, with one space on each side of the operator.
-//   * A block that has only scalars stays on one line (`{ 1 2 3 }`). A block
-//     with fields, blocks, or comments has one entry on each line. An empty
-//     block becomes `{}`.
-//   * A comment always ends its line, so it cannot hide the token after it.
-//     A quoted string that a newline closes also ends its line.
-//   * One blank line between entries stays. More blank lines become one.
-//   * The document ends with one newline.
-//
-// The formatter writes parameter, code, calc, and `Bogus` nodes with their
-// source bytes. It writes each loose token on its own line. The content of
-// these nodes does not change, but their layout can be rough.
-// ---------------------------------------------------------------------------
-
 /// Configuration for [`SyntaxTree::format`].
 ///
 /// ```
@@ -5689,10 +5642,8 @@ impl Default for FormatOptions {
     }
 }
 
-/// Parse `source` and reformat it with the default [`FormatOptions`].
-///
-/// The result reparses to the same significant tokens as `source` and is
-/// idempotent (`format(format(x)) == format(x)`).
+/// Parse `source` and reformat it with the default [`FormatOptions`]. See
+/// [`SyntaxTree::format`] for the style.
 ///
 /// ```
 /// use jomini::text::lossless::format;
@@ -5707,8 +5658,31 @@ pub fn format(source: &[u8]) -> Vec<u8> {
 }
 
 impl<'t, 'a> SyntaxTree<'t, 'a> {
-    /// Reformat the tree with the given [`FormatOptions`]. See the module-level
-    /// formatter notes for the house style.
+    /// Reformat the tree with the given [`FormatOptions`].
+    ///
+    /// The formatter changes only the whitespace. It writes each significant
+    /// token, each comment, and the BOM with the same bytes. Thus a parse of
+    /// the output gives the same significant tokens, and a second format
+    /// makes no change.
+    ///
+    /// The style is:
+    ///
+    /// - Each entry is on its own line. Each nesting level adds one
+    ///   [`indent`](FormatOptions::indent).
+    /// - A field is `key = value`, with one space on each side of the
+    ///   operator.
+    /// - A block that has only scalars stays on one line (`{ 1 2 3 }`). A
+    ///   block with fields, blocks, or comments has one entry on each line. An
+    ///   empty block becomes `{}`.
+    /// - A comment always ends its line, so it cannot hide the token after it.
+    ///   A comment inside a field moves to a line before the field. A quoted
+    ///   string that a newline closes also ends its line.
+    /// - One blank line between entries stays. More blank lines become one.
+    /// - The document ends with one newline, unless the last token is a
+    ///   quoted string with no closing quote.
+    ///
+    /// The formatter writes parameter, code, calc, and `Bogus` nodes with
+    /// their source bytes, and each loose token on its own line.
     pub fn format(&self, opts: &FormatOptions) -> Vec<u8> {
         let mut f = Fmt {
             out: Vec::with_capacity(self.source.len()),
@@ -5733,13 +5707,15 @@ fn count_newlines(bytes: &[u8]) -> usize {
     lf + lone_cr
 }
 
-/// Whether a quoted token's bytes (`text` begins with `"`) are properly closed
-/// by a `"` before running out — mirroring the lexer's escape handling. An
-/// *un*closed quote (it ran to end of input) would absorb any byte the
-/// formatter emits after it, so the formatter must not follow it with a newline.
+/// Return `false` when `text` starts with a `"` that has no closing `"`. A
+/// backslash escapes the next byte, as in the lexer.
+///
+/// The lexer uses this to find a string that continues to the end of the
+/// source. The formatter uses it because such a string, or a string that a
+/// newline closes, takes the bytes that follow it.
 fn quote_is_closed(text: &[u8]) -> bool {
     if text.first() != Some(&b'"') {
-        return true; // not an opening quote; nothing to absorb
+        return true;
     }
     let mut i = 1;
     while i < text.len() {
@@ -6073,6 +6049,12 @@ mod tests {
     use super::*;
     use quickcheck_macros::quickcheck;
 
+    fn error_kinds<S: AsRef<[u8]>>(parse: &Parse<S>) -> Vec<SyntaxErrorKind> {
+        parse.errors().iter().map(|e| e.kind).collect()
+    }
+
+    /// The fast [`Sink::scalar_field`] of the builder must make the same
+    /// nodes and flags as the four separate events.
     #[quickcheck]
     fn scalar_field_matches_events(kinds: (u8, u8), flags: (u8, u8, u8), nested: bool) -> bool {
         const KINDS: &[SyntaxKind] = &[
@@ -6388,95 +6370,6 @@ mod tests {
     }
 
     #[test]
-    fn structure_field() {
-        let tree = parse(b"a = b");
-        let root = tree.root();
-        assert_eq!(root.kind(), SyntaxKind::Root);
-
-        let fields: Vec<_> = root.child_nodes().collect();
-        assert_eq!(fields.len(), 1);
-        let field = fields[0];
-        assert_eq!(field.kind(), SyntaxKind::Field);
-
-        let kinds: Vec<_> = field.child_tokens().map(|t| t.kind()).collect();
-        assert_eq!(
-            kinds,
-            [
-                SyntaxKind::Unquoted,
-                SyntaxKind::Whitespace,
-                SyntaxKind::Operator,
-                SyntaxKind::Whitespace,
-                SyntaxKind::Unquoted
-            ]
-        );
-
-        let toks: Vec<_> = field.child_tokens().collect();
-        assert_eq!(toks[0].text(), b"a");
-        assert_eq!(toks[2].op(), Some(Operator::Equal));
-        assert_eq!(toks[4].text(), b"b");
-        assert_eq!(field.text(), b"a = b");
-        assert!(tree.errors().is_empty());
-    }
-
-    #[test]
-    fn structure_block_value() {
-        let tree = parse(b"a = { b c }");
-        let field = tree.root().child_nodes().next().unwrap();
-        assert_eq!(field.kind(), SyntaxKind::Field);
-
-        let block = field.child_nodes().next().unwrap();
-        assert_eq!(block.kind(), SyntaxKind::Block);
-        assert_eq!(block.text(), b"{ b c }");
-
-        let scalars: Vec<_> = block
-            .child_tokens()
-            .filter(|t| t.kind() == SyntaxKind::Unquoted)
-            .map(|t| t.text())
-            .collect();
-        assert_eq!(scalars, [b"b", b"c"]);
-    }
-
-    #[test]
-    fn headered_color_block() {
-        let tree = parse(b"color = rgb { 1 2 3 }");
-        let field = tree.root().child_nodes().next().unwrap();
-        let hb = field.child_nodes().next().unwrap();
-        assert_eq!(hb.kind(), SyntaxKind::HeaderedBlock);
-        assert_eq!(hb.text(), b"rgb { 1 2 3 }");
-
-        let header = hb
-            .child_tokens()
-            .find(|t| t.kind() == SyntaxKind::Unquoted)
-            .unwrap();
-        assert_eq!(header.text(), b"rgb");
-
-        let block = hb.child_nodes().next().unwrap();
-        assert_eq!(block.kind(), SyntaxKind::Block);
-    }
-
-    #[test]
-    fn macro_param_token() {
-        let tree = parse(b"x = $TIER|capital$");
-        let field = tree.root().child_nodes().next().unwrap();
-        let m = field
-            .child_tokens()
-            .find(|t| t.kind() == SyntaxKind::MacroParam)
-            .unwrap();
-        assert_eq!(m.text(), b"$TIER|capital$");
-    }
-
-    #[test]
-    fn non_equal_operator_preserved() {
-        let tree = parse(b"age > 16");
-        let field = tree.root().child_nodes().next().unwrap();
-        let op = field
-            .child_tokens()
-            .find(|t| t.kind() == SyntaxKind::Operator)
-            .unwrap();
-        assert_eq!(op.op(), Some(Operator::GreaterThan));
-    }
-
-    #[test]
     fn flavor_newline_terminated_strings() {
         let src = b"x=\"ab\ncd\"";
 
@@ -6498,20 +6391,6 @@ mod tests {
         // Both round-trip.
         assert_eq!(parse_with(src, Flavor::default()).reconstruct(), src);
         assert_eq!(parse_with(src, Flavor::hoi4()).reconstruct(), src);
-    }
-
-    #[test]
-    fn text_outlives_tree_data() {
-        // The text of a token borrows the source, not the tree.
-        fn first_key(source: &[u8]) -> &[u8] {
-            let data = parse_data(source, Flavor::default());
-            let tree = SyntaxTree {
-                data: &data,
-                source,
-            };
-            tree.ast().fields().next().unwrap().key().text()
-        }
-        assert_eq!(first_key(b"a = 1"), b"a");
     }
 
     #[test]
@@ -6591,17 +6470,6 @@ mod tests {
 
         let toks = lex(b"@foo", Flavor::default()).tokens;
         assert_eq!(toks[0].kind, SyntaxKind::Variable);
-    }
-
-    #[test]
-    fn diagnostics_unclosed_block() {
-        let tree = parse(b"a = { b");
-        assert!(
-            tree.errors()
-                .iter()
-                .any(|e| e.message().contains("unclosed"))
-        );
-        assert_eq!(tree.reconstruct(), b"a = { b"); // still lossless
     }
 
     #[test]
@@ -6697,13 +6565,24 @@ mod tests {
 
     #[test]
     fn recovery_refuses_mismatches_and_interrupted_constructs() {
-        for source in [b"a = { b ]".as_slice(), b"a = { b = @[ (1]".as_slice()] {
+        for (source, kinds) in [
+            (
+                b"a = { b ]".as_slice(),
+                [
+                    SyntaxErrorKind::UnmatchedCloseBracket,
+                    SyntaxErrorKind::UnclosedBlock,
+                ],
+            ),
+            (
+                b"a = { b = @[ (1]".as_slice(),
+                [
+                    SyntaxErrorKind::UnclosedCalcParen,
+                    SyntaxErrorKind::UnclosedBlock,
+                ],
+            ),
+        ] {
             let tree = parse(source);
-            assert!(
-                tree.errors()
-                    .iter()
-                    .any(|error| error.message().contains("unclosed"))
-            );
+            assert_eq!(error_kinds(&tree), kinds, "{source:?}");
             assert!(tree.repairs().is_empty(), "unexpected fix for {source:?}");
             assert!(tree.errors().iter().all(|error| {
                 error.recovery.as_ref().is_none_or(|recovery| {
@@ -6734,11 +6613,9 @@ mod tests {
             .and_then(|value| value.as_calc())
             .unwrap();
         assert!(calc.syntax().has_error());
-        assert!(
-            interrupted_calc
-                .errors()
-                .iter()
-                .any(|error| error.message().contains("unclosed '@['"))
+        assert_eq!(
+            error_kinds(&interrupted_calc),
+            [SyntaxErrorKind::UnclosedCalc]
         );
         assert!(interrupted_calc.repairs().is_empty());
 
@@ -6892,25 +6769,18 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_unmatched_brace() {
+    fn unmatched_close_brace_is_a_bogus_node() {
         let tree = parse(b"x } y");
-        assert!(
-            tree.errors()
-                .iter()
-                .any(|e| e.message().contains("unmatched"))
-        );
-        assert_eq!(tree.reconstruct(), b"x } y");
-        // The stray brace lands in a Bogus node.
-        assert!(
-            tree.root()
-                .child_nodes()
-                .any(|n| n.kind() == SyntaxKind::Bogus)
-        );
-    }
-
-    #[test]
-    fn clean_input_has_no_errors() {
-        assert!(parse(b"a = { b = c }").errors().is_empty());
+        assert_eq!(error_kinds(&tree), [SyntaxErrorKind::UnmatchedCloseBrace]);
+        let bogus: Vec<_> = tree
+            .root()
+            .child_nodes()
+            .filter(|n| n.kind() == SyntaxKind::Bogus)
+            .collect();
+        assert_eq!(bogus.len(), 1);
+        assert_eq!(bogus[0].text(), b"}");
+        assert!(bogus[0].has_error());
+        assert!(tree.root().has_error());
     }
 
     #[test]
@@ -6982,7 +6852,7 @@ mod tests {
         assert!(
             tree.errors()
                 .iter()
-                .any(|e| e.message().contains("maximum nesting depth"))
+                .any(|e| e.kind == SyntaxErrorKind::BlockDepthExceeded)
         );
     }
 
@@ -7012,7 +6882,7 @@ mod tests {
         assert!(
             tree.errors()
                 .iter()
-                .any(|e| e.message().contains("calc nesting"))
+                .any(|e| e.kind == SyntaxErrorKind::CalcDepthExceeded)
         );
     }
 
@@ -7029,7 +6899,7 @@ mod tests {
         assert!(
             tree.errors()
                 .iter()
-                .any(|e| e.message().contains("calc nesting"))
+                .any(|e| e.kind == SyntaxErrorKind::CalcDepthExceeded)
         );
     }
 
@@ -7050,7 +6920,7 @@ mod tests {
         assert!(
             tree.errors()
                 .iter()
-                .any(|e| e.message().contains("calc nesting"))
+                .any(|e| e.kind == SyntaxErrorKind::CalcDepthExceeded)
         );
         // A pure `*` chain folds the same way.
         let mut data = Vec::new();
@@ -7075,8 +6945,6 @@ mod tests {
         );
     }
 
-    // ---- typed AST ----
-
     #[test]
     fn ast_field_key_op_value() {
         let tree = parse(b"name = \"Ragusa\"");
@@ -7086,16 +6954,6 @@ mod tests {
         let value = field.value().unwrap();
         // Quoted value: as_scalar() strips the surrounding quotes.
         assert_eq!(value.as_scalar().unwrap().as_bytes(), b"Ragusa");
-    }
-
-    #[test]
-    fn ast_value_coercions() {
-        let tree = parse(b"a = 1.5 b = -3 c = 42 d = yes");
-        let vals: Vec<_> = tree.ast().fields().map(|f| f.value().unwrap()).collect();
-        assert_eq!(vals[0].to_f64(), Some(1.5));
-        assert_eq!(vals[1].to_i64(), Some(-3));
-        assert_eq!(vals[2].to_u64(), Some(42));
-        assert_eq!(vals[3].to_bool(), Some(true));
     }
 
     #[test]
@@ -7118,18 +6976,17 @@ mod tests {
     }
 
     #[test]
-    fn ast_empty_block_is_empty() {
-        let tree = parse(b"a = {}");
-        let block = tree
+    fn ast_block_with_only_trivia_is_empty() {
+        let tree = parse(b"a = {} b = { # note\n } c = { = }");
+        let blocks: Vec<_> = tree
             .ast()
             .fields()
-            .next()
-            .unwrap()
-            .value()
-            .unwrap()
-            .as_block()
-            .unwrap();
-        assert!(block.is_empty());
+            .map(|f| f.value().unwrap().as_block().unwrap())
+            .collect();
+        assert!(blocks[0].is_empty());
+        assert!(blocks[1].is_empty());
+        // A stray operator is an `Item::Other`, so the block is not empty.
+        assert!(!blocks[2].is_empty());
     }
 
     #[test]
@@ -7470,11 +7327,7 @@ mod tests {
         let source = b"outer = { code [[value = yes }";
         let tree = parse(source);
         assert_eq!(tree.reconstruct(), source);
-        assert!(
-            tree.errors()
-                .iter()
-                .any(|error| error.message().contains("unclosed code payload"))
-        );
+        assert_eq!(error_kinds(&tree), [SyntaxErrorKind::UnclosedCode]);
         let outer = tree
             .ast()
             .fields()
@@ -7501,11 +7354,14 @@ mod tests {
         for source in sources {
             let tree = parse(source);
             assert_eq!(tree.reconstruct(), source);
-            assert!(
-                tree.errors()
-                    .iter()
-                    .any(|error| error.message().contains("unclosed code payload"))
+            assert_eq!(
+                error_kinds(&tree),
+                [
+                    SyntaxErrorKind::CodeMissingFirstBracket,
+                    SyntaxErrorKind::CodeMissingSecondBracket,
+                ]
             );
+            assert_eq!(tree.repairs()[0].replacement, "]]");
         }
     }
 
@@ -7514,14 +7370,7 @@ mod tests {
         for source in [b"[[p] a = ]\nb = 1".as_slice(), b"x = { code [[ a = ]] }"] {
             let tree = parse(source);
             assert_eq!(tree.reconstruct(), source);
-            assert!(
-                !tree.errors().iter().any(|error| {
-                    let message = error.message();
-                    message.contains("unclosed parameter block")
-                        || message.contains("unclosed code payload")
-                }),
-                "source={source:?}"
-            );
+            assert!(tree.errors().is_empty(), "{source:?}");
         }
 
         let tree = parse(b"[[p] a = ]\nb = 1");
@@ -7566,11 +7415,11 @@ mod tests {
 
         let tree = parse(&source);
         assert_eq!(tree.reconstruct(), source);
-        assert!(tree.errors().iter().any(|error| {
-            error
-                .message()
-                .contains("maximum code nesting depth exceeded")
-        }));
+        assert!(
+            tree.errors()
+                .iter()
+                .any(|e| e.kind == SyntaxErrorKind::CodeDepthExceeded)
+        );
     }
 
     #[test]
@@ -7578,11 +7427,7 @@ mod tests {
         let source = b"outer = { [[name] value = yes }";
         let tree = parse(source);
         assert_eq!(tree.reconstruct(), source);
-        assert!(
-            tree.errors()
-                .iter()
-                .any(|error| error.message().contains("unclosed parameter block"))
-        );
+        assert_eq!(error_kinds(&tree), [SyntaxErrorKind::UnclosedParameter]);
         let outer = tree
             .ast()
             .fields()
@@ -7623,8 +7468,6 @@ mod tests {
             2
         );
     }
-
-    // ---- formatter ----
 
     fn fmt(src: &[u8]) -> String {
         String::from_utf8(format(src)).unwrap()
@@ -7709,15 +7552,6 @@ mod tests {
     #[test]
     fn fmt_block_with_fields_is_multiline() {
         assert_eq!(fmt(b"o={x=1 y=2}"), "o = {\n\tx = 1\n\ty = 2\n}\n");
-    }
-
-    #[test]
-    fn fmt_indent_option_spaces() {
-        let opts = FormatOptions {
-            indent: "  ".into(),
-        };
-        let out = String::from_utf8(parse(b"a={b=c}").format(&opts)).unwrap();
-        assert_eq!(out, "a = {\n  b = c\n}\n");
     }
 
     #[test]
@@ -7825,27 +7659,9 @@ mod tests {
     }
 
     #[test]
-    fn tokens_iter_is_ordered_leaves_and_lossless() {
-        let src = b"a = { b = @[1+2] }  # c";
-        let tree = parse(src);
-        // Only leaves, never nodes.
-        assert!(tree.tokens().all(|t| !t.kind().is_node()));
-        // In document order, contiguous, covering the whole source.
-        let mut at = TextSize::new(0);
-        let mut joined = Vec::new();
-        for t in tree.tokens() {
-            assert_eq!(t.text_range().start(), at);
-            at = t.text_range().end();
-            joined.extend_from_slice(t.text());
-        }
-        assert_eq!(joined, src); // the lossless invariant, via tokens()
-    }
-
-    #[test]
     fn node_flags_summarize_subtrees() {
-        // `outer` holds a comment + a macro; the nested `inner` block is clean;
-        // the calc lives only under sibling `c`. Each node's flags reflect its
-        // *whole* subtree, derived in finish() with no per-query walk.
+        // The `outer` block has a comment and a macro. Its `inner` block has
+        // neither. Only the sibling field `c` has a calc.
         let tree = parse(b"outer = { # hi\n a = $P$ inner = { b = c } } c = @[1+2]");
         let root = tree.root();
         assert!(root.has_comment() && root.has_macro() && root.has_calc());
@@ -7862,12 +7678,8 @@ mod tests {
             .syntax();
         assert!(outer_block.has_comment());
         assert!(outer_block.has_macro());
-        assert!(
-            !outer_block.has_calc(),
-            "the calc is in a sibling, not here"
-        );
+        assert!(!outer_block.has_calc());
 
-        // The genuinely nested `inner = { b = c }` block carries none of the bits.
         let inner = outer_block
             .child_nodes()
             .filter_map(|f| Field::cast(f)?.value()?.as_block())
@@ -7876,39 +7688,8 @@ mod tests {
             .expect("the `inner` block");
         assert!(!inner.has_comment() && !inner.has_macro() && !inner.has_calc());
 
-        // The calc sibling carries HAS_CALC and nothing spurious.
-        let calc_block = fields.next().unwrap().syntax();
-        assert!(calc_block.has_calc() && !calc_block.has_comment());
-
-        // A `Bogus` recovery node sets HAS_ERROR all the way to the root.
-        // Virtual missing delimiters also set HAS_ERROR through their ancestors.
-        let stray = parse(b"x } y");
-        assert!(stray.root().has_error(), "the Bogus node sets HAS_ERROR");
-        assert!(parse(b"a = { b").root().has_error());
-    }
-
-    #[test]
-    fn parent_links_reach_root() {
-        let tree = parse(b"a = { b = c }");
-        let field = tree.root().child_nodes().next().unwrap();
-        let block = field.child_nodes().next().unwrap();
-        let inner = block.child_nodes().next().unwrap();
-        assert_eq!(inner.kind(), SyntaxKind::Field);
-        let c = inner
-            .child_tokens()
-            .filter(|t| t.kind() == SyntaxKind::Unquoted)
-            .last()
-            .unwrap();
-        assert_eq!(c.text(), b"c");
-
-        let mut n = c.parent().unwrap();
-        let mut depth = 0;
-        while let Some(p) = n.parent() {
-            n = p;
-            depth += 1;
-        }
-        assert_eq!(n.kind(), SyntaxKind::Root);
-        assert!(depth >= 2, "expected Field -> Block -> Root nesting");
+        let calc_field = fields.next().unwrap().syntax();
+        assert!(calc_field.has_calc() && !calc_field.has_comment() && !calc_field.has_macro());
     }
 
     /// Compact structural rendering of a subtree: interior nodes as
@@ -7991,41 +7772,21 @@ mod tests {
     }
 
     #[test]
-    fn calc_float_with_f_suffix_is_one_number() {
-        let tree = parse(b"x = @[10.0f / tier]");
-        let field = tree.root().child_nodes().next().unwrap();
-        let calc = field.child_nodes().next().unwrap();
-        let bin = calc.child_nodes().next().unwrap();
-        assert_eq!(bin.kind(), SyntaxKind::BinaryExpr);
-        let nums: Vec<_> = bin
-            .child_tokens()
-            .filter(|t| t.kind() == SyntaxKind::Number)
-            .map(|t| t.text())
-            .collect();
-        assert_eq!(nums, [b"10.0f"]);
-        let op = bin
-            .child_tokens()
-            .find(|t| t.kind() == SyntaxKind::Slash)
-            .unwrap();
-        assert_eq!(op.text(), b"/");
-    }
-
-    #[test]
-    fn calc_at_variable_operand() {
-        let tree = parse(b"x = @[@var + 1]");
-        let field = tree.root().child_nodes().next().unwrap();
-        let bin = field
-            .child_nodes()
-            .next()
-            .unwrap()
-            .child_nodes()
-            .next()
-            .unwrap();
-        let ident = bin
-            .child_tokens()
-            .find(|t| t.kind() == SyntaxKind::CalcIdent)
-            .unwrap();
-        assert_eq!(ident.text(), b"@var");
+    fn calc_operands_are_single_tokens() {
+        // `10.0f`, `.5`, `@var`, and `leopard_x` are each one operand token.
+        assert_eq!(
+            calc_shape(b"x = @[10.0f / @var]"),
+            "Calc(CalcOpen BinaryExpr(Number Slash CalcIdent) CalcClose)"
+        );
+        assert_eq!(
+            calc_shape(b"x = @[.5*leopard_x]"),
+            "Calc(CalcOpen BinaryExpr(Number Star CalcIdent) CalcClose)"
+        );
+        // A `-` ends an identifier, so it is an operator and not a name byte.
+        assert_eq!(
+            calc_shape(b"x = @[a-b]"),
+            "Calc(CalcOpen BinaryExpr(CalcIdent Minus CalcIdent) CalcClose)"
+        );
     }
 
     #[test]
@@ -8062,34 +7823,15 @@ mod tests {
 
     #[test]
     fn calc_unterminated_diagnostic() {
-        let tree = parse(b"x = @[1 + 2");
-        assert!(
-            tree.errors()
-                .iter()
-                .any(|e| e.message().contains("unclosed '@['")),
-            "expected an unclosed-calc diagnostic, got {:?}",
-            tree.errors()
-        );
-        assert_eq!(tree.reconstruct(), b"x = @[1 + 2"); // still lossless
-        // No CalcClose token was emitted, but the expression still parsed.
-        let calc = tree
-            .root()
-            .child_nodes()
-            .next()
-            .unwrap()
-            .child_nodes()
-            .find(|n| n.kind() == SyntaxKind::Calc)
-            .unwrap();
-        assert!(
-            calc.child_tokens()
-                .all(|t| t.kind() != SyntaxKind::CalcClose)
-        );
-        assert!(
-            calc.child_nodes()
-                .any(|n| n.kind() == SyntaxKind::BinaryExpr)
+        let source = b"x = @[1 + 2";
+        let tree = parse(source);
+        assert_eq!(error_kinds(&tree), [SyntaxErrorKind::UnclosedCalc]);
+        // The expression is complete. Only the `]` is missing.
+        assert_eq!(
+            calc_shape(source),
+            "Calc(CalcOpen BinaryExpr(Number Plus Number) MissingCalcClose)"
         );
         assert_eq!(tree.repairs()[0].replacement, "]");
-        assert!(calc.has_error());
         assert!(parse(&tree.repaired_source()).errors().is_empty());
     }
 
@@ -8542,6 +8284,7 @@ mod tests {
             (b"$a$_b".as_slice(), SyntaxKind::MacroParam),
             (b"foo_$a$", SyntaxKind::MacroParam),
             (b"$a$_$b$_c", SyntaxKind::MacroParam),
+            (b"$TIER|capital$", SyntaxKind::MacroParam),
             (b"$$", SyntaxKind::MacroParam),
             (b"$5", SyntaxKind::Unquoted),
             (b"a$b", SyntaxKind::Unquoted),

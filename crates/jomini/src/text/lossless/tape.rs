@@ -967,6 +967,8 @@ mod tests {
         assert_eq!(actual.utf8_bom(), expected.utf8_bom());
     }
 
+    /// In `a=]=b`, the `]` is the value of `a`, not the key of `]=b`. It is not
+    /// a scalar, so the tape drops the field and the `=` is a stray operator.
     #[test]
     fn bracket_value_before_operator() {
         assert!(matches_grammar(b"a=]=b", Flavor::default()));
