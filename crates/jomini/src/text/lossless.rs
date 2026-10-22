@@ -1497,8 +1497,9 @@ impl fmt::Display for SyntaxErrorKind {
     }
 }
 
-/// A non-fatal problem found while parsing. Parsing never fails — the tree is
-/// always lossless — but recoverable issues are collected here for tooling.
+/// A problem that the parser found and recovered from. A parse never fails,
+/// and the tree always keeps all of the bytes. The tree keeps these problems
+/// for tools.
 ///
 /// The parser continues after an error, so one parse finds all of the
 /// problems in a file, and the fields after an error are still available:
@@ -4083,8 +4084,8 @@ impl<'t, 'a> SyntaxNode<'t, 'a> {
         self.data().flags
     }
 
-    /// Whether this subtree contains a syntax error or recovery element. Lets
-    /// a linter cheaply skip or downgrade checks over malformed input.
+    /// Return `true` when this subtree contains a syntax error or a recovery
+    /// element. A linter can use it to skip checks on incorrect input.
     pub fn has_error(&self) -> bool {
         self.flags().contains(NodeFlags::HAS_ERROR)
     }
@@ -4948,9 +4949,9 @@ pub enum Item<'t, 'a> {
     Interpolation(Interpolation<'t, 'a>),
     /// A bare value: an array element or a loose value.
     Value(Value<'t, 'a>),
-    /// A significant element that is neither a field nor a value — e.g. a stray
-    /// operator/bracket or a [`SyntaxKind::Bogus`] node. Surfaced so the typed
-    /// view drops nothing.
+    /// A significant element that is not a field or a value, for example an
+    /// operator or a bracket out of place, or a [`SyntaxKind::Bogus`] node.
+    /// Thus the typed view does not lose an element.
     Other(SyntaxElement<'t, 'a>),
 }
 
