@@ -53,6 +53,44 @@ jobs:
     - name: Run clippy
       run: cargo clippy --target wasm32-unknown-unknown -p jomini -p eu4save -p ck3save -p hoi4save -p imperator-save -p vic3save -p eu5save --features eu4save/tsify,eu5save/tsify -- -D warnings
 
+  # Library tests on wasm, which doubles as the 32-bit leg. Wasm aborts on
+  # panic, so `should_panic` tests are skipped. wasi-sdk builds the C zstd.
+  wasi:
+    name: test (wasm32-wasip1)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run --dir=.
+      PKGS: -p jomini -p jomini_derive -p arena-serde -p arena-serde-derive
+      WASI_SDK: wasi-sdk-34.0-x86_64-linux
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+        targets: wasm32-wasip1
+    - name: Install wasmtime
+      uses: bytecodealliance/actions/wasmtime/setup@v1
+    - name: Install wasi-sdk
+      run: |
+        curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/$WASI_SDK.tar.gz | tar -xz -C "$RUNNER_TEMP"
+        echo "CC_wasm32_wasip1=$RUNNER_TEMP/$WASI_SDK/bin/clang" >> "$GITHUB_ENV"
+        echo "AR_wasm32_wasip1=$RUNNER_TEMP/$WASI_SDK/bin/llvm-ar" >> "$GITHUB_ENV"
+    - name: Run default features tests
+      run: cargo test ${{ env.PKGS }} --target wasm32-wasip1
+    - name: Run no-default-feature tests
+      run: cargo test --no-default-features ${{ env.PKGS }} --target wasm32-wasip1
+    - name: Run json tests
+      run: cargo test --features json ${{ env.PKGS }} --target wasm32-wasip1
+    - name: Run envelope tests
+      run: cargo test --features envelope ${{ env.PKGS }} --target wasm32-wasip1
+    - name: Run envelope tests (pure-Rust zstd)
+      run: cargo test --features zstd_rust,serde -p jomini --target wasm32-wasip1
+    - name: Run all-features tests
+      run: cargo test --all-features ${{ env.PKGS }} --target wasm32-wasip1
+    - name: Run serde-only tests (no derive macros)
+      run: cargo test --no-default-features --features serde ${{ env.PKGS }} --target wasm32-wasip1
+
   testbench:
     name: testbench
     runs-on: ubuntu-latest
@@ -206,7 +244,6 @@ jobs:
         - macos
         - win-msvc
         - big-endian
-        - stable-32
         include:
         - build: stable
           os: ubuntu-latest
@@ -227,10 +264,6 @@ jobs:
           os: ubuntu-latest
           rust: stable
           target: powerpc64-unknown-linux-gnu
-        - build: stable-32
-          os: ubuntu-latest
-          rust: stable
-          target: i686-unknown-linux-gnu
     steps:
     - uses: actions/checkout@v7
 
