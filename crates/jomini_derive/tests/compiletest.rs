@@ -1,6 +1,6 @@
-// trybuild runs cargo, which Miri cannot do.
+// trybuild runs cargo, which Miri and wasm cannot do.
 #[test]
-#[cfg_attr(miri, ignore)]
+#[cfg_attr(any(miri, target_family = "wasm"), ignore)]
 fn tests() {
     let t = trybuild::TestCases::new();
     t.pass("tests/01-parse.rs");
