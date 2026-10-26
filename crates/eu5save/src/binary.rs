@@ -798,6 +798,21 @@ fn skip_container(source: &mut ParserSource<'_>) -> Result<(), Error> {
                 }
                 // Rare and variable width. The careful path handles it.
                 Class::Rgb => break,
+                // The common lexemes of a constant width have arms of their
+                // own, though the last arm gives the same result. The step of
+                // the last arm comes from a table read that depends on the
+                // read of the id, so each lexeme waits for two loads in a row.
+                // In these arms the predicted branch gives the step at once.
+                // An `EQUAL` follows every key, and the 32 bit numbers are a
+                // sixth of the lexemes of a 1.4 gamestate. The two arms took
+                // nearly a third off the time to skip it.
+                //
+                // An arm for each lookup width or fixed point width made it
+                // slower, because those widths depend on the value and the
+                // branch guesses wrong. An arm for the 16 bit lookup, which is
+                // a quarter of the lexemes, made it slower too.
+                Class::Token | Class::Equal | Class::EmptyStr => i += 2,
+                Class::U32 | Class::I32 | Class::F32 => i += 6,
                 _ => i += 2 + payload_size(id),
             }
         }
