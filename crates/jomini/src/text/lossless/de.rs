@@ -75,7 +75,7 @@ pub(crate) use self::engine::{
 };
 
 use self::tree::{TreeCtx, TreeDoc};
-use super::{Flavor, SyntaxErrorKind, SyntaxTree, parse_with};
+use super::{Flavor, SyntaxErrorKind, SyntaxTree, parse_with, resolve::Resolution};
 use crate::{Encoding, Utf8Encoding, Windows1252Encoding};
 use serde::de::{self, Deserialize, Visitor};
 
@@ -202,6 +202,9 @@ fn check_errors(tree: &SyntaxTree<'_, '_>) -> Result<(), Error> {
 
 /// A serde deserializer for a [`SyntaxTree`].
 ///
+/// `RESOLVED` is `true` for a deserializer that gives the values of a
+/// [`Resolution`]. See [`with_resolution`](Deserializer::with_resolution).
+///
 /// ```
 /// use jomini::{Windows1252Encoding, text::lossless::{parse, de::Deserializer}};
 /// use serde::Deserialize;
@@ -218,7 +221,7 @@ fn check_errors(tree: &SyntaxTree<'_, '_>) -> Result<(), Error> {
 /// assert_eq!(meta.date, "1444.11.11");
 /// # Ok::<(), jomini::text::lossless::de::Error>(())
 /// ```
-pub struct Deserializer<'t, 'a, E> {
+pub struct Deserializer<'t, 'a, E, const RESOLVED: bool = false> {
     ctx: TreeCtx<'t, 'a, E>,
     file: Option<String>,
 }
@@ -232,6 +235,28 @@ impl<'t, 'a, E: Encoding> Deserializer<'t, 'a, E> {
         }
     }
 
+    /// Give the values of the variables and the calculations of the tree.
+    /// See [`resolve`](super::resolve).
+    ///
+    /// The deserializer then gives each value that has a resolution in
+    /// place of its source text, and a calculation is an unquoted scalar.
+    /// A variable definition, such as `@size = 0.5`, is not an entry of its
+    /// container. A variable or a calculation that has no value keeps its
+    /// source text.
+    ///
+    /// # Panics
+    ///
+    /// The function panics when the resolution is of a different tree.
+    pub fn with_resolution(mut self, resolution: Resolution) -> Deserializer<'t, 'a, E, true> {
+        self.ctx.set_resolution(resolution);
+        Deserializer {
+            ctx: self.ctx,
+            file: self.file,
+        }
+    }
+}
+
+impl<'t, 'a, E: Encoding, const RESOLVED: bool> Deserializer<'t, 'a, E, RESOLVED> {
     /// Set the file name that the errors show.
     pub fn with_file(mut self, file: impl Into<String>) -> Self {
         self.file = Some(file.into());
@@ -252,14 +277,16 @@ impl<'t, 'a, E: Encoding> Deserializer<'t, 'a, E> {
 macro_rules! forward_root {
     ($($method:ident ( $($arg:ident : $ty:ty),* ))*) => {$(
         fn $method<V: Visitor<'a>>(self, $($arg: $ty,)* visitor: V) -> Result<V::Value, Error> {
-            let doc = TreeDoc::new(&self.ctx);
+            let doc = TreeDoc::<_, RESOLVED>::of(&self.ctx);
             let root = ValueDe::root(doc, doc.root());
             de::Deserializer::$method(root, $($arg,)* visitor).map_err(|e| self.finish(e))
         }
     )*};
 }
 
-impl<'a, E: Encoding> de::Deserializer<'a> for &Deserializer<'_, 'a, E> {
+impl<'a, E: Encoding, const RESOLVED: bool> de::Deserializer<'a>
+    for &Deserializer<'_, 'a, E, RESOLVED>
+{
     type Error = Error;
 
     forward_root! {

@@ -14,7 +14,7 @@ use crate::{
         Operator,
         lossless::{
             AstNode, Node, Parameter, SyntaxKind, SyntaxNode, SyntaxTree, TextRange, Token,
-            UndefinedParameter,
+            UndefinedParameter, resolve::Resolution,
         },
     },
 };
@@ -28,6 +28,10 @@ pub(crate) struct TreeCtx<'c, 'a, E> {
     source: &'a [u8],
     tree: SyntaxTree<'c, 'a>,
     encoding: E,
+    /// The values of the variables and the calculations. When it is set, a
+    /// resolved scalar gives its value, and a variable definition is not an
+    /// entry.
+    resolution: Option<Box<Resolution>>,
 }
 
 impl<'c, 'a, E> TreeCtx<'c, 'a, E> {
@@ -38,7 +42,17 @@ impl<'c, 'a, E> TreeCtx<'c, 'a, E> {
             source: tree.source,
             tree,
             encoding,
+            resolution: None,
         }
+    }
+
+    /// Set the resolution. It must be of this tree.
+    pub(crate) fn set_resolution(&mut self, resolution: Resolution) {
+        assert!(
+            resolution.shape == (self.tokens.len(), self.nodes.len()),
+            "the resolution is of a different tree"
+        );
+        self.resolution = Some(Box::new(resolution));
     }
 
     pub(crate) fn tree(&self) -> SyntaxTree<'c, 'a> {
@@ -52,17 +66,21 @@ impl<'c, 'a, E> TreeCtx<'c, 'a, E> {
 
 /// The model of the tree. It is one pointer, so the deserializer can copy
 /// it at no cost.
-pub(crate) struct TreeDoc<'c, 'a, E> {
+///
+/// When `RESOLVED` is `true`, the model gives the values of the resolution of the
+/// context. A model without a resolution has no cost for it, because each
+/// test of `RESOLVED` is a constant.
+pub(crate) struct TreeDoc<'c, 'a, E, const RESOLVED: bool = false> {
     ctx: &'c TreeCtx<'c, 'a, E>,
 }
 
-impl<E> Clone for TreeDoc<'_, '_, E> {
+impl<E, const RESOLVED: bool> Clone for TreeDoc<'_, '_, E, RESOLVED> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<E> Copy for TreeDoc<'_, '_, E> {}
+impl<E, const RESOLVED: bool> Copy for TreeDoc<'_, '_, E, RESOLVED> {}
 
 /// A value of the tree: a token or a node, by index.
 #[derive(Clone, Copy)]
@@ -96,6 +114,15 @@ pub(crate) struct TreeContainer {
 
 impl<'c, 'a, E: Encoding> TreeDoc<'c, 'a, E> {
     pub(crate) fn new(ctx: &'c TreeCtx<'c, 'a, E>) -> Self {
+        TreeDoc { ctx }
+    }
+}
+
+impl<'c, 'a, E: Encoding, const RESOLVED: bool> TreeDoc<'c, 'a, E, RESOLVED> {
+    /// A model of the tree of `ctx`. When `RESOLVED` is `true`, the context must
+    /// have a resolution.
+    pub(crate) fn of(ctx: &'c TreeCtx<'c, 'a, E>) -> Self {
+        debug_assert!(!RESOLVED || ctx.resolution.is_some());
         TreeDoc { ctx }
     }
 
@@ -140,6 +167,33 @@ impl<'c, 'a, E: Encoding> TreeDoc<'c, 'a, E> {
     #[inline]
     fn is_variable(self, scalar: TreeScalar) -> bool {
         !scalar.node && self.ctx.tokens[scalar.index as usize].kind == SyntaxKind::Variable
+    }
+
+    /// The value of a variable or a calculation from the resolution.
+    #[inline]
+    fn resolved(self, scalar: TreeScalar) -> Option<&'c [u8]> {
+        if !RESOLVED {
+            return None;
+        }
+        match &self.ctx.resolution {
+            None => None,
+            Some(resolution) => self.resolved_in(resolution, scalar),
+        }
+    }
+
+    /// Most deserializers have no resolution, so keep this lookup out of
+    /// the hot path.
+    #[cold]
+    #[inline(never)]
+    fn resolved_in(self, resolution: &'c Resolution, scalar: TreeScalar) -> Option<&'c [u8]> {
+        let value = if scalar.node {
+            resolution.nodes.get(&scalar.index)
+        } else if self.is_variable(scalar) {
+            resolution.tokens.get(&scalar.index)
+        } else {
+            None
+        };
+        value.map(|value| &**value)
     }
 
     #[inline]
@@ -227,6 +281,10 @@ impl<'c, 'a, E: Encoding> TreeDoc<'c, 'a, E> {
         let tokens = ctx.tokens;
         let key_token = tokens.get(first as usize)?;
         if !key_token.kind.is_scalar() {
+            return None;
+        }
+        // A variable definition is not data.
+        if RESOLVED && key_token.kind == SyntaxKind::Variable {
             return None;
         }
         let key = self.token_scalar(first);
@@ -406,15 +464,15 @@ impl Iterator for TreeScalars<'_> {
 }
 
 /// The entries of a container of the tree.
-pub(crate) struct TreeItems<'c, 'a, E> {
-    doc: TreeDoc<'c, 'a, E>,
+pub(crate) struct TreeItems<'c, 'a, E, const RESOLVED: bool> {
+    doc: TreeDoc<'c, 'a, E, RESOLVED>,
     cursor: Cursor,
     /// For a parameter: the header (`[[name]`) is done.
     header_done: bool,
     parameter: bool,
 }
 
-impl<E> Clone for TreeItems<'_, '_, E> {
+impl<E, const RESOLVED: bool> Clone for TreeItems<'_, '_, E, RESOLVED> {
     fn clone(&self) -> Self {
         TreeItems {
             doc: self.doc,
@@ -425,11 +483,11 @@ impl<E> Clone for TreeItems<'_, '_, E> {
     }
 }
 
-impl<'c, 'a, E> Iterator for TreeItems<'c, 'a, E>
+impl<'c, 'a, E, const RESOLVED: bool> Iterator for TreeItems<'c, 'a, E, RESOLVED>
 where
     E: Encoding,
 {
-    type Item = Item<TreeDoc<'c, 'a, E>>;
+    type Item = Item<TreeDoc<'c, 'a, E, RESOLVED>>;
 
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
@@ -478,14 +536,14 @@ where
     }
 }
 
-impl<'c, 'a, E> Doc for TreeDoc<'c, 'a, E>
+impl<'c, 'a, E, const RESOLVED: bool> Doc for TreeDoc<'c, 'a, E, RESOLVED>
 where
     E: Encoding,
 {
     type Node = TreeNode;
     type Scalar = TreeScalar;
     type Container = TreeContainer;
-    type Items = TreeItems<'c, 'a, E>;
+    type Items = TreeItems<'c, 'a, E, RESOLVED>;
     type Scalars = TreeScalars<'c>;
 
     #[inline]
@@ -513,7 +571,13 @@ where
                     _ => View::Scalar(self.node_scalar(index)),
                 }
             }
-            SyntaxKind::Calc => View::Calc(self.node_scalar(index)),
+            SyntaxKind::Calc => {
+                let scalar = self.node_scalar(index);
+                match self.resolved(scalar) {
+                    Some(_) => View::Scalar(scalar),
+                    None => View::Calc(scalar),
+                }
+            }
             _ => View::Scalar(self.node_scalar(index)),
         }
     }
@@ -558,16 +622,20 @@ where
 
     #[inline]
     fn variable(self, scalar: Self::Scalar) -> bool {
-        self.is_variable(scalar)
+        self.is_variable(scalar) && self.resolved(scalar).is_none()
     }
 
     #[inline]
     fn with_scalar<R>(self, scalar: Self::Scalar, f: impl FnOnce(Scalar<'_>) -> R) -> R {
-        f(Scalar::new(self.bytes(scalar)))
+        match self.resolved(scalar) {
+            Some(value) => f(Scalar::new(value)),
+            None => f(Scalar::new(self.bytes(scalar))),
+        }
     }
 
     fn string(self, scalar: Self::Scalar) -> String {
-        self.ctx.encoding.decode(self.bytes(scalar)).into_owned()
+        let bytes = self.resolved(scalar).unwrap_or_else(|| self.bytes(scalar));
+        self.ctx.encoding.decode(bytes).into_owned()
     }
 
     fn node_range(self, node: Self::Node) -> Option<TextRange> {
@@ -618,7 +686,7 @@ where
     }
 }
 
-impl<'a, E> DocDe<'a> for TreeDoc<'_, 'a, E>
+impl<'a, E, const RESOLVED: bool> DocDe<'a> for TreeDoc<'_, 'a, E, RESOLVED>
 where
     E: Encoding,
 {
@@ -628,6 +696,12 @@ where
         scalar: Self::Scalar,
         visitor: V,
     ) -> Result<V::Value, Error> {
+        if let Some(value) = self.resolved(scalar) {
+            return match self.ctx.encoding.decode(value) {
+                Cow::Borrowed(s) => visitor.visit_str(s),
+                Cow::Owned(s) => visitor.visit_string(s),
+            };
+        }
         match self.ctx.encoding.decode(self.bytes(scalar)) {
             Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
             Cow::Owned(s) => visitor.visit_string(s),
@@ -640,6 +714,9 @@ where
         scalar: Self::Scalar,
         visitor: V,
     ) -> Result<V::Value, Error> {
-        visitor.visit_borrowed_bytes(self.bytes(scalar))
+        match self.resolved(scalar) {
+            Some(value) => visitor.visit_bytes(value),
+            None => visitor.visit_borrowed_bytes(self.bytes(scalar)),
+        }
     }
 }
