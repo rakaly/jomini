@@ -25,6 +25,8 @@
 pub mod de;
 mod dom;
 mod fnv;
+#[cfg(feature = "lossless")]
+pub mod lossless;
 mod operator;
 mod reader;
 mod tape;

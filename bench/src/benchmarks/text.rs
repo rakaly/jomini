@@ -19,6 +19,30 @@ pub(crate) fn tape_parse(data: &[u8]) -> usize {
 }
 
 #[inline(never)]
+pub(crate) fn lossless_tape_parse(data: &[u8]) -> usize {
+    let tape = jomini::text::lossless::parse_tape(data);
+    black_box(tape.tokens().len())
+}
+
+#[inline(never)]
+pub(crate) fn lossless_parse(data: &[u8]) -> usize {
+    let tree = jomini::text::lossless::parse(data);
+    black_box(tree.root().children().count())
+}
+
+/// Visit every node and every leaf of `tree`, trivia included.
+#[inline(never)]
+pub(crate) fn lossless_walk(tree: &jomini::text::lossless::Parse<&[u8]>) -> usize {
+    fn walk(node: jomini::text::lossless::SyntaxNode<'_, '_>) -> usize {
+        node.children()
+            .map(|child| child.as_node().map_or(1, walk))
+            .sum::<usize>()
+            + 1
+    }
+    black_box(walk(tree.root()))
+}
+
+#[inline(never)]
 pub(crate) fn reader_count_equals(data: &[u8]) -> i32 {
     let mut reader = jomini::text::TokenReader::from_slice(data);
     let mut count = 0i32;
@@ -88,8 +112,18 @@ pub mod criterion_benches {
             group.bench_function(BenchmarkId::new("tape", game), |b| {
                 b.iter(|| tape_parse(data))
             });
+            group.bench_function(BenchmarkId::new("lossless_tape", game), |b| {
+                b.iter(|| lossless_tape_parse(data))
+            });
             group.bench_function(BenchmarkId::new("reader", game), |b| {
                 b.iter(|| reader_count_equals(data))
+            });
+            group.bench_function(BenchmarkId::new("lossless", game), |b| {
+                b.iter(|| lossless_parse(data))
+            });
+            let tree = jomini::text::lossless::parse(data);
+            group.bench_function(BenchmarkId::new("lossless_walk", game), |b| {
+                b.iter(|| lossless_walk(&tree))
             });
         }
         group.finish();
@@ -133,8 +167,22 @@ pub mod gungraun_benches {
     #[library_benchmark]
     #[bench::eu4(setup = setup_eu4)]
     #[bench::ck3(setup = setup_ck3)]
+    fn lossless_tape(data: &[u8]) -> usize {
+        lossless_tape_parse(data)
+    }
+
+    #[library_benchmark]
+    #[bench::eu4(setup = setup_eu4)]
+    #[bench::ck3(setup = setup_ck3)]
     fn reader(data: &[u8]) -> i32 {
         reader_count_equals(data)
+    }
+
+    #[library_benchmark]
+    #[bench::eu4(setup = setup_eu4)]
+    #[bench::ck3(setup = setup_ck3)]
+    fn lossless(data: &[u8]) -> usize {
+        lossless_parse(data)
     }
 
     #[library_benchmark]
@@ -152,6 +200,13 @@ pub mod gungraun_benches {
 
     library_benchmark_group!(
         name = text_benches,
-        benchmarks = [tape, reader, deserialize, compressed_read,]
+        benchmarks = [
+            tape,
+            lossless_tape,
+            reader,
+            lossless,
+            deserialize,
+            compressed_read,
+        ]
     );
 }
