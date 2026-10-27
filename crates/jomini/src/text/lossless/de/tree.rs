@@ -31,7 +31,7 @@ pub(crate) struct TreeCtx<'c, 'a, E> {
     /// The values of the variables and the calculations. When it is set, a
     /// resolved scalar gives its value, and a variable definition is not an
     /// entry.
-    resolution: Option<Resolution>,
+    resolution: Option<Box<Resolution>>,
 }
 
 impl<'c, 'a, E> TreeCtx<'c, 'a, E> {
@@ -52,7 +52,7 @@ impl<'c, 'a, E> TreeCtx<'c, 'a, E> {
             resolution.shape == (self.tokens.len(), self.nodes.len()),
             "the resolution is of a different tree"
         );
-        self.resolution = Some(resolution);
+        self.resolution = Some(Box::new(resolution));
     }
 
     pub(crate) fn tree(&self) -> SyntaxTree<'c, 'a> {
@@ -66,17 +66,21 @@ impl<'c, 'a, E> TreeCtx<'c, 'a, E> {
 
 /// The model of the tree. It is one pointer, so the deserializer can copy
 /// it at no cost.
-pub(crate) struct TreeDoc<'c, 'a, E> {
+///
+/// When `RESOLVED` is `true`, the model gives the values of the resolution of the
+/// context. A model without a resolution has no cost for it, because each
+/// test of `RESOLVED` is a constant.
+pub(crate) struct TreeDoc<'c, 'a, E, const RESOLVED: bool = false> {
     ctx: &'c TreeCtx<'c, 'a, E>,
 }
 
-impl<E> Clone for TreeDoc<'_, '_, E> {
+impl<E, const RESOLVED: bool> Clone for TreeDoc<'_, '_, E, RESOLVED> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<E> Copy for TreeDoc<'_, '_, E> {}
+impl<E, const RESOLVED: bool> Copy for TreeDoc<'_, '_, E, RESOLVED> {}
 
 /// A value of the tree: a token or a node, by index.
 #[derive(Clone, Copy)]
@@ -110,6 +114,15 @@ pub(crate) struct TreeContainer {
 
 impl<'c, 'a, E: Encoding> TreeDoc<'c, 'a, E> {
     pub(crate) fn new(ctx: &'c TreeCtx<'c, 'a, E>) -> Self {
+        TreeDoc { ctx }
+    }
+}
+
+impl<'c, 'a, E: Encoding, const RESOLVED: bool> TreeDoc<'c, 'a, E, RESOLVED> {
+    /// A model of the tree of `ctx`. When `RESOLVED` is `true`, the context must
+    /// have a resolution.
+    pub(crate) fn of(ctx: &'c TreeCtx<'c, 'a, E>) -> Self {
+        debug_assert!(!RESOLVED || ctx.resolution.is_some());
         TreeDoc { ctx }
     }
 
@@ -159,7 +172,20 @@ impl<'c, 'a, E: Encoding> TreeDoc<'c, 'a, E> {
     /// The value of a variable or a calculation from the resolution.
     #[inline]
     fn resolved(self, scalar: TreeScalar) -> Option<&'c [u8]> {
-        let resolution = self.ctx.resolution.as_ref()?;
+        if !RESOLVED {
+            return None;
+        }
+        match &self.ctx.resolution {
+            None => None,
+            Some(resolution) => self.resolved_in(resolution, scalar),
+        }
+    }
+
+    /// Most deserializers have no resolution, so keep this lookup out of
+    /// the hot path.
+    #[cold]
+    #[inline(never)]
+    fn resolved_in(self, resolution: &'c Resolution, scalar: TreeScalar) -> Option<&'c [u8]> {
         let value = if scalar.node {
             resolution.nodes.get(&scalar.index)
         } else if self.is_variable(scalar) {
@@ -258,7 +284,7 @@ impl<'c, 'a, E: Encoding> TreeDoc<'c, 'a, E> {
             return None;
         }
         // A variable definition is not data.
-        if key_token.kind == SyntaxKind::Variable && ctx.resolution.is_some() {
+        if RESOLVED && key_token.kind == SyntaxKind::Variable {
             return None;
         }
         let key = self.token_scalar(first);
@@ -438,15 +464,15 @@ impl Iterator for TreeScalars<'_> {
 }
 
 /// The entries of a container of the tree.
-pub(crate) struct TreeItems<'c, 'a, E> {
-    doc: TreeDoc<'c, 'a, E>,
+pub(crate) struct TreeItems<'c, 'a, E, const RESOLVED: bool> {
+    doc: TreeDoc<'c, 'a, E, RESOLVED>,
     cursor: Cursor,
     /// For a parameter: the header (`[[name]`) is done.
     header_done: bool,
     parameter: bool,
 }
 
-impl<E> Clone for TreeItems<'_, '_, E> {
+impl<E, const RESOLVED: bool> Clone for TreeItems<'_, '_, E, RESOLVED> {
     fn clone(&self) -> Self {
         TreeItems {
             doc: self.doc,
@@ -457,11 +483,11 @@ impl<E> Clone for TreeItems<'_, '_, E> {
     }
 }
 
-impl<'c, 'a, E> Iterator for TreeItems<'c, 'a, E>
+impl<'c, 'a, E, const RESOLVED: bool> Iterator for TreeItems<'c, 'a, E, RESOLVED>
 where
     E: Encoding,
 {
-    type Item = Item<TreeDoc<'c, 'a, E>>;
+    type Item = Item<TreeDoc<'c, 'a, E, RESOLVED>>;
 
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
@@ -510,14 +536,14 @@ where
     }
 }
 
-impl<'c, 'a, E> Doc for TreeDoc<'c, 'a, E>
+impl<'c, 'a, E, const RESOLVED: bool> Doc for TreeDoc<'c, 'a, E, RESOLVED>
 where
     E: Encoding,
 {
     type Node = TreeNode;
     type Scalar = TreeScalar;
     type Container = TreeContainer;
-    type Items = TreeItems<'c, 'a, E>;
+    type Items = TreeItems<'c, 'a, E, RESOLVED>;
     type Scalars = TreeScalars<'c>;
 
     #[inline]
@@ -660,7 +686,7 @@ where
     }
 }
 
-impl<'a, E> DocDe<'a> for TreeDoc<'_, 'a, E>
+impl<'a, E, const RESOLVED: bool> DocDe<'a> for TreeDoc<'_, 'a, E, RESOLVED>
 where
     E: Encoding,
 {
