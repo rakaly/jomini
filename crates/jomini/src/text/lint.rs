@@ -25,7 +25,12 @@
 //!
 //! The [`Schema`] of which files define an entity and which keys refer to an
 //! entity is a small set of rules written by hand, not a full rule set for a
-//! game. The linter compares names as lossy UTF-8 strings, not with the
+//! game.
+//!
+//! The linter also [resolves](lossless::resolve) the `@name` variables and
+//! the `@[ ... ]` calculations of each file. A variable that a file does not
+//! define is a reference of the kind [`VARIABLE`] to a definition in a
+//! [`Schema::variable_dir`] file. The linter compares names as lossy UTF-8 strings, not with the
 //! encoding of the game.
 //!
 //! # Examples
@@ -67,8 +72,9 @@
 #![allow(missing_docs)] // experimental surface; docs land as the API stabilizes
 
 use crate::text::lossless::{
-    self, Applicability, AstNode, Field, Flavor, LineCol, LineIndex, Repair, SyntaxNode, TextRange,
-    TextSize, Value,
+    self, Applicability, AstNode, Field, Flavor, LineCol, LineIndex, Repair, SyntaxKind,
+    SyntaxNode, TextRange, TextSize, Value,
+    resolve::{ResolveErrorKind, resolve},
 };
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -247,7 +253,13 @@ pub struct Schema {
     definition_dirs: HashMap<String, Kind>,
     /// Field key (e.g. `"add_building"`) → the [`Kind`] its value references.
     reference_keys: HashMap<String, Kind>,
+    /// Directory components whose `@name` definitions apply to all files.
+    variable_dirs: Vec<String>,
 }
+
+/// The [`Kind`] of a `@name` variable that a [`Schema::variable_dir`] file
+/// defines. Its names start with `@`.
+pub const VARIABLE: &str = "variable";
 
 impl Schema {
     /// An empty schema.
@@ -269,6 +281,24 @@ impl Schema {
         self.reference_keys
             .insert(key.to_string(), kind.to_string());
         self
+    }
+
+    /// Each `@name` definition of a file in a directory named `dir` applies
+    /// to all the files, as in `variable_dir("reader_export")` for CK3.
+    ///
+    /// A `@name` that a file does not define itself must have a definition
+    /// in such a directory, or the linter gives an undefined-reference
+    /// diagnostic. The games do not agree on these directories, so the
+    /// schema has none by default.
+    pub fn variable_dir(&mut self, dir: &str) -> &mut Self {
+        self.variable_dirs.push(dir.to_string());
+        self
+    }
+
+    fn is_variable_file(&self, path: &Path) -> bool {
+        path.components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .any(|c| self.variable_dirs.iter().any(|dir| dir == c))
     }
 
     /// The kind that a file at `path` defines, if any directory component of
@@ -308,6 +338,17 @@ pub struct FileSummary {
     pub defs: Vec<DefSite>,
     pub refs: Vec<RefSite>,
     pub syntax_errors: Vec<SyntaxDiagnosticSummary>,
+    /// The variables and calculations that have no value for a reason other
+    /// than an undefined variable.
+    pub value_errors: Vec<ValueErrorSummary>,
+}
+
+/// A variable or a calculation that has no value. See
+/// [`resolve`](lossless::resolve).
+#[derive(Debug, Clone)]
+pub struct ValueErrorSummary {
+    pub kind: ResolveErrorKind,
+    pub range: TextRange,
 }
 
 /// A syntax error of a file, and its repair when the parser has one.
@@ -335,7 +376,8 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
     // references in the same error subtree are suppressed for the same reason.
     if let Some(kind) = schema.definition_kind(fileset.path(file)) {
         for field in tree.ast().fields() {
-            if !field.syntax().has_error() {
+            // A `@name = value` field defines a variable, not an entity.
+            if !field.syntax().has_error() && field.key().kind() != SyntaxKind::Variable {
                 let key = field.key();
                 defs.push(DefSite {
                     kind: kind.clone(),
@@ -349,6 +391,49 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
     // References can appear at any depth, so walk the whole tree.
     let mut refs = Vec::new();
     collect_refs(tree.root(), schema, false, &mut refs);
+
+    // Resolve the variables of the file. A variable that the file does not
+    // define is a reference to a variable of a `variable_dir` file.
+    let resolution = resolve(tree.tree(), &());
+    if schema.is_variable_file(fileset.path(file)) {
+        for field in tree.root().descendants().filter_map(Field::cast) {
+            let key = field.key();
+            if key.kind() == SyntaxKind::Variable && !field.syntax().has_error() {
+                defs.push(DefSite {
+                    kind: VARIABLE.to_string(),
+                    name: decode(key.as_scalar()),
+                    range: key.text_range(),
+                });
+            }
+        }
+    }
+    let mut value_errors = Vec::new();
+    for error in resolution.errors() {
+        if error.kind != ResolveErrorKind::UndefinedVariable {
+            value_errors.push(ValueErrorSummary {
+                kind: error.kind,
+                range: error.range,
+            });
+            continue;
+        }
+        let text = &source[error.range.to_range()];
+        // A name in a calculation can omit the `@`.
+        let name = match text.strip_prefix(b"@") {
+            Some(_) => decode(crate::Scalar::new(text)),
+            None => format!("@{}", decode(crate::Scalar::new(text))),
+        };
+        let in_error_subtree = tree
+            .covering_element(error.range)
+            .ancestors()
+            .any(|node| node.has_error());
+        refs.push(RefSite {
+            kind: VARIABLE.to_string(),
+            name,
+            range: error.range,
+            in_error_subtree,
+        });
+    }
+    refs.sort_by_key(|r| r.range.start());
 
     let repairs = tree.repairs();
     let syntax_errors = tree
@@ -379,6 +464,7 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
         defs,
         refs,
         syntax_errors,
+        value_errors,
     }
 }
 
@@ -619,6 +705,7 @@ pub mod lints {
     pub const SYNTAX_ERROR: &str = "syntax-error";
     pub const DUPLICATE: &str = "duplicate-definition";
     pub const OVERRIDE: &str = "override";
+    pub const VARIABLE_VALUE: &str = "variable-value";
 }
 
 /// How serious a finding is.
@@ -773,6 +860,26 @@ impl Linter {
                         }
                     }),
                     fix: error.fix.clone(),
+                });
+            }
+            for error in &s.value_errors {
+                // The games do not agree on the calculation grammar, so a
+                // form that the resolver does not know is only a warning.
+                let (severity, confidence) = match error.kind {
+                    ResolveErrorKind::UnsupportedCalculation => {
+                        (Severity::Warning, Confidence::Reasonable)
+                    }
+                    _ => (Severity::Error, Confidence::Strong),
+                };
+                diags.push(Diagnostic {
+                    id: lints::VARIABLE_VALUE,
+                    severity,
+                    confidence,
+                    file: s.file,
+                    range: error.range,
+                    message: error.kind.message().to_string(),
+                    help: None,
+                    fix: None,
                 });
             }
             for (ref_index, r) in s.refs.iter().enumerate() {
@@ -1583,6 +1690,99 @@ mod tests {
                 .diagnostics()
                 .iter()
                 .any(|d| d.id == lints::UNDEFINED_REFERENCE && d.message.contains("baracks"))
+        );
+    }
+
+    /// A CK3 project with shared variables in `reader_export` and a file
+    /// that uses them.
+    fn variables() -> (Fileset, Schema, FileId, FileId) {
+        let mut fs = Fileset::new();
+        let shared = fs.add(
+            "common/reader_export/00_values.txt",
+            FileKind::Vanilla,
+            b"@shared = 2\n@other = 3\n".to_vec(),
+        );
+        let source =
+            b"@local = 1\nx = { a = @shared b = @[shared * local] c = @sharde d = @local }\n";
+        let user = fs.add(
+            "common/great_projects/p.txt",
+            FileKind::Vanilla,
+            source.to_vec(),
+        );
+        let mut schema = Schema::new();
+        schema
+            .define_dir("great_projects", "great_project")
+            .variable_dir("reader_export");
+        (fs, schema, shared, user)
+    }
+
+    #[test]
+    fn variable_from_a_variable_dir() {
+        let (fs, schema, shared, user) = variables();
+        let analysis = Linter::new(schema).analyze(&fs);
+
+        // Only the typo has no definition.
+        let diagnostics = analysis.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        let diagnostic = &diagnostics[0];
+        assert_eq!(diagnostic.id, lints::UNDEFINED_REFERENCE);
+        assert_eq!(diagnostic.file, user);
+        assert_eq!(&fs.source(user)[diagnostic.range.to_range()], b"@sharde");
+        assert_eq!(diagnostic.help.as_deref(), Some("did you mean `@shared`?"));
+
+        // A variable definition is not a definition of an entity.
+        let entities: Vec<_> = analysis
+            .definitions()
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(entities, ["@shared", "@other", "x"]);
+
+        // A shared variable in a calculation goes to its definition.
+        let source = fs.source(user);
+        let offset = source.windows(7).position(|w| w == b"shared ").unwrap();
+        let definition = analysis
+            .definition_for(user, TextSize::try_from(offset).unwrap())
+            .unwrap();
+        assert_eq!(
+            (definition.file, definition.name.as_str()),
+            (shared, "@shared")
+        );
+    }
+
+    #[test]
+    fn variable_without_a_variable_dir_is_undefined() {
+        let (fs, _, _, user) = variables();
+        let mut schema = Schema::new();
+        schema.define_dir("great_projects", "great_project");
+        let diagnostics = Linter::new(schema).run(&fs);
+        let names: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.file == user)
+            .map(|d| &fs.source(user)[d.range.to_range()])
+            .collect();
+        assert_eq!(names, [&b"@shared"[..], b"shared", b"@sharde"]);
+    }
+
+    #[test]
+    fn variable_value_errors() {
+        let mut fs = Fileset::new();
+        let file = fs.add(
+            "common/x.txt",
+            FileKind::Vanilla,
+            b"a = @[1 / 0]\nb = @[min(1, 2)]\n".to_vec(),
+        );
+        let diagnostics = Linter::new(Schema::new()).run(&fs);
+        let found: Vec<_> = diagnostics
+            .iter()
+            .map(|d| (d.id, d.severity, &fs.source(file)[d.range.to_range()]))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (lints::VARIABLE_VALUE, Severity::Error, &b"1 / 0"[..]),
+                (lints::VARIABLE_VALUE, Severity::Warning, b"@[min(1, 2)]"),
+            ]
         );
     }
 }
