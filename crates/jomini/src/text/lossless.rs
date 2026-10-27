@@ -682,8 +682,9 @@ impl fmt::Debug for TextRange {
 ///
 /// [`Flavor::default`] is the most permissive superset and is correct for every
 /// game except where a genuine lexer fork exists. [`Flavor::hoi4`] enables
-/// HoI4's newline-terminated strings and treats `@`/`$` as ordinary identifier
-/// bytes (HoI4 has no reader variables or macros).
+/// HoI4's newline-terminated strings and treats `$` as an ordinary identifier
+/// byte (HoI4 has no macros). HoI4 has `@name` reader variables, as in
+/// `common/technologies`, so the flavor keeps them.
 ///
 /// In HoI4, a newline closes a quoted string that has no closing quote. The
 /// default flavor reads such a string to the end of the source:
@@ -726,11 +727,11 @@ impl Flavor {
         macros: true,
     };
 
-    /// Hearts of Iron IV: newline-terminated strings, no `@vars`/`$macros$`.
+    /// Hearts of Iron IV: newline-terminated strings, `@vars`, no `$macros$`.
     pub const fn hoi4() -> Self {
         Flavor {
             newline_terminated_strings: true,
-            variables: false,
+            variables: true,
             macros: false,
         }
     }
@@ -6574,9 +6575,10 @@ mod tests {
     }
 
     #[test]
-    fn flavor_hoi4_treats_at_as_identifier() {
-        // With HoI4, `@` is an ordinary identifier byte, not a variable marker.
-        let toks = lex(b"@foo", Flavor::hoi4()).tokens;
+    fn flavor_without_variables_treats_at_as_identifier() {
+        // Without variables, `@` is an ordinary identifier byte, not a
+        // variable marker.
+        let toks = lex(b"@foo", Flavor::default().with_variables(false)).tokens;
         assert_eq!(toks.len(), 1);
         assert_eq!(toks[0].kind, SyntaxKind::Unquoted);
 
@@ -8061,12 +8063,20 @@ mod tests {
     }
 
     #[test]
-    fn calc_hoi4_flavor_has_no_calc() {
-        // HoI4 has no reader variables, so `@[` is ordinary identifier bytes and
-        // no calc machinery (no `Calc`/`CalcOpen`/...) ever appears in the tree.
-        let tree = parse_with(b"x = @[1+2]", Flavor::hoi4());
-        assert_eq!(tree.reconstruct(), b"x = @[1+2]");
-        assert!(!tree.debug_tree().contains("Calc"));
+    fn hoi4_flavor_has_variables() {
+        // From HoI4 `common/technologies/infantry.txt`.
+        let source = b"@1936 = 2\nposition = { x = 0 y = @1936 }";
+        let tree = parse_with(source, Flavor::hoi4());
+        assert_eq!(tree.reconstruct(), source);
+        let variables = tree
+            .tokens()
+            .filter(|t| t.kind() == SyntaxKind::Variable)
+            .count();
+        assert_eq!(variables, 2);
+
+        // HoI4 has no macros, so `$` is an ordinary identifier byte.
+        let tree = parse_with(b"x = $NAME$", Flavor::hoi4());
+        assert!(tree.tokens().all(|t| t.kind() != SyntaxKind::MacroParam));
     }
 
     #[quickcheck]
