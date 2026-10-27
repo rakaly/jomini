@@ -63,6 +63,8 @@ pub(crate) trait Doc: Copy {
     /// Return `true` for the root of the document.
     fn is_root(self, container: Self::Container) -> bool;
     fn quoted(self, scalar: Self::Scalar) -> bool;
+    /// Return `true` for a `@name` variable.
+    fn variable(self, scalar: Self::Scalar) -> bool;
     fn with_scalar<R>(self, scalar: Self::Scalar, f: impl FnOnce(Scalar<'_>) -> R) -> R;
     /// The decoded text of a scalar.
     fn string(self, scalar: Self::Scalar) -> String;
@@ -1327,12 +1329,12 @@ impl<D: Doc> Part<D> {
 /// A private sequence of parts.
 struct PartsSeq<D: Doc> {
     doc: D,
-    parts: std::array::IntoIter<Option<Part<D>>, 4>,
+    parts: std::array::IntoIter<Option<Part<D>>, 5>,
 }
 
 impl<D: Doc> PartsSeq<D> {
     fn new<const N: usize>(doc: D, parts: [Part<D>; N]) -> Self {
-        let mut all = [None, None, None, None];
+        let mut all = [None, None, None, None, None];
         for (slot, part) in all.iter_mut().zip(parts) {
             *slot = Some(part);
         }
@@ -1375,6 +1377,7 @@ struct ValueEnum<D: Doc> {
 
 pub(crate) const TAG_UNQUOTED: &str = "unquoted";
 pub(crate) const TAG_QUOTED: &str = "quoted";
+pub(crate) const TAG_VARIABLE: &str = "variable";
 pub(crate) const TAG_CALC: &str = "calc";
 pub(crate) const TAG_BLOCK: &str = "block";
 pub(crate) const TAG_HEADERED: &str = "headered";
@@ -1394,6 +1397,8 @@ impl<'de, D: DocDe<'de>> de::EnumAccess<'de> for ValueEnum<D> {
         let scalar_tag = |s| {
             if doc.quoted(s) {
                 TAG_QUOTED
+            } else if doc.variable(s) {
+                TAG_VARIABLE
             } else {
                 TAG_UNQUOTED
             }
@@ -1582,6 +1587,7 @@ impl<'de, D: DocDe<'de>> de::VariantAccess<'de> for EntryDe<D> {
                 let parts = [
                     Part::Text(Text::Scalar(key)),
                     Part::Bool(doc.quoted(key)),
+                    Part::Bool(doc.variable(key)),
                     Part::op(op),
                     Part::Value(value),
                 ];

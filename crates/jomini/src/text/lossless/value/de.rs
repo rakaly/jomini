@@ -9,7 +9,8 @@ use crate::{
             TextRange,
             de::{
                 Doc, DocDe, Error, Item as DocItem, TAG_BLOCK, TAG_CALC, TAG_FIELD, TAG_HEADERED,
-                TAG_PARAMETER, TAG_QUOTED, TAG_UNQUOTED, TAG_VALUE, VALUE, ValueDe, View,
+                TAG_PARAMETER, TAG_QUOTED, TAG_UNQUOTED, TAG_VALUE, TAG_VARIABLE, VALUE, ValueDe,
+                View,
             },
         },
     },
@@ -30,6 +31,7 @@ impl<'de> Deserialize<'de> for Value {
 enum Tag {
     Unquoted,
     Quoted,
+    Variable,
     Calc,
     Block,
     Headered,
@@ -53,6 +55,7 @@ impl<'de> Deserialize<'de> for Tag {
                 Ok(match v {
                     TAG_UNQUOTED => Tag::Unquoted,
                     TAG_QUOTED => Tag::Quoted,
+                    TAG_VARIABLE => Tag::Variable,
                     TAG_CALC => Tag::Calc,
                     TAG_BLOCK => Tag::Block,
                     TAG_HEADERED => Tag::Headered,
@@ -82,6 +85,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
         match tag {
             Tag::Unquoted => variant.newtype_variant().map(Value::Unquoted),
             Tag::Quoted => variant.newtype_variant().map(Value::Quoted),
+            Tag::Variable => variant.newtype_variant().map(Value::Variable),
             Tag::Calc => variant.newtype_variant().map(Value::Calc),
             Tag::Block => variant.newtype_variant_seed(BlockSeed).map(Value::Block),
             Tag::Headered => variant.tuple_variant(2, HeaderedVisitor),
@@ -219,7 +223,7 @@ impl<'de> Visitor<'de> for ItemSeed {
     fn visit_enum<A: EnumAccess<'de>>(self, data: A) -> Result<Item, A::Error> {
         let (tag, variant) = data.variant::<Tag>()?;
         match tag {
-            Tag::Field => variant.tuple_variant(4, FieldVisitor),
+            Tag::Field => variant.tuple_variant(5, FieldVisitor),
             Tag::Value => variant.newtype_variant().map(Item::Value),
             Tag::Parameter => variant.tuple_variant(3, ParameterVisitor),
             _ => Err(de::Error::custom("unexpected jomini item tag")),
@@ -240,8 +244,9 @@ impl<'de> Visitor<'de> for FieldVisitor {
         Ok(Item::Field(Field {
             key: next(&mut seq, 0)?,
             quoted_key: next(&mut seq, 1)?,
-            op: next(&mut seq, 2)?,
-            value: next(&mut seq, 3)?,
+            variable_key: next(&mut seq, 2)?,
+            op: next(&mut seq, 3)?,
+            value: next(&mut seq, 4)?,
         }))
     }
 }
@@ -378,6 +383,7 @@ impl<B> ValueDoc<'_, B> {
 pub(crate) struct ValueScalar<'v> {
     text: &'v str,
     quoted: bool,
+    variable: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -413,6 +419,7 @@ impl<'v, B> Iterator for ValueItems<'v, B> {
                 key: ValueScalar {
                     text: &f.key,
                     quoted: f.quoted_key,
+                    variable: f.variable_key,
                 },
                 op: f.op,
                 value: &f.value,
@@ -422,6 +429,7 @@ impl<'v, B> Iterator for ValueItems<'v, B> {
                 name: ValueScalar {
                     text: &p.name,
                     quoted: false,
+                    variable: false,
                 },
                 undefined: p.undefined,
                 body: ValueContainer {
@@ -442,18 +450,23 @@ impl<'v, B> Doc for ValueDoc<'v, B> {
     type Scalars = std::iter::Empty<&'v Value>;
 
     fn view(self, node: Self::Node) -> View<Self> {
-        let scalar = |text: &'v str, quoted| ValueScalar { text, quoted };
+        let scalar = |text: &'v str, quoted, variable| ValueScalar {
+            text,
+            quoted,
+            variable,
+        };
         let block = |b: &'v Block| ValueContainer {
             items: &b.items,
             root: false,
             top: false,
         };
         match node {
-            Value::Unquoted(s) => View::Scalar(scalar(s, false)),
-            Value::Quoted(s) => View::Scalar(scalar(s, true)),
-            Value::Calc(s) => View::Calc(scalar(s, false)),
+            Value::Unquoted(s) => View::Scalar(scalar(s, false, false)),
+            Value::Quoted(s) => View::Scalar(scalar(s, true, false)),
+            Value::Variable(s) => View::Scalar(scalar(s, false, true)),
+            Value::Calc(s) => View::Calc(scalar(s, false, false)),
             Value::Block(b) => View::Block(block(b)),
-            Value::HeaderedBlock(h, b) => View::Headered(scalar(h, false), block(b)),
+            Value::HeaderedBlock(h, b) => View::Headered(scalar(h, false, false), block(b)),
         }
     }
 
@@ -474,6 +487,10 @@ impl<'v, B> Doc for ValueDoc<'v, B> {
 
     fn quoted(self, scalar: Self::Scalar) -> bool {
         scalar.quoted
+    }
+
+    fn variable(self, scalar: Self::Scalar) -> bool {
+        scalar.variable
     }
 
     fn with_scalar<R>(self, scalar: Self::Scalar, f: impl FnOnce(Scalar<'_>) -> R) -> R {
