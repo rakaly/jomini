@@ -75,7 +75,7 @@ pub(crate) use self::engine::{
 };
 
 use self::tree::{TreeCtx, TreeDoc};
-use super::{Flavor, SyntaxErrorKind, SyntaxTree, parse_with};
+use super::{Flavor, SyntaxErrorKind, SyntaxTree, parse_with, resolve::Resolution};
 use crate::{Encoding, Utf8Encoding, Windows1252Encoding};
 use serde::de::{self, Deserialize, Visitor};
 
@@ -230,6 +230,23 @@ impl<'t, 'a, E: Encoding> Deserializer<'t, 'a, E> {
             ctx: TreeCtx::new(tree, encoding),
             file: None,
         }
+    }
+
+    /// Give the values of the variables and the calculations of the tree.
+    /// See [`resolve`](super::resolve).
+    ///
+    /// The deserializer then gives each value that has a resolution in
+    /// place of its source text, and a calculation is an unquoted scalar.
+    /// A variable definition, such as `@size = 0.5`, is not an entry of its
+    /// container. A variable or a calculation that has no value keeps its
+    /// source text.
+    ///
+    /// # Panics
+    ///
+    /// The function panics when the resolution is of a different tree.
+    pub fn with_resolution(mut self, resolution: Resolution) -> Self {
+        self.ctx.set_resolution(resolution);
+        self
     }
 
     /// Set the file name that the errors show.

@@ -162,6 +162,7 @@ use std::sync::OnceLock;
 #[cfg(feature = "serde")]
 pub mod de;
 mod line_index;
+pub mod resolve;
 mod tape;
 #[cfg(feature = "serde")]
 pub mod value;
