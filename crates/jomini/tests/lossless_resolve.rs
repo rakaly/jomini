@@ -205,6 +205,14 @@ fn code_payload_is_not_resolved() {
 }
 
 #[test]
+fn parameter_block_is_not_resolved() {
+    // No parameter is set, so the definition in the block does not apply.
+    let source = b"[[p] @x = 2 ]\nb = @x";
+    assert_eq!(kinds(source), [ResolveErrorKind::UndefinedVariable]);
+    assert!(kinds(b"[[p] a = @x ]").is_empty());
+}
+
+#[test]
 fn evaluate_one_calculation() {
     let parse = parse(b"x = @[-(2 + 1) * 4 / 8]");
     let calc = parse.root().descendants().find_map(Calc::cast).unwrap();
