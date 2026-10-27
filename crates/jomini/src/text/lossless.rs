@@ -6512,10 +6512,15 @@ mod tests {
 
         let parse = Parse::owned(std::sync::Arc::<[u8]>::from(&b"a = { b = 1 }"[..]));
         assert_send_sync(&parse);
-        let count = std::thread::spawn(move || parse.root().children().count())
-            .join()
-            .unwrap();
-        assert_eq!(count, 1);
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let count = std::thread::spawn(move || parse.root().children().count())
+                .join()
+                .unwrap();
+            assert_eq!(count, 1);
+        }
+        #[cfg(target_family = "wasm")]
+        assert_eq!(parse.root().children().count(), 1);
 
         let parse = Parse::owned(b"a = 1".to_vec());
         assert_eq!(parse.reconstruct(), b"a = 1");
