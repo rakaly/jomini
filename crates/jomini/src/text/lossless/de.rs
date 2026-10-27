@@ -71,7 +71,7 @@ pub use self::wrappers::{Headered, MaybeQuoted, Spanned, WithOp};
 
 pub(crate) use self::engine::{
     Doc, DocDe, Item, TAG_BLOCK, TAG_CALC, TAG_FIELD, TAG_HEADERED, TAG_PARAMETER, TAG_QUOTED,
-    TAG_UNQUOTED, TAG_VALUE, VALUE, ValueDe, View,
+    TAG_UNQUOTED, TAG_VALUE, TAG_VARIABLE, VALUE, ValueDe, View,
 };
 
 use self::tree::{TreeCtx, TreeDoc};

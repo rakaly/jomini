@@ -138,6 +138,11 @@ impl<'c, 'a, E: Encoding> TreeDoc<'c, 'a, E> {
     }
 
     #[inline]
+    fn is_variable(self, scalar: TreeScalar) -> bool {
+        !scalar.node && self.ctx.tokens[scalar.index as usize].kind == SyntaxKind::Variable
+    }
+
+    #[inline]
     fn range(self, scalar: TreeScalar) -> TextRange {
         if scalar.node {
             self.node(scalar.index).text_range()
@@ -549,6 +554,11 @@ where
     #[inline]
     fn quoted(self, scalar: Self::Scalar) -> bool {
         self.is_quoted(scalar)
+    }
+
+    #[inline]
+    fn variable(self, scalar: Self::Scalar) -> bool {
+        self.is_variable(scalar)
     }
 
     #[inline]

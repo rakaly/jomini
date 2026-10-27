@@ -339,6 +339,12 @@ impl<'d, 'a, E: Encoding> FieldRef<'d, 'a, E> {
         bytes == key.as_bytes() || (!bytes.is_ascii() && self.key() == key)
     }
 
+    /// Return `true` when the key is a `@name` variable, so the field
+    /// defines the variable, as in `@size = 0.5`.
+    pub fn is_variable_key(&self) -> bool {
+        self.doc().variable(self.key)
+    }
+
     /// The operator, or `None` for a `key { ... }` field that has no
     /// operator.
     pub fn op(&self) -> Option<Operator> {
@@ -374,6 +380,14 @@ impl<'d, 'a, E: Encoding> ValueRef<'d, 'a, E> {
     pub fn is_quoted(&self) -> bool {
         match self.doc().view(self.node) {
             View::Scalar(scalar) => self.doc().quoted(scalar),
+            _ => false,
+        }
+    }
+
+    /// Return `true` for a `@name` variable.
+    pub fn is_variable(&self) -> bool {
+        match self.doc().view(self.node) {
+            View::Scalar(scalar) => self.doc().variable(scalar),
             _ => false,
         }
     }

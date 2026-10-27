@@ -12,7 +12,7 @@ use jomini::{
     text::{
         Operator, Property,
         lossless::{
-            self,
+            self, Flavor,
             de::{
                 Document, Error, Headered, MaybeQuoted, Spanned, WithOp, from_slice, from_tree,
                 from_utf8_slice, from_windows1252_slice,
@@ -644,6 +644,58 @@ fn value_from_a_different_deserializer() {
     assert!(block.get("c").unwrap().as_block().unwrap().is_array());
 }
 
+#[test]
+fn value_keeps_variables() {
+    #[derive(Deserialize)]
+    struct File {
+        size: String,
+        text: MaybeQuoted<String>,
+    }
+
+    let data = b"@size = 0.5\nsize = @size\ntext = @size\nquoted = \"@size\"";
+    let value: Value = from_utf8_slice(data).unwrap();
+    let root = value.as_block().unwrap();
+
+    let definition = root.fields().next().unwrap();
+    assert_eq!(definition.key, "@size");
+    assert!(definition.variable_key);
+    assert!(!root.fields().nth(1).unwrap().variable_key);
+
+    assert_eq!(
+        root.get("size"),
+        Some(&Value::Variable(String::from("@size")))
+    );
+    assert_eq!(root.get("size").unwrap().as_variable(), Some("@size"));
+    assert_eq!(root.get("quoted"), Some(&Value::quoted("@size")));
+
+    // A value deserializes into a value with the same variables.
+    assert_eq!(Value::deserialize(&value).unwrap(), value);
+
+    // A text target gets the source text, and `MaybeQuoted` tells that the
+    // text had no quotes.
+    for file in [
+        from_utf8_slice::<File>(data).unwrap(),
+        File::deserialize(&value).unwrap(),
+    ] {
+        assert_eq!(file.size, "@size");
+        assert_eq!(file.text, MaybeQuoted::Unquoted(String::from("@size")));
+    }
+
+    let tree = lossless::parse(data);
+    let doc = Document::new(tree.tree(), Utf8Encoding::new());
+    let root = doc.root();
+    assert!(root.fields().next().unwrap().is_variable_key());
+    assert!(root.require("size").unwrap().is_variable());
+    assert!(!root.require("quoted").unwrap().is_variable());
+
+    // A flavor without variables makes `@size` an unquoted scalar.
+    let tree = lossless::parse_with(data, Flavor::default().with_variables(false));
+    let value = Value::from_tree(tree.tree(), Utf8Encoding::new());
+    let root = value.as_block().unwrap();
+    assert!(!root.fields().next().unwrap().variable_key);
+    assert_eq!(root.get("size"), Some(&Value::unquoted("@size")));
+}
+
 /// The variable interpolation of PR #184: collect the `@` variables, then
 /// replace each variable and each calculation with its value, then
 /// deserialize the result into a type.
@@ -667,12 +719,13 @@ fn value_variable_interpolation() {
         .as_block()
         .unwrap()
         .fields()
-        .filter_map(|f| Some((f.key.strip_prefix('@')?.to_string(), f.value.to_f64()?)))
+        .filter(|f| f.variable_key)
+        .filter_map(|f| Some((f.key[1..].to_string(), f.value.to_f64()?)))
         .collect();
 
     fn interpolate(value: &mut Value, variables: &HashMap<String, f64>) {
         let replacement = match value {
-            Value::Unquoted(s) => s.strip_prefix('@').and_then(|name| variables.get(name)),
+            Value::Variable(s) => variables.get(&s[1..]),
             Value::Calc(s) => {
                 let expr = s.trim_start_matches("@[").trim_end_matches(']');
                 return *value = Value::Unquoted(eval(expr, variables).to_string());

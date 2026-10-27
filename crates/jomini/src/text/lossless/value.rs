@@ -57,13 +57,18 @@ use crate::{Encoding, Scalar, text::Operator};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Value {
-    /// A scalar with no quotes, such as `yes`, `1.5`, `1444.11.11`, or
-    /// `@variable`. An interpolation (`[Root.GetName]`) and a code payload
-    /// are also unquoted scalars that hold their source text.
+    /// A scalar with no quotes, such as `yes`, `1.5`, or `1444.11.11`. An
+    /// interpolation (`[Root.GetName]`) and a code payload are also unquoted
+    /// scalars that hold their source text.
     Unquoted(String),
     /// A scalar that had quotes. The text has no quotes and no escape
     /// characters.
     Quoted(String),
+    /// A `@name` variable. The text is the source text, `@` included.
+    ///
+    /// The [`Flavor`](super::Flavor) of the parser must recognize variables.
+    /// Else `@name` is [`Value::Unquoted`].
+    Variable(String),
     /// A `@[ ... ]` calculation. The text is the source text, `@[` and `]`
     /// included.
     Calc(String),
@@ -135,6 +140,9 @@ pub struct Field {
     pub key: String,
     /// The key had quotes.
     pub quoted_key: bool,
+    /// The key is a `@name` variable, so the field defines the variable, as
+    /// in `@size = 0.5`.
+    pub variable_key: bool,
     /// The operator, or `None` for a `key { ... }` field that has no
     /// operator.
     pub op: Option<Operator>,
@@ -223,6 +231,14 @@ impl Value {
     /// The header of a [`Value::HeaderedBlock`].
     pub fn header(&self) -> Option<&str> {
         self.as_headered_block().map(|(h, _)| h)
+    }
+
+    /// The source text of a [`Value::Variable`], `@` included.
+    pub fn as_variable(&self) -> Option<&str> {
+        match self {
+            Value::Variable(s) => Some(s),
+            _ => None,
+        }
     }
 
     /// The source text of a [`Value::Calc`].
@@ -420,11 +436,12 @@ impl Item {
 }
 
 impl Field {
-    /// Make a field with an unquoted key.
+    /// Make a field with an unquoted key that is not a variable.
     pub fn new(key: impl Into<String>, op: Option<Operator>, value: Value) -> Self {
         Field {
             key: key.into(),
             quoted_key: false,
+            variable_key: false,
             op,
             value,
         }
@@ -467,6 +484,7 @@ impl<D: Doc> ValueBuilder<D> {
         let doc = self.doc;
         match doc.view(node) {
             View::Scalar(s) if doc.quoted(s) => Value::Quoted(doc.string(s)),
+            View::Scalar(s) if doc.variable(s) => Value::Variable(doc.string(s)),
             View::Scalar(s) => Value::Unquoted(doc.string(s)),
             View::Calc(s) => Value::Calc(doc.string(s)),
             View::Block(c) => Value::Block(self.block(c)),
@@ -480,6 +498,7 @@ impl<D: Doc> ValueBuilder<D> {
             DocItem::Field { key, op, value } => Item::Field(Field {
                 key: doc.string(key),
                 quoted_key: doc.quoted(key),
+                variable_key: doc.variable(key),
                 op,
                 value: self.value(value),
             }),
