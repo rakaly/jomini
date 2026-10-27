@@ -54,8 +54,9 @@
 //!   `-`, `*`, `/`, and parentheses. `*` and `/` bind more tightly than `+`
 //!   and `-`.
 //! - The resolver does not examine a code payload (`code [[ ... ]]`), such as
-//!   the body of an EU5 `template`. A `@name` in it is a parameter of the
-//!   template.
+//!   the body of an EU5 `template`, or a conditional parameter block
+//!   (`[[name] ... ]`). Their contents apply only where a caller gives the
+//!   parameters, so a `@name` in them keeps its source text.
 //! - When the resolver cannot find a value, it records a [`ResolveError`]
 //!   and keeps the source text of that variable or calculation.
 
@@ -288,8 +289,9 @@ pub fn resolve(tree: SyntaxTree<'_, '_>, scope: &dyn Scope) -> Resolution {
 
     // Walk the tokens in source order. A node that starts at a token comes
     // before the token. A definition and a calculation take their subtree.
-    // A code payload, such as the body of an EU5 `template`, is not a part
-    // of the file scope: its `@name` is a parameter of the template.
+    // A code payload, such as the body of an EU5 `template`, and a
+    // conditional parameter block are not a part of the file scope: they
+    // apply only where a caller gives the parameters.
     let mut token = 0;
     let mut node = 0;
     'tokens: while token < tokens.len() as u32 {
@@ -300,7 +302,7 @@ pub fn resolve(tree: SyntaxTree<'_, '_>, scope: &dyn Scope) -> Resolution {
             match data.kind {
                 SyntaxKind::Field if key == Some(SyntaxKind::Variable) => resolver.define(node),
                 SyntaxKind::Calc => resolver.calc(node),
-                SyntaxKind::Code => {}
+                SyntaxKind::Code | SyntaxKind::Parameter | SyntaxKind::UndefinedParameter => {}
                 _ => {
                     node += 1;
                     continue;
