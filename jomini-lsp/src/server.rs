@@ -616,7 +616,7 @@ fn workspace_roots(init: &InitializeParams) -> Vec<PathBuf> {
 fn demo_schema() -> Schema {
     let mut schema = Schema::new();
     schema
-        .define_dir("buildings", "building")
+        .define_dir("common/buildings", "building")
         .reference_key("has_building", "building")
         .reference_key("add_building", "building")
         .reference_key("remove_building", "building")
