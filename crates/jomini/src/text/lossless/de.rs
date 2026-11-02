@@ -247,6 +247,10 @@ impl<'t, 'a, E: Encoding> Deserializer<'t, 'a, E> {
     /// container. A variable or a calculation that has no value keeps its
     /// source text.
     ///
+    /// A resolved value is not a part of the source, so a target that
+    /// borrows from the source, such as `&'a str`, cannot take it. Use
+    /// `String` or `Cow<str>`.
+    ///
     /// # Panics
     ///
     /// The function panics when the resolution is of a tree that has a

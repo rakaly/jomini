@@ -188,7 +188,10 @@ impl<'c, 'a, E: Encoding, const RESOLVED: bool> TreeDoc<'c, 'a, E, RESOLVED> {
     fn resolved_in(self, resolution: &'c Resolution, scalar: TreeScalar) -> Option<&'c [u8]> {
         let value = if scalar.node {
             resolution.nodes.get(&scalar.index)
-        } else if self.is_variable(scalar) {
+        } else if matches!(
+            self.ctx.tokens[scalar.index as usize].kind,
+            SyntaxKind::Variable | SyntaxKind::VariableKey
+        ) {
             resolution.tokens.get(&scalar.index)
         } else {
             None

@@ -1,4 +1,5 @@
-//! **Experimental** values of `@name` variables and `@[ ... ]` calculations.
+//! **Experimental.** Find the values of `@name` variables and `@[ ... ]`
+//! calculations.
 //!
 //! Some game files define variables and use them in other values:
 //!
@@ -43,16 +44,40 @@
 //!
 //! # Rules
 //!
+//! The rules are the rules of the game reader: the CK3 file
+//! `game/reader_export/_reader_export.info` and the game files of EU5, CK3,
+//! Vic3, HoI4, and Imperator agree with them.
+//!
 //! - A field with a variable key, such as `@size = 0.5`, defines the
 //!   variable. The value is a scalar, a different variable, or a
-//!   calculation. A definition applies to the parts of the file after it,
-//!   and a new definition of the same name replaces it.
-//! - A variable that the file does not define before it is used comes from
-//!   the [`Scope`] that you give. Use `&()` for no scope, or [`Variables`]
-//!   for the variables of a different file.
+//!   calculation. The CK3 directive `@:register_variable size = 0.5` is the
+//!   same.
+//! - A definition applies from its position to the end of the file. A
+//!   definition in a block also applies after the block, because the game
+//!   reads the variables before the file has a structure. A variable that is
+//!   used before its definition has no value.
+//! - A second definition of the same name is an error
+//!   ([`ResolveErrorKind::Redefined`]), and the first value stays.
+//! - A variable that the file does not define comes from the [`Scope`] that
+//!   you give. Use `&()` for no scope, or [`Variables`] for shared variables,
+//!   such as the CK3 variables of `reader_export`. A definition of a name that
+//!   the scope has is an error ([`ResolveErrorKind::DefinedInScope`]), and
+//!   the value of the scope stays. Thus the scope must not have the
+//!   variables of the file itself.
+//! - `@:load_variable size` in a value is the same as `@size`. `@@size` puts
+//!   the value of the variable in place of a key.
 //! - A calculation has numbers, variable names (with or without `@`), `+`,
 //!   `-`, `*`, `/`, and parentheses. `*` and `/` bind more tightly than `+`
-//!   and `-`.
+//!   and `-`. Operators of the same level apply from left to right, so
+//!   `@[8 / 4 / 2]` is `1`. A `-` or a `+` before an operand changes its
+//!   sign.
+//! - The value of a calculation is the shortest decimal text that gives the
+//!   same `f64`. It has no exponent, so `@[0.1 + 0.2]` is
+//!   `0.30000000000000004`. A target of type `f32` reads it as `0.3`.
+//! - A text value loses its quotes: after `@x = "a b"`, `@x` is the unquoted
+//!   text `a b`.
+//! - The resolver does not examine the tokens of `@:define` or the arguments
+//!   of `@:insert`. They apply where the game inserts the block.
 //! - The resolver does not examine a code payload (`code [[ ... ]]`), such as
 //!   the body of an EU5 `template`, or a conditional parameter block
 //!   (`[[name] ... ]`). Their contents apply only where a caller gives the
@@ -60,7 +85,10 @@
 //! - When the resolver cannot find a value, it records a [`ResolveError`]
 //!   and keeps the source text of that variable or calculation.
 
-use super::{AstNode, Calc, Field, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxTree, TextRange};
+use super::{
+    AstNode, Calc, DirectiveKind, Field, ReaderDirective, SyntaxElement, SyntaxKind, SyntaxNode,
+    SyntaxToken, SyntaxTree, TextRange,
+};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -129,10 +157,6 @@ impl Variables {
     pub fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
         self.values.iter().map(|(name, value)| (&**name, &**value))
     }
-
-    fn remove(&mut self, name: &[u8]) {
-        self.values.remove(name);
-    }
 }
 
 /// Add variables, as in the variables of a set of files. A new value of a
@@ -187,6 +211,11 @@ pub enum ResolveErrorKind {
     UnsupportedCalculation,
     /// The value of a variable definition is a block.
     UnsupportedDefinition,
+    /// The file defines the variable a second time. The first value stays.
+    Redefined,
+    /// The file defines a variable that the scope has, such as a CK3
+    /// variable of `reader_export`. The value of the scope stays.
+    DefinedInScope,
 }
 
 impl ResolveErrorKind {
@@ -198,6 +227,8 @@ impl ResolveErrorKind {
             Self::NotFinite => "result is not a finite number",
             Self::UnsupportedCalculation => "unsupported calculation",
             Self::UnsupportedDefinition => "variable value is not a scalar or a calculation",
+            Self::Redefined => "variable is already defined",
+            Self::DefinedInScope => "variable is already defined in the scope",
         }
     }
 }
@@ -332,6 +363,7 @@ pub fn resolve(tree: SyntaxTree<'_, '_>, scope: &dyn Scope) -> Resolution {
             match data.kind {
                 SyntaxKind::Field if key == Some(SyntaxKind::Variable) => resolver.define(node),
                 SyntaxKind::Calc => resolver.calc(node),
+                SyntaxKind::ReaderDirective => resolver.directive(node),
                 SyntaxKind::Code | SyntaxKind::Parameter | SyntaxKind::UndefinedParameter => {}
                 _ => {
                     node += 1;
@@ -342,7 +374,10 @@ pub fn resolve(tree: SyntaxTree<'_, '_>, scope: &dyn Scope) -> Resolution {
             node = data.subtree_end;
             continue 'tokens;
         }
-        if tokens[token as usize].kind == SyntaxKind::Variable {
+        if matches!(
+            tokens[token as usize].kind,
+            SyntaxKind::Variable | SyntaxKind::VariableKey
+        ) {
             resolver.reference(token);
         }
         token += 1;
@@ -407,15 +442,48 @@ impl Resolver<'_, '_, '_> {
     /// The value of a variable token, or `None` when it has no value.
     fn variable(&mut self, token: u32) -> Option<Box<[u8]>> {
         let token = self.tree.token(token);
-        let name = &token.text()[1..];
+        self.variable_named(variable_name(token), token.range)
+    }
+
+    /// The value of the variable `name`, or `None` when it has no value.
+    /// An error is at `range`.
+    fn variable_named(&mut self, name: &[u8], range: TextRange) -> Option<Box<[u8]>> {
         match self.lookup(name) {
             Lookup::Found(value) => Some(value.into()),
             Lookup::Failed => None,
             Lookup::Missing => {
-                let error = ResolveError::new(ResolveErrorKind::UndefinedVariable, token.range);
+                let error = ResolveError::new(ResolveErrorKind::UndefinedVariable, range);
                 self.out.errors.push(error);
                 None
             }
+        }
+    }
+
+    /// A CK3 reader directive. `@:register_variable` defines a variable,
+    /// and `@:load_variable` in value position gives its value. The tokens
+    /// of `@:define` and the arguments of `@:insert` apply where the block
+    /// is inserted, so the resolver does not examine them.
+    fn directive(&mut self, node: u32) {
+        let node = SyntaxNode {
+            tree: self.tree,
+            idx: node,
+        };
+        let Some(directive) = ReaderDirective::cast(node) else {
+            return;
+        };
+        let Some(argument) = directive.argument() else {
+            return;
+        };
+        match directive.kind() {
+            DirectiveKind::RegisterVariable => {
+                self.define_value(argument, argument.text(), directive.value());
+            }
+            DirectiveKind::LoadVariable => {
+                if let Some(value) = self.variable_named(argument.text(), argument.text_range()) {
+                    self.out.nodes.insert(node.idx, value);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -448,8 +516,29 @@ impl Resolver<'_, '_, '_> {
         let Some(field) = Field::cast(node) else {
             return;
         };
-        let name: Box<[u8]> = field.key().text()[1..].into();
-        let value = match field.value() {
+        let key = field.key();
+        self.define_value(key, variable_name(key), field.value());
+    }
+
+    /// Define the variable `name` with `value`. The name is at `key`.
+    fn define_value(
+        &mut self,
+        key: SyntaxToken<'_, '_>,
+        name: &[u8],
+        value: Option<super::Value<'_, '_>>,
+    ) {
+        if self.out.variables.get(name).is_some() || self.failed.contains(name) {
+            let error = ResolveError::new(ResolveErrorKind::Redefined, key.text_range());
+            self.out.errors.push(error);
+            return;
+        }
+        if self.scope.lookup(name).is_some() {
+            let error = ResolveError::new(ResolveErrorKind::DefinedInScope, key.text_range());
+            self.out.errors.push(error);
+            return;
+        }
+        let name: Box<[u8]> = name.into();
+        let value = match value {
             Some(super::Value::Scalar(token)) => match token.kind() {
                 SyntaxKind::Variable => self.variable(token.idx),
                 SyntaxKind::Quoted => Some(strip_quotes(token.text()).into()),
@@ -479,16 +568,19 @@ impl Resolver<'_, '_, '_> {
             None => None,
         };
         match value {
-            Some(value) => {
-                self.failed.remove(&name);
-                self.out.variables.insert(name, value);
-            }
+            Some(value) => self.out.variables.insert(name, value),
             None => {
-                self.out.variables.remove(&name);
                 self.failed.insert(name);
             }
         }
     }
+}
+
+/// The name of a variable token without its `@` or `@@`.
+fn variable_name<'a>(token: SyntaxToken<'_, 'a>) -> &'a [u8] {
+    let text = token.text();
+    let text = text.strip_prefix(b"@").unwrap_or(text);
+    text.strip_prefix(b"@").unwrap_or(text)
 }
 
 fn strip_quotes(text: &[u8]) -> &[u8] {

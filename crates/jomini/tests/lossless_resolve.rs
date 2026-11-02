@@ -133,10 +133,10 @@ fn failed_definition_has_one_error() {
     let source = b"@a = @[1 / 0]\nx = @a\ny = @[a + 1]";
     assert_eq!(kinds(source), [ResolveErrorKind::NotFinite]);
 
-    // A new definition replaces the failed one.
+    // A second definition is an error, and the failed one stays.
     assert_eq!(
         kinds(b"@a = @[1 / 0]\n@a = 1\nx = @a"),
-        [ResolveErrorKind::NotFinite]
+        [ResolveErrorKind::NotFinite, ResolveErrorKind::Redefined]
     );
 }
 
@@ -146,14 +146,19 @@ fn source_order_and_scope() {
     scope.insert("size", "1");
     scope.insert("other", "3");
 
-    // A reference before the definition comes from the scope. The
-    // definition of the file then replaces it.
+    // A variable that the file does not define comes from the scope. A
+    // definition of a name that the scope has is an error, and the value
+    // of the scope stays, as for a CK3 `reader_export` variable.
     let source = b"a = @size\n@size = 2\nb = @size\nc = @[size + other]";
     let (file, resolution) = resolved::<HashMap<String, f64>>(source, &scope);
     let file = file.unwrap();
-    assert_eq!((file["a"], file["b"], file["c"]), (1.0, 2.0, 5.0));
-    assert_eq!(resolution.variables().get("size"), Some(&b"2"[..]));
+    assert_eq!((file["a"], file["b"], file["c"]), (1.0, 1.0, 4.0));
+    assert_eq!(resolution.variables().get("size"), None);
     assert_eq!(resolution.variables().get("other"), None);
+    let errors = resolution.errors();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].kind, ResolveErrorKind::DefinedInScope);
+    assert_eq!(&source[errors[0].range.to_range()], b"@size");
 
     // A reference before the definition, and no scope.
     assert_eq!(
@@ -235,4 +240,67 @@ fn calculation_of_a_definition_has_a_value() {
     let calc = parse.root().descendants().find_map(Calc::cast).unwrap();
     let value = jomini::text::lossless::Value::Calc(calc);
     assert_eq!(resolution.get(value), Some(&b"0.5"[..]));
+}
+
+#[test]
+fn second_definition_keeps_the_first() {
+    let source = b"@a = 1\n@a = 2\nx = @a";
+    let (file, resolution) = resolved::<HashMap<String, f64>>(source, &Variables::new());
+    assert_eq!(file.unwrap()["x"], 1.0);
+    let errors = resolution.errors();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].kind, ResolveErrorKind::Redefined);
+    assert_eq!(&source[errors[0].range.to_range()], b"@a");
+}
+
+/// A definition in a block applies after the block, as in the GUI files of
+/// Vic3 and Imperator.
+#[test]
+fn definition_in_a_block_applies_after_the_block() {
+    let source = b"a = { @w = 4 }\nb = @w";
+    let (file, resolution) = resolved::<HashMap<String, Value>>(source, &Variables::new());
+    assert!(resolution.errors().is_empty());
+    assert_eq!(file.unwrap()["b"], Value::Unquoted("4".into()));
+}
+
+/// The CK3 reader directives that define and read variables.
+#[test]
+fn reader_directive_variables() {
+    let source = b"@:register_variable size = 0.5\n@:register_variable double = @[size * 2]\n\
+        x = @:load_variable double\ny = @size\n@@size = key";
+    let parse = parse(source);
+    assert!(parse.errors().is_empty(), "{:?}", parse.errors());
+    let resolution = resolve(parse.tree(), &());
+    assert!(resolution.errors().is_empty(), "{:?}", resolution.errors());
+    assert_eq!(resolution.variables().get("double"), Some(&b"1"[..]));
+
+    let file: HashMap<String, String> = Deserializer::new(parse.tree(), Utf8Encoding::new())
+        .with_resolution(resolution)
+        .deserialize()
+        .unwrap();
+    assert_eq!(file["x"], "1");
+    assert_eq!(file["y"], "0.5");
+    // `@@size` puts the value of the variable in place of the key.
+    assert_eq!(file["0.5"], "key");
+}
+
+/// The tokens of `@:define` and the arguments of `@:insert` apply where the
+/// block is inserted, so they have no errors here. A directive is not an
+/// undefined variable.
+#[test]
+fn reader_directive_blocks_are_not_examined() {
+    assert_eq!(
+        kinds(
+            b"@:define m = { x = @undefined }\n@:insert m = { y = @other }\n@:log \"t\"\n@:assert"
+        ),
+        []
+    );
+    assert_eq!(
+        kinds(b"x = @:load_variable missing"),
+        [ResolveErrorKind::UndefinedVariable]
+    );
+    assert_eq!(
+        kinds(b"@:register_variable a = 1\n@a = 2"),
+        [ResolveErrorKind::Redefined]
+    );
 }
