@@ -17,6 +17,8 @@
 //!   operator, a value, and the header of a headered block. A sequence over
 //!   an object that has bare values starts at the first bare value.
 //! - A sequence over a headered block gives the header and then the block.
+//!   A sequence over a scalar gives the scalar as its only element, as
+//!   `TextDeserializer::from_utf8_reader` does.
 //! - An empty block is not a value when it is the first entry of a
 //!   container, or when it is in an object.
 //!
@@ -467,6 +469,8 @@ pub(crate) enum Elems<D: Doc> {
     Flatten(Flatten<D>),
     /// A header and its block.
     Pair(std::array::IntoIter<Val<D>, 2>),
+    /// A scalar that a caller reads as a sequence. It is the only element.
+    One(Option<Val<D>>),
 }
 
 impl<D: Doc> Elems<D> {
@@ -483,6 +487,7 @@ impl<D: Doc> Elems<D> {
             Elems::Scalars(x) => Some(x.size_hint().0),
             Elems::Flatten(x) => x.size_hint(),
             Elems::Pair(x) => Some(x.len()),
+            Elems::One(x) => Some(usize::from(x.is_some())),
         }
     }
 }
@@ -495,6 +500,7 @@ impl<D: Doc> Iterator for Elems<D> {
             Elems::Scalars(x) => x.next().map(Val::Node),
             Elems::Flatten(x) => x.next(),
             Elems::Pair(x) => x.next(),
+            Elems::One(x) => x.take(),
         }
     }
 }
@@ -854,10 +860,19 @@ impl<'de, D: DocDe<'de>> de::Deserializer<'de> for ValueDe<D> {
     }
 
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
-        match self.elems() {
-            Some(elems) => visitor.visit_seq(SeqDe::new(self.doc, elems)),
-            None => self.deserialize_any(visitor),
+        if let Some(elems) = self.elems() {
+            return visitor.visit_seq(SeqDe::new(self.doc, elems));
         }
+        // `TextDeserializer::from_utf8_reader` gives a scalar as a sequence
+        // that starts with the scalar. Thus a visitor can accept both
+        // `rgb { 1 2 3 }` and the name of a different color.
+        if let Val::Node(node) = &self.val
+            && matches!(self.doc.view(*node), View::Scalar(_))
+        {
+            let elems = Elems::One(Some(self.val.clone()));
+            return visitor.visit_seq(SeqDe::new(self.doc, elems));
+        }
+        self.deserialize_any(visitor)
     }
 
     fn deserialize_tuple<V: Visitor<'de>>(

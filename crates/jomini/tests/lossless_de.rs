@@ -367,6 +367,50 @@ fn headered_value_as_seq() {
     assert_eq!(file.color, (String::from("rgb"), vec![1, 2, 3]));
 }
 
+/// EU5 `named_colors/02_map.txt` has a color or the name of a different
+/// color in the same position. `TextDeserializer::from_utf8_reader` gives a
+/// scalar as a sequence of one element, so a visitor can accept both forms.
+#[test]
+fn scalar_as_seq() {
+    #[derive(Debug, PartialEq)]
+    enum Color {
+        Rgb(Vec<u8>),
+        Alias(String),
+    }
+
+    impl<'de> Deserialize<'de> for Color {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct ColorVisitor;
+            impl<'de> de::Visitor<'de> for ColorVisitor {
+                type Value = Color;
+                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    f.write_str("a color or a color name")
+                }
+                fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Color, A::Error> {
+                    let head: String = seq.next_element()?.unwrap();
+                    if head != "rgb" {
+                        return Ok(Color::Alias(head));
+                    }
+                    Ok(Color::Rgb(seq.next_element()?.unwrap()))
+                }
+            }
+            deserializer.deserialize_seq(ColorVisitor)
+        }
+    }
+
+    let data = b"colors = { map_tunis = rgb { 1 2 3 } governor = map_tunis }";
+    let reader: HashMap<String, HashMap<String, Color>> =
+        TextDeserializer::from_utf8_reader(jomini::text::TokenReader::new(&data[..]))
+            .deserialize()
+            .unwrap();
+    let tree: HashMap<String, HashMap<String, Color>> = from_utf8_slice(data).unwrap();
+    assert_eq!(tree, reader);
+    assert_eq!(tree["colors"]["governor"], Color::Alias(String::from("map_tunis")));
+
+    let tags = Vec::<String>::deserialize(&Value::unquoted("FRA")).unwrap();
+    assert_eq!(tags, vec![String::from("FRA")]);
+}
+
 #[test]
 fn borrow_from_the_source() {
     #[derive(Deserialize)]
