@@ -405,7 +405,10 @@ fn scalar_as_seq() {
             .unwrap();
     let tree: HashMap<String, HashMap<String, Color>> = from_utf8_slice(data).unwrap();
     assert_eq!(tree, reader);
-    assert_eq!(tree["colors"]["governor"], Color::Alias(String::from("map_tunis")));
+    assert_eq!(
+        tree["colors"]["governor"],
+        Color::Alias(String::from("map_tunis"))
+    );
 
     let tags = Vec::<String>::deserialize(&Value::unquoted("FRA")).unwrap();
     assert_eq!(tags, vec![String::from("FRA")]);
@@ -904,4 +907,25 @@ fn key_errors_tell_the_key() {
     let error = from_utf8_slice::<File>(b"m = {\n  foo = 1\n  bar = 2\n}").unwrap_err();
     assert_eq!(error.path(), "m.bar");
     assert_eq!(error.line_col().unwrap().to_string(), "3:3");
+}
+
+#[test]
+fn reader_directives_are_not_entries() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct File {
+        x: String,
+        b: u32,
+        list: Vec<u32>,
+    }
+
+    let source = b"@:define m = { a = 1 }\n@:insert m\nx = @:load_variable v\nb = 2\nlist = { 1 @:assert 2 }";
+    let file: File = from_utf8_slice(source).unwrap();
+    assert_eq!(
+        file,
+        File {
+            x: String::from("@:load_variable v"),
+            b: 2,
+            list: vec![1, 2],
+        }
+    );
 }

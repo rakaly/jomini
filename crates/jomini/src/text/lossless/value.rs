@@ -4,7 +4,9 @@
 //! It keeps the data that a serde data model does not: quotes, operators,
 //! headers, duplicate keys, the order of the items, and containers that
 //! have both fields and bare values. It owns its data (`Value: 'static`),
-//! so it can live longer than the source.
+//! so it can live longer than the source. It does not keep a CK3 reader
+//! directive (`@:insert name`), except in the value of a field, where the
+//! directive is its text.
 //!
 //! You can make a value in two ways:
 //!

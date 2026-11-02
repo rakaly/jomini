@@ -51,6 +51,9 @@
 //! - A sequence over a headered block (`rgb { 1 2 3 }`) gives the header and
 //!   then the block.
 //! - A field with no operator (`key { ... }`) is a field.
+//! - A CK3 reader directive (`@:insert name`) is not an entry. In the value
+//!   of a field, as in `x = @:load_variable name`, it is the text of the
+//!   directive. The deserializer does not expand a directive.
 //!
 //! # Syntax errors
 //!
