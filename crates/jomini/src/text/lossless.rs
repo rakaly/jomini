@@ -1,7 +1,7 @@
 //! **Experimental** lossless syntax tree for the Clausewitz text format.
 //!
-//! This tree is the base for tooling: formatting, linting, highlighting, and
-//! transformations. Later, it will also be the base for deserialization. Unlike
+//! This tree is the base for tooling (formatting, linting, highlighting, and
+//! transformations) and for deserialization (see [`de`]). Unlike
 //! [`TextTape`], which discards trivia and the `=` operator, this tree keeps
 //! **every byte** of the source: comments, whitespace, the `=`, and bytes that
 //! match no rule. The defining invariant is:
