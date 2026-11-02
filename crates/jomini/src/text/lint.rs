@@ -267,8 +267,14 @@ impl Schema {
         Schema::default()
     }
 
-    /// Each top-level key of a file in a directory named `dir` defines an
-    /// entity of kind `kind`, as in `define_dir("buildings", "building")`.
+    /// Each top-level key of a file in the directory `dir` defines an entity
+    /// of kind `kind`, as in `define_dir("common/buildings", "building")`.
+    ///
+    /// The path of the file must contain all the components of `dir` in
+    /// sequence. Use more than one component when the games use a
+    /// directory name two times: CK3 has `common/buildings` and
+    /// `common/domiciles/buildings`, and `define_dir("buildings", ..)`
+    /// matches the two.
     pub fn define_dir(&mut self, dir: &str, kind: &str) -> &mut Self {
         self.definition_dirs
             .insert(dir.to_string(), kind.to_string());
@@ -283,8 +289,9 @@ impl Schema {
         self
     }
 
-    /// Each `@name` definition of a file in a directory named `dir` applies
-    /// to all the files, as in `variable_dir("reader_export")` for CK3.
+    /// Each `@name` definition of a file in the directory `dir` applies to
+    /// all the files, as in `variable_dir("reader_export")` for CK3. The
+    /// directory matches as in [`define_dir`](Schema::define_dir).
     ///
     /// A `@name` that a file does not define itself must have a definition
     /// in such a directory, or the linter gives an undefined-reference
@@ -296,18 +303,30 @@ impl Schema {
     }
 
     fn is_variable_file(&self, path: &Path) -> bool {
-        path.components()
-            .filter_map(|c| c.as_os_str().to_str())
-            .any(|c| self.variable_dirs.iter().any(|dir| dir == c))
+        self.variable_dirs.iter().any(|dir| in_dir(path, dir))
     }
 
-    /// The kind that a file at `path` defines, if any directory component of
-    /// the path is a known definition directory.
+    /// The kind that a file at `path` defines, if the path is in a known
+    /// definition directory. When more than one directory matches, the
+    /// longest directory wins.
     fn definition_kind(&self, path: &Path) -> Option<&Kind> {
-        path.components()
-            .filter_map(|c| c.as_os_str().to_str())
-            .find_map(|c| self.definition_dirs.get(c))
+        self.definition_dirs
+            .iter()
+            .filter(|(dir, _)| in_dir(path, dir))
+            .max_by_key(|(dir, _)| (Path::new(dir).components().count(), dir.as_str()))
+            .map(|(_, kind)| kind)
     }
+}
+
+/// `true` when the directory components of `path` contain all the
+/// components of `dir` in sequence.
+fn in_dir(path: &Path, dir: &str) -> bool {
+    let dir: Vec<_> = Path::new(dir).components().collect();
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let parent: Vec<_> = parent.components().collect();
+    !dir.is_empty() && parent.windows(dir.len()).any(|w| w == dir.as_slice())
 }
 
 /// A definition in a file: its kind, its name, and the range of its key.
@@ -1443,6 +1462,51 @@ mod tests {
                 .any(|d| d.id == lints::DUPLICATE && d.message.contains("fortress")),
             "fortress is defined twice in the mod layer"
         );
+    }
+
+    #[test]
+    fn definition_dir_with_more_than_one_component() {
+        let mut fs = Fileset::new();
+        let buildings = fs.add(
+            "/games/ck3/game/common/buildings/00_buildings.txt",
+            FileKind::Vanilla,
+            b"barracks_01 = {}".to_vec(),
+        );
+        let domicile = fs.add(
+            "/games/ck3/game/common/domiciles/buildings/00_estate_buildings.txt",
+            FileKind::Vanilla,
+            b"barracks_01 = {}".to_vec(),
+        );
+        let mut schema = Schema::new();
+        schema
+            .define_dir("common/buildings", "building")
+            .define_dir("domiciles/buildings", "domicile_building");
+        let analysis = Linter::new(schema).analyze(&fs);
+        assert!(
+            analysis.diagnostics().is_empty(),
+            "{:?}",
+            analysis.diagnostics()
+        );
+        let kinds = |file| analysis.summary(file).unwrap().defs[0].kind.clone();
+        assert_eq!(kinds(buildings), "building");
+        assert_eq!(kinds(domicile), "domicile_building");
+
+        // One component matches the two directories.
+        let mut schema = Schema::new();
+        schema.define_dir("buildings", "building");
+        let analysis = Linter::new(schema).analyze(&fs);
+        assert_eq!(analysis.diagnostics()[0].id, lints::DUPLICATE);
+
+        // A file name is not a directory.
+        assert!(!in_dir(Path::new("common/buildings"), "buildings"));
+        assert!(in_dir(
+            Path::new("common/buildings/a.txt"),
+            "common/buildings"
+        ));
+        assert!(!in_dir(
+            Path::new("common/buildings/a.txt"),
+            "mon/buildings"
+        ));
     }
 
     #[test]
