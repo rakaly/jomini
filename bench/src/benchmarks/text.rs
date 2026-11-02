@@ -20,7 +20,7 @@ pub(crate) fn tape_parse(data: &[u8]) -> usize {
 
 #[inline(never)]
 pub(crate) fn lossless_tape_parse(data: &[u8]) -> usize {
-    let tape = jomini::text::lossless::parse_tape(data);
+    let tape = jomini::text::lossless::parse_tape(data).unwrap();
     black_box(tape.tokens().len())
 }
 

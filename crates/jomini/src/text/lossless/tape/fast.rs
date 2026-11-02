@@ -9,7 +9,7 @@ use fearless_simd::Simd;
 use super::super::{
     BOM, CLASS, CLASS_BANG, CLASS_CLOSE_BRACE, CLASS_CLOSE_BRACKET, CLASS_COMMENT,
     CLASS_OPEN_BRACE, CLASS_OPEN_BRACKET, CLASS_OPERATOR, CLASS_QUOTE, MAX_DEPTH, find_line_end,
-    is_ws, scan_quoted, scan_unquoted, skip_whitespace, strip_quotes,
+    is_ws, quote_is_closed, scan_quoted, scan_unquoted, skip_whitespace, strip_quotes,
 };
 
 /// The state between two root items. The full grammar can continue from this
@@ -157,6 +157,11 @@ impl<'a, S: Simd> Parser<'a, S> {
                 start + 1,
                 self.flavor.newline_terminated_strings,
             );
+            if self.pos == self.source.len() && !quote_is_closed(&self.source[start..]) {
+                // A quote that is not closed is a syntax error, and the
+                // grammar records it.
+                return None;
+            }
             return Some(Leaf::Quoted(Scalar::new(strip_quotes(
                 &self.source[start..self.pos],
             ))));
@@ -295,10 +300,16 @@ impl<'a, S: Simd> Parser<'a, S> {
                 if self.stack.is_empty() {
                     return Some(());
                 }
-                self.close(&mut current);
-                continue;
+                // A block is not closed. That is a syntax error, and the
+                // grammar records it.
+                return None;
             };
             if b == b'}' {
+                if self.stack.is_empty() {
+                    // A `}` that closes no block is a syntax error, and the
+                    // grammar records it.
+                    return None;
+                }
                 self.pos += 1;
                 self.close(&mut current);
                 if self.stack.is_empty() {
@@ -344,6 +355,10 @@ impl<'a, S: Simd> Parser<'a, S> {
             }
             let start = self.pos;
             let Some(key) = self.scalar(b, true) else {
+                if b == b'"' {
+                    // The quote is not closed.
+                    return None;
+                }
                 self.pos = start;
                 self.stray_operator(&mut current)?;
                 next = self.trivia();

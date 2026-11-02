@@ -35,21 +35,26 @@
 
 mod fast;
 
-use super::{Flavor, Sink, SyntaxKind, Token, operator, run_items, strip_quotes};
+use super::{Flavor, Sink, SyntaxError, SyntaxKind, Token, operator, run_items, strip_quotes};
 use crate::{Scalar, TextTape, TextToken, text::Operator};
 
 /// Parse `source` with the lossless grammar into a [`TextTape`].
 ///
 /// The result has the same layout as [`TextTape::from_slice`], so the
 /// [`ObjectReader`](crate::text::ObjectReader) and the deserializer can read
-/// it. This parse does not fail: it recovers from syntax errors in the same
-/// way as [`parse`](super::parse). Use [`parse`](super::parse) to get the
-/// diagnostics.
+/// it.
+///
+/// # Errors
+///
+/// If `source` has a syntax error, the result is the first error that
+/// [`parse`](super::parse) finds. To read a file that has errors, use
+/// [`parse`](super::parse): it recovers from the errors and gives all of
+/// them.
 ///
 /// ```
-/// use jomini::text::lossless::parse_tape;
+/// use jomini::text::lossless::{parse_tape, SyntaxErrorKind};
 ///
-/// let tape = parse_tape(b"name = Jean core = { FRA BUR }");
+/// let tape = parse_tape(b"name = Jean core = { FRA BUR }")?;
 /// let reader = tape.windows1252_reader();
 /// let mut fields = reader.fields();
 /// let (key, _op, value) = fields.next().unwrap();
@@ -57,23 +62,38 @@ use crate::{Scalar, TextTape, TextToken, text::Operator};
 /// assert_eq!(value.read_str().unwrap(), "Jean");
 /// let (_key, _op, value) = fields.next().unwrap();
 /// assert_eq!(value.read_array().unwrap().len(), 2);
+///
+/// let error = parse_tape(b"core = { FRA BUR").unwrap_err();
+/// assert_eq!(error.kind, SyntaxErrorKind::UnclosedBlock);
+/// # Ok::<(), jomini::text::lossless::SyntaxError>(())
 /// ```
 ///
 /// # Panics
 ///
 /// Panics if `source` is 4 GiB or larger, because the offsets are `u32`.
-#[must_use]
-pub fn parse_tape(source: &[u8]) -> TextTape<'_> {
+pub fn parse_tape(source: &[u8]) -> Result<TextTape<'_>, SyntaxError> {
     parse_tape_with(source, Flavor::default())
 }
 
 /// Parse `source` into a [`TextTape`] with a specific [`Flavor`].
 ///
+/// # Errors
+///
+/// The first syntax error of `source`, as for [`parse_tape`].
+///
 /// # Panics
 ///
 /// Panics if `source` is 4 GiB or larger, because the offsets are `u32`.
-#[must_use]
-pub fn parse_tape_with(source: &[u8], flavor: Flavor) -> TextTape<'_> {
+pub fn parse_tape_with(source: &[u8], flavor: Flavor) -> Result<TextTape<'_>, SyntaxError> {
+    match recover_tape(source, flavor) {
+        (tape, false) => Ok(tape),
+        (_, true) => Err(first_error(source, flavor)),
+    }
+}
+
+/// Parse `source` into a [`TextTape`] and recover from syntax errors. The
+/// flag tells if `source` has an error.
+pub(crate) fn recover_tape(source: &[u8], flavor: Flavor) -> (TextTape<'_>, bool) {
     assert!(
         u32::try_from(source.len()).is_ok(),
         "source is larger than 4 GiB"
@@ -83,7 +103,7 @@ pub fn parse_tape_with(source: &[u8], flavor: Flavor) -> TextTape<'_> {
     let level = fearless_simd::Level::new();
     let fast = fearless_simd::dispatch!(level, simd => fast::parse(simd, source, flavor, tape));
     let (mut tape, at) = match fast {
-        Ok(tape) => return TextTape::from_parts(tape, bom),
+        Ok(tape) => return (TextTape::from_parts(tape, bom), false),
         Err(stop) => stop,
     };
     // The fast path stopped. Keep the tape of the root items before the
@@ -91,7 +111,20 @@ pub fn parse_tape_with(source: &[u8], flavor: Flavor) -> TextTape<'_> {
     tape.truncate(at.len);
     let sink = TapeSink::resume(source, tape, at);
     let p = run_items(source, flavor, at.pos, sink);
-    TextTape::from_parts(p.sink.tape, bom)
+    let has_error = p.sink.has_error || p.lexer.unclosed_quote.is_some();
+    (TextTape::from_parts(p.sink.tape, bom), has_error)
+}
+
+/// Parse `source` again with the full tree to get its first syntax error.
+/// The tape sink keeps no tokens, so it knows only that an error occurred.
+#[cold]
+#[inline(never)]
+fn first_error(source: &[u8], flavor: Flavor) -> SyntaxError {
+    let parse = super::parse_with(source, flavor);
+    let first = parse.errors().iter().min_by_key(|e| e.range.start());
+    first
+        .cloned()
+        .expect("the tape parse and the tree parse find the same errors")
 }
 
 /// A scalar for the tape.
@@ -228,6 +261,8 @@ struct TapeSink<'a> {
     frames: Vec<Frame<'a>>,
     /// The number of open nodes inside the top opaque frame.
     skip: u32,
+    /// The parser found a syntax error.
+    has_error: bool,
 }
 
 impl<'a> TapeSink<'a> {
@@ -237,6 +272,7 @@ impl<'a> TapeSink<'a> {
             tape,
             frames: Vec::with_capacity(16),
             skip: 0,
+            has_error: false,
         }
     }
 
@@ -717,7 +753,9 @@ impl Sink for TapeSink<'_> {
     }
 
     #[inline]
-    fn error(&mut self) {}
+    fn error(&mut self) {
+        self.has_error = true;
+    }
 
     #[inline]
     fn brace(&mut self, token: Token) {
@@ -847,7 +885,11 @@ mod tests {
 
     fn matches_grammar(source: &[u8], flavor: Flavor) -> bool {
         let expected = run(source, flavor, TapeSink::new(source, Vec::new()));
-        parse_tape_with(source, flavor).tokens() == expected.sink.tape
+        let (tape, has_error) = recover_tape(source, flavor);
+        // The tape finds an error exactly when the tree finds one.
+        has_error == !super::super::parse_with(source, flavor).errors().is_empty()
+            && parse_tape_with(source, flavor).is_ok() != has_error
+            && tape.tokens() == expected.sink.tape
             && fast::parse(fearless_simd::Fallback::new(), source, flavor, Vec::new())
                 .ok()
                 .is_none_or(|tape| tape == expected.sink.tape)
@@ -962,7 +1004,7 @@ mod tests {
     #[track_caller]
     fn same(data: &[u8]) {
         let expected = TextTape::from_slice(data).unwrap();
-        let actual = parse_tape(data);
+        let (actual, _) = recover_tape(data, Flavor::default());
         assert_eq!(
             actual.tokens(),
             expected.tokens(),
@@ -1083,7 +1125,7 @@ mod tests {
         same(b"a = b } c = d");
 
         // An operator as a value is a scalar.
-        let tape = parse_tape(b"OPERATOR = <=");
+        let (tape, _) = recover_tape(b"OPERATOR = <=", Flavor::default());
         assert_eq!(
             tape.tokens(),
             &[
@@ -1093,7 +1135,7 @@ mod tests {
         );
 
         // A field with no value is ignored.
-        let tape = parse_tape(b"a = } b = c");
+        let (tape, _) = recover_tape(b"a = } b = c", Flavor::default());
         assert_eq!(
             tape.tokens(),
             &[
@@ -1103,7 +1145,7 @@ mod tests {
         );
 
         // Each unclosed block closes at EOF.
-        let tape = parse_tape(b"a = { b = { c = d");
+        let (tape, _) = recover_tape(b"a = { b = { c = d", Flavor::default());
         assert_eq!(
             tape.tokens(),
             &[
@@ -1127,7 +1169,10 @@ mod tests {
 
     #[test]
     fn opaque_nodes() {
-        let tape = parse_tape(b"a = [GetName] b = code [[ x = 1 ]] c = { 1 } } d");
+        let (tape, _) = recover_tape(
+            b"a = [GetName] b = code [[ x = 1 ]] c = { 1 } } d",
+            Flavor::default(),
+        );
         assert_eq!(
             tape.tokens(),
             &[

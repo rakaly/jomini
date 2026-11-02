@@ -162,6 +162,8 @@ use std::sync::OnceLock;
 mod line_index;
 mod tape;
 pub use line_index::{LineCol, LineIndex};
+#[cfg(all(jomini_lossless_tape, feature = "lossless"))]
+pub(crate) use tape::recover_tape;
 pub use tape::{parse_tape, parse_tape_with};
 
 /// The kind of every node (interior) and token (leaf) in a [`SyntaxTree`].
@@ -2533,7 +2535,8 @@ trait Sink {
     fn token(&mut self, token: Token);
     /// Close the most recently opened node.
     fn finish_node(&mut self);
-    /// Record that the open node contains a diagnostic.
+    /// Record that the open node contains a diagnostic. The parser also calls
+    /// it when [`Sink::KEEP_TOKENS`] is `false`.
     fn error(&mut self);
 
     /// Add a field node whose key, operator, and value are single tokens. A
@@ -2865,6 +2868,7 @@ impl<'t, S: Sink> Parser<'t, S> {
     ) {
         self.push_missing(missing);
         if !S::KEEP_TOKENS {
+            self.sink.error();
             return;
         }
         let at = self.source.len() as u32;
@@ -2932,11 +2936,13 @@ impl<'t, S: Sink> Parser<'t, S> {
     /// Record a diagnostic that starts at the emitted token `index`. Call it
     /// while the nodes that hold the token are still open.
     fn error_at(&mut self, index: usize, kind: SyntaxErrorKind) {
+        // A sink that keeps no tokens still learns that the input has an
+        // error, so that it can report the error after the parse.
+        self.sink.error();
         if !S::KEEP_TOKENS {
             return;
         }
         self.tok_mut(index).flags |= TOKEN_ERROR;
-        self.sink.error();
         self.errors.push(SyntaxError {
             kind,
             range: self.tok(index).range(),
@@ -3613,6 +3619,10 @@ impl<'t, S: Sink> Parser<'t, S> {
         }
         if !at_eof && !interior.missing_parens.is_empty() {
             self.recovery_barrier += 1;
+        }
+        if at_eof && !interior.overflowed && !interior.missing_parens.is_empty() && !S::KEEP_TOKENS
+        {
+            self.sink.error();
         }
         if at_eof && !interior.overflowed && S::KEEP_TOKENS {
             for paren_open in interior.missing_parens {
@@ -6928,7 +6938,10 @@ mod tests {
         // A `?` that no `=` follows stays in the scalar, as in HoI4 `cost = a?50`.
         let tree = parse_with(b"cost = a?50", Flavor::hoi4());
         let field = tree.ast().fields().next().unwrap();
-        assert_eq!(field.value().unwrap().as_scalar().unwrap().as_bytes(), b"a?50");
+        assert_eq!(
+            field.value().unwrap().as_scalar().unwrap().as_bytes(),
+            b"a?50"
+        );
     }
 
     #[test]

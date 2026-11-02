@@ -118,9 +118,18 @@ fuzz_target!(|data: &[u8]| {
     check_flavor(data, lossless::Flavor::default());
     check_flavor(data, lossless::Flavor::hoi4());
 
-    // The lossless parser does not have to write the same tape as `TextTape`
-    // for malformed input, but the tape must always be valid.
-    let tape = lossless::parse_tape(data);
+    // The tape parse fails exactly when the tree has a syntax error. When it
+    // succeeds, the tape must be valid.
+    let tape = match lossless::parse_tape(data) {
+        Ok(tape) => {
+            assert!(lossless::parse(data).errors().is_empty());
+            tape
+        }
+        Err(error) => {
+            assert!(lossless::parse(data).errors().contains(&error));
+            return;
+        }
+    };
     let tokens = tape.tokens();
     for (i, token) in tokens.iter().enumerate() {
         match token {

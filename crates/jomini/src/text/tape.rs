@@ -135,7 +135,10 @@ impl TextTapeParser {
         // RUSTFLAGS="--cfg jomini_lossless_tape" cargo test -p jomini --features lossless
         #[cfg(all(jomini_lossless_tape, feature = "lossless"))]
         {
-            *tape = crate::text::lossless::parse_tape(data);
+            // `TextTape` recovers from some syntax errors, so use the tape
+            // that recovers.
+            let flavor = crate::text::lossless::Flavor::default();
+            *tape = crate::text::lossless::recover_tape(data, flavor).0;
             return Ok(());
         }
 
