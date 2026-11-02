@@ -1,13 +1,12 @@
-//! `jomini-lsp` — a Language Server Protocol server for Clausewitz (Paradox) game
-//! files, built on jomini's lossless syntax tree and cross-file lint layer.
+//! `jomini-lsp` is a language server for the script files of Paradox games.
+//! It checks a mod and its base game together with
+//! [`jomini::text::lint`], and gives the editor the diagnostics, quick fixes,
+//! go to definition, find references, symbols, and formatting.
 //!
-//! A synchronous server on rust-analyzer's [`lsp_server`] stack. The first cut
-//! serves: publish-diagnostics, document formatting, go-to-definition,
-//! find-references, document & workspace symbols, and quick-fix code actions —
-//! all reading off a single retained [`jomini::text::lint::Analysis`].
-//!
-//! [`serve`] runs the protocol against any [`Connection`] (stdio in the binary, an
-//! in-memory pair in tests), so the whole server is driveable without a subprocess.
+//! [`serve`] runs the server on a [`Connection`]. The binary uses stdin and
+//! stdout, and the tests use a connection in memory, so a test does not start
+//! a process. The server runs on one thread, on the [`lsp_server`] crate of
+//! rust-analyzer.
 //!
 //! # Examples
 //!

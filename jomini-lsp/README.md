@@ -1,112 +1,107 @@
 # jomini-lsp
 
-A [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
-server for Clausewitz (Paradox) game files — EU4 / CK3 / HOI4 / Vic3 / Imperator
-and friends — built on jomini's **lossless** text syntax tree (`jomini::text::lossless`)
-and its **cross-file lint layer** (`jomini::text::lint`).
+`jomini-lsp` is a language server for the script files of Paradox games
+(EU4, EU5, CK3, HOI4, Vic3, Imperator). An editor starts the server and sends
+it the files that you edit. The server sends back errors, quick fixes, and the
+locations of definitions.
 
-This is the editor-facing payoff of the lossless tree: a single retained
-[`Analysis`](../src/text/lint.rs) answers every query, and because the tree
-preserves every byte, the quick-fixes it produces are byte-faithful.
+The server checks a mod and its base game together. Thus it finds an error
+that is in the relation between two files, for example a reference to a
+building that no file defines:
 
-It is a synchronous server on rust-analyzer's own stack
-([`lsp-server`](https://crates.io/crates/lsp-server) + `lsp-types`), kept in its
-**own workspace** (like `bench/`) so its transport dependencies never touch the
-published `jomini` crate's graph.
-
-## Features (first cut)
-
-| LSP request | Backed by |
-|---|---|
-| `textDocument/publishDiagnostics` | `Linter::analyze` — undefined references, overrides, duplicates, syntax errors, suppressed-in-error-subtree |
-| `textDocument/formatting` | `lossless::format` (whole-document; honors `tabSize`/`insertSpaces`) |
-| `textDocument/definition` | `Analysis::definition_for` — resolves a reference to the *winning* definition, across files & load-order layers |
-| `textDocument/references` | `Analysis::references_to` — every use site of the name under the cursor |
-| `textDocument/documentSymbol` | per-file `FileSummary.defs` |
-| `workspace/symbol` | `Index::definitions` (winning defs, fuzzy-matched by query) |
-| `textDocument/codeAction` | each `Diagnostic.fix` → a `QuickFix` `TextEdit` (e.g. the "did you mean `barracks`?" rename) |
-
-Cross-file is the point: an `add_building = baracks` typo is flagged in the file
-it appears in, even though its (missing) definition would live in another file —
-something a per-file checker fundamentally cannot do.
-
-## Build & run
-
-```sh
-# from this directory (it is a standalone workspace)
-cargo build --release
-# the server speaks LSP over stdio:
-./target/release/jomini-lsp
+```text
+error[undefined-reference]: no building named `baracks` is defined in any loaded file
+  --> events/mod_events.txt:4:18
+   = help: did you mean `barracks`?
 ```
 
-### Wiring into an editor
+The server uses the lossless parser (`jomini::text::lossless`), which keeps
+every byte of a file. A quick fix changes only the bytes of the error. The
+comments and the layout of the file do not change.
 
-The server talks stdio and advertises its capabilities on `initialize`. Point any
-generic LSP client at the binary for the `clausewitz` / plaintext file type.
+> **Experimental.** The rules of the server know only buildings
+> (`common/buildings`, `add_building`, `has_building`, ...). The rules for
+> each game are future work.
 
-**Neovim** (`nvim-lspconfig`-style, using a custom config):
+## Features
+
+| Editor feature | What it does |
+|---|---|
+| Diagnostics | Syntax errors, undefined references, duplicate definitions, and mod overrides, for all the loaded files |
+| Quick fix | Applies the "did you mean" name, or inserts a missing `}` |
+| Go to definition | Goes to the definition that wins in the load order, also in a different file |
+| Find references | Finds each use of the name under the cursor, in all the files |
+| Document symbols | Lists the definitions of the file |
+| Workspace symbols | Finds a definition by a part of its name (not case sensitive) |
+| Format document | Formats the whole file with the indent of the editor |
+
+## Build and run
+
+The server has its own Cargo workspace, like `bench/`. Thus its dependencies
+are not in the dependency graph of `jomini`.
+
+```sh
+cd jomini-lsp
+cargo build --release
+./target/release/jomini-lsp   # speaks LSP on stdin and stdout
+```
+
+### Neovim
 
 ```lua
 vim.lsp.start({
   name = 'jomini-lsp',
   cmd = { '/path/to/jomini-lsp' },
-  root_dir = vim.fs.dirname(vim.fs.find({ 'descriptor.mod', '.git' }, { upward = true })[1]),
-  init_options = { vanilla = '/path/to/game/install/game' }, -- optional vanilla base
+  root_dir = vim.fs.root(0, { 'descriptor.mod', '.git' }),
+  init_options = { vanilla = '/path/to/game' },
 })
 ```
 
-**VS Code**: a thin extension that launches the binary as a stdio server
-(`vscode-languageclient`, `TransportKind.stdio`). (No extension is bundled yet.)
+### VS Code
 
-### Configuration
+There is no extension yet. A small extension that starts the binary with
+`vscode-languageclient` and `TransportKind.stdio` works.
 
-`initializationOptions`:
+### Settings
 
-| key | meaning |
+Send these in `initializationOptions`:
+
+| Key | Value |
 |---|---|
-| `vanilla` | filesystem path to a base-game directory, loaded as the `Vanilla` layer beneath the workspace (which loads as `Mod(0)`). Mod definitions then override vanilla, matching Paradox load order. |
+| `vanilla` | The absolute path of the `game` directory of the base game. The server loads it below the workspace, so a mod definition overrides a base game definition. |
 
-Position encoding is negotiated: UTF-8 when the client offers it, else UTF-16.
+The server loads each workspace folder as one mod.
 
-## Architecture
+## How it works
 
-```
-main.rs    stdio transport → jomini_lsp::serve
-lib.rs     serve(): initialize handshake (+ encoding negotiation) and the dispatch loop
-server.rs  Server state (Fileset overlay + retained Analysis) and one handler per feature
-line_index byte offset ↔ LSP Position (UTF-16/UTF-8); the one mapping the tree leaves to us
-convert    jomini lint types → lsp_types
-```
+The server keeps all the files in memory, and the editor text replaces the
+disk text of each open file. After each change, the server parses again only
+the changed file. Then it resolves the references of all the files again,
+because one change can change a definition in a different file. When
+changes arrive faster than the server can analyze them, the server analyzes
+one time for all of them.
 
-The server keeps one `Fileset` (whose bytes double as the open-document overlay)
-and one `Analysis`. Every edit re-runs `Linter::analyze` from scratch and
-republishes — correct and simple. The library additions that make this possible
-(`Analysis`, the reverse reference index, offset hit-testing, `Fileset::set_source`/
-`id_for_path`) live in `jomini::text::lint`, the rust-analyzer-style split of
-reusable analysis (`ide-db`) from the LSP shell.
+| File | Job |
+|---|---|
+| `main.rs` | Connects the server to stdin and stdout |
+| `lib.rs` | The `initialize` handshake and the message loop |
+| `server.rs` | The state of the server and one handler for each request |
+| `line_index.rs` | Converts byte offsets to LSP positions (UTF-16 or UTF-8 columns) |
+| `convert.rs` | Converts lint types to LSP types |
 
-## Known limitations / next steps
+## Limits
 
-- **Prototype schema.** The rule set (what defines/references a "building") is the
-  hand-written demo from `examples/lint.rs`, hardcoded in `server.rs`. A real
-  per-game schema (or a `.cwt`-config front end feeding the same `Index`) is the
-  follow-up.
-- **Full re-analysis per edit.** A one-file edit can flip override winners
-  project-wide, so the first cut re-summarizes everything on each change.
-  Incremental reparse + incremental re-summarize is the planned optimization.
-- **Whole-document formatting only** (no range/on-type formatting).
-- **Encoding.** Positions assume UTF-8 document bytes (what the client sends).
-  Windows-1252 files on disk are ASCII-exact but not yet fully encoding-aware — the
-  same follow-up the lint layer notes.
-- **Not yet implemented:** hover, completion, semantic-token highlighting, rename
-  (the `Index` + `Repair` infra make these the natural next features).
+- The rules know only buildings, and they are in `server.rs`.
+- The server reads the disk only at start and when you close a file. It does
+  not see a file that a different program adds, changes, or deletes.
+- A Windows-1252 file on disk has correct columns only for ASCII text.
+- There is no hover, completion, rename, or semantic highlighting.
 
-## Testing
+## Tests
 
 ```sh
-cargo test   # line_index unit tests + an in-process end-to-end smoke test
+cargo test
 ```
 
-`tests/smoke.rs` drives the real `serve` loop over an in-memory `Connection`
-against `../crates/jomini/examples/mod-demo`, exercising diagnostics, symbols, go-to-definition,
-find-references, code actions, and formatting without a subprocess.
+`tests/smoke.rs` runs the server in the same process on the project in
+`../crates/jomini/examples/mod-demo`, and tests each feature.
