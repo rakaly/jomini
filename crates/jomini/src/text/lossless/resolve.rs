@@ -228,9 +228,10 @@ pub struct Resolution {
     pub(crate) nodes: HashMap<u32, Box<[u8]>>,
     variables: Variables,
     errors: Vec<ResolveError>,
-    /// The size of the tree, to find a resolution of a different tree.
+    /// The number of bytes, tokens, and nodes of the tree, to find a
+    /// resolution of a different tree.
     #[cfg_attr(not(feature = "serde"), allow(dead_code))]
-    pub(crate) shape: (usize, usize),
+    pub(crate) shape: (usize, usize, usize),
 }
 
 impl Resolution {
@@ -282,7 +283,7 @@ pub fn resolve(tree: SyntaxTree<'_, '_>, scope: &dyn Scope) -> Resolution {
         scope,
         failed: HashSet::new(),
         out: Resolution {
-            shape: (tokens.len(), nodes.len()),
+            shape: (tree.source.len(), tokens.len(), nodes.len()),
             ..Resolution::default()
         },
     };

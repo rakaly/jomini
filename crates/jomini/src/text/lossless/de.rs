@@ -249,7 +249,9 @@ impl<'t, 'a, E: Encoding> Deserializer<'t, 'a, E> {
     ///
     /// # Panics
     ///
-    /// The function panics when the resolution is of a different tree.
+    /// The function panics when the resolution is of a tree that has a
+    /// different number of bytes, tokens, or nodes. It does not compare the
+    /// bytes, so give the resolution of the same tree.
     pub fn with_resolution(mut self, resolution: Resolution) -> Deserializer<'t, 'a, E, true> {
         self.ctx.set_resolution(resolution);
         Deserializer {

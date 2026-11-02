@@ -49,7 +49,7 @@ impl<'c, 'a, E> TreeCtx<'c, 'a, E> {
     /// Set the resolution. It must be of this tree.
     pub(crate) fn set_resolution(&mut self, resolution: Resolution) {
         assert!(
-            resolution.shape == (self.tokens.len(), self.nodes.len()),
+            resolution.shape == (self.source.len(), self.tokens.len(), self.nodes.len()),
             "the resolution is of a different tree"
         );
         self.resolution = Some(Box::new(resolution));
