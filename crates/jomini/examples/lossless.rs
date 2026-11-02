@@ -1,7 +1,8 @@
 //! Examine a Clausewitz text file through the **lossless** syntax tree
 //! ([`jomini::text::lossless`]).
 //!
-//! The default mode colors the source by token kind. The leaves of the tree
+//! The default mode colors the source by token kind when stdout is a
+//! terminal. The leaves of the tree
 //! cover the source exactly, so with `--no-color` the output is the input.
 //! The other modes:
 //!
@@ -28,7 +29,7 @@
 use jomini::text::lossless::{
     Flavor, FormatOptions, LineIndex, SyntaxElement, SyntaxKind, parse_with,
 };
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 
 #[derive(PartialEq)]
 enum Mode {
@@ -42,7 +43,8 @@ fn main() {
     let mut path: Option<String> = None;
     let mut mode = Mode::Highlight;
     let mut trivia = true;
-    let mut color = true;
+    // Write ANSI colors only to a terminal, so that a pipe gets plain text.
+    let mut color = std::io::stdout().is_terminal();
     let mut flavor = Flavor::DEFAULT;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
