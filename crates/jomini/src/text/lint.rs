@@ -72,8 +72,8 @@
 #![allow(missing_docs)] // experimental surface; docs land as the API stabilizes
 
 use crate::text::lossless::{
-    self, Applicability, AstNode, Field, Flavor, LineCol, LineIndex, Repair, SyntaxKind,
-    SyntaxNode, TextRange, TextSize, Value,
+    self, Applicability, AstNode, DirectiveKind, Field, Flavor, LineCol, LineIndex,
+    ReaderDirective, Repair, SyntaxKind, SyntaxNode, TextRange, TextSize, Value,
     resolve::{ResolveErrorKind, resolve},
 };
 use smallvec::SmallVec;
@@ -425,6 +425,20 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
                 });
             }
         }
+        // The CK3 directive `@:register_variable name = value` also defines
+        // a variable.
+        for directive in tree.root().descendants().filter_map(ReaderDirective::cast) {
+            if directive.kind() == DirectiveKind::RegisterVariable
+                && !directive.syntax().has_error()
+                && let Some(name) = directive.argument()
+            {
+                defs.push(DefSite {
+                    kind: VARIABLE.to_string(),
+                    name: format!("@{}", decode(name.as_scalar())),
+                    range: name.text_range(),
+                });
+            }
+        }
     }
     let mut value_errors = Vec::new();
     for error in resolution.errors() {
@@ -436,11 +450,11 @@ pub fn summarize(fileset: &Fileset, schema: &Schema, file: FileId) -> FileSummar
             continue;
         }
         let text = &source[error.range.to_range()];
-        // A name in a calculation can omit the `@`.
-        let name = match text.strip_prefix(b"@") {
-            Some(_) => decode(crate::Scalar::new(text)),
-            None => format!("@{}", decode(crate::Scalar::new(text))),
-        };
+        // A name in a calculation or in `@:load_variable` has no `@`, and a
+        // `@@name` key has two. The index uses one.
+        let bare = text.strip_prefix(b"@").unwrap_or(text);
+        let bare = bare.strip_prefix(b"@").unwrap_or(bare);
+        let name = format!("@{}", decode(crate::Scalar::new(bare)));
         let in_error_subtree = tree
             .covering_element(error.range)
             .ancestors()
@@ -1913,6 +1927,49 @@ mod tests {
                 (lints::VARIABLE_VALUE, Severity::Error, &b"1 / 0"[..]),
                 (lints::VARIABLE_VALUE, Severity::Warning, b"@[min(1, 2)]"),
             ]
+        );
+    }
+
+    /// A CK3 `reader_export` file can define a variable with
+    /// `@:register_variable`, and a file can read it with
+    /// `@:load_variable` or a `@@name` key.
+    #[test]
+    fn reader_directive_variables() {
+        let mut fs = Fileset::new();
+        let shared = fs.add(
+            "common/reader_export/00_values.txt",
+            FileKind::Vanilla,
+            b"@:register_variable shared = 2\n".to_vec(),
+        );
+        let user = fs.add(
+            "common/great_projects/p.txt",
+            FileKind::Vanilla,
+            b"x = { a = @:load_variable shared @@shared = 1 b = @:load_variable sharde }\n"
+                .to_vec(),
+        );
+        let mut schema = Schema::new();
+        schema
+            .define_dir("great_projects", "great_project")
+            .variable_dir("reader_export");
+        let analysis = Linter::new(schema).analyze(&fs);
+
+        let diagnostics = analysis.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].file, user);
+        assert_eq!(&fs.source(user)[diagnostics[0].range.to_range()], b"sharde");
+        assert_eq!(
+            diagnostics[0].help.as_deref(),
+            Some("did you mean `@shared`?")
+        );
+
+        let source = fs.source(user);
+        let offset = source.windows(8).position(|w| w == b"@@shared").unwrap();
+        let definition = analysis
+            .definition_for(user, TextSize::try_from(offset).unwrap())
+            .unwrap();
+        assert_eq!(
+            (definition.file, definition.name.as_str()),
+            (shared, "@shared")
         );
     }
 }
