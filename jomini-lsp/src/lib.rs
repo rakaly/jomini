@@ -142,6 +142,9 @@ fn main_loop(connection: &Connection, server: &mut Server) -> Result<(), DynErro
             // The server sends no requests, so a response is not expected.
             Message::Response(_) => {}
         }
+        if connection.receiver.is_empty() {
+            server.flush();
+        }
     }
     Ok(())
 }

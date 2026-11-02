@@ -412,3 +412,61 @@ fn bare_exit_without_shutdown_terminates_the_server() {
         "bare exit terminates the loop with a non-Ok status"
     );
 }
+
+#[test]
+fn queued_changes_cause_one_analysis() {
+    let (mod_dir, vanilla_dir) = demo_paths();
+    let events = mod_dir.join("events/mod_events.txt");
+    let uri = file_uri(&events);
+    let text = std::fs::read_to_string(&events).unwrap();
+    let (server_conn, client_conn) = Connection::memory();
+    let mut client = Client {
+        conn: client_conn,
+        notifications: Vec::new(),
+        next_id: 1,
+    };
+
+    // Send all the messages before the server starts, as when a person types
+    // faster than the server analyzes.
+    let send = |message| client.conn.sender.send(message).unwrap();
+    send(Message::Request(Request {
+        id: RequestId::from(1),
+        method: "initialize".into(),
+        params: json!({
+            "rootUri": file_uri(&mod_dir),
+            "capabilities": {},
+            "initializationOptions": { "vanilla": vanilla_dir.to_str().unwrap() }
+        }),
+    }));
+    client.notify("initialized", json!({}));
+    let document = json!({ "uri": uri, "languageId": "paradox", "version": 1, "text": text });
+    client.notify("textDocument/didOpen", json!({ "textDocument": document }));
+    for version in 2..12 {
+        client.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": uri, "version": version },
+                "contentChanges": [{ "text": format!("{text}\n# {version}\n") }]
+            }),
+        );
+    }
+    send(Message::Request(Request {
+        id: RequestId::from(2),
+        method: "textDocument/documentSymbol".into(),
+        params: json!({ "textDocument": { "uri": uri } }),
+    }));
+    client.next_id = 3;
+
+    let handle = std::thread::spawn(move || jomini_lsp::serve(&server_conn));
+    client.read_until_response(RequestId::from(1));
+    client.read_until_response(RequestId::from(2));
+
+    // One set at the start, and one set for all the changes.
+    let published = client.published_diagnostics();
+    let for_events = published.iter().filter(|(u, _)| *u == uri).count();
+    assert_eq!(for_events, 2);
+
+    client.request("shutdown", Value::Null);
+    client.notify("exit", Value::Null);
+    handle.join().unwrap().unwrap();
+}

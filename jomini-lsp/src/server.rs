@@ -42,6 +42,9 @@ pub struct Server {
     open: HashSet<FileId>,
     /// Files we last published non-empty diagnostics for, so stale sets get cleared.
     published: HashSet<FileId>,
+    /// `true` when a document changed after the last analysis. See
+    /// [`flush`](Server::flush).
+    dirty: bool,
 }
 
 impl Server {
@@ -86,10 +89,13 @@ impl Server {
             path_to_id,
             open: HashSet::new(),
             published: HashSet::new(),
+            dirty: false,
         }
     }
 
     pub fn on_request(&mut self, req: Request) {
+        // A request must see all the changes before it.
+        self.flush();
         match req.method.as_str() {
             lsp_types::request::Formatting::METHOD => {
                 self.dispatch::<lsp_types::request::Formatting>(req, |s, p| s.formatting(p))
@@ -175,7 +181,7 @@ impl Server {
             }
         };
         self.open.insert(id);
-        self.reanalyze_and_publish();
+        self.dirty = true;
     }
 
     fn did_change(&mut self, params: DidChangeTextDocumentParams) {
@@ -185,7 +191,7 @@ impl Server {
         // FULL sync: the last content change carries the whole document.
         if let Some(change) = params.content_changes.into_iter().next_back() {
             self.fileset.set_source(id, change.text.into_bytes());
-            self.reanalyze_and_publish();
+            self.dirty = true;
         }
     }
 
@@ -202,12 +208,21 @@ impl Server {
         let path = self.fileset.path(id).to_path_buf();
         let reverted = std::fs::read(&path).unwrap_or_default();
         self.fileset.set_source(id, reverted);
-        self.reanalyze_and_publish();
+        self.dirty = true;
     }
 
-    fn reanalyze_and_publish(&mut self) {
-        self.linter.reanalyze(&self.fileset, &mut self.analysis);
-        self.publish_all();
+    /// Analyze again and publish the diagnostics, when a document changed.
+    ///
+    /// The change notifications only mark the server dirty. The main loop
+    /// calls this function when no message waits, and each request calls it
+    /// first. Thus a quick series of changes, such as fast typing, causes one
+    /// analysis, not one analysis for each change.
+    pub fn flush(&mut self) {
+        if self.dirty {
+            self.dirty = false;
+            self.linter.reanalyze(&self.fileset, &mut self.analysis);
+            self.publish_all();
+        }
     }
 
     /// Publish diagnostics for every file that has any, and clear the set for any
@@ -215,7 +230,7 @@ impl Server {
     /// *all* files (not just open ones) is the point of a cross-file linter — an
     /// undefined reference often lives in a file the user has not opened.
     ///
-    /// Called after the `initialize` handshake and after each edit.
+    /// Called after the `initialize` handshake and by [`flush`](Server::flush).
     pub fn publish_all(&mut self) {
         let (payloads, now_published) = {
             let mut grouped: HashMap<FileId, Vec<&jomini::text::lint::Diagnostic>> = HashMap::new();
