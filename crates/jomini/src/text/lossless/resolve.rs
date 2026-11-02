@@ -135,6 +135,35 @@ impl Variables {
     }
 }
 
+/// Add variables, as in the variables of a set of files. A new value of a
+/// name replaces the old value.
+///
+/// ```
+/// use jomini::text::lossless::{parse, resolve::{Variables, resolve}};
+///
+/// let first = parse(b"@half = 0.5");
+/// let second = parse(b"@quarter = @[half / 2]");
+/// let mut shared = Variables::new();
+/// shared.extend(resolve(first.tree(), &()).variables().iter());
+/// shared.extend(resolve(second.tree(), &shared).variables().iter());
+/// assert_eq!(shared.get("quarter"), Some(&b"0.25"[..]));
+/// ```
+impl<K: AsRef<[u8]>, V: AsRef<[u8]>> Extend<(K, V)> for Variables {
+    fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
+        for (name, value) in iter {
+            self.insert(name, value);
+        }
+    }
+}
+
+impl<K: AsRef<[u8]>, V: AsRef<[u8]>> FromIterator<(K, V)> for Variables {
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let mut variables = Variables::new();
+        variables.extend(iter);
+        variables
+    }
+}
+
 impl Scope for Variables {
     fn lookup(&self, name: &[u8]) -> Option<&[u8]> {
         self.get(name)
