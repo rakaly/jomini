@@ -1013,6 +1013,15 @@ impl<D: Doc> MapDe<D> {
         seed.deserialize(StaticDe("remainder")).map(Some)
     }
 
+    /// Locate an error of a key, such as an unknown enum variant.
+    #[cold]
+    fn key_error(&self, error: Error, key: D::Scalar) -> Error {
+        let doc = self.doc;
+        error
+            .or_range(doc.scalar_range(key))
+            .in_key(doc.string(key))
+    }
+
     #[cold]
     fn value_error(&self, error: Error, key: Text<D>, range: RangeOf<D>) -> Error {
         let doc = self.doc;
@@ -1050,7 +1059,10 @@ impl<'de, D: DocDe<'de>> de::MapAccess<'de> for MapDe<D> {
                 Item::Field { key, op, value } => {
                     self.pending = Pending::Field { key, op, value };
                     let de = ValueDe::new(self.doc, Val::Scalar(key));
-                    return seed.deserialize(de).map(Some);
+                    return seed
+                        .deserialize(de)
+                        .map(Some)
+                        .map_err(|e| self.key_error(e, key));
                 }
                 Item::Parameter { name, body, .. } => {
                     self.pending = Pending::Other {
@@ -1058,7 +1070,10 @@ impl<'de, D: DocDe<'de>> de::MapAccess<'de> for MapDe<D> {
                         val: param_val(self.doc, body),
                     };
                     let de = ValueDe::new(self.doc, Val::Scalar(name));
-                    return seed.deserialize(de).map(Some);
+                    return seed
+                        .deserialize(de)
+                        .map(Some)
+                        .map_err(|e| self.key_error(e, name));
                 }
                 Item::Value(_) if is_empty_block(self.doc, &item) => continue,
                 Item::Value(_) => {

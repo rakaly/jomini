@@ -886,3 +886,22 @@ fn document_access() {
     assert_eq!(typed.id, 1);
     assert_eq!(typed.core, ["FRA", "BUR"]);
 }
+
+#[test]
+fn key_errors_tell_the_key() {
+    #[derive(Deserialize, Debug, Hash, PartialEq, Eq)]
+    #[serde(rename_all = "lowercase")]
+    enum Kind {
+        Foo,
+    }
+
+    #[derive(Deserialize, Debug)]
+    struct File {
+        #[allow(dead_code)]
+        m: HashMap<Kind, u32>,
+    }
+
+    let error = from_utf8_slice::<File>(b"m = {\n  foo = 1\n  bar = 2\n}").unwrap_err();
+    assert_eq!(error.path(), "m.bar");
+    assert_eq!(error.line_col().unwrap().to_string(), "3:3");
+}
