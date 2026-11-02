@@ -76,7 +76,7 @@ pub(crate) fn deserialize_tape<'a, T: serde::Deserialize<'a>>(data: &'a [u8]) ->
 /// `TextDeserializer`.
 #[inline(never)]
 pub(crate) fn deserialize_lossless_tape<'a, T: serde::Deserialize<'a>>(data: &'a [u8]) -> T {
-    let tape = jomini::text::lossless::parse_tape(data);
+    let tape = jomini::text::lossless::parse_tape(data).unwrap();
     jomini::TextDeserializer::from_windows1252_tape(&tape)
         .deserialize()
         .unwrap()
