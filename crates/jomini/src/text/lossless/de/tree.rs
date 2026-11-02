@@ -599,17 +599,16 @@ where
     }
 
     fn len_hint(self, container: Self::Container) -> usize {
-        let mut cursor = self.cursor(container.node);
-        // Each child node or token outside a child node is at most one entry.
-        let children = if cursor.child == cursor.child_end {
-            (cursor.token_end - cursor.token) as usize
-        } else {
-            let mut count = 0;
-            while cursor.next(self.ctx.nodes).is_some() {
-                count += 1;
-            }
-            count
-        };
+        let node = self.ctx.nodes[container.node as usize];
+        // A container with child nodes has no hint. To count its entries,
+        // the deserializer must read all of its children one more time, and
+        // that costs more than the growth of a collection (about 8% of the
+        // time to deserialize an EU4 save).
+        if node.subtree_end != container.node + 1 {
+            return 0;
+        }
+        // Each token is at most one entry.
+        let children = (node.token_end - node.first_token) as usize;
         match container.kind {
             // The braces are not entries.
             ContainerKind::Block => children.saturating_sub(2),

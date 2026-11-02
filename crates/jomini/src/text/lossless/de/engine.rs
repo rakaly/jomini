@@ -73,9 +73,9 @@ pub(crate) trait Doc: Copy {
     fn node_range(self, node: Self::Node) -> Option<TextRange>;
     fn scalar_range(self, scalar: Self::Scalar) -> Option<TextRange>;
     fn container_range(self, container: Self::Container) -> Option<TextRange>;
-    /// The number of entries of a container, or a number a little larger.
-    /// A map or a sequence gives it to serde as a size hint, so that a
-    /// collection can allocate one time.
+    /// The number of entries of a container, a number a little larger, or
+    /// 0 when the count is not cheap to get. A map or a sequence gives it to
+    /// serde as a size hint, so that a collection can allocate one time.
     fn len_hint(self, container: Self::Container) -> usize;
     /// The values of a block that can have only scalar values, such as
     /// `{ 1 2 3 }`. Each entry of such a block is a part of its sequence, so
