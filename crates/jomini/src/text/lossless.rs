@@ -1077,8 +1077,13 @@ fn lex_simd<S: Simd>(
                 // The first byte is not a stop byte, so the scan can include
                 // it in the `$` check.
                 let (mut end, dollar) = scan_unquoted(simd, source, i);
-                if source[end - 1] == b'!' && end - start > 1 && end < n && source[end] == b'=' {
-                    // `a!=b` is `a`, `!=`, `b`, as in `TextTape`.
+                if matches!(source[end - 1], b'!' | b'?')
+                    && end - start > 1
+                    && end < n
+                    && source[end] == b'='
+                {
+                    // `a!=b` is `a`, `!=`, `b`, as in `TextTape`. Also,
+                    // `c:GBR?= THIS` (Vic3) is `c:GBR`, `?=`, `THIS`.
                     end -= 1;
                 }
                 i = end;
@@ -6912,6 +6917,21 @@ mod tests {
     }
 
     #[test]
+    fn question_equal_splits_from_a_scalar() {
+        // Vic3 `common/objective_subgoals` has `c:GBR?= THIS`.
+        let tree = parse(b"c:GBR?= THIS");
+        let field = tree.ast().fields().next().unwrap();
+        assert_eq!(field.key().text(), b"c:GBR");
+        assert_eq!(field.op(), Some(Operator::Exists));
+        assert_eq!(tree.reconstruct(), b"c:GBR?= THIS");
+
+        // A `?` that no `=` follows stays in the scalar, as in HoI4 `cost = a?50`.
+        let tree = parse_with(b"cost = a?50", Flavor::hoi4());
+        let field = tree.ast().fields().next().unwrap();
+        assert_eq!(field.value().unwrap().as_scalar().unwrap().as_bytes(), b"a?50");
+    }
+
+    #[test]
     fn lone_open_bracket_has_a_diagnostic() {
         for source in [&b"desc = ["[..], b"desc = [ ", b"a = { desc = [ }"] {
             let tree = parse(source);
@@ -8228,7 +8248,10 @@ mod tests {
                     while i < n && !STOP[source[i] as usize] {
                         i += 1;
                     }
-                    if source.get(i) == Some(&b'=') && i - start > 1 && source[i - 1] == b'!' {
+                    if source.get(i) == Some(&b'=')
+                        && i - start > 1
+                        && matches!(source[i - 1], b'!' | b'?')
+                    {
                         i -= 1;
                     }
                     let run = &source[start..i];

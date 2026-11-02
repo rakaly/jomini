@@ -176,7 +176,10 @@ impl<'a, S: Simd> Parser<'a, S> {
             return None;
         }
         let (mut end, _) = scan_unquoted(self.simd, self.source, start);
-        if self.source[end - 1] == b'!' && end - start > 1 && self.source.get(end) == Some(&b'=') {
+        if matches!(self.source[end - 1], b'!' | b'?')
+            && end - start > 1
+            && self.source.get(end) == Some(&b'=')
+        {
             end -= 1;
         }
         self.pos = end;
