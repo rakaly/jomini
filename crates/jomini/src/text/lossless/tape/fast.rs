@@ -70,6 +70,9 @@ struct Container {
     flag: bool,
     /// The index of the open token, or `NO_OPEN` for the root.
     open: usize,
+    /// An entry was removed, so the block is not empty in the source.
+    /// `TextTape` removes only a block that is empty in the source.
+    removed: bool,
     on_empty: OnEmpty,
 }
 
@@ -82,6 +85,7 @@ impl Container {
             first_scalar: false,
             flag: false,
             open,
+            removed: false,
             on_empty,
         }
     }
@@ -236,7 +240,7 @@ impl<'a, S: Simd> Parser<'a, S> {
             return;
         };
         let child = std::mem::replace(current, parent);
-        if child.empty {
+        if child.empty && !child.removed {
             match child.on_empty {
                 OnEmpty::Keep => {}
                 OnEmpty::Drop {
@@ -248,6 +252,7 @@ impl<'a, S: Simd> Parser<'a, S> {
                     self.tape.truncate(len);
                     current.shape = shape;
                     current.mixed = mixed;
+                    current.removed = true;
                     if first {
                         current.empty = true;
                         current.first_scalar = false;

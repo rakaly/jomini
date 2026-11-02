@@ -170,6 +170,9 @@ struct Container {
     /// container closes, the mixed mode comes from this flag again.
     flag: bool,
     entries: u32,
+    /// An entry was removed, so the block is not empty in the source.
+    /// `TextTape` removes only a block that is empty in the source.
+    removed: bool,
     on_empty: OnEmpty,
 }
 
@@ -182,6 +185,7 @@ impl Container {
             mixed: false,
             flag: false,
             entries: 0,
+            removed: false,
             on_empty,
         }
     }
@@ -488,7 +492,7 @@ impl<'a> TapeSink<'a> {
                     return;
                 }
             }
-            ContainerKind::Block if c.entries == 0 => match c.on_empty {
+            ContainerKind::Block if c.entries == 0 && !c.removed => match c.on_empty {
                 OnEmpty::Keep => {}
                 OnEmpty::Drop {
                     len,
@@ -500,6 +504,7 @@ impl<'a> TapeSink<'a> {
                     if let Some(parent) = self.top_container() {
                         parent.shape = shape;
                         parent.mixed = mixed;
+                        parent.removed = true;
                         if first {
                             parent.entries = 0;
                         }
@@ -995,6 +1000,13 @@ mod tests {
         same(b"foo={bar=val { } a=b} me=you");
         same(b"foo={{} {a=b}}");
         same(b"foo={1 {} 2}");
+        // A block that holds only empty blocks is not empty in the source.
+        same(b"a={{{}}}");
+        same(b"a={{{}} 1}");
+        same(b"a={ {{}} b=c }");
+        same(b"a = rgb { {} }");
+        same(b"a = LIST { {} {} }");
+        same(b"a = { b = rgb { {} } }");
         same(b"a = { 1 c = { {} d = 3 } e = 4 }");
         same(b"a = { 1 c = { {} {} d = 3 } e = 4 }");
         same(b"a = { 1 c = { {} 2 } e = 4 }");
