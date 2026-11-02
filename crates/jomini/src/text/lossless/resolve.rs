@@ -428,7 +428,11 @@ impl Resolver<'_, '_, '_> {
             Some(super::Value::Calc(calc)) => {
                 let value = eval_calc(calc.syntax(), &|name| self.lookup(name));
                 match value {
-                    Ok(value) => Some(format_number(value)),
+                    Ok(value) => {
+                        let value = format_number(value);
+                        self.out.nodes.insert(calc.syntax().idx, value.clone());
+                        Some(value)
+                    }
                     Err(error) => {
                         self.out.errors.extend(error);
                         None

@@ -227,3 +227,12 @@ fn resolution_of_a_different_tree() {
     let resolution = resolve(first.tree(), &());
     let _ = Deserializer::new(second.tree(), Utf8Encoding::new()).with_resolution(resolution);
 }
+
+#[test]
+fn calculation_of_a_definition_has_a_value() {
+    let parse = parse(b"@half = @[1 / 2]");
+    let resolution = resolve(parse.tree(), &());
+    let calc = parse.root().descendants().find_map(Calc::cast).unwrap();
+    let value = jomini::text::lossless::Value::Calc(calc);
+    assert_eq!(resolution.get(value), Some(&b"0.5"[..]));
+}
