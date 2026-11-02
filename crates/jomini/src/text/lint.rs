@@ -606,18 +606,29 @@ impl Index {
         // A longer name can have more edits, from 1 to 3. Thus `baracks` gets
         // `barracks`, but a short name does not get an unrelated name.
         let threshold = (name.len() / 3).clamp(1, 3);
-        self.definitions
+        let mut best: Option<(usize, &str)> = None;
+        for d in self
+            .definitions
             .iter()
             .filter(|d| d.winner && d.kind == kind)
-            .map(|d| {
-                (
-                    levenshtein(name.as_bytes(), d.name.as_bytes()),
-                    d.name.as_str(),
-                )
-            })
-            .filter(|&(dist, _)| dist <= threshold)
-            .min_by_key(|&(dist, candidate)| (dist, candidate.len()))
-            .map(|(_, candidate)| candidate)
+        {
+            // A candidate must be as near as the best candidate, or nearer.
+            let limit = best.map_or(threshold, |(dist, _)| dist);
+            // The difference of the lengths is the minimum distance. This
+            // check is fast and removes most candidates.
+            if d.name.len().abs_diff(name.len()) > limit {
+                continue;
+            }
+            let Some(dist) = levenshtein_within(name.as_bytes(), d.name.as_bytes(), limit) else {
+                continue;
+            };
+            // On equal distance, the shorter name wins. On equal length, the
+            // first name wins.
+            if best.is_none_or(|(b, c)| (dist, d.name.len()) < (b, c.len())) {
+                best = Some((dist, d.name.as_str()));
+            }
+        }
+        best.map(|(_, candidate)| candidate)
     }
 
     /// Pick the definition that wins for each `(kind, name)`: the last one in
@@ -697,23 +708,27 @@ impl Index {
     }
 }
 
-/// The Levenshtein edit distance between two byte strings. The names are
-/// short, so the O(n·m) time is not a problem.
-fn levenshtein(a: &[u8], b: &[u8]) -> usize {
-    if a.is_empty() {
-        return b.len();
-    }
+/// The Levenshtein edit distance between two byte strings, when it is
+/// `limit` or less. Return `None` when it is more than `limit`. The function
+/// stops when all the cells of a row are more than `limit`, so a far name
+/// costs less than the full O(n·m) time.
+fn levenshtein_within(a: &[u8], b: &[u8], limit: usize) -> Option<usize> {
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     let mut curr = vec![0usize; b.len() + 1];
     for (i, &ca) in a.iter().enumerate() {
         curr[0] = i + 1;
+        let mut row_min = curr[0];
         for (j, &cb) in b.iter().enumerate() {
-            let cost = if ca == cb { 0 } else { 1 };
+            let cost = usize::from(ca != cb);
             curr[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(curr[j] + 1);
+            row_min = row_min.min(curr[j + 1]);
+        }
+        if row_min > limit {
+            return None;
         }
         std::mem::swap(&mut prev, &mut curr);
     }
-    prev[b.len()]
+    Some(prev[b.len()]).filter(|&dist| dist <= limit)
 }
 
 /// The stable ids of the lints. A user can refer to an id to configure or
@@ -1399,6 +1414,33 @@ mod tests {
                 .iter()
                 .any(|d| d.id == lints::UNDEFINED_REFERENCE)
         );
+    }
+
+    #[test]
+    fn suggest_picks_the_nearest_then_the_shortest_name() {
+        let mut fs = Fileset::new();
+        fs.add("common/buildings/a.txt", FileKind::Vanilla, Vec::new());
+        let mut index = Index::new();
+        for name in ["barracks", "barrack", "stables", "castle_01", "castle_02"] {
+            index.define(
+                "building".into(),
+                name.into(),
+                FileId(0),
+                TextRange::span(0, 1),
+            );
+        }
+        index.finalize(&fs);
+        assert_eq!(index.suggest("building", "baracks"), Some("barracks"));
+        assert_eq!(index.suggest("building", "barrackz"), Some("barrack"));
+        assert_eq!(index.suggest("building", "castle_0"), Some("castle_01"));
+        assert_eq!(index.suggest("building", "castle"), None);
+        assert_eq!(index.suggest("building", "temple"), None);
+        assert_eq!(index.suggest("culture", "barracks"), None);
+
+        assert_eq!(levenshtein_within(b"kitten", b"sitting", 3), Some(3));
+        assert_eq!(levenshtein_within(b"kitten", b"sitting", 2), None);
+        assert_eq!(levenshtein_within(b"", b"abc", 3), Some(3));
+        assert_eq!(levenshtein_within(b"abc", b"", 2), None);
     }
 
     #[test]
