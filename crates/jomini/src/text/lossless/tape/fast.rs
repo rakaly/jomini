@@ -179,7 +179,9 @@ impl<'a, S: Simd> Parser<'a, S> {
             | CLASS_BANG | CLASS_COMMENT | CLASS_QUOTE | CLASS_CLOSE_BRACKET => return None,
             _ => {}
         }
-        if (b == b'@' && self.flavor.variables && self.source.get(start + 1) == Some(&b'['))
+        if (b == b'@'
+            && self.flavor.variables
+            && matches!(self.source.get(start + 1), Some(b'[' | b':')))
             || (b == b'?' && self.source.get(start + 1) == Some(&b'='))
         {
             return None;

@@ -191,6 +191,11 @@ pub enum SyntaxKind {
     /// An unquoted scalar that contains one or more `$NAME$` macro
     /// parameters, such as `$NAME$` or `$key$_modifier`.
     MacroParam,
+    /// A CK3 reader directive, such as `@:insert` or `@:define`.
+    Directive,
+    /// A `@@name` reader-variable reference in key position. The reader puts
+    /// the value of the variable in place of the key.
+    VariableKey,
     /// `{`
     OpenBrace,
     /// `}`
@@ -256,6 +261,9 @@ pub enum SyntaxKind {
     Code,
     /// A single-bracket interpolation, such as `[ROOT.GetName]`.
     Interpolation,
+    /// A CK3 reader directive and its arguments, such as
+    /// `@:insert name = { ... }`. See [`ReaderDirective`].
+    ReaderDirective,
     /// A binary arithmetic expression `lhs <op> rhs` inside a [`SyntaxKind::Calc`].
     BinaryExpr,
     /// A prefix `-`/`+` expression inside a [`SyntaxKind::Calc`].
@@ -326,6 +334,7 @@ impl SyntaxKind {
             SyntaxKind::Unquoted
                 | SyntaxKind::Quoted
                 | SyntaxKind::Variable
+                | SyntaxKind::VariableKey
                 | SyntaxKind::MacroParam
         )
     }
@@ -343,6 +352,7 @@ impl SyntaxKind {
                 | SyntaxKind::UndefinedParameter
                 | SyntaxKind::Code
                 | SyntaxKind::Interpolation
+                | SyntaxKind::ReaderDirective
                 | SyntaxKind::BinaryExpr
                 | SyntaxKind::UnaryExpr
                 | SyntaxKind::ParenExpr
@@ -1130,12 +1140,18 @@ fn lex_simd<S: Simd>(
 /// Classify an unquoted run. `dollar` is `true` when the run contains a `$`.
 #[inline(always)]
 fn classify_run(run: &[u8], dollar: bool, flavor: Flavor) -> SyntaxKind {
-    if let [b'@', second, ..] = run
-        && *second != b'@'
-        && flavor.variables
-    {
-        SyntaxKind::Variable
-    } else if dollar && flavor.macros && has_macro(run) {
+    match run {
+        [b'@', b':', _, ..] if flavor.variables => SyntaxKind::Directive,
+        [b'@', b'@', _, ..] if flavor.variables => SyntaxKind::VariableKey,
+        [b'@', second, ..] if *second != b'@' && flavor.variables => SyntaxKind::Variable,
+        _ => classify_plain_run(run, dollar, flavor),
+    }
+}
+
+/// Classify an unquoted run that is not a reader variable or directive.
+#[inline(always)]
+fn classify_plain_run(run: &[u8], dollar: bool, flavor: Flavor) -> SyntaxKind {
+    if dollar && flavor.macros && has_macro(run) {
         SyntaxKind::MacroParam
     } else {
         SyntaxKind::Unquoted
@@ -3109,6 +3125,7 @@ impl<'t, S: Sink> Parser<'t, S> {
             }
             Some(SyntaxKind::OpenBrace) => self.parse_block(),
             Some(SyntaxKind::CalcOpen) => self.parse_calc(),
+            Some(SyntaxKind::Directive) => self.parse_directive(),
             Some(SyntaxKind::OpenBracket) => self.parse_open_bracket(),
             Some(SyntaxKind::CloseBracket) if self.parameter_depth > 0 => {
                 self.bump();
@@ -3124,6 +3141,7 @@ impl<'t, S: Sink> Parser<'t, S> {
         match self.peek() {
             Some(SyntaxKind::OpenBrace) => self.parse_block(),
             Some(SyntaxKind::CalcOpen) => self.parse_calc(),
+            Some(SyntaxKind::Directive) => self.parse_directive(),
             Some(SyntaxKind::OpenBracket) => self.parse_open_bracket(),
             Some(SyntaxKind::Unquoted) if self.is_code_statement() => self.parse_code_statement(),
             Some(SyntaxKind::Unquoted | SyntaxKind::MacroParam | SyntaxKind::Variable)
@@ -3145,6 +3163,25 @@ impl<'t, S: Sink> Parser<'t, S> {
             // missing value (e.g. `a =` at EOF, or `a = }`): emit nothing.
             _ => {}
         }
+    }
+
+    /// Parse a CK3 reader directive. The directive name sets the arguments:
+    /// a name or text for each directive except `@:assert`, and `= value` for
+    /// `@:define`, `@:insert`, and `@:register_variable`. A directive that is
+    /// not known has no arguments.
+    fn parse_directive(&mut self) {
+        let directive = self.tok(self.pos);
+        let form = DirectiveKind::from_token(&self.source[directive.range().to_range()]).form();
+        self.sink.start_node(SyntaxKind::ReaderDirective);
+        self.bump();
+        if form.argument && self.peek().is_some_and(SyntaxKind::is_scalar) {
+            self.bump();
+            if form.value && self.peek() == Some(SyntaxKind::Operator) {
+                self.bump();
+                self.parse_value();
+            }
+        }
+        self.sink.finish_node();
     }
 
     /// Return the EU4 parameter node kind at the current token position.
@@ -4941,6 +4978,24 @@ ast_nodes! {
     Code => Code,
     /// A single-bracket interpolation ([`SyntaxKind::Interpolation`]).
     Interpolation => Interpolation,
+    /// A CK3 reader directive ([`SyntaxKind::ReaderDirective`]).
+    ///
+    /// The game runs a directive while it reads the file, before the file
+    /// has a structure. The tree keeps the directive as one node, and does
+    /// not expand it:
+    ///
+    /// ```
+    /// use jomini::text::lossless::{parse, DirectiveKind};
+    ///
+    /// let parse = parse(b"@:insert cool_block = { trait = lunatic }");
+    /// let item = parse.ast().items().next().unwrap();
+    /// let directive = item.as_reader_directive().unwrap();
+    /// assert_eq!(directive.kind(), DirectiveKind::Insert);
+    /// assert_eq!(directive.argument().unwrap().text(), b"cool_block");
+    /// let block = directive.value().unwrap().as_block().unwrap();
+    /// assert_eq!(block.fields().count(), 1);
+    /// ```
+    ReaderDirective => ReaderDirective,
     /// A binary arithmetic expression inside a [`Calc`] ([`SyntaxKind::BinaryExpr`]).
     BinaryExpr => BinaryExpr,
     /// A prefix `-`/`+` expression inside a [`Calc`] ([`SyntaxKind::UnaryExpr`]).
@@ -4963,6 +5018,8 @@ pub enum Item<'t, 'a> {
     Code(Code<'t, 'a>),
     /// A single-bracket interpolation.
     Interpolation(Interpolation<'t, 'a>),
+    /// A CK3 reader directive, such as `@:insert name`.
+    ReaderDirective(ReaderDirective<'t, 'a>),
     /// A bare value: an array element or a loose value.
     Value(Value<'t, 'a>),
     /// A significant element that is not a field or a value, for example an
@@ -5018,6 +5075,9 @@ pub enum Value<'t, 'a> {
     Code(Code<'t, 'a>),
     /// A single-bracket interpolation.
     Interpolation(Interpolation<'t, 'a>),
+    /// A CK3 reader directive in value position, such as
+    /// `@:load_variable name`.
+    ReaderDirective(ReaderDirective<'t, 'a>),
 }
 
 /// An arithmetic expression inside a [`Calc`].
@@ -5165,6 +5225,7 @@ fn parameter_body_item<'t, 'a>(el: SyntaxElement<'t, 'a>) -> Option<Item<'t, 'a>
             }
             SyntaxKind::Code => Code::cast(n).map(Item::Code),
             SyntaxKind::Interpolation => Interpolation::cast(n).map(Item::Interpolation),
+            SyntaxKind::ReaderDirective => ReaderDirective::cast(n).map(Item::ReaderDirective),
             _ => Value::cast_element(el)
                 .map(Item::Value)
                 .or(Some(Item::Other(el))),
@@ -5394,6 +5455,106 @@ impl<'t, 'a> Code<'t, 'a> {
     }
 }
 
+/// The kind of a CK3 [`ReaderDirective`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DirectiveKind {
+    /// `@:define name = { tokens }` defines a block of tokens to insert.
+    Define,
+    /// `@:insert name` or `@:insert name = { arguments }` inserts a block.
+    Insert,
+    /// `@:register_variable name = value` defines a variable, as
+    /// `@name = value` does.
+    RegisterVariable,
+    /// `@:load_variable name` reads a variable, as `@name` does.
+    LoadVariable,
+    /// `@:log "text"` writes the text to the debug log.
+    Log,
+    /// `@:assert` stops the game in a debug build.
+    Assert,
+    /// A directive that the game does not know.
+    Unknown,
+}
+
+/// The arguments that a directive takes.
+#[derive(Debug, Clone, Copy)]
+struct DirectiveForm {
+    /// A name or a text follows the directive.
+    argument: bool,
+    /// `= value` can follow the argument.
+    value: bool,
+}
+
+impl DirectiveKind {
+    /// The kind of a directive token, such as `@:insert`.
+    fn from_token(text: &[u8]) -> Self {
+        match text.strip_prefix(b"@:").unwrap_or(text) {
+            b"define" => DirectiveKind::Define,
+            b"insert" => DirectiveKind::Insert,
+            b"register_variable" => DirectiveKind::RegisterVariable,
+            b"load_variable" => DirectiveKind::LoadVariable,
+            b"log" => DirectiveKind::Log,
+            b"assert" => DirectiveKind::Assert,
+            _ => DirectiveKind::Unknown,
+        }
+    }
+
+    const fn form(self) -> DirectiveForm {
+        let (argument, value) = match self {
+            DirectiveKind::Define | DirectiveKind::Insert | DirectiveKind::RegisterVariable => {
+                (true, true)
+            }
+            DirectiveKind::LoadVariable | DirectiveKind::Log => (true, false),
+            DirectiveKind::Assert | DirectiveKind::Unknown => (false, false),
+        };
+        DirectiveForm { argument, value }
+    }
+}
+
+impl<'t, 'a> ReaderDirective<'t, 'a> {
+    /// The directive token, such as `@:insert`.
+    pub fn directive(&self) -> SyntaxToken<'t, 'a> {
+        self.syntax()
+            .significant_child_tokens()
+            .next()
+            .expect("a reader directive starts with its directive token")
+    }
+
+    /// The kind of the directive.
+    pub fn kind(&self) -> DirectiveKind {
+        DirectiveKind::from_token(self.directive().text())
+    }
+
+    /// The name or the text after the directive: the variable name of
+    /// `@:register_variable` and `@:load_variable`, the block name of
+    /// `@:define` and `@:insert`, and the text of `@:log`.
+    pub fn argument(&self) -> Option<SyntaxToken<'t, 'a>> {
+        self.syntax()
+            .significant_child_tokens()
+            .nth(1)
+            .filter(|token| token.kind().is_scalar())
+    }
+
+    /// The operator after the argument, if any.
+    pub fn op_token(&self) -> Option<SyntaxToken<'t, 'a>> {
+        self.syntax()
+            .significant_child_tokens()
+            .nth(2)
+            .filter(|token| token.kind() == SyntaxKind::Operator)
+    }
+
+    /// The value after the operator: the token block of `@:define`, the
+    /// arguments of `@:insert`, and the value of `@:register_variable`.
+    pub fn value(&self) -> Option<Value<'t, 'a>> {
+        self.op_token()?;
+        self.syntax()
+            .children()
+            .filter(|el| !el.kind().is_trivia())
+            .skip(3)
+            .find_map(Value::cast_element)
+    }
+}
+
 impl<'t, 'a> Interpolation<'t, 'a> {
     /// The elements between the interpolation brackets.
     pub fn body(&self) -> impl Iterator<Item = SyntaxElement<'t, 'a>> + use<'t, 'a> {
@@ -5499,6 +5660,7 @@ impl<'t, 'a> Item<'t, 'a> {
             Item::UndefinedParameter(parameter) => SyntaxElement::Node(parameter.syntax()),
             Item::Code(code) => SyntaxElement::Node(code.syntax()),
             Item::Interpolation(interpolation) => SyntaxElement::Node(interpolation.syntax()),
+            Item::ReaderDirective(directive) => SyntaxElement::Node(directive.syntax()),
             Item::Value(value) => value.syntax(),
             Item::Other(el) => el,
         }
@@ -5549,6 +5711,14 @@ impl<'t, 'a> Item<'t, 'a> {
         }
     }
 
+    /// The [`ReaderDirective`] if this item is one.
+    pub fn as_reader_directive(&self) -> Option<ReaderDirective<'t, 'a>> {
+        match *self {
+            Item::ReaderDirective(directive) => Some(directive),
+            _ => None,
+        }
+    }
+
     /// The [`Value`] if this item is a bare value.
     pub fn as_value(&self) -> Option<Value<'t, 'a>> {
         match *self {
@@ -5574,6 +5744,7 @@ impl<'t, 'a> Value<'t, 'a> {
                 }
                 SyntaxKind::Code => Code::cast(n).map(Value::Code),
                 SyntaxKind::Interpolation => Interpolation::cast(n).map(Value::Interpolation),
+                SyntaxKind::ReaderDirective => ReaderDirective::cast(n).map(Value::ReaderDirective),
                 _ => None,
             },
         }
@@ -5590,6 +5761,7 @@ impl<'t, 'a> Value<'t, 'a> {
             Value::UndefinedParameter(parameter) => SyntaxElement::Node(parameter.syntax()),
             Value::Code(code) => SyntaxElement::Node(code.syntax()),
             Value::Interpolation(interpolation) => SyntaxElement::Node(interpolation.syntax()),
+            Value::ReaderDirective(directive) => SyntaxElement::Node(directive.syntax()),
         }
     }
 
@@ -6179,6 +6351,99 @@ mod tests {
 
     fn error_kinds<S: AsRef<[u8]>>(parse: &Parse<S>) -> Vec<SyntaxErrorKind> {
         parse.errors().iter().map(|e| e.kind).collect()
+    }
+
+    /// The CK3 reader directives of `game/reader_export/_reader_export.info`.
+    #[test]
+    fn reader_directives() {
+        let source = b"@:define cool_block = { color = { 1 0 1 } trait = $trait$ }
+@:insert cool_block = { trait = lunatic }
+@:insert plain_block
+@:register_variable size = 0.5
+x = @:load_variable size
+@:log \"Text\"
+@:assert
+@:unknown_thing
+@@size = 1
+";
+        let parse = parse(source);
+        assert!(parse.errors().is_empty(), "{:?}", parse.errors());
+        rt(source);
+
+        let items: Vec<_> = parse.ast().items().collect();
+        let directive = |i: usize| items[i].as_reader_directive().unwrap();
+        let arg = |i: usize| directive(i).argument().map(|t| t.text());
+
+        assert_eq!(directive(0).kind(), DirectiveKind::Define);
+        assert_eq!(arg(0), Some(&b"cool_block"[..]));
+        let body = directive(0).value().unwrap().as_block().unwrap();
+        assert_eq!(body.fields().count(), 2);
+
+        assert_eq!(directive(1).kind(), DirectiveKind::Insert);
+        assert_eq!(arg(1), Some(&b"cool_block"[..]));
+        assert!(directive(1).value().unwrap().as_block().is_some());
+
+        assert_eq!(directive(2).kind(), DirectiveKind::Insert);
+        assert_eq!(arg(2), Some(&b"plain_block"[..]));
+        assert!(directive(2).value().is_none());
+
+        assert_eq!(directive(3).kind(), DirectiveKind::RegisterVariable);
+        assert_eq!(arg(3), Some(&b"size"[..]));
+        assert_eq!(directive(3).value().unwrap().to_f64(), Some(0.5));
+
+        let field = items[4].as_field().unwrap();
+        let Some(Value::ReaderDirective(load)) = field.value() else {
+            panic!("expected a directive value");
+        };
+        assert_eq!(load.kind(), DirectiveKind::LoadVariable);
+        assert_eq!(load.argument().unwrap().text(), b"size");
+
+        assert_eq!(directive(5).kind(), DirectiveKind::Log);
+        assert_eq!(arg(5), Some(&b"\"Text\""[..]));
+        assert_eq!(directive(6).kind(), DirectiveKind::Assert);
+        assert_eq!(arg(6), None);
+        assert_eq!(directive(7).kind(), DirectiveKind::Unknown);
+
+        let key = items[8].as_field().unwrap().key();
+        assert_eq!(key.kind(), SyntaxKind::VariableKey);
+        assert_eq!(key.text(), b"@@size");
+    }
+
+    /// `@:assert` takes no argument, so the next line is a separate item.
+    #[test]
+    fn assert_directive_takes_no_argument() {
+        let parse = parse(b"@:assert\na = b");
+        let items: Vec<_> = parse.ast().items().collect();
+        assert_eq!(items.len(), 2);
+        assert!(items[1].as_field().is_some());
+    }
+
+    /// Without reader variables, `@:name` and `@@name` are plain scalars.
+    #[test]
+    fn directives_need_the_variables_flavor() {
+        let flavor = Flavor {
+            variables: false,
+            ..Flavor::default()
+        };
+        let parse = parse_with(b"@:insert a @@b = 1", flavor);
+        let kinds: Vec<_> = parse.tree().tokens().map(|t| t.kind()).collect();
+        assert!(!kinds.contains(&SyntaxKind::Directive));
+        assert!(!kinds.contains(&SyntaxKind::VariableKey));
+    }
+
+    #[test]
+    fn format_keeps_reader_directives() {
+        let source = b"@:insert  cool_block  =  { trait = lunatic }\nx = @:load_variable   size\n";
+        let formatted = format(source);
+        let reparsed = parse(&formatted);
+        assert!(reparsed.errors().is_empty());
+        let directives = reparsed
+            .tree()
+            .root()
+            .descendants()
+            .filter(|n| n.kind() == SyntaxKind::ReaderDirective)
+            .count();
+        assert_eq!(directives, 2, "{}", String::from_utf8_lossy(&formatted));
     }
 
     /// The fast [`Sink::scalar_field`] of the builder must make the same
@@ -8268,7 +8533,12 @@ mod tests {
                         i -= 1;
                     }
                     let run = &source[start..i];
-                    if flavor.variables && run.len() > 1 && run[0] == b'@' && run[1] != b'@' {
+                    if flavor.variables && run.len() > 2 && run.starts_with(b"@:") {
+                        SyntaxKind::Directive
+                    } else if flavor.variables && run.len() > 2 && run.starts_with(b"@@") {
+                        SyntaxKind::VariableKey
+                    } else if flavor.variables && run.len() > 1 && run[0] == b'@' && run[1] != b'@'
+                    {
                         SyntaxKind::Variable
                     } else if flavor.macros && run.iter().filter(|&&b| b == b'$').count() >= 2 {
                         SyntaxKind::MacroParam

@@ -28,7 +28,9 @@
 //!   that holds the source text. An operator in the value of a field, as in
 //!   `OPERATOR = <=`, is also an unquoted scalar.
 //! - Tokens that have no place in the tape (a stray operator or bracket, and a
-//!   [`SyntaxKind::Bogus`] node) are ignored. A field that has no value is
+//!   [`SyntaxKind::Bogus`] node) are ignored. A CK3 reader directive is
+//!   ignored, except in the value of a field, where it is one unquoted
+//!   scalar. A field that has no value is
 //!   ignored. An unclosed block closes at EOF.
 //!
 //! [`ObjectReader`]: crate::text::ObjectReader
@@ -654,11 +656,19 @@ impl Sink for TapeSink<'_> {
                     OnEmpty::Keep,
                 )));
             }
-            _ => self.frames.push(Frame::Opaque {
-                start: u32::MAX,
-                end: 0,
-                bogus: kind == SyntaxKind::Bogus,
-            }),
+            _ => {
+                // A reader directive changes the text before the game reads
+                // it, so it has no place in the tape. In value position, as in
+                // `x = @:load_variable y`, it is one unquoted scalar.
+                let ignore = kind == SyntaxKind::Bogus
+                    || (kind == SyntaxKind::ReaderDirective
+                        && !matches!(self.frames.last(), Some(Frame::Field { .. })));
+                self.frames.push(Frame::Opaque {
+                    start: u32::MAX,
+                    end: 0,
+                    bogus: ignore,
+                });
+            }
         }
     }
 
@@ -948,7 +958,7 @@ mod tests {
 
     #[quickcheck]
     fn fused_matches_grammar_alphabet(source: Vec<u8>) -> bool {
-        const ALPHABET: &[u8] = b"abc\"\\{}[]<>!?= \t\n;#@$";
+        const ALPHABET: &[u8] = b"abc\"\\{}[]<>!?= \t\n;#@$:";
         let source: Vec<u8> = source
             .iter()
             .map(|b| ALPHABET[*b as usize % ALPHABET.len()])
@@ -991,6 +1001,13 @@ mod tests {
             b"x=$v$ {}",
             b"x={1 a=@v {2}}",
             b"}",
+            b"@:insert m = { a=b }",
+            b"@:define m = { $x$ }",
+            b"x=@:load_variable v",
+            b"@:assert",
+            b"@:log \"t\"",
+            b"@@k=1",
+            b"x={1 @:insert m}",
         ];
         let mut source = Vec::new();
         for entry in entries {
