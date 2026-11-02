@@ -496,6 +496,9 @@ fn collect_refs(node: SyntaxNode<'_, '_>, schema: &Schema, in_error: bool, out: 
         && let Some(value) = field.value()
         && let Some(kind) = schema.reference_keys.get(&decode(field.key().as_scalar()))
         && let Value::Scalar(tok) = value
+        // A `$NAME$` parameter of a scripted effect or trigger gets its value
+        // when the game calls the effect, so the name is not known here.
+        && !tok.as_scalar().as_bytes().contains(&b'$')
     {
         out.push(RefSite {
             kind: kind.clone(),
@@ -1486,6 +1489,27 @@ mod tests {
             ],
         );
         assert_eq!(out, b"abc]}");
+    }
+
+    #[test]
+    fn script_parameter_is_not_a_reference() {
+        let mut fs = Fileset::new();
+        fs.add(
+            "common/buildings/b.txt",
+            FileKind::Vanilla,
+            b"barracks_01 = {}".to_vec(),
+        );
+        fs.add(
+            "common/scripted_effects/e.txt",
+            FileKind::Vanilla,
+            b"add_level = { add_building = $BUILDING$_01 }".to_vec(),
+        );
+        let mut schema = Schema::new();
+        schema
+            .define_dir("buildings", "building")
+            .reference_key("add_building", "building");
+        let diagnostics = Linter::new(schema).run(&fs);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]
