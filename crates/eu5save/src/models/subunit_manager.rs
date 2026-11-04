@@ -1,5 +1,5 @@
 use crate::models::de::Maybe;
-use crate::models::{CountryId, LocationId, PopId, UnitId};
+use crate::models::{BStr, CountryId, LocationId, PopId, UnitId};
 use arena_serde::{ArenaDeserialize, ArenaSeed};
 use serde::{Deserialize, de};
 use std::fmt;
@@ -60,8 +60,32 @@ pub struct SubUnit<'bump> {
     pub strength: f64,
     #[arena(default)]
     pub max_strength: f64,
+    /// The pops that a levy draws from. Empty for a regular.
     #[arena(default)]
     pub levies: &'bump [PopId],
+    /// The unit type, such as `a_footmen` or `n_cog`.
+    #[arena(default, alias = "type")]
+    pub unit_type: Option<BStr<'bump>>,
+    #[arena(default)]
+    pub mercenary: Option<MercenaryId>,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Default, ArenaDeserialize,
+)]
+#[serde(transparent)]
+pub struct MercenaryId(u32);
+
+impl MercenaryId {
+    #[inline]
+    pub fn new(id: u32) -> Self {
+        MercenaryId(id)
+    }
+
+    #[inline]
+    pub fn value(self) -> u32 {
+        self.0
+    }
 }
 
 #[inline]
@@ -143,6 +167,31 @@ mod tests {
         .unwrap();
         let values: Vec<_> = manager.database.iter().map(|unit| unit.morale).collect();
         assert_eq!(values, [3.55509, 0.0]);
+    }
+
+    #[test]
+    fn subunit_kinds() {
+        let allocator = arena_serde::Arena::new();
+        let manager = deserialize(
+            "database={
+                1={ owner=7 controller=7 home=1 unit=2 type=a_footmen }
+                2={ owner=7 controller=7 home=1 unit=2 type=n_fishing_boat levies={ 10 11 } }
+                3={ owner=2 controller=7 home=1 unit=2 type=a_pikemen mercenary=50331682 }
+                4={ home=1 unit=2 }
+            }",
+            &allocator,
+        )
+        .unwrap();
+        let units: Vec<_> = manager.database.iter().collect();
+        assert_eq!(units[0].unit_type.unwrap().to_str(), "a_footmen");
+        assert!(units[0].levies.is_empty());
+        assert_eq!(units[0].mercenary, None);
+        assert_eq!(units[1].unit_type.unwrap().to_str(), "n_fishing_boat");
+        assert_eq!(units[1].levies.len(), 2);
+        assert_eq!(units[2].mercenary, Some(MercenaryId::new(50331682)));
+        assert_eq!(units[2].owner, CountryId::new(2));
+        assert_eq!(units[2].controller, CountryId::new(7));
+        assert_eq!(units[3].unit_type, None);
     }
 
     #[test]
