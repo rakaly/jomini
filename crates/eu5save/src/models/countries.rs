@@ -243,6 +243,8 @@ pub struct Country<'bump> {
     #[arena(default)]
     pub great_power_rank: i32,
     #[arena(default)]
+    pub great_power_points: f64,
+    #[arena(default)]
     pub artists: i32,
     #[arena(default)]
     pub estimated_monthly_income_trade_and_tax: f64,
