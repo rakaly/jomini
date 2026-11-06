@@ -1,0 +1,203 @@
+//! Byte-offset ↔ LSP [`Position`] conversion.
+//!
+//! jomini's ranges are raw half-open **byte** offsets over `&[u8]`, and its
+//! [`lossless::LineIndex`] finds the line and the byte column. LSP positions are
+//! 0-based `(line, character)` where `character` counts UTF-16 code units (the
+//! protocol default) or, when the client agrees during `initialize` negotiation,
+//! UTF-8 bytes. This module converts the columns in both directions.
+//!
+//! **Encoding caveat.** We treat document bytes as UTF-8 — which is what a client
+//! sends in a `textDocument/did{Open,Change}`. Game files on disk may be
+//! Windows-1252; for the ASCII-dominated content of keys, numbers, and tags the
+//! conversion is exact, and a fully encoding-aware mapping is a follow-up (the
+//! lint layer punts on encoding the same way today).
+
+use jomini::text::lossless::{self, LineCol, TextSize};
+use lsp_types::{Position, PositionEncodingKind};
+
+/// Which unit an LSP `character` column counts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PositionEncoding {
+    /// LSP's default: `character` counts UTF-16 code units.
+    Utf16,
+    /// The client supports it: `character` counts UTF-8 bytes, the same as a
+    /// byte column.
+    Utf8,
+}
+
+impl PositionEncoding {
+    /// The matching LSP capability value to echo back in `initialize`.
+    pub fn to_lsp(self) -> PositionEncodingKind {
+        match self {
+            PositionEncoding::Utf16 => PositionEncodingKind::UTF16,
+            PositionEncoding::Utf8 => PositionEncodingKind::UTF8,
+        }
+    }
+}
+
+/// jomini's byte [`lossless::LineIndex`] for one document plus its bytes, to
+/// convert byte columns to and from the columns of the negotiated encoding.
+pub struct LineIndex<'a> {
+    text: &'a [u8],
+    lines: &'a lossless::LineIndex,
+    encoding: PositionEncoding,
+}
+
+impl<'a> LineIndex<'a> {
+    /// `lines` must be the line index of `text`.
+    pub fn new(text: &'a [u8], lines: &'a lossless::LineIndex, encoding: PositionEncoding) -> Self {
+        debug_assert_eq!(lines, &lossless::LineIndex::new(text));
+        LineIndex {
+            text,
+            lines,
+            encoding,
+        }
+    }
+
+    /// The [`Position`] of byte `offset` (clamped to the document end).
+    pub fn position(&self, offset: TextSize) -> Position {
+        let offset = offset.min(TextSize::of(self.text));
+        let LineCol { line, col } = self.lines.line_col(offset);
+        let line_start = offset.to_usize() - col as usize;
+        let character = self.encode_col(&self.text[line_start..offset.to_usize()]);
+        Position { line, character }
+    }
+
+    /// The byte offset of `position` (clamped into range).
+    pub fn offset(&self, position: Position) -> TextSize {
+        let Some(range) = self.lines.line_range(position.line) else {
+            return TextSize::of(self.text);
+        };
+        let line_start = range.start().to_usize();
+        // Remove the line break (`\n`, `\r\n`, or `\r`), so a column after the
+        // end of the text clamps to the end of this line, not to the start of
+        // the next line.
+        let line = &self.text[line_start..range.end().to_usize()];
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let col_bytes = self.decode_col(line, position.character);
+        TextSize::new((line_start + col_bytes) as u32)
+    }
+
+    /// The end-of-document position — the `end` of a whole-document range.
+    pub fn end_position(&self) -> Position {
+        self.position(TextSize::of(self.text))
+    }
+
+    /// The number of code units of the encoding in `slice`, which is the
+    /// column at the end of `slice` when `slice` starts at the line start.
+    fn encode_col(&self, slice: &[u8]) -> u32 {
+        match self.encoding {
+            PositionEncoding::Utf8 => slice.len() as u32,
+            // For non-UTF-8 bytes the replacement char is one UTF-16 unit, which
+            // keeps columns sane for the ASCII-dominated content we target.
+            PositionEncoding::Utf16 => String::from_utf8_lossy(slice)
+                .chars()
+                .map(|c| c.len_utf16() as u32)
+                .sum(),
+        }
+    }
+
+    /// The inverse of [`encode_col`](Self::encode_col): the number of bytes in
+    /// the first `character` code units of `line`. The result is at most the
+    /// length of the line. A column inside a character moves to the end of
+    /// that character.
+    fn decode_col(&self, line: &[u8], character: u32) -> usize {
+        match self.encoding {
+            PositionEncoding::Utf8 => (character as usize).min(line.len()),
+            PositionEncoding::Utf16 => {
+                let text = String::from_utf8_lossy(line);
+                let mut units = 0u32;
+                let mut bytes = 0usize;
+                for c in text.chars() {
+                    if units >= character {
+                        break;
+                    }
+                    units += c.len_utf16() as u32;
+                    bytes += c.len_utf8();
+                }
+                bytes.min(line.len())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pos(line: u32, character: u32) -> Position {
+        Position { line, character }
+    }
+
+    #[test]
+    fn ascii_offsets_and_positions_round_trip() {
+        let lines = lossless::LineIndex::new(b"abc\ndef");
+        let li = LineIndex::new(b"abc\ndef", &lines, PositionEncoding::Utf16);
+        assert_eq!(li.position(TextSize::new(0)), pos(0, 0));
+        assert_eq!(li.position(TextSize::new(3)), pos(0, 3)); // the '\n'
+        assert_eq!(li.position(TextSize::new(4)), pos(1, 0)); // 'd'
+        assert_eq!(li.position(TextSize::new(6)), pos(1, 2));
+        assert_eq!(li.offset(pos(1, 0)), TextSize::new(4));
+        assert_eq!(li.offset(pos(1, 2)), TextSize::new(6));
+        // Past-end positions clamp.
+        assert_eq!(li.offset(pos(99, 99)), TextSize::new(7));
+        assert_eq!(li.position(TextSize::new(999)), pos(1, 3));
+    }
+
+    #[test]
+    fn utf16_counts_code_units_not_bytes() {
+        // "é" is 2 UTF-8 bytes but 1 UTF-16 unit.
+        let text = "é = 1".as_bytes();
+        let lines = lossless::LineIndex::new(text);
+        let li = LineIndex::new(text, &lines, PositionEncoding::Utf16);
+        // After 'é' (byte offset 2) the UTF-16 column is 1.
+        assert_eq!(li.position(TextSize::new(2)), pos(0, 1));
+        assert_eq!(li.offset(pos(0, 1)), TextSize::new(2));
+    }
+
+    #[test]
+    fn utf8_counts_bytes() {
+        let text = "é = 1".as_bytes();
+        let lines = lossless::LineIndex::new(text);
+        let li = LineIndex::new(text, &lines, PositionEncoding::Utf8);
+        assert_eq!(li.position(TextSize::new(2)), pos(0, 2));
+        assert_eq!(li.offset(pos(0, 2)), TextSize::new(2));
+    }
+
+    #[test]
+    fn utf16_handles_astral_surrogate_pairs() {
+        // "😀" is 4 UTF-8 bytes and 2 UTF-16 units.
+        let text = "😀x".as_bytes();
+        let lines = lossless::LineIndex::new(text);
+        let li = LineIndex::new(text, &lines, PositionEncoding::Utf16);
+        assert_eq!(li.position(TextSize::new(4)), pos(0, 2)); // after the emoji
+        assert_eq!(li.offset(pos(0, 2)), TextSize::new(4));
+        assert_eq!(li.position(TextSize::new(5)), pos(0, 3)); // after 'x'
+    }
+
+    #[test]
+    fn crlf_line_starts() {
+        let lines = lossless::LineIndex::new(b"a\r\nb");
+        let li = LineIndex::new(b"a\r\nb", &lines, PositionEncoding::Utf16);
+        assert_eq!(li.position(TextSize::new(0)), pos(0, 0));
+        assert_eq!(li.position(TextSize::new(1)), pos(0, 1)); // '\r' stays on line 0
+        assert_eq!(li.position(TextSize::new(3)), pos(1, 0)); // 'b' on line 1
+    }
+
+    #[test]
+    fn out_of_range_column_clamps_to_end_of_line_not_next_line() {
+        // A column after the text of line 0 goes to byte 1, after `a`, not to
+        // byte 3, the `b` of line 1.
+        let lines = lossless::LineIndex::new(b"a\r\nb");
+        let li = LineIndex::new(b"a\r\nb", &lines, PositionEncoding::Utf16);
+        assert_eq!(li.offset(pos(0, 99)), TextSize::new(1));
+        assert_eq!(li.offset(pos(0, 1)), TextSize::new(1)); // in-range columns are unchanged
+        // A `\n` or a lone `\r` line break is the same.
+        for text in [&b"abc\ndef"[..], b"abc\rdef"] {
+            let lines = lossless::LineIndex::new(text);
+            let li = LineIndex::new(text, &lines, PositionEncoding::Utf16);
+            assert_eq!(li.offset(pos(0, 99)), TextSize::new(3), "{text:?}");
+        }
+    }
+}
