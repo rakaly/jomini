@@ -17,7 +17,7 @@ serde = { version = "1.0", features = ["derive"] }
 
 [dependencies.jomini]
 path = "../crates/jomini"
-features = ["envelope"]
+features = ["envelope", "lossless"]
 
 [dependencies.eu4save]
 path = "../crates/eu4save"
@@ -50,6 +50,12 @@ members = ["."]
 [[bin]]
 name = "fuzz_text"
 path = "fuzz_targets/fuzz_text.rs"
+
+[[bin]]
+name = "fuzz_text_lossless"
+path = "fuzz_targets/fuzz_text_lossless.rs"
+test = false
+doc = false
 
 [[bin]]
 name = "fuzz_scalar_text"

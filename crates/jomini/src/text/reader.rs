@@ -852,6 +852,7 @@ impl<'a> TokenReader<'a> {
         }
     }
 
+    #[cfg(feature = "serde")]
     #[inline]
     pub(crate) fn read_expect_equals(&mut self) -> Result<Token<'_>, ReaderError> {
         match self.source.window().first() {
