@@ -1,7 +1,7 @@
 //! **Experimental** lossless syntax tree for the Clausewitz text format.
 //!
-//! This tree is the base for tooling: formatting, linting, highlighting, and
-//! transformations. Later, it will also be the base for deserialization. Unlike
+//! This tree is the base for tooling (formatting, linting, highlighting, and
+//! transformations) and for deserialization (see [`de`]). Unlike
 //! [`TextTape`], which discards trivia and the `=` operator, this tree keeps
 //! **every byte** of the source: comments, whitespace, the `=`, and bytes that
 //! match no rule. The defining invariant is:
@@ -159,8 +159,12 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::OnceLock;
 
+#[cfg(feature = "serde")]
+pub mod de;
 mod line_index;
 mod tape;
+#[cfg(feature = "serde")]
+pub mod value;
 pub use line_index::{LineCol, LineIndex};
 #[cfg(all(jomini_lossless_tape, feature = "lossless"))]
 pub(crate) use tape::recover_tape;
