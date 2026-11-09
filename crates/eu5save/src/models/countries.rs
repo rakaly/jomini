@@ -246,10 +246,15 @@ pub struct Country<'bump> {
     pub great_power_points: f64,
     #[arena(default)]
     pub artists: i32,
+    /// Removed in 1.3. Use [`Country::monthly_tax_and_trade_income`].
+    pub estimated_monthly_income_trade_and_tax: Option<f64>,
+    /// Removed in 1.3.
+    pub estimated_monthly_income: Option<f64>,
     #[arena(default)]
-    pub estimated_monthly_income_trade_and_tax: f64,
+    pub last_months_tax_income: f64,
+    /// Added in 1.4.
     #[arena(default)]
-    pub estimated_monthly_income: f64,
+    pub last_months_tariff_income: f64,
     #[arena(default)]
     pub monthly_trade_balance: f64,
     #[arena(default)]
@@ -304,6 +309,18 @@ impl Country<'_> {
     #[inline]
     pub fn economic_base(&self) -> f64 {
         self.current_tax_base + self.monthly_trade_value
+    }
+
+    /// The monthly income from tax and trade. Since 1.3, saves do not record
+    /// the game's estimate, so this adds up last month's tax, tariffs, and
+    /// trade balance in its place.
+    #[inline]
+    pub fn monthly_tax_and_trade_income(&self) -> f64 {
+        self.estimated_monthly_income_trade_and_tax.unwrap_or(
+            self.last_months_tax_income
+                + self.last_months_tariff_income
+                + self.monthly_trade_balance,
+        )
     }
 }
 

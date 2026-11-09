@@ -366,16 +366,57 @@ fn assert_milan_1_4_buildings(save: &Gamestate<'_>) {
     assert_eq!(jewelry.employed, 0.0);
 }
 
+/// Since 1.3, saves do not record the game's estimate of tax and trade
+/// income, so the top ranked countries must get it from last month's ledger.
+fn assert_ledger_tax_and_trade_income(save: &Gamestate<'_>) {
+    let top_ranked: Vec<_> = save
+        .countries
+        .iter()
+        .filter_map(|entry| entry.data())
+        .filter(|country| (1..=10).contains(&country.great_power_rank))
+        .collect();
+    assert_eq!(top_ranked.len(), 10);
+    for country in top_ranked {
+        assert_eq!(country.estimated_monthly_income_trade_and_tax, None);
+        assert!(country.monthly_tax_and_trade_income() > 0.0);
+    }
+}
+
+fn assert_milan_1_4(save: &Gamestate<'_>) {
+    assert_milan_1_4_buildings(save);
+    assert_ledger_tax_and_trade_income(save);
+}
+
+/// Saves before 1.3 record the game's estimate, which takes precedence.
+fn assert_estimated_tax_and_trade_income(save: &Gamestate<'_>) {
+    let mut estimates = save
+        .countries
+        .iter()
+        .filter_map(|entry| entry.data())
+        .filter_map(|country| {
+            let estimate = country.estimated_monthly_income_trade_and_tax?;
+            Some((country, estimate))
+        })
+        .peekable();
+    assert!(estimates.peek().is_some());
+    for (country, estimate) in estimates {
+        assert_eq!(country.monthly_tax_and_trade_income(), estimate);
+    }
+}
+
 #[rstest]
 #[case("ironman-1.0.eu5", None)]
 #[case("debug-1.0.eu5", None)]
-#[case("Clandeboye.eu5", None)]
+#[case(
+    "Clandeboye.eu5",
+    Some(assert_estimated_tax_and_trade_income as GamestateAssertions)
+)]
 #[case("mp_cas_1374_03_06.eu5", None)]
 #[case("SP_ironman_95ff2d32-01d9-446a-98bb-9eec434606a5.eu5", None)]
 #[case("SP_ironman_aa80180a-6b96-4666-a3f2-5d4587b0751e.eu5", None)]
 #[case(
     "SP_MLO_1617_04_01_166d38a1-bffb-4182-9e37-9540b0c2ac4f.eu5",
-    Some(assert_milan_1_4_buildings as GamestateAssertions)
+    Some(assert_milan_1_4 as GamestateAssertions)
 )]
 fn deserialization_regression_test(
     #[case] filename: &str,
