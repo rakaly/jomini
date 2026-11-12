@@ -25,8 +25,9 @@
 //! highlighter, or editor tool. For other jobs, the crate has better
 //! choices:
 //!
-//! - To deserialize a file into your own types, use serde with
-//!   [`TextDeserializer`](crate::text::de::TextDeserializer).
+//! - To only deserialize a file into your own types, use serde with
+//!   [`TextDeserializer`](crate::text::de::TextDeserializer). It is faster,
+//!   but its errors do not give a line.
 //! - To read a large save with little memory, use the streaming
 //!   [`TokenReader`](crate::text::TokenReader) or
 //!   [`from_windows1252_reader`](crate::text::de::from_windows1252_reader).
@@ -191,6 +192,16 @@
 //! acceptable. The tape discards the trivia. [`parse_tape`] lists where its
 //! tape differs from the tape of `from_slice`.
 //!
+//! # Deserialize into your own types
+//!
+//! The [`de`] module deserializes the tree into serde types with no tape. A
+//! type that derives `Deserialize` for `TextDeserializer` needs no change.
+//! Each error gives the line, the column, and the path of keys.
+//!
+//! To keep a whole document as data, read it into an [`OwnedBlock`]. The
+//! block keeps the quotes, the operators, the headers, and the order of the
+//! items. Later, you can deserialize the block into a type.
+//!
 //! # Walk the tree
 //!
 //! Under the typed view are the [`SyntaxNode`] and [`SyntaxToken`] cursors.
@@ -246,6 +257,8 @@
 mod ast;
 mod calc;
 mod cursor;
+#[cfg(feature = "serde")]
+pub mod de;
 mod edit;
 mod error;
 mod flavor;
@@ -259,6 +272,8 @@ mod tape;
 mod tests;
 mod text_size;
 mod tree;
+#[cfg(feature = "serde")]
+pub(crate) mod value;
 
 pub use ast::{
     AstNode, BinOp, BinaryExpr, Block, Calc, Code, DirectiveKind, Expr, Field, HeaderedBlock,
@@ -280,6 +295,8 @@ pub use text_size::{TextRange, TextSize};
 pub use tree::{
     NodeFlags, OwnedParse, Parse, SyntaxTree, parse, parse_owned, parse_owned_with, parse_with,
 };
+#[cfg(feature = "serde")]
+pub use value::{OwnedBlock, OwnedField, OwnedItem, OwnedParameter, OwnedScalar, OwnedValue};
 
 // The tape parser in `tape` reads these private items through this module.
 use ast::strip_quotes;

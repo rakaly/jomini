@@ -245,9 +245,11 @@ The **experimental** [`text::lossless`] module parses plaintext into a tree
 that keeps every byte of the source: comments, whitespace, and the operator.
 It continues after a syntax error, and it gives the position of each error.
 Use it to read the game and mod files: in a program that extracts data from
-them, or in a formatter, linter, or highlighter. A save is usually only
-deserialized, and the streaming deserializer is faster for that. Enable the
-`lossless` feature to use it.
+them, or in a formatter, linter, or highlighter. With the `serde` feature,
+`text::lossless::de` deserializes the tree into serde types, and each error
+gives its line, column, and field path. A save is usually only deserialized,
+and the streaming deserializer is faster for that. Enable the `lossless`
+feature to use it.
 
 ```rust
 use jomini::text::lossless::parse;

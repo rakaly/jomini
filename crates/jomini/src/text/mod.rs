@@ -21,6 +21,14 @@
 //! - [ValuesIter]
 //!
 #![cfg_attr(
+    feature = "serde",
+    doc = r#"
+A plain serde type does not keep the operator, the quotes, or the header of
+a value. To keep them, wrap the type of the field in [`Property`],
+[`MaybeQuoted`], or [`Headered`].
+"#
+)]
+#![cfg_attr(
     feature = "lossless",
     doc = r#"
 When you need positions, comments, or recovery from syntax errors in game and
@@ -40,6 +48,8 @@ pub mod lossless;
 mod operator;
 mod reader;
 mod tape;
+#[cfg(feature = "serde")]
+mod wrappers;
 mod writer;
 
 #[cfg(feature = "serde")]
@@ -51,6 +61,8 @@ pub use self::dom::{
 };
 pub use self::operator::*;
 pub use self::tape::{TextTape, TextTapeParser, TextToken};
+#[cfg(feature = "serde")]
+pub use self::wrappers::{Headered, MaybeQuoted};
 pub use self::writer::*;
 pub use crate::{ReaderError, ReaderErrorKind};
 pub use reader::{Token, TokenKind, TokenReader};

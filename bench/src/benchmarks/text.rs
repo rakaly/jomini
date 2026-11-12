@@ -1,6 +1,7 @@
 use crate::corpus::{self, Corpus, CorpusArchive, CorpusBytes, Game};
+use eu4save::models::GameState;
 use jomini::TextTape;
-use std::hint::black_box;
+use std::{hint::black_box, sync::OnceLock};
 
 const METADATA_TXT: &[u8] = include_bytes!("../../../crates/jomini/tests/fixtures/meta.txt");
 const EU4_TEXT: Corpus = Corpus::text(Game::Eu4);
@@ -62,6 +63,158 @@ pub(crate) fn reader_count_equals(data: &[u8]) -> i32 {
 #[inline(never)]
 pub(crate) fn deserialize_meta(data: &[u8]) -> Meta {
     jomini::text::de::from_windows1252_slice(data).unwrap()
+}
+
+/// Parse with `TextTape` and deserialize with `TextDeserializer`.
+#[inline(never)]
+pub(crate) fn deserialize_tape<'a, T: serde::Deserialize<'a>>(data: &'a [u8]) -> T {
+    let tape = TextTape::from_slice(data).unwrap();
+    jomini::TextDeserializer::from_windows1252_tape(&tape)
+        .deserialize()
+        .unwrap()
+}
+
+/// Deserialize with `TextDeserializer` from a stream of tokens, with no tape.
+#[inline(never)]
+pub(crate) fn deserialize_reader<T: serde::de::DeserializeOwned>(data: &[u8]) -> T {
+    jomini::text::de::from_windows1252_reader(data).unwrap()
+}
+
+/// Parse with the lossless grammar into a `TextTape` and deserialize with
+/// `TextDeserializer`.
+#[inline(never)]
+pub(crate) fn deserialize_lossless_tape<'a, T: serde::Deserialize<'a>>(data: &'a [u8]) -> T {
+    let tape = jomini::text::lossless::parse_tape(data)
+        .into_result()
+        .unwrap();
+    jomini::TextDeserializer::from_windows1252_tape(&tape)
+        .deserialize()
+        .unwrap()
+}
+
+/// Parse into a syntax tree and deserialize the tree directly.
+#[inline(never)]
+pub(crate) fn deserialize_tree<'a, T: serde::Deserialize<'a>>(data: &'a [u8]) -> T {
+    let parse = jomini::text::lossless::parse(data);
+    jomini::text::lossless::de::from_tree(parse.tree(), jomini::Windows1252Encoding::new()).unwrap()
+}
+
+/// A type that takes each value of a document, so that a benchmark measures a
+/// full deserialization and not a skip.
+pub(crate) struct Any;
+
+impl<'de> serde::Deserialize<'de> for Any {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Any, D::Error> {
+        deserializer.deserialize_any(AnyVisitor)
+    }
+}
+
+/// [`Any`] for the root of a file. `TextDeserializer` reads the root only as
+/// a map.
+pub(crate) struct AnyRoot;
+
+impl<'de> serde::Deserialize<'de> for AnyRoot {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<AnyRoot, D::Error> {
+        deserializer.deserialize_map(AnyVisitor).map(|Any| AnyRoot)
+    }
+}
+
+struct AnyVisitor;
+
+impl<'de> serde::de::Visitor<'de> for AnyVisitor {
+    type Value = Any;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("any value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<Any, E> {
+        Ok(Any)
+    }
+
+    fn visit_i64<E>(self, _: i64) -> Result<Any, E> {
+        Ok(Any)
+    }
+
+    fn visit_u64<E>(self, _: u64) -> Result<Any, E> {
+        Ok(Any)
+    }
+
+    fn visit_f64<E>(self, _: f64) -> Result<Any, E> {
+        Ok(Any)
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Any, E> {
+        black_box(value.len());
+        Ok(Any)
+    }
+
+    fn visit_bytes<E>(self, value: &[u8]) -> Result<Any, E> {
+        black_box(value.len());
+        Ok(Any)
+    }
+
+    fn visit_unit<E>(self) -> Result<Any, E> {
+        Ok(Any)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Any, A::Error> {
+        while seq.next_element::<Any>()?.is_some() {}
+        Ok(Any)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Any, A::Error> {
+        while map.next_entry::<Any, Any>()?.is_some() {}
+        Ok(Any)
+    }
+}
+
+/// The `.txt` files under the directory of `JOMINI_GAME_DIR`, such as the
+/// `game/common` directory of CK3. Game files are not in the repository, so
+/// the game file benchmarks run only when the variable is set. A file that
+/// one of the paths rejects is left out, so each benchmark reads the same
+/// files.
+fn setup_game_files() -> Option<&'static [Vec<u8>]> {
+    static FILES: OnceLock<Option<Vec<Vec<u8>>>> = OnceLock::new();
+    FILES
+        .get_or_init(|| {
+            let root = std::env::var_os("JOMINI_GAME_DIR")?;
+            let mut paths = Vec::new();
+            let mut stack = vec![std::path::PathBuf::from(root)];
+            while let Some(dir) = stack.pop() {
+                for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().is_some_and(|e| e == "txt") {
+                        paths.push(path);
+                    }
+                }
+            }
+            paths.sort();
+            let files = paths
+                .iter()
+                .filter_map(|path| std::fs::read(path).ok())
+                .filter(|data| {
+                    TextTape::from_slice(data).is_ok_and(|tape| {
+                        jomini::TextDeserializer::from_windows1252_tape(&tape)
+                            .deserialize::<AnyRoot>()
+                            .is_ok()
+                    }) && jomini::text::lossless::parse_tape(data)
+                        .into_result()
+                        .is_ok()
+                        && jomini::text::lossless::de::from_windows1252_slice::<AnyRoot>(data)
+                            .is_ok()
+                })
+                .collect();
+            Some(files)
+        })
+        .as_deref()
+}
+
+/// The EU4 save without the `EU4txt` header, for the `GameState` model.
+fn setup_eu4_gamestate() -> &'static [u8] {
+    &setup_eu4()["EU4txt".len()..]
 }
 
 #[inline(never)]
@@ -136,6 +289,57 @@ pub mod criterion_benches {
         let mut group = c.benchmark_group("text/deserialize");
         group.throughput(Throughput::Bytes(data.len() as u64));
         group.bench_function("meta", |b| b.iter(|| deserialize_meta(data)));
+        group.bench_function(BenchmarkId::new("tape", "meta"), |b| {
+            b.iter(|| deserialize_tape::<Meta>(data))
+        });
+        group.bench_function(BenchmarkId::new("lossless_tape", "meta"), |b| {
+            b.iter(|| deserialize_lossless_tape::<Meta>(data))
+        });
+        group.bench_function(BenchmarkId::new("tree", "meta"), |b| {
+            b.iter(|| deserialize_tree::<Meta>(data))
+        });
+
+        let data = setup_eu4_gamestate();
+        group.sample_size(20);
+        group.throughput(Throughput::Bytes(data.len() as u64));
+        group.bench_function(BenchmarkId::new("tape", "eu4"), |b| {
+            b.iter(|| deserialize_tape::<GameState>(data))
+        });
+        group.bench_function(BenchmarkId::new("reader", "eu4"), |b| {
+            b.iter(|| deserialize_reader::<GameState>(data))
+        });
+        group.bench_function(BenchmarkId::new("lossless_tape", "eu4"), |b| {
+            b.iter(|| deserialize_lossless_tape::<GameState>(data))
+        });
+        group.bench_function(BenchmarkId::new("tree", "eu4"), |b| {
+            b.iter(|| deserialize_tree::<GameState>(data))
+        });
+
+        if let Some(files) = setup_game_files() {
+            let bytes = files.iter().map(|data| data.len() as u64).sum();
+            group.throughput(Throughput::Bytes(bytes));
+            group.bench_function(BenchmarkId::new("tape", "game"), |b| {
+                b.iter(|| {
+                    files.iter().for_each(|data| {
+                        black_box(deserialize_tape::<AnyRoot>(data));
+                    })
+                })
+            });
+            group.bench_function(BenchmarkId::new("lossless_tape", "game"), |b| {
+                b.iter(|| {
+                    files.iter().for_each(|data| {
+                        black_box(deserialize_lossless_tape::<AnyRoot>(data));
+                    })
+                })
+            });
+            group.bench_function(BenchmarkId::new("tree", "game"), |b| {
+                b.iter(|| {
+                    files.iter().for_each(|data| {
+                        black_box(deserialize_tree::<AnyRoot>(data));
+                    })
+                })
+            });
+        }
         group.finish();
     }
 
@@ -194,6 +398,42 @@ pub mod gungraun_benches {
     }
 
     #[library_benchmark]
+    #[bench::meta(setup = setup_meta)]
+    fn deserialize_meta_tape(data: &[u8]) -> Meta {
+        deserialize_tape(data)
+    }
+
+    #[library_benchmark]
+    #[bench::meta(setup = setup_meta)]
+    fn deserialize_meta_lossless_tape(data: &[u8]) -> Meta {
+        deserialize_lossless_tape(data)
+    }
+
+    #[library_benchmark]
+    #[bench::meta(setup = setup_meta)]
+    fn deserialize_meta_tree(data: &[u8]) -> Meta {
+        deserialize_tree(data)
+    }
+
+    #[library_benchmark]
+    #[bench::eu4(setup = setup_eu4_gamestate)]
+    fn deserialize_eu4_tape(data: &[u8]) -> GameState {
+        deserialize_tape(data)
+    }
+
+    #[library_benchmark]
+    #[bench::eu4(setup = setup_eu4_gamestate)]
+    fn deserialize_eu4_lossless_tape(data: &[u8]) -> GameState {
+        deserialize_lossless_tape(data)
+    }
+
+    #[library_benchmark]
+    #[bench::eu4(setup = setup_eu4_gamestate)]
+    fn deserialize_eu4_tree(data: &[u8]) -> GameState {
+        deserialize_tree(data)
+    }
+
+    #[library_benchmark]
     #[bench::eu4(setup = setup_eu4_archive)]
     #[bench::ck3(setup = setup_ck3_archive)]
     fn compressed_read(archive: &CorpusArchive) -> i32 {
@@ -208,6 +448,12 @@ pub mod gungraun_benches {
             reader,
             lossless,
             deserialize,
+            deserialize_meta_tape,
+            deserialize_meta_lossless_tape,
+            deserialize_meta_tree,
+            deserialize_eu4_tape,
+            deserialize_eu4_lossless_tape,
+            deserialize_eu4_tree,
             compressed_read,
         ]
     );
