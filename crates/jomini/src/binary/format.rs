@@ -9,8 +9,8 @@ use std::borrow::Cow;
 
 /// Extension of Serde's [`Visitor`] trait with Jomini-specific binary values.
 ///
-/// The default `visit_rgb` forwards to `visit_seq` via [`ColorSequence`], so
-/// existing Serde visitors automatically receive RGB support.
+/// The default `visit_rgb` gives the color to `visit_seq` as a sequence of
+/// its channels, so existing Serde visitors receive RGB values with no change.
 pub trait PdxVisitor<'de>: Visitor<'de> {
     /// Visit an RGB color value. Defaults to a 3- or 4-element sequence.
     #[inline]

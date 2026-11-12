@@ -19,12 +19,24 @@
 //! - [FieldGroupsIter]
 //! - [FieldsIter]
 //! - [ValuesIter]
+//!
+#![cfg_attr(
+    feature = "lossless",
+    doc = r#"
+When you need positions, comments, or recovery from syntax errors in game and
+mod files, use the **experimental** [`lossless`] module. It parses text into a
+tree that keeps every byte, so a tool can extract data, format, edit, or check
+a file.
+"#
+)]
 
 /// text deserialization
 #[cfg(feature = "serde")]
 pub mod de;
 mod dom;
 mod fnv;
+#[cfg(feature = "lossless")]
+pub mod lossless;
 mod operator;
 mod reader;
 mod tape;

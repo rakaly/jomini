@@ -105,9 +105,10 @@ enum ParseState {
 /// of data.
 ///
 /// `TokenReader` uses a low-level parsing model that is optimized for large
-/// save files. It returns raw tokens and does not provide all of [`TextTape`]'s
-/// normalization. For example, it does not skip ghost objects, pair open and
-/// close tokens, or identify container types.
+/// save files. It returns raw tokens and does not provide all of the
+/// normalization of [`TextTape`](crate::TextTape). For example, it does not
+/// skip ghost objects, pair open and close tokens, or identify container
+/// types.
 ///
 /// [TokenReader] operates over a fixed size buffer, so using a
 /// [BufRead](std::io::BufRead) affords no benefits. An error will be returned
@@ -852,6 +853,7 @@ impl<'a> TokenReader<'a> {
         }
     }
 
+    #[cfg(feature = "serde")]
     #[inline]
     pub(crate) fn read_expect_equals(&mut self) -> Result<Token<'_>, ReaderError> {
         match self.source.window().first() {

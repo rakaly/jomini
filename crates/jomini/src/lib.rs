@@ -236,6 +236,29 @@ assert_eq!(actual, r#"{"foo":"bar"}"#);
 ```
 "##
 )]
+#![cfg_attr(
+    feature = "lossless",
+    doc = r##"
+## Lossless Syntax Tree
+
+The **experimental** [`text::lossless`] module parses plaintext into a tree
+that keeps every byte of the source: comments, whitespace, and the operator.
+It continues after a syntax error, and it gives the position of each error.
+Use it to read the game and mod files: in a program that extracts data from
+them, or in a formatter, linter, or highlighter. A save is usually only
+deserialized, and the streaming deserializer is faster for that. Enable the
+`lossless` feature to use it.
+
+```rust
+use jomini::text::lossless::parse;
+
+let parse = parse(b"capital = 169 # Paris");
+let field = parse.ast().fields().next().unwrap();
+assert_eq!(field.value().unwrap().to_u64(), Some(169));
+assert!(parse.root().has_comment());
+```
+"##
+)]
 /*!
 
 ## Write API
@@ -323,6 +346,9 @@ capabilities.
 
 */
 #![warn(missing_docs)]
+// docs.rs builds with `--cfg docsrs`. Each item that a feature enables then
+// shows the feature that it needs.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 pub mod binary;
 pub mod common;
 mod data;
