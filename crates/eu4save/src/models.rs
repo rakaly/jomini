@@ -17,7 +17,6 @@ pub struct Meta {
     #[jomini(default)]
     pub is_ironman: bool,
     #[jomini(default, alias = "multi_player")]
-    #[jomini(alias = "multi_player")]
     pub multiplayer: bool,
     pub not_observer: bool,
     #[jomini(default)]
@@ -67,7 +66,6 @@ impl<'de> Deserialize<'de> for Eu4Save {
             #[jomini(default)]
             pub is_ironman: bool,
             #[jomini(default, alias = "multi_player")]
-            #[jomini(alias = "multi_player")]
             pub multiplayer: bool,
             pub not_observer: bool,
             #[jomini(default)]
