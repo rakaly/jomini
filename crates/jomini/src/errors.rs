@@ -34,6 +34,7 @@ impl Error {
         Self::new(ErrorKind::Deserialize(DeserializeError { kind }))
     }
 
+    #[cfg(feature = "serde")]
     pub(crate) fn deserialize_msg(msg: impl Into<Box<str>>) -> Self {
         Self::deserialize(DeserializeErrorKind::Message(msg.into()))
     }
