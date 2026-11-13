@@ -77,6 +77,15 @@
 //! # Ok::<(), jomini::text::lossless::de::Error>(())
 //! ```
 //!
+//! # Read variables as their values
+//!
+//! By default, the deserializer reads a `@name` variable or a `@[ ... ]`
+//! calculation as its source text. To read their values, make a
+//! [`Resolution`](super::resolve::Resolution) with
+//! [`resolve`](super::resolve::resolve()) and pass it to
+//! [`Document::with_resolution`]. The [`resolve`](mod@super::resolve) module
+//! has examples.
+//!
 //! # Keep a document
 //!
 //! An [`OwnedBlock`](super::OwnedBlock) holds a whole document as data. It
@@ -151,6 +160,31 @@
 //!   of a field, as in `x = @:load_variable name`, it is the text of the
 //!   directive. The deserializer does not expand a directive.
 
+/// Bind `$doc` to the model of the tree of `$ctx` and run `$body`. With a
+/// resolution, the model gives the values of the resolution. The two models
+/// are two types, so the hot path of each one tests a constant.
+macro_rules! with_doc {
+    ($ctx:expr, |$doc:ident| $body:expr) => {
+        if $ctx.has_resolution() {
+            let $doc = $crate::text::lossless::de::tree::TreeDoc::<_, true>::of($ctx);
+            $body
+        } else {
+            let $doc = $crate::text::lossless::de::tree::TreeDoc::<_, false>::of($ctx);
+            $body
+        }
+    };
+}
+
+/// Bind `$doc` to the model of the tree of `$ctx` without a resolution and
+/// run `$body`. A caller that never has a resolution uses this, so it does
+/// not compile the deserializer of the model with a resolution.
+macro_rules! without_resolution {
+    ($ctx:expr, |$doc:ident| $body:expr) => {{
+        let $doc = $crate::text::lossless::de::tree::TreeDoc::<_, false>::of($ctx);
+        $body
+    }};
+}
+
 mod document;
 mod engine;
 mod error;
@@ -201,7 +235,7 @@ where
 {
     let parse = parse_with(source, flavor);
     check_errors(&parse.tree())?;
-    Document::new(parse.tree(), encoding).deserialize()
+    Document::new(parse.tree(), encoding).deserialize_unresolved()
 }
 
 /// Parse UTF-8 `source` and deserialize it into `T`.
@@ -260,7 +294,7 @@ where
     T: Deserialize<'a>,
     E: Encoding,
 {
-    Document::new(tree, encoding).deserialize()
+    Document::new(tree, encoding).deserialize_unresolved()
 }
 
 /// Read the root of a tree into an owned block.
