@@ -7,7 +7,7 @@ use crate::{
     Encoding,
     text::lossless::{
         AstNode, Block, Field, LineCol, LineIndex, NodeId, OwnedValue, Root, SyntaxElement,
-        SyntaxKind, SyntaxTree, TextSize, Value, value::ValueBuilder,
+        SyntaxKind, SyntaxTree, TextSize, Value, resolve::Resolution, value::ValueBuilder,
     },
 };
 use serde::de::{self, Deserialize, DeserializeSeed, Error as _, Visitor};
@@ -15,7 +15,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     marker::PhantomData,
-    sync::{Mutex, OnceLock, PoisonError},
+    sync::{Arc, Mutex, OnceLock, PoisonError},
 };
 
 /// A syntax tree, its encoding, and its file name.
@@ -99,6 +99,94 @@ impl<'t, 'a, E: Encoding> Document<'t, 'a, E> {
         }
     }
 
+    /// Make the document read each variable and each calculation as its
+    /// value from `resolution`. See
+    /// [`resolve`](crate::text::lossless::resolve).
+    ///
+    /// `resolution` can be a [`Resolution`] or an `Arc<Resolution>`, so
+    /// several documents can share one resolution.
+    ///
+    /// The document skips each variable definition, such as `@size = 0.5`:
+    /// a definition is not an entry of its block or of the root. These reads
+    /// use the resolution, also when the target is an [`OwnedValue`]:
+    ///
+    /// - [`deserialize`](Document::deserialize)
+    /// - [`deserialize_value`](Document::deserialize_value) and
+    ///   [`deserialize_value_seed`](Document::deserialize_value_seed)
+    /// - [`deserialize_field`](Document::deserialize_field) and
+    ///   [`deserialize_field_seed`](Document::deserialize_field_seed)
+    /// - [`str`](Document::str)
+    ///
+    /// Only [`to_owned_value`](Document::to_owned_value) ignores the
+    /// resolution and copies the source text.
+    ///
+    /// A variable or a calculation that has no value reads as its source
+    /// text. See [Find variables that have no
+    /// value](crate::text::lossless::resolve#find-variables-that-have-no-value).
+    ///
+    /// A resolved value is not a part of the source, so a target that
+    /// borrows from the source, such as `&'a str`, cannot take it. Use
+    /// `String` or `Cow<str>`:
+    ///
+    /// ```
+    /// use jomini::{Utf8Encoding, text::lossless::{parse, de::Document, resolve::resolve}};
+    ///
+    /// let parse = parse(b"@name = \"Jean II\"\nruler = @name");
+    /// let doc = Document::new(parse.tree(), Utf8Encoding::new())
+    ///     .with_resolution(resolve(parse.tree()))?;
+    /// let ruler = doc.require(doc.root(), b"ruler")?;
+    /// assert_eq!(doc.deserialize_value::<String>(ruler)?, "Jean II");
+    ///
+    /// let error = doc.deserialize_value::<&str>(ruler).unwrap_err();
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     r#"2:9: ruler: invalid type: string "Jean II", expected a borrowed string"#
+    /// );
+    /// # Ok::<(), jomini::text::lossless::de::Error>(())
+    /// ```
+    ///
+    /// `with_resolution` returns the same `Document` type, so code that has a
+    /// resolution for only some files needs one code path:
+    ///
+    /// ```
+    /// use jomini::{Utf8Encoding, text::lossless::{parse, de::Document, resolve::resolve}};
+    /// use std::collections::HashMap;
+    ///
+    /// let parse = parse(b"@size = 2\nwidth = @size");
+    /// for (resolution, width) in [(None, "@size"), (Some(resolve(parse.tree())), "2")] {
+    ///     let mut doc = Document::new(parse.tree(), Utf8Encoding::new());
+    ///     if let Some(resolution) = resolution {
+    ///         doc = doc.with_resolution(resolution)?;
+    ///     }
+    ///     let map: HashMap<String, String> = doc.deserialize()?;
+    ///     assert_eq!(map["width"], width);
+    /// }
+    /// # Ok::<(), jomini::text::lossless::de::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the resolution is not for the tree of the
+    /// document. See [`Resolution::is_for`].
+    pub fn with_resolution(
+        mut self,
+        resolution: impl Into<Arc<Resolution>>,
+    ) -> Result<Self, Error> {
+        let resolution = resolution.into();
+        if !resolution.is_for(self.tree()) {
+            let error = Error::custom("the resolution is of a different tree");
+            return Err(self.finish(error));
+        }
+        self.ctx.set_resolution(resolution);
+        // A resolution changes the entries of a container: a variable
+        // definition is not an entry.
+        self.arrays
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        Ok(self)
+    }
+
     /// Set the file name that the errors show.
     pub fn with_file(mut self, file: impl Into<String>) -> Self {
         self.file = Some(file.into());
@@ -167,6 +255,14 @@ impl<'t, 'a, E: Encoding> Document<'t, 'a, E> {
         T::deserialize(self).map_err(|e| self.finish_root(e))
     }
 
+    /// Deserialize the whole document into `T`, as
+    /// [`deserialize`](Document::deserialize) does, for a document that has
+    /// no resolution.
+    pub(super) fn deserialize_unresolved<T: Deserialize<'a>>(&self) -> Result<T, Error> {
+        debug_assert!(!self.ctx.has_resolution());
+        T::deserialize(Unresolved(self)).map_err(|e| self.finish_root(e))
+    }
+
     /// Finish an error of the root. An error with no position of its own
     /// gets the position of the root.
     #[cold]
@@ -221,14 +317,21 @@ impl<'t, 'a, E: Encoding> Document<'t, 'a, E> {
     }
 
     /// The decoded text of a scalar, an operator, a calculation, or an
-    /// interpolation. Else an error.
+    /// interpolation. For a block, it returns an error.
+    ///
+    /// With a [resolution](Document::with_resolution), a variable or a
+    /// calculation that has a value always gives a copy of the value
+    /// ([`Cow::Owned`]). Other text borrows from the source
+    /// ([`Cow::Borrowed`]) when decoding does not change it.
     pub fn str(&self, value: Value<'t, 'a>) -> Result<Cow<'a, str>, Error> {
-        let doc = self.doc();
         let node = self.handle(value)?;
-        match doc.view(node) {
-            View::Scalar(scalar) | View::Calc(scalar) => Ok(doc.decode(scalar)),
+        with_doc!(&self.ctx, |doc| match doc.view(node) {
+            View::Scalar(scalar) | View::Calc(scalar) => Ok(match doc.resolved(scalar) {
+                Some(value) => Cow::Owned(value.decode(self.ctx.encoding()).into_owned()),
+                None => doc.decode(scalar),
+            }),
             _ => Err(self.error(node, Error::custom("expected a scalar, found a block"))),
-        }
+        })
     }
 
     /// Deserialize `value` into `T`, such as a number, a `Vec`, or a
@@ -273,8 +376,10 @@ impl<'t, 'a, E: Encoding> Document<'t, 'a, E> {
         seed: S,
     ) -> Result<S::Value, Error> {
         let node = self.handle(value)?;
-        seed.deserialize(ValueDe::node(self.doc(), node))
-            .map_err(|e| self.error(node, e))
+        with_doc!(&self.ctx, |doc| {
+            seed.deserialize(ValueDe::node(doc, node))
+                .map_err(|e| self.error(node, e))
+        })
     }
 
     /// Deserialize the value of `field` into `T`, with the operator of the
@@ -304,11 +409,31 @@ impl<'t, 'a, E: Encoding> Document<'t, 'a, E> {
         seed: S,
     ) -> Result<S::Value, Error> {
         let node = self.handle(self.value(field)?)?;
-        seed.deserialize(ValueDe::field(self.doc(), node, field.op()))
-            .map_err(|e| self.error(node, e))
+        with_doc!(&self.ctx, |doc| {
+            seed.deserialize(ValueDe::field(doc, node, field.op()))
+                .map_err(|e| self.error(node, e))
+        })
     }
 
-    /// Copy `value` into an [`OwnedValue`].
+    /// Copy `value` into an [`OwnedValue`]. The copy keeps the source text,
+    /// also when the document has a resolution: a variable stays a
+    /// variable, and a variable definition stays an entry. To get the
+    /// resolved values, deserialize the value into an `OwnedValue` with
+    /// [`deserialize_value`](Document::deserialize_value).
+    ///
+    /// ```
+    /// use jomini::{Utf8Encoding, text::lossless::{parse, OwnedValue, de::Document, resolve::resolve}};
+    ///
+    /// let tree = parse(b"@x = 1\nm = { @x }");
+    /// let doc = Document::new(tree.tree(), Utf8Encoding::new())
+    ///     .with_resolution(resolve(tree.tree()))?;
+    /// let m = doc.require(doc.root(), b"m")?;
+    /// let source = doc.to_owned_value(m)?;
+    /// let resolved: OwnedValue = doc.deserialize_value(m)?;
+    /// assert_eq!(source.as_block().unwrap().values().next().unwrap().as_str(), Some("@x"));
+    /// assert_eq!(resolved.as_block().unwrap().values().next().unwrap().as_str(), Some("1"));
+    /// # Ok::<(), jomini::text::lossless::de::Error>(())
+    /// ```
     pub fn to_owned_value(&self, value: Value<'t, 'a>) -> Result<OwnedValue, Error> {
         let node = self.handle(value)?;
         Ok(ValueBuilder::new(self.doc()).value(node))
@@ -369,7 +494,7 @@ impl<'t, 'a, E: Encoding> Document<'t, 'a, E> {
         let mut arrays = self.arrays.lock().unwrap_or_else(PoisonError::into_inner);
         let array = arrays
             .entry(block.syntax().id())
-            .or_insert_with(|| ArrayIndex::new(self.doc(), block));
+            .or_insert_with(|| with_doc!(&self.ctx, |doc| ArrayIndex::new(doc, block)));
         array.as_ref()?.get(element)
     }
 
@@ -380,12 +505,55 @@ impl<'t, 'a, E: Encoding> Document<'t, 'a, E> {
     }
 }
 
+/// The methods of a deserializer of the root of the document
+/// `$document`, which bind the model with the macro `$model`.
 macro_rules! forward_root {
-    ($($method:ident ( $($arg:ident : $ty:ty),* ))*) => {$(
+    (|$this:ident| $document:expr, $model:ident) => {
+        forward_root! {
+            @methods [$this, $document] $model
+            deserialize_any()
+            deserialize_bool()
+            deserialize_i8()
+            deserialize_i16()
+            deserialize_i32()
+            deserialize_i64()
+            deserialize_i128()
+            deserialize_u8()
+            deserialize_u16()
+            deserialize_u32()
+            deserialize_u64()
+            deserialize_u128()
+            deserialize_f32()
+            deserialize_f64()
+            deserialize_char()
+            deserialize_str()
+            deserialize_string()
+            deserialize_bytes()
+            deserialize_byte_buf()
+            deserialize_option()
+            deserialize_unit()
+            deserialize_unit_struct(name: &'static str)
+            deserialize_newtype_struct(name: &'static str)
+            deserialize_seq()
+            deserialize_tuple(len: usize)
+            deserialize_tuple_struct(name: &'static str, len: usize)
+            deserialize_map()
+            deserialize_struct(name: &'static str, fields: &'static [&'static str])
+            deserialize_enum(name: &'static str, variants: &'static [&'static str])
+            deserialize_identifier()
+            deserialize_ignored_any()
+        }
+    };
+    (@methods [$this:ident, $document:expr] $model:ident
+        $($method:ident ( $($arg:ident : $ty:ty),* ))*) => {$(
         fn $method<V: Visitor<'a>>(self, $($arg: $ty,)* visitor: V) -> Result<V::Value, Error> {
-            let doc = self.doc();
-            let root = ValueDe::root(doc, doc.root());
-            de::Deserializer::$method(root, $($arg,)* visitor).map_err(|e| self.finish_root(e))
+            let $this = self;
+            let document: &Document<'_, 'a, E> = $document;
+            $model!(&document.ctx, |doc| {
+                let root = ValueDe::root(doc, doc.root());
+                de::Deserializer::$method(root, $($arg,)* visitor)
+                    .map_err(|e| document.finish_root(e))
+            })
         }
     )*};
 }
@@ -395,37 +563,15 @@ macro_rules! forward_root {
 impl<'a, E: Encoding> de::Deserializer<'a> for &Document<'_, 'a, E> {
     type Error = Error;
 
-    forward_root! {
-        deserialize_any()
-        deserialize_bool()
-        deserialize_i8()
-        deserialize_i16()
-        deserialize_i32()
-        deserialize_i64()
-        deserialize_i128()
-        deserialize_u8()
-        deserialize_u16()
-        deserialize_u32()
-        deserialize_u64()
-        deserialize_u128()
-        deserialize_f32()
-        deserialize_f64()
-        deserialize_char()
-        deserialize_str()
-        deserialize_string()
-        deserialize_bytes()
-        deserialize_byte_buf()
-        deserialize_option()
-        deserialize_unit()
-        deserialize_unit_struct(name: &'static str)
-        deserialize_newtype_struct(name: &'static str)
-        deserialize_seq()
-        deserialize_tuple(len: usize)
-        deserialize_tuple_struct(name: &'static str, len: usize)
-        deserialize_map()
-        deserialize_struct(name: &'static str, fields: &'static [&'static str])
-        deserialize_enum(name: &'static str, variants: &'static [&'static str])
-        deserialize_identifier()
-        deserialize_ignored_any()
-    }
+    forward_root!(|this| this, with_doc);
+}
+
+/// The deserializer of the whole tree of a document that has no
+/// resolution. It does not compile the model with a resolution.
+struct Unresolved<'d, 't, 'a, E>(&'d Document<'t, 'a, E>);
+
+impl<'a, E: Encoding> de::Deserializer<'a> for Unresolved<'_, '_, 'a, E> {
+    type Error = Error;
+
+    forward_root!(|this| this.0, without_resolution);
 }

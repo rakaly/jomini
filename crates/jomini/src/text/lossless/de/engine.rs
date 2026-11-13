@@ -26,7 +26,7 @@
 
 use super::error::Error;
 use crate::{
-    Scalar,
+    Scalar, ScalarError,
     text::{
         Operator,
         lossless::TextRange,
@@ -66,6 +66,12 @@ pub(crate) trait Doc: Copy {
     /// Return `true` for a `@name` variable.
     fn variable(self, scalar: Self::Scalar) -> bool;
     fn with_scalar<R>(self, scalar: Self::Scalar, f: impl FnOnce(Scalar<'_>) -> R) -> R;
+    /// The value of a scalar as a float, with the rules of
+    /// `TextDeserializer`.
+    #[inline]
+    fn to_f64(self, scalar: Self::Scalar) -> Result<f64, ScalarError> {
+        self.with_scalar(scalar, |s| s.to_f64())
+    }
     /// The decoded text of a scalar.
     fn string(self, scalar: Self::Scalar) -> String;
     fn node_range(self, node: Self::Node) -> Option<TextRange>;
@@ -211,6 +217,14 @@ impl<D: Doc> Text<D> {
         match self {
             Text::Scalar(s) => doc.with_scalar(s, f),
             Text::Static(s) => f(Scalar::new(s.as_bytes())),
+        }
+    }
+
+    #[inline]
+    fn to_f64(self, doc: D) -> Result<f64, ScalarError> {
+        match self {
+            Text::Scalar(s) => doc.to_f64(s),
+            Text::Static(s) => Scalar::new(s.as_bytes()).to_f64(),
         }
     }
 }
@@ -791,7 +805,13 @@ impl<'de, D: DocDe<'de>> de::Deserializer<'de> for ValueDe<D> {
     }
 
     fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
-        parse_scalar!(self, visitor, to_f64, visit_f64)
+        let doc = self.doc;
+        if let Some(text) = self.text()
+            && let Ok(x) = text.to_f64(doc)
+        {
+            return visitor.visit_f64(x);
+        }
+        self.deserialize_any(visitor)
     }
 
     fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {

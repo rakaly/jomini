@@ -23,6 +23,7 @@ use super::{
 };
 use std::fmt;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Summary bits for a subtree, one byte for each node. The parser sets the
 /// bits when it builds the tree.
@@ -132,6 +133,9 @@ pub(super) const NO_PARENT: u32 = u32::MAX;
 /// has no lifetime.
 #[derive(Clone)]
 pub(super) struct TreeData {
+    /// The identity of the parse. Each parse gets a different number, and
+    /// a clone keeps it. A resolution compares it to find its tree.
+    pub(super) parse_id: u64,
     pub(super) flavor: Flavor,
     /// The significant and missing tokens in sink emission order.
     pub(super) tokens: Vec<Token>,
@@ -412,6 +416,7 @@ fn parse_data(source: &[u8], flavor: Flavor) -> TreeData {
     debug_assert_eq!(base, 0, "the tree keeps every token");
     let nodes = sink.finish(trailing_comment, &mut tokens, lexed);
     TreeData {
+        parse_id: next_parse_id(),
         flavor,
         tokens,
         nodes,
@@ -419,6 +424,12 @@ fn parse_data(source: &[u8], flavor: Flavor) -> TreeData {
         parents: OnceLock::new(),
         closing_edit: OnceLock::new(),
     }
+}
+
+/// A number that no other parse has.
+fn next_parse_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Send the events of the grammar for `source` to `sink`. The parser lexes

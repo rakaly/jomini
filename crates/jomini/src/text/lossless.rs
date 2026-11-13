@@ -197,6 +197,8 @@
 //! The [`de`] module deserializes the tree into serde types with no tape. A
 //! type that derives `Deserialize` for `TextDeserializer` needs no change.
 //! Each error gives the line, the column, and the path of keys.
+//! To read `@name` variables and `@[ ... ]` calculations as their values,
+//! not as their source text, use [`resolve`].
 //!
 //! To keep a whole document as data, read it into an [`OwnedBlock`]. The
 //! block keeps the quotes, the operators, the headers, and the order of the
@@ -267,6 +269,7 @@ mod kind;
 mod lexer;
 mod line_index;
 mod parser;
+pub mod resolve;
 mod tape;
 #[cfg(test)]
 mod tests;
