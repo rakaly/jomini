@@ -36,6 +36,7 @@ pub struct Meta {
 #[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 pub struct ModName {
     pub filename: String,
+    #[serde(deserialize_with = "deserialize_eu4_string")]
     pub name: String,
 }
 
@@ -80,7 +81,7 @@ impl<'de> Deserialize<'de> for Eu4Save {
             #[jomini(default)]
             pub is_random_new_world: bool,
 
-            #[jomini(default)]
+            #[jomini(default, deserialize_with = "deserialize_eu4_string_vec")]
             pub players_countries: Vec<String>,
             pub current_age: String,
             pub start_date: Eu4Date,
@@ -186,7 +187,7 @@ impl Eu4Save {
 #[derive(Debug, Clone, JominiDeserialize)]
 #[cfg_attr(feature = "serialize", derive(Serialize))]
 pub struct GameState {
-    #[jomini(default)]
+    #[jomini(default, deserialize_with = "deserialize_eu4_string_vec")]
     pub players_countries: Vec<String>,
     pub current_age: String,
     pub start_date: Eu4Date,
