@@ -1,4 +1,4 @@
-use super::{TokenReader, dom::ValuesIter, reader::Token};
+use super::{TokenReader, decode_quoted, dom::ValuesIter, reader::Token};
 use crate::{
     DeserializeError, DeserializeErrorKind, Encoding, Error, TextTape, TextToken, Utf8Encoding,
     Windows1252Encoding,
@@ -302,12 +302,7 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
                 unsafe { self.de.read() }.reader.position(),
             )),
             Token::Operator(x) => visitor.visit_str(x.symbol()),
-            Token::Unquoted(s) | Token::Quoted(s) => {
-                match unsafe { self.de.read() }.encoding.decode(s.as_bytes()) {
-                    Cow::Borrowed(x) => visitor.visit_str(x),
-                    Cow::Owned(x) => visitor.visit_string(x),
-                }
-            }
+            Token::Unquoted(_) | Token::Quoted(_) => self.deserialize_str(visitor),
         }
     }
 
@@ -411,13 +406,16 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        if let Some(s) = self.token.as_scalar() {
-            match unsafe { self.de.read() }.encoding.decode(s.as_bytes()) {
-                Cow::Borrowed(x) => visitor.visit_str(x),
-                Cow::Owned(x) => visitor.visit_string(x),
-            }
-        } else {
-            self.deserialize_any(visitor)
+        let encoding = &unsafe { self.de.read() }.encoding;
+        let decoded = match self.token {
+            Token::Unquoted(s) => encoding.decode(s.as_bytes()),
+            Token::Quoted(s) => decode_quoted(encoding, s.as_bytes()),
+            _ => return self.deserialize_any(visitor),
+        };
+
+        match decoded {
+            Cow::Borrowed(x) => visitor.visit_str(x),
+            Cow::Owned(x) => visitor.visit_string(x),
         }
     }
 
@@ -1148,8 +1146,8 @@ where
 macro_rules! deserialize_any_value {
     ($self: expr, $x: expr, $visitor: expr) => {
         match $x.token() {
-            TextToken::Quoted(s) | TextToken::Unquoted(s) => {
-                visit_str!($x.decode(s.as_bytes()), $visitor)
+            TextToken::Quoted(_) | TextToken::Unquoted(_) => {
+                visit_str!($x.read_str().map_err(Error::from)?, $visitor)
             }
             TextToken::Header(_) => {
                 // This is a bit of a hack to avoid overflows on flattened
@@ -1846,6 +1844,74 @@ mod tests {
             MyStruct {
                 name: r#"Joe "Captain" Rogers"#.to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn test_escaped_backslashes() {
+        let data = br#"
+            path = "C:\\Users\\me"
+            model = "gfx\models\ships\cog.mesh"
+            mixed = "gfx\\interface\English_flag.tga"
+            old_tooltip = "Traditions: +50%\n"
+            new_tooltip = "Traditions: +50%\\n"
+            backslash = "\\"
+            nested = "division_template = \"Anarchist Militia\""
+            unquoted = gfx\\icon.dds
+        "#;
+
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct MyStruct {
+            path: String,
+            model: String,
+            mixed: String,
+            old_tooltip: String,
+            new_tooltip: String,
+            backslash: String,
+            nested: String,
+            unquoted: String,
+        }
+
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(
+            actual,
+            MyStruct {
+                path: r"C:\Users\me".to_string(),
+                model: r"gfx\models\ships\cog.mesh".to_string(),
+                mixed: r"gfx\interface\English_flag.tga".to_string(),
+                old_tooltip: r"Traditions: +50%\n".to_string(),
+                new_tooltip: r"Traditions: +50%\n".to_string(),
+                backslash: r"\".to_string(),
+                nested: r#"division_template = "Anarchist Militia""#.to_string(),
+                unquoted: r"gfx\\icon.dds".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_escaped_keys_and_any_values() {
+        let data = br#""C:\\Users" = "say \"hi\"" plain = "a\\b""#;
+        let actual: HashMap<String, String> = from_owned(&data[..]);
+        let expected = HashMap::from([
+            (r"C:\Users".to_string(), r#"say "hi""#.to_string()),
+            ("plain".to_string(), r"a\b".to_string()),
+        ]);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_written_backslashes_round_trip() {
+        let path = r#"C:\Users\me "and" \\server\"#;
+        let mut out = Vec::new();
+        let mut writer = crate::TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_unquoted(b"path").unwrap();
+        writer.write_quoted(path.as_bytes()).unwrap();
+        assert_eq!(out, br#"path="C:\\Users\\me \"and\" \\\\server\\""#);
+
+        let actual: HashMap<String, String> = from_owned(&out);
+        assert_eq!(
+            actual,
+            HashMap::from([("path".to_string(), path.to_string())])
         );
     }
 
