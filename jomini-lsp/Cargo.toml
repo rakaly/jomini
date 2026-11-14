@@ -1,0 +1,23 @@
+[package]
+publish = false
+name = "jomini-lsp"
+version = "0.0.1"
+authors = ["Nick Babcock <nbabcock19@hotmail.com>"]
+description = "Language server for Clausewitz (Paradox) game files, built on jomini's lossless syntax tree + cross-file lint layer."
+homepage = "https://github.com/rakaly/jomini/tree/master/jomini-lsp"
+repository = "https://github.com/rakaly/jomini"
+license = "MIT"
+edition = "2024"
+
+# Its own workspace root (mirrors `bench/`) so the LSP/transport dependency tree
+# never touches the published `jomini` crate's graph or lockfile.
+[workspace]
+
+[dependencies]
+crossbeam-channel = "0.5.15"
+jomini = { path = "../crates/jomini", default-features = false }
+lsp-server = "0.7.9"
+lsp-types = "0.97.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+url = "2.5.8"

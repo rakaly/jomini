@@ -1,0 +1,8 @@
+# Mod events. Mixes valid and invalid building references.
+mod_event = {
+	effect = {
+		add_building = fortress      # ok: defined in the mod
+		add_building = baracks       # ERROR: typo for the vanilla `barracks`
+		remove_building = temple     # ok: resolves to the mod's override
+	}
+}
