@@ -2289,7 +2289,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escaped_string_keys() {
+    fn test_binary_strings_keep_backslashes() {
         let mut data = vec![0xcc, 0x29, 0x01, 0x00, 0x03, 0x00, 0x0f, 0x00, 0x11, 0x00];
         data.extend_from_slice(b"schools_initiated");
         data.extend_from_slice(&[0x01, 0x00, 0x0f, 0x00, 0x16, 0x00]);
@@ -2307,7 +2307,7 @@ mod tests {
         let mut expected_map = HashMap::new();
         expected_map.insert(
             String::from("schools_initiated"),
-            String::from(r#"Joe "Captain" Rogers"#),
+            String::from(r#"Joe \"Captain\" Rogers"#),
         );
 
         let actual: MyStruct = from_owned(&data[..], &map).unwrap();
@@ -3161,7 +3161,7 @@ mod tests {
             actual,
             MyStruct {
                 text_field: ByteField(b"Joe \\\"Captain\\\" Rogers ".to_vec()),
-                text_field2: String::from("Joe \"Captain\" Rogers")
+                text_field2: String::from("Joe \\\"Captain\\\" Rogers")
             }
         );
     }

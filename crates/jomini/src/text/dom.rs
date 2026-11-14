@@ -1,4 +1,4 @@
-use super::fnv::FnvBuildHasher;
+use super::{decode_quoted, fnv::FnvBuildHasher};
 use crate::{
     DeserializeError, DeserializeErrorKind, Encoding, Scalar, TextTape, TextToken, text::Operator,
 };
@@ -643,13 +643,16 @@ where
     /// Decode the data with a given string encoding
     #[inline]
     pub fn read_str(&self) -> Cow<'data, str> {
-        self.encoding.decode(self.scalar.as_bytes())
+        match self.token {
+            TextToken::Quoted(_) => decode_quoted(&self.encoding, self.scalar.as_bytes()),
+            _ => self.encoding.decode(self.scalar.as_bytes()),
+        }
     }
 
     /// Decode the data with a given string encoding
     #[inline]
     pub fn read_string(&self) -> String {
-        self.encoding.decode(self.scalar.as_bytes()).into_owned()
+        self.read_str().into_owned()
     }
 
     /// Return the underlying scalar
@@ -704,9 +707,9 @@ where
 {
     fn raw_str(&self) -> Option<Cow<'data, str>> {
         match self.tokens[self.value_ind] {
+            TextToken::Quoted(s) => Some(decode_quoted(&self.encoding, s.as_bytes())),
             TextToken::Header(s)
             | TextToken::Unquoted(s)
-            | TextToken::Quoted(s)
             | TextToken::Parameter(s)
             | TextToken::UndefinedParameter(s) => Some(self.encoding.decode(s.as_bytes())),
             TextToken::Operator(s) => Some(Cow::Borrowed(s.symbol())),
@@ -1016,6 +1019,32 @@ mod tests {
             let _ = key.read_str();
             read_value(value);
         }
+    }
+
+    #[test]
+    fn text_reader_unescapes_quoted_scalars() {
+        let data = br#""C:\\Users" = "say \"hi\"" list = { "a\\b" c\\d } plain = gfx\\e"#;
+        let tape = TextTape::from_slice(data).unwrap();
+        let reader = tape.utf8_reader();
+
+        let mut iter = reader.fields();
+        let (key, _op, value) = iter.next().unwrap();
+        assert_eq!(key.read_str(), r"C:\Users");
+        assert_eq!(key.read_scalar().as_bytes(), br"C:\\Users");
+        assert_eq!(value.read_str().unwrap(), r#"say "hi""#);
+        assert_eq!(value.read_string().unwrap(), r#"say "hi""#);
+
+        let (_key, _op, value) = iter.next().unwrap();
+        let values: Vec<_> = value
+            .read_array()
+            .unwrap()
+            .values()
+            .map(|x| x.read_string().unwrap())
+            .collect();
+        assert_eq!(values, vec![r"a\b".to_string(), r"c\\d".to_string()]);
+
+        let (_key, _op, value) = iter.next().unwrap();
+        assert_eq!(value.read_str().unwrap(), r"gfx\\e");
     }
 
     #[test]
