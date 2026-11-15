@@ -203,7 +203,8 @@
 tape, and [`Parse::document`] reads a file that has syntax errors, or
 part of a file. A type that derives `Deserialize` for `TextDeserializer`
 needs no change, and each error gives the line, the column, and the path
-of keys. See the [`de`] module.
+of keys. See the [`de`] module. To read `@name` variables and `@[ ... ]`
+calculations as their values, not as their source text, use [`resolve`].
 
 To keep a whole document as data, read it into an [`OwnedBlock`]. The
 block keeps the quotes, the operators, the headers, and the order of the
@@ -276,6 +277,7 @@ mod kind;
 mod lexer;
 mod line_index;
 mod parser;
+pub mod resolve;
 mod tape;
 #[cfg(test)]
 mod tests;
