@@ -19,11 +19,11 @@ impl Eu4Flavor {
 impl Encoding for Eu4Flavor {
     fn decode<'a>(&self, data: &'a [u8]) -> std::borrow::Cow<'a, str> {
         // Nearly all strings are plain ascii, so one branch-free pass finds
-        // the bytes that need more work: non-ascii, a backslash escape, or an
-        // EU4dll escape. The loop is written so that it vectorizes.
+        // the bytes that need more work: non-ascii or an EU4dll escape. The
+        // loop is written so that it vectorizes.
         let mut plain = true;
         for &b in data {
-            plain &= b.is_ascii() & (b != b'\\') & !is_eu4dll_escape(b);
+            plain &= b.is_ascii() & !is_eu4dll_escape(b);
         }
 
         if plain {
@@ -100,8 +100,6 @@ pub fn decode_eu4_escaped_text(mut input: &[u8]) -> String {
                     }
                 }
             }
-            // Backslash escapes are dropped like in the Windows-1252 decoder
-            b'\\' => continue,
             _ => cp1252_to_ucs2(cp),
         };
 
@@ -168,11 +166,15 @@ mod tests {
     }
 
     #[test]
-    fn eu4_escaped_text_drops_backslashes() {
-        // A latin name in quotes with a localized suffix: `"Foo" 隊`
+    fn eu4_escaped_text_keeps_backslashes() {
+        // A latin name in quotes with a localized suffix: `"Foo" 隊`. Binary
+        // strings have no escapes, so the flavor keeps the backslashes. Text
+        // unescapes before it decodes, and no EU4dll payload byte is a
+        // backslash or a quote.
         let data = b"\\\"Foo\\\" \x10\x8A\x96";
         let flavor = Eu4Flavor::new();
-        assert_eq!(flavor.decode(data), "\"Foo\" 隊");
+        assert_eq!(flavor.decode(data), "\\\"Foo\\\" 隊");
+        assert_eq!(flavor.decode(&jomini::text::unescape(data)), "\"Foo\" 隊");
     }
 
     #[test]

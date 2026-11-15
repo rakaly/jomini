@@ -24,6 +24,7 @@
 #[cfg(feature = "serde")]
 pub mod de;
 mod dom;
+mod escape;
 mod fnv;
 mod operator;
 mod reader;
@@ -37,6 +38,8 @@ pub use self::dom::{
     ArrayReader, FieldGroupsIter, FieldsIter, GroupEntry, GroupEntryIter, ObjectReader, Reader,
     ScalarReader, ValueReader, ValuesIter,
 };
+pub(crate) use self::escape::decode_quoted;
+pub use self::escape::unescape;
 pub use self::operator::*;
 pub use self::tape::{TextTape, TextTapeParser, TextToken};
 pub use self::writer::*;

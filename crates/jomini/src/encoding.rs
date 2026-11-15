@@ -1,4 +1,4 @@
-use crate::{data::WINDOWS_1252, util::contains_zero_byte, util::le_u64, util::repeat_byte};
+use crate::data::WINDOWS_1252;
 use std::borrow::Cow;
 
 /// An encoding for interpreting byte data as UTF-8 text
@@ -11,10 +11,12 @@ use std::borrow::Cow;
 /// of deserialization throughput by over 10%, as encodings are passed
 /// around everywhere.
 ///
-/// An encoding should also perform additional actions when:
+/// An encoding should also remove trailing whitespace.
 ///
-/// - trailing whitespace is removed
-/// - escape sequences are unescaped
+/// An encoding does not unescape. Escapes such as `\"` are part of the text
+/// syntax, and binary strings have none, so the text deserializers and
+/// readers unescape quoted scalars before they call the encoding. See
+/// [`text::unescape`](crate::text::unescape).
 pub trait Encoding {
     /// Decodes bytes into a utf-8 compatible string -- allocating if necessary
     fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str>;
@@ -31,7 +33,7 @@ pub trait Encoding {
 ///     encoding.decode(b"\xa7GRichard Plantagenet\xa7 ( 2 / 4 / 3 / 0 )"),
 ///     "§GRichard Plantagenet§ ( 2 / 4 / 3 / 0 )"
 /// );
-/// assert_eq!(encoding.decode(br#"Captain \"Joe\" Rogers"#), r#"Captain "Joe" Rogers"#);
+/// assert_eq!(encoding.decode(br"gfx\\interface\icon.dds"), r"gfx\\interface\icon.dds");
 /// assert_eq!(encoding.decode(b"1444.11.11\n"), "1444.11.11");
 /// assert_eq!(encoding.decode(b"\xff"), "ÿ");
 /// assert_eq!(encoding.decode(b"\x8a"), "Š");
@@ -78,7 +80,7 @@ impl<T: Encoding + ?Sized> Encoding for Box<T> {
 ///
 /// let encoding = Utf8Encoding::new();
 /// assert_eq!(encoding.decode(b"Common Sense"), "Common Sense");
-/// assert_eq!(encoding.decode(br#"Captain \"Joe\" Rogers"#), r#"Captain "Joe" Rogers"#);
+/// assert_eq!(encoding.decode(br"gfx\\interface\icon.dds"), r"gfx\\interface\icon.dds");
 /// assert_eq!(encoding.decode(b"1444.11.11\n"), "1444.11.11");
 /// assert_eq!(encoding.decode(b"J\xc3\xa5hk\xc3\xa5m\xc3\xa5hkke"), "Jåhkåmåhkke");
 /// assert_eq!(encoding.decode("Jåhkåmåhkke".as_bytes()), "Jåhkåmåhkke");
@@ -120,98 +122,54 @@ const fn trim_ascii_end(data: &[u8]) -> &[u8] {
     bytes
 }
 
+/// A branch-free loop that LLVM vectorizes.
+#[inline]
+fn is_ascii(data: &[u8]) -> bool {
+    let mut ascii = true;
+    for &b in data {
+        ascii &= b.is_ascii();
+    }
+    ascii
+}
+
 #[inline]
 pub(crate) fn decode_windows1252(d: &[u8]) -> Cow<'_, str> {
     let bytes = trim_ascii_end(d);
-    let mut eject = false;
-    for x in bytes {
-        eject |= !x.is_ascii() || *x == b'\\'
+    if is_ascii(bytes) {
+        debug_assert!(std::str::from_utf8(bytes).is_ok());
+        // SAFETY: every byte is ascii, and ascii is a subset of utf-8
+        let s = unsafe { std::str::from_utf8_unchecked(bytes) };
+        Cow::Borrowed(s)
+    } else {
+        Cow::Owned(windows_1252_create(bytes))
     }
-
-    if eject {
-        return Cow::Owned(windows_1252_create(bytes, 0));
-    }
-
-    debug_assert!(std::str::from_utf8(bytes).is_ok());
-    let s = unsafe { std::str::from_utf8_unchecked(bytes) };
-    Cow::Borrowed(s)
 }
 
 #[inline(never)]
-fn windows_1252_create(d: &[u8], offset: usize) -> String {
-    let (upto, rest) = d.split_at(offset);
-
-    // size estimate: all remaining characters need translation
-    let size_estimate = offset + (d.len() - offset) * 2;
-    let mut result = String::with_capacity(size_estimate);
-    let head = unsafe { std::str::from_utf8_unchecked(upto) };
-    result.push_str(head);
-
-    for &c in rest.iter().filter(|&x| *x != b'\\') {
+fn windows_1252_create(d: &[u8]) -> String {
+    // size estimate: every byte needs translation
+    let mut result = String::with_capacity(d.len() * 2);
+    for &c in d {
         result.push(WINDOWS_1252[c as usize]);
     }
-
     result
 }
 
 #[inline]
 pub(crate) fn decode_utf8(d: &[u8]) -> Cow<'_, str> {
-    // Then we iterate through the data in 8 byte chunks and ensure that each chunk
-    // has no escape characters
-    let d = trim_ascii_end(d);
-    let (chunks, remainder) = d.as_chunks::<8>();
-    let mut offset = 0;
-    let mut is_ascii = true;
-    for n in chunks {
-        let wide = le_u64(n);
-        is_ascii &= wide & 0x8080_8080_8080_8080 == 0;
-        if contains_zero_byte(wide ^ repeat_byte(b'\\')) {
-            return Cow::Owned(utf8_create(d, offset));
-        }
-
-        offset += 8;
-    }
-
-    // Same logic as before but instead of operating on 8 bytes at a time, work bytewise
-    for &byte in remainder {
-        is_ascii &= byte.is_ascii();
-        if byte == b'\\' {
-            return Cow::Owned(utf8_create(d, offset));
-        }
-
-        offset += 1;
-    }
-
     let d = trim_ascii_end(d);
 
     // Most the strings we'll be decoding are ascii, so we have an ascii fast path. If we don't
     // detect any non-ascii characters then we can immediately create the borrowed string without
     // validation. This causes the string benchmarks to be 2-3x faster on ascii inputs (with ~5%
     // decrease on utf-8 inputs). Large string decodes saw perf increases of 5x.
-    if is_ascii {
-        // This is safe as we just checked that the data is ascii and ascii is a subset of utf8
+    if is_ascii(d) {
         debug_assert!(std::str::from_utf8(d).is_ok());
+        // SAFETY: every byte is ascii, and ascii is a subset of utf-8
         let s = unsafe { std::str::from_utf8_unchecked(d) };
         Cow::Borrowed(s)
     } else {
         String::from_utf8_lossy(d)
-    }
-}
-
-fn utf8_create(d: &[u8], offset: usize) -> String {
-    let (upto, rest) = d.split_at(offset);
-
-    // size estimate: all remaining characters need translation
-    let size_estimate = offset + (d.len() - offset) * 2;
-    let mut result = Vec::with_capacity(size_estimate);
-    result.extend_from_slice(upto);
-    for &c in rest.iter().filter(|&x| *x != b'\\') {
-        result.push(c);
-    }
-
-    match String::from_utf8(result) {
-        Ok(s) => s,
-        Err(e) => String::from_utf8_lossy(&e.into_bytes()).into_owned(),
     }
 }
 
@@ -226,7 +184,7 @@ mod tests {
         assert_eq!(Windows1252Encoding::decode(b"\t"), "");
         assert_eq!(
             Windows1252Encoding::decode(b"new \\\"Captain\\\" \n"),
-            r#"new "Captain""#
+            r#"new \"Captain\""#
         );
         assert_eq!(Windows1252Encoding::decode(b"new\xF8 "), "newø")
     }
@@ -238,24 +196,22 @@ mod tests {
         assert_eq!(Utf8Encoding::decode(b"\t"), "");
         assert_eq!(
             Utf8Encoding::decode(b"new \\\"Captain\\\" \n"),
-            r#"new "Captain""#
+            r#"new \"Captain\""#
         );
         assert_eq!(Utf8Encoding::decode("newø ".as_bytes()), "newø")
     }
 
     #[test]
-    fn scalar_string_escapes() {
-        let data = br#"Joe \"Captain\" Rogers"#;
-        assert_eq!(Windows1252Encoding::decode(data), r#"Joe "Captain" Rogers"#);
-    }
+    fn scalar_string_keeps_backslashes() {
+        let data = br#"Joe \"Captain\" Rogers\n"#;
+        assert_eq!(
+            Windows1252Encoding::decode(data),
+            r#"Joe \"Captain\" Rogers\n"#
+        );
+        assert_eq!(Utf8Encoding::decode(data), r#"Joe \"Captain\" Rogers\n"#);
 
-    #[test]
-    fn scalar_utf8_string_escapes() {
-        let data = br#"Joe \"Captain\" Rogers"#;
-        assert_eq!(Utf8Encoding::decode(data), r#"Joe "Captain" Rogers"#);
-
-        let data = br#"Joe Captain\"s"#;
-        assert_eq!(Utf8Encoding::decode(data), r#"Joe Captain"s"#);
+        let data = b"\\\xa7G+20.0%\xa7!\\n";
+        assert_eq!(Windows1252Encoding::decode(data), "\\§G+20.0%§!\\n");
     }
 
     #[test]
