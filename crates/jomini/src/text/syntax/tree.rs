@@ -258,7 +258,7 @@ pub fn parse_with<'a, F: TextFlavor + ?Sized>(source: &'a [u8], flavor: &F) -> P
     parse_lex(source, LexFlavor::of(flavor))
 }
 
-pub(super) fn parse_lex(source: &[u8], flavor: LexFlavor) -> Parse<'_> {
+pub(crate) fn parse_lex(source: &[u8], flavor: LexFlavor) -> Parse<'_> {
     let data = parse_data(source, flavor);
     Parse { source, data }
 }
