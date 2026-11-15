@@ -321,6 +321,8 @@ impl Encoding for Eu5Flavor {
     }
 }
 
+impl jomini::text::TextFlavor for Eu5Flavor {}
+
 fn string_lookup_parse(mut data: &[u8]) -> Vec<&'_ str> {
     let mut result = Vec::new();
     data = data.get(5..).unwrap_or_default();

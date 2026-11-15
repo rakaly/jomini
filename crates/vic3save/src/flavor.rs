@@ -17,6 +17,8 @@ impl Encoding for Vic3Flavor {
     }
 }
 
+impl jomini::text::TextFlavor for Vic3Flavor {}
+
 impl BinaryFlavor for Vic3Flavor {
     fn visit_f32(&self, data: [u8; 4]) -> f32 {
         f32::from_bits(u32::from_le_bytes(data))

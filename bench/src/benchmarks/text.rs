@@ -21,6 +21,32 @@ pub(crate) fn tape_parse(data: &[u8]) -> usize {
 }
 
 #[inline(never)]
+pub(crate) fn syntax_tape_parse(data: &[u8]) -> usize {
+    let tape = jomini::text::syntax::parse_tape(data)
+        .into_result()
+        .unwrap();
+    black_box(tape.tokens().len())
+}
+
+#[inline(never)]
+pub(crate) fn syntax_parse(data: &[u8]) -> usize {
+    let tree = jomini::text::syntax::parse(data);
+    black_box(tree.root().children().count())
+}
+
+/// Visit every node and every leaf of `tree`, trivia included.
+#[inline(never)]
+pub(crate) fn syntax_walk(tree: &jomini::text::syntax::Parse<'_>) -> usize {
+    fn walk(node: jomini::text::syntax::SyntaxNode<'_, '_>) -> usize {
+        node.children()
+            .map(|child| child.as_node().map_or(1, walk))
+            .sum::<usize>()
+            + 1
+    }
+    black_box(walk(tree.root()))
+}
+
+#[inline(never)]
 pub(crate) fn reader_count_equals(data: &[u8]) -> i32 {
     let mut reader = jomini::text::TokenReader::from_slice(data);
     let mut count = 0i32;
@@ -117,8 +143,18 @@ pub mod criterion_benches {
             group.bench_function(BenchmarkId::new("tape", game), |b| {
                 b.iter(|| tape_parse(data))
             });
+            group.bench_function(BenchmarkId::new("syntax_tape", game), |b| {
+                b.iter(|| syntax_tape_parse(data))
+            });
             group.bench_function(BenchmarkId::new("reader", game), |b| {
                 b.iter(|| reader_count_equals(data))
+            });
+            group.bench_function(BenchmarkId::new("syntax_tree", game), |b| {
+                b.iter(|| syntax_parse(data))
+            });
+            let tree = jomini::text::syntax::parse(data);
+            group.bench_function(BenchmarkId::new("syntax_walk", game), |b| {
+                b.iter(|| syntax_walk(&tree))
             });
         }
         group.finish();
@@ -174,8 +210,22 @@ pub mod gungraun_benches {
     #[library_benchmark]
     #[bench::eu4(setup = setup_eu4)]
     #[bench::ck3(setup = setup_ck3)]
+    fn syntax_tape(data: &[u8]) -> usize {
+        syntax_tape_parse(data)
+    }
+
+    #[library_benchmark]
+    #[bench::eu4(setup = setup_eu4)]
+    #[bench::ck3(setup = setup_ck3)]
     fn reader(data: &[u8]) -> i32 {
         reader_count_equals(data)
+    }
+
+    #[library_benchmark]
+    #[bench::eu4(setup = setup_eu4)]
+    #[bench::ck3(setup = setup_ck3)]
+    fn syntax_tree(data: &[u8]) -> usize {
+        syntax_parse(data)
     }
 
     #[library_benchmark]
@@ -211,7 +261,9 @@ pub mod gungraun_benches {
         name = text_benches,
         benchmarks = [
             tape,
+            syntax_tape,
             reader,
+            syntax_tree,
             deserialize,
             deserialize_meta_with,
             deserialize_gamestate,

@@ -547,6 +547,8 @@ struct UnclosedNested {
 fn test_end_closes_blocks(#[case] data: &[u8], #[case] expected: Unclosed, #[case] tape: bool) {
     let actual: Unclosed = all_paths(data, 12..=32);
     assert_eq!(actual, expected);
+    // The tape of the syntax parser closes every block too.
+    let tape = tape || cfg!(all(jomini_syntax_tape, feature = "syntax"));
     let tape_value = from_tape::<Unclosed>(data);
     assert_eq!(
         tape_value.as_ref().ok(),

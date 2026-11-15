@@ -15,6 +15,8 @@ impl Encoding for ImperatorFlavor {
     }
 }
 
+impl jomini::text::TextFlavor for ImperatorFlavor {}
+
 impl BinaryFlavor for ImperatorFlavor {
     fn visit_f32(&self, data: [u8; 4]) -> f32 {
         f32::from_bits(u32::from_le_bytes(data))

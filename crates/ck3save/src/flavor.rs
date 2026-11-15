@@ -76,6 +76,8 @@ impl Encoding for Ck3Flavor15 {
     }
 }
 
+impl jomini::text::TextFlavor for Ck3Flavor15 {}
+
 impl Ck3BinaryFlavor for Ck3Flavor15 {
     fn float_reencoding(&self) -> bool {
         false
@@ -128,6 +130,8 @@ impl Encoding for Ck3Flavor10 {
         self.0.decode(data)
     }
 }
+
+impl jomini::text::TextFlavor for Ck3Flavor10 {}
 
 impl BinaryFlavor for Ck3Flavor10 {
     fn visit_f32(&self, data: [u8; 4]) -> f32 {

@@ -3018,7 +3018,7 @@ mod tests {
     /// arrays.
     #[rstest]
     #[case::block_kind(
-        b"object={ a=b c<2 } array={ 1 2 } empty={} objects={ { a=b } { c=d } } empty_key={ =b }",
+        b"object={ a=b c<2 } array={ 1 2 } empty={} objects={ { a=b } { c=d } } empty_key={\n=b }",
         "{object={a=b c=2} array=[1 2] empty=[] objects=[{a=b} {c=d}] empty_key={=b}}",
         true
     )]
@@ -3079,8 +3079,37 @@ mod tests {
             assert_eq!(actual.to_string(), expected, "buffer size {size}");
         }
 
+        // The lossless parser recovers from some data that `TextTape`
+        // rejects.
         let tape_value = from_tape::<TapeRoot>(data).map(|x| x.0.to_string());
-        assert_eq!(tape_value.ok().as_deref() == Some(expected), tape);
+        if tape || !cfg!(all(jomini_syntax_tape, feature = "syntax")) {
+            assert_eq!(tape_value.ok().as_deref() == Some(expected), tape);
+        }
+    }
+
+    /// An operator in key position is a field with an empty key also when
+    /// it does not start a line. The lossless parser reads only an operator
+    /// that starts a line as a field with an empty key, so its tape differs.
+    #[test]
+    fn test_any_empty_key_mid_line() {
+        let data = b"empty_key={ =b }";
+        let expected = "{empty_key={=b}}";
+        let actual: AnyValue = from_slice(data).unwrap();
+        assert_eq!(actual.to_string(), expected);
+        let encoding = Windows1252Encoding::new();
+        for size in 16..=data.len() + 1 {
+            let actual = TextDeserializer::from_reader_with_buf(&data[..], encoding, vec![0; size])
+                .deserialize::<AnyValue>()
+                .unwrap();
+            assert_eq!(actual.to_string(), expected, "buffer size {size}");
+        }
+
+        let tape: TapeRoot = from_tape(data).unwrap();
+        if cfg!(all(jomini_syntax_tape, feature = "syntax")) {
+            assert_eq!(tape.0.to_string(), "{empty_key=[b]}");
+        } else {
+            assert_eq!(tape.0.to_string(), expected);
+        }
     }
 
     #[cfg(feature = "json")]

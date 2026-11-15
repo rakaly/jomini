@@ -42,6 +42,8 @@ impl Encoding for Eu4Flavor {
     }
 }
 
+impl jomini::text::TextFlavor for Eu4Flavor {}
+
 /// Returns true for the control bytes that start an EU4dll escape sequence
 #[inline]
 fn is_eu4dll_escape(b: u8) -> bool {
