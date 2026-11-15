@@ -122,6 +122,23 @@ jobs:
     - name: Build benchmark (gungraun, json)
       run: cargo bench --manifest-path bench/Cargo.toml --features json --bench jomini-bench-gungraun --no-run
 
+  lsp:
+    name: jomini-lsp
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+    - name: Check formatting
+      run: cargo fmt --manifest-path jomini-lsp/Cargo.toml --all -- --check
+    - name: Run clippy
+      run: cargo clippy --manifest-path jomini-lsp/Cargo.toml --all-targets -- -D warnings
+    - name: Run tests
+      run: cargo test --manifest-path jomini-lsp/Cargo.toml
+
   miri:
     name: miri
     runs-on: ubuntu-latest
