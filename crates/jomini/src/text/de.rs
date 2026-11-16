@@ -1,7 +1,7 @@
 use super::{TokenReader, decode_quoted, dom::ValuesIter, reader::Token};
 use crate::{
-    DeserializeError, DeserializeErrorKind, Encoding, Error, TextTape, TextToken, Utf8Encoding,
-    Windows1252Encoding,
+    DeserializeError, DeserializeErrorKind, Encoding, Error, Scalar, TextTape, TextToken,
+    Utf8Encoding, Windows1252Encoding,
     text::{ArrayReader, FieldsIter, ObjectReader, Operator, Reader, ScalarReader, ValueReader},
 };
 use serde::de::{self, Deserialize, DeserializeOwned, DeserializeSeed, Visitor};
@@ -161,6 +161,10 @@ where
 pub struct TextReaderDeserializer<'r, E> {
     reader: TokenReader<'r>,
     encoding: E,
+
+    /// The operator of the field with an empty key that is being read. The
+    /// key consumed the operator, so the value does not read one.
+    empty_key_op: Option<Operator>,
 }
 
 impl<'r, E: Encoding> TextReaderDeserializer<'r, E> {
@@ -214,6 +218,12 @@ impl<'de, 'r, E: Encoding> de::Deserializer<'de> for &'_ mut TextReaderDeseriali
     }
 }
 
+/// A map over the fields of an object.
+///
+/// An operator where a key is expected, as in `=1825.6.28` in an EU4 save,
+/// starts a field whose key is the empty string. An operator after a block
+/// in key position, as in `{ a = b }={ 1 2 3 }`, makes the block the key,
+/// so the map skips the field.
 struct TextReaderMap<'a, 'r, E> {
     de: *const &'a mut TextReaderDeserializer<'r, E>,
     root: bool,
@@ -225,6 +235,54 @@ impl<'a, 'r, E> TextReaderMap<'a, 'r, E> {
     }
 }
 
+impl<'a, 'r, E: Encoding> TextReaderMap<'a, 'r, E> {
+    /// Return the key of a field that starts with the operator.
+    #[cold]
+    fn empty_key(&mut self, op: Operator) -> Token<'static> {
+        unsafe { self.de.read() }.empty_key_op = Some(op);
+        Token::Unquoted(Scalar::new(b""))
+    }
+
+    /// Return the operator of a field whose value does not follow an
+    /// operator: the operator of the empty key, or `=` for `key { ... }`.
+    #[cold]
+    fn missing_operator(&mut self) -> Operator {
+        let de = unsafe { self.de.read() };
+        de.empty_key_op.take().unwrap_or(Operator::Equal)
+    }
+
+    /// Skip the block that the reader read where a key is expected, and
+    /// skip the field when the block is its key. Return the next key, or
+    /// `None` at the end of the object.
+    #[cold]
+    fn key_after_block(&mut self) -> Result<Option<Token<'a>>, Error> {
+        let mut after_block = true;
+        unsafe { self.de.read() }.reader.skip_container()?;
+        loop {
+            match unsafe { self.de.read() }.reader.next()? {
+                Some(Token::Close) => return Ok(None),
+                Some(Token::Open) => {
+                    unsafe { self.de.read() }.reader.skip_container()?;
+                    after_block = true;
+                }
+                Some(Token::Operator(_)) if after_block => {
+                    let reader = &mut unsafe { self.de.read() }.reader;
+                    match reader.read()? {
+                        Token::Open => reader.skip_container()?,
+                        Token::Close => return Ok(None),
+                        _ => {}
+                    }
+                    after_block = false;
+                }
+                Some(Token::Operator(op)) => return Ok(Some(self.empty_key(op))),
+                Some(token) => return Ok(Some(token)),
+                None if self.root => return Ok(None),
+                None => return Err(unsafe { self.de.read() }.reader.eof_error().into()),
+            }
+        }
+    }
+}
+
 impl<'de, 'r, E: Encoding> de::MapAccess<'de> for TextReaderMap<'_, 'r, E> {
     type Error = Error;
 
@@ -233,22 +291,21 @@ impl<'de, 'r, E: Encoding> de::MapAccess<'de> for TextReaderMap<'_, 'r, E> {
     where
         K: DeserializeSeed<'de>,
     {
-        loop {
-            match unsafe { self.de.read() }.reader.next() {
-                Ok(Some(Token::Close)) => return Ok(None),
-                Ok(Some(Token::Open)) => {
-                    unsafe { self.de.read() }.reader.skip_container()?;
-                }
-                Ok(Some(token)) => {
-                    return seed
-                        .deserialize(TextReaderTokenDeserializer::new(self.de, token))
-                        .map(Some);
-                }
-                Ok(None) if self.root => return Ok(None),
-                Ok(None) => return Err(unsafe { self.de.read() }.reader.eof_error().into()),
-                Err(e) => return Err(e.into()),
-            }
-        }
+        let token = match unsafe { self.de.read() }.reader.next() {
+            Ok(Some(Token::Close)) => return Ok(None),
+            Ok(Some(Token::Open)) => match self.key_after_block()? {
+                Some(token) => token,
+                None => return Ok(None),
+            },
+            Ok(Some(Token::Operator(op))) => self.empty_key(op),
+            Ok(Some(token)) => token,
+            Ok(None) if self.root => return Ok(None),
+            Ok(None) => return Err(unsafe { self.de.read() }.reader.eof_error().into()),
+            Err(e) => return Err(e.into()),
+        };
+
+        seed.deserialize(TextReaderTokenDeserializer::new(self.de, token))
+            .map(Some)
     }
 
     #[inline]
@@ -263,7 +320,9 @@ impl<'de, 'r, E: Encoding> de::MapAccess<'de> for TextReaderMap<'_, 'r, E> {
             deser.op = op;
             deser
         } else {
-            TextReaderTokenDeserializer::new(self.de, token)
+            let mut deser = TextReaderTokenDeserializer::new(self.de, token);
+            deser.op = self.missing_operator();
+            deser
         };
 
         seed.deserialize(deser)
@@ -830,10 +889,7 @@ impl TextDeserializer<'_, '_, Windows1252Encoding> {
     pub fn from_windows1252_reader<'r>(
         reader: TokenReader<'r>,
     ) -> TextReaderDeserializer<'r, Windows1252Encoding> {
-        TextReaderDeserializer {
-            reader,
-            encoding: Windows1252Encoding,
-        }
+        TextDeserializer::from_encoded_reader(reader, Windows1252Encoding)
     }
 }
 
@@ -844,10 +900,7 @@ impl TextDeserializer<'_, '_, Utf8Encoding> {
     pub fn from_utf8_reader<'r>(
         reader: TokenReader<'r>,
     ) -> TextReaderDeserializer<'r, Utf8Encoding> {
-        TextReaderDeserializer {
-            reader,
-            encoding: Utf8Encoding,
-        }
+        TextDeserializer::from_encoded_reader(reader, Utf8Encoding)
     }
 }
 
@@ -860,7 +913,11 @@ impl<E: Encoding> TextDeserializer<'_, '_, E> {
         reader: TokenReader<'r>,
         encoding: E,
     ) -> TextReaderDeserializer<'r, E> {
-        TextReaderDeserializer { reader, encoding }
+        TextReaderDeserializer {
+            reader,
+            encoding,
+            empty_key_op: None,
+        }
     }
 }
 
@@ -1771,10 +1828,7 @@ mod tests {
             .deserialize()
             .unwrap();
         let reader = TokenReader::new(data);
-        let mut des = TextReaderDeserializer {
-            reader,
-            encoding: Windows1252Encoding,
-        };
+        let mut des = TextDeserializer::from_windows1252_reader(reader);
         let x2 = T::deserialize(&mut des).unwrap();
         assert_eq!(x1, x2);
         x1
@@ -3234,5 +3288,309 @@ mod tests {
         let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(actual.raw_field.0, b"Joe \\\"Captain\\\" Rogers ");
         assert_eq!(actual.string_field, "Joe \"Captain\" Rogers");
+    }
+
+    const EMPTY_KEY_FIRST: &[u8] =
+        b"cooldowns={\n\t=1825.1.11\n\ttrade_favors_for_men=1826.6.22\n}";
+    const EMPTY_KEY_LAST: &[u8] = b"cooldowns={\n\ttrade_favors_for_men=1826.6.22\n\t=1825.1.11\n}";
+    const EMPTY_KEY_ONLY: &[u8] = b"cooldowns={\n\t=1825.6.28\n}";
+    const EMPTY_KEY_EXACT: &[u8] =
+        b"idea_dates={\n\t==-5000.1.1\n\tnoble_knights=1461.11.17\n\tmilitary_traditions=1473.5.13\n}";
+
+    #[rstest]
+    #[case(EMPTY_KEY_FIRST, Some("1826.6.22"))]
+    #[case(EMPTY_KEY_LAST, Some("1826.6.22"))]
+    #[case(EMPTY_KEY_ONLY, None)]
+    fn test_empty_key_struct(#[case] data: &[u8], #[case] expected: Option<&str>) {
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            cooldowns: Cooldowns,
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Cooldowns {
+            trade_favors_for_men: Option<String>,
+        }
+
+        #[derive(JominiDeserialize, PartialEq, Debug)]
+        struct JominiStruct {
+            cooldowns: JominiCooldowns,
+        }
+
+        #[derive(JominiDeserialize, PartialEq, Debug)]
+        struct JominiCooldowns {
+            trade_favors_for_men: Option<String>,
+        }
+
+        let expected = expected.map(String::from);
+        let actual: MyStruct = from_owned(data);
+        assert_eq!(
+            actual,
+            MyStruct {
+                cooldowns: Cooldowns {
+                    trade_favors_for_men: expected.clone()
+                }
+            }
+        );
+
+        let actual: JominiStruct = from_owned(data);
+        assert_eq!(
+            actual,
+            JominiStruct {
+                cooldowns: JominiCooldowns {
+                    trade_favors_for_men: expected
+                }
+            }
+        );
+    }
+
+    #[rstest]
+    #[case(EMPTY_KEY_FIRST, &[("", "1825.1.11"), ("trade_favors_for_men", "1826.6.22")])]
+    #[case(EMPTY_KEY_LAST, &[("trade_favors_for_men", "1826.6.22"), ("", "1825.1.11")])]
+    #[case(EMPTY_KEY_ONLY, &[("", "1825.6.28")])]
+    fn test_empty_key_map(#[case] data: &[u8], #[case] expected: &[(&str, &str)]) {
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyMap {
+            cooldowns: HashMap<String, String>,
+        }
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyPairs {
+            #[serde(deserialize_with = "deserialize_vec_pair")]
+            cooldowns: Vec<(String, String)>,
+        }
+
+        let expected: Vec<(String, String)> = expected
+            .iter()
+            .map(|(k, v)| (String::from(*k), String::from(*v)))
+            .collect();
+
+        let actual: MyMap = from_owned(data);
+        assert_eq!(
+            actual,
+            MyMap {
+                cooldowns: expected.iter().cloned().collect()
+            }
+        );
+
+        let actual: MyPairs = from_owned(data);
+        assert_eq!(
+            actual,
+            MyPairs {
+                cooldowns: expected
+            }
+        );
+    }
+
+    #[test]
+    fn test_empty_key_property() {
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            #[serde(deserialize_with = "deserialize_vec_pair")]
+            idea_dates: Vec<(String, Property<String>)>,
+        }
+
+        let actual: MyStruct = from_owned(EMPTY_KEY_EXACT);
+        assert_eq!(
+            actual,
+            MyStruct {
+                idea_dates: vec![
+                    (
+                        String::from(""),
+                        Property::new(Operator::Exact, String::from("-5000.1.1"))
+                    ),
+                    (
+                        String::from("noble_knights"),
+                        Property::new(Operator::Equal, String::from("1461.11.17"))
+                    ),
+                    (
+                        String::from("military_traditions"),
+                        Property::new(Operator::Equal, String::from("1473.5.13"))
+                    ),
+                ]
+            }
+        );
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Cooldowns {
+            #[serde(deserialize_with = "deserialize_vec_pair")]
+            cooldowns: Vec<(String, Property<String>)>,
+        }
+
+        let actual: Cooldowns = from_owned(EMPTY_KEY_LAST);
+        assert_eq!(
+            actual,
+            Cooldowns {
+                cooldowns: vec![
+                    (
+                        String::from("trade_favors_for_men"),
+                        Property::new(Operator::Equal, String::from("1826.6.22"))
+                    ),
+                    (
+                        String::from(""),
+                        Property::new(Operator::Equal, String::from("1825.1.11"))
+                    ),
+                ]
+            }
+        );
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum AnyValue {
+        Str(String),
+        Seq(Vec<AnyValue>),
+        Map(Vec<(String, AnyValue)>),
+    }
+
+    impl<'de> Deserialize<'de> for AnyValue {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct AnyVisitor;
+
+            impl<'de> de::Visitor<'de> for AnyVisitor {
+                type Value = AnyValue;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("any value")
+                }
+
+                fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                    Ok(AnyValue::Str(String::from(v)))
+                }
+
+                fn visit_seq<A: de::SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> Result<Self::Value, A::Error> {
+                    let mut values = Vec::new();
+                    while let Some(value) = seq.next_element()? {
+                        values.push(value);
+                    }
+                    Ok(AnyValue::Seq(values))
+                }
+
+                fn visit_map<A: de::MapAccess<'de>>(
+                    self,
+                    mut map: A,
+                ) -> Result<Self::Value, A::Error> {
+                    let mut entries = Vec::new();
+                    while let Some(entry) = map.next_entry()? {
+                        entries.push(entry);
+                    }
+                    Ok(AnyValue::Map(entries))
+                }
+            }
+
+            deserializer.deserialize_any(AnyVisitor)
+        }
+    }
+
+    #[test]
+    fn test_empty_key_deserialize_any() {
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            #[serde(deserialize_with = "deserialize_vec_pair")]
+            idea_dates: Vec<(AnyValue, AnyValue)>,
+        }
+
+        let actual: MyStruct = from_owned(EMPTY_KEY_EXACT);
+        assert_eq!(
+            actual,
+            MyStruct {
+                idea_dates: vec![
+                    (
+                        AnyValue::Str(String::from("")),
+                        AnyValue::Str(String::from("-5000.1.1"))
+                    ),
+                    (
+                        AnyValue::Str(String::from("noble_knights")),
+                        AnyValue::Str(String::from("1461.11.17"))
+                    ),
+                    (
+                        AnyValue::Str(String::from("military_traditions")),
+                        AnyValue::Str(String::from("1473.5.13"))
+                    ),
+                ]
+            }
+        );
+
+        // Only the tape knows that a block is an object; the streaming
+        // reader gives a block to `deserialize_any` as a sequence.
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Cooldowns {
+            cooldowns: AnyValue,
+        }
+
+        let actual: Cooldowns = from_slice(EMPTY_KEY_FIRST).unwrap();
+        assert_eq!(
+            actual,
+            Cooldowns {
+                cooldowns: AnyValue::Map(vec![
+                    (String::from(""), AnyValue::Str(String::from("1825.1.11"))),
+                    (
+                        String::from("trade_favors_for_men"),
+                        AnyValue::Str(String::from("1826.6.22"))
+                    ),
+                ])
+            }
+        );
+    }
+
+    #[test]
+    fn test_empty_key_sequence() {
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            cooldowns: Vec<String>,
+        }
+
+        // The tape gives the key and the value of each field.
+        let actual: MyStruct = from_slice(EMPTY_KEY_FIRST).unwrap();
+        assert_eq!(
+            actual.cooldowns,
+            vec!["", "1825.1.11", "trade_favors_for_men", "1826.6.22"]
+        );
+
+        // The streaming reader gives each token of the block, operators too.
+        let actual: MyStruct = from_windows1252_reader(EMPTY_KEY_FIRST).unwrap();
+        assert_eq!(
+            actual.cooldowns,
+            vec!["=", "1825.1.11", "trade_favors_for_men", "=", "1826.6.22"]
+        );
+    }
+
+    #[test]
+    fn test_operator_on_next_line_after_key() {
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            name: String,
+            #[serde(deserialize_with = "deserialize_vec_pair")]
+            block: Vec<(String, String)>,
+        }
+
+        let data = b"name\n= \"x\"\nblock={\n\ta = b\n\t= c\n}";
+        let actual: MyStruct = from_owned(data);
+        assert_eq!(
+            actual,
+            MyStruct {
+                name: String::from("x"),
+                block: vec![
+                    (String::from("a"), String::from("b")),
+                    (String::from(""), String::from("c")),
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn test_reader_skips_field_with_block_key() {
+        let data = b"obj={ { a = b }={ 1 2 3 } { c = d }=16 e=f }";
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct MyStruct {
+            obj: HashMap<String, String>,
+        }
+
+        let actual: MyStruct = from_windows1252_reader(&data[..]).unwrap();
+        let expected = HashMap::from([(String::from("e"), String::from("f"))]);
+        assert_eq!(actual, MyStruct { obj: expected });
     }
 }
