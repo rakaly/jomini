@@ -164,11 +164,11 @@ where
 /// A [`Token`] whose scalar is held by a raw pointer.
 ///
 /// A reference to a scalar asserts that the reader's buffer is not written
-/// to while the reference is live, and serde passes accessors by value,
-/// which keeps references in their fields live for the whole visit. A refill
-/// moves the buffer, so tokens that an accessor holds while the reader
-/// advances are stored raw, and turned back into a [`Token`] only while the
-/// scalar is unchanged.
+/// to while the reference is live, and serde passes deserializers and
+/// accessors by value, which keeps references in their fields live for the
+/// whole visit. A refill moves the buffer, so tokens that are held while the
+/// reader may advance are stored raw, and turned back into a [`Token`] only
+/// while the scalar is unchanged.
 #[derive(Clone, Copy)]
 enum RawToken {
     Open,
@@ -417,22 +417,42 @@ impl<'de, 'r, E: Encoding> de::MapAccess<'de> for TextReaderMap<'_, 'r, E> {
 
 /// Deserializes a token that was read.
 ///
-/// Serde passes deserializers by value, so a scalar token stays borrowed for
-/// the whole visit, and the reader must not refill its buffer meanwhile.
-/// Field values that may look ahead are deserialized by
-/// [`TextReaderValueDeserializer`] instead.
+/// Serde passes deserializers by value, which would keep a reference to a
+/// scalar live for the whole visit, so the token is held raw. A header read
+/// into a sequence, as in `color = rgb { 1 2 3 }`, reads the block while
+/// the deserializer of the header is live, and the reader may refill.
 struct TextReaderTokenDeserializer<'a, 'r, E> {
     de: *const &'a mut TextReaderDeserializer<'r, E>,
-    token: Token<'a>,
+    token: RawToken,
     op: Operator,
 }
 
 impl<'a, 'r, E> TextReaderTokenDeserializer<'a, 'r, E> {
     fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, token: Token<'a>) -> Self {
+        Self::raw(de, RawToken::new(token))
+    }
+
+    fn raw(de: *const &'a mut TextReaderDeserializer<'r, E>, token: RawToken) -> Self {
         Self {
             de,
             token,
             op: Operator::Equal,
+        }
+    }
+
+    #[inline]
+    fn token(&self) -> Token<'a> {
+        // SAFETY: the reader advances past the token only after the token
+        // is visited.
+        unsafe { self.token.get() }
+    }
+
+    #[inline]
+    fn scalar(&self) -> Option<Scalar<'a>> {
+        match self.token {
+            // SAFETY: as in `token`.
+            RawToken::Unquoted(s) | RawToken::Quoted(s) => Some(Scalar::new(unsafe { &*s })),
+            _ => None,
         }
     }
 }
@@ -486,7 +506,7 @@ impl<'a, 'de: 'a, 'r, E: Encoding> TextReaderTokenDeserializer<'a, 'r, E> {
     where
         V: Visitor<'de>,
     {
-        match self.token {
+        match self.token() {
             Token::Open => visitor.visit_seq(TextReaderSeq::new(self.de)),
             Token::Close => Err(Error::invalid_syntax(
                 "did not expect end",
@@ -520,7 +540,7 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        match self.token {
+        match self.token() {
             Token::Open => self.visit_block(visitor),
             _ => self.visit_token(visitor),
         }
@@ -530,7 +550,7 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        match self.token.as_scalar().and_then(|x| x.to_bool().ok()) {
+        match self.scalar().and_then(|x| x.to_bool().ok()) {
             Some(x) => visitor.visit_bool(x),
             None => self.visit_token(visitor),
         }
@@ -561,7 +581,7 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        match self.token.as_scalar().and_then(|x| x.to_i64().ok()) {
+        match self.scalar().and_then(|x| x.to_i64().ok()) {
             Some(x) => visitor.visit_i64(x),
             None => self.visit_token(visitor),
         }
@@ -592,7 +612,7 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        match self.token.as_scalar().and_then(|x| x.to_u64().ok()) {
+        match self.scalar().and_then(|x| x.to_u64().ok()) {
             Some(x) => visitor.visit_u64(x),
             None => self.visit_token(visitor),
         }
@@ -609,7 +629,7 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        match self.token.as_scalar().and_then(|x| x.to_f64().ok()) {
+        match self.scalar().and_then(|x| x.to_f64().ok()) {
             Some(x) => visitor.visit_f64(x),
             None => self.visit_token(visitor),
         }
@@ -627,9 +647,10 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
         V: Visitor<'de>,
     {
         let encoding = &unsafe { self.de.read() }.encoding;
+        // SAFETY: as in `token`.
         let decoded = match self.token {
-            Token::Unquoted(s) => encoding.decode(s.as_bytes()),
-            Token::Quoted(s) => decode_quoted(encoding, s.as_bytes()),
+            RawToken::Unquoted(s) => encoding.decode(unsafe { &*s }),
+            RawToken::Quoted(s) => decode_quoted(encoding, unsafe { &*s }),
             _ => return self.visit_token(visitor),
         };
 
@@ -650,7 +671,7 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        match self.token.as_scalar() {
+        match self.scalar() {
             Some(s) => visitor.visit_bytes(s.as_bytes()),
             None => self.visit_token(visitor),
         }
@@ -703,7 +724,7 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        visit_seq_after(self.de, RawToken::new(self.token), visitor)
+        visit_seq_after(self.de, self.token, visitor)
     }
 
     fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
@@ -729,7 +750,7 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        if matches!(self.token, Token::Open) {
+        if matches!(self.token, RawToken::Open) {
             visitor.visit_map(TextReaderMap::new(self.de, false))
         } else {
             self.visit_token(visitor)
@@ -780,7 +801,7 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
     where
         V: Visitor<'de>,
     {
-        if matches!(self.token, Token::Open) {
+        if matches!(self.token, RawToken::Open) {
             unsafe { self.de.read() }.reader.skip_container()?;
         }
         visitor.visit_unit()
@@ -806,8 +827,7 @@ macro_rules! forward_to_token {
 /// Holding no token lets `deserialize_any` look past a scalar for a header
 /// block, as in `color = rgb { 1 2 3 }`, even when that refills the reader's
 /// buffer: the scalar is then held only by a local [`RawToken`], which
-/// `peek_after` moves to the scratch buffer before refilling, and not by a
-/// deserializer that serde passed by value.
+/// `peek_after` moves to the scratch buffer before refilling.
 struct TextReaderValueDeserializer<'a, 'r, E> {
     de: *const &'a mut TextReaderDeserializer<'r, E>,
     op: Operator,
@@ -849,9 +869,9 @@ impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
             de.reader.read()?;
         }
 
-        // SAFETY: a scalar that was read past a refill was moved to the
-        // scratch buffer.
-        let mut deser = TextReaderTokenDeserializer::new(self.de, unsafe { token.get() });
+        // A scalar that was read past a refill was moved to the scratch
+        // buffer.
+        let mut deser = TextReaderTokenDeserializer::raw(self.de, token);
         deser.op = self.op;
         deser.deserialize_any(visitor)
     }
@@ -970,10 +990,7 @@ fn visit_seq_after<'a, 'de: 'a, 'r, E: Encoding, V: Visitor<'de>>(
 
         Ok(result)
     } else {
-        // SAFETY: the header was just read. The sequence holds it in a
-        // local, not in a deserializer passed by value.
-        let mut seq = TextReaderInitSeq::new(de, unsafe { token.get() });
-        visitor.visit_seq(&mut seq)
+        visitor.visit_seq(&mut TextReaderInitSeq::new(de, token))
     }
 }
 
@@ -1015,11 +1032,11 @@ impl<'de, 'r, E: Encoding> de::SeqAccess<'de> for TextReaderSeq<'_, 'r, E> {
 /// ```
 struct TextReaderInitSeq<'a, 'r, E> {
     de: *const &'a mut TextReaderDeserializer<'r, E>,
-    token: Option<Token<'a>>,
+    token: Option<RawToken>,
 }
 
 impl<'a, 'r, E> TextReaderInitSeq<'a, 'r, E> {
-    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, token: Token<'a>) -> Self {
+    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, token: RawToken) -> Self {
         TextReaderInitSeq {
             de,
             token: Some(token),
@@ -1036,7 +1053,7 @@ impl<'de, 'r, E: Encoding> de::SeqAccess<'de> for TextReaderInitSeq<'_, 'r, E> {
     {
         if let Some(token) = self.token.take() {
             return seed
-                .deserialize(TextReaderTokenDeserializer::new(self.de, token))
+                .deserialize(TextReaderTokenDeserializer::raw(self.de, token))
                 .map(Some);
         }
 
@@ -1231,11 +1248,11 @@ impl<'de, 'r, E: Encoding> de::SeqAccess<'de> for TextReaderAnySeq<'_, 'r, E> {
 
 struct TextReaderEnum<'a, 'r, E> {
     de: *const &'a mut TextReaderDeserializer<'r, E>,
-    token: Token<'a>,
+    token: RawToken,
 }
 
 impl<'a, 'r, E> TextReaderEnum<'a, 'r, E> {
-    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, token: Token<'a>) -> Self {
+    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, token: RawToken) -> Self {
         TextReaderEnum { de, token }
     }
 }
@@ -1248,7 +1265,7 @@ impl<'de, 'r, E: Encoding> de::EnumAccess<'de> for TextReaderEnum<'_, 'r, E> {
     where
         V: de::DeserializeSeed<'de>,
     {
-        let variant = seed.deserialize(TextReaderTokenDeserializer::new(self.de, self.token))?;
+        let variant = seed.deserialize(TextReaderTokenDeserializer::raw(self.de, self.token))?;
         Ok((variant, self))
     }
 }
@@ -1301,7 +1318,7 @@ impl<'de, 'r, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'_, 'r, E> 
 struct PropertyReaderMap<'a, 'r, E> {
     de: *const &'a mut TextReaderDeserializer<'r, E>,
     op: Operator,
-    token: Token<'a>,
+    token: RawToken,
     state: usize,
 }
 
@@ -1327,7 +1344,7 @@ impl<'de, 'r, E: Encoding> de::MapAccess<'de> for PropertyReaderMap<'_, 'r, E> {
         if self.state == 1 {
             seed.deserialize(OperatorDeserializer(self.op))
         } else {
-            seed.deserialize(TextReaderTokenDeserializer::new(self.de, self.token))
+            seed.deserialize(TextReaderTokenDeserializer::raw(self.de, self.token))
         }
     }
 }
@@ -4216,32 +4233,62 @@ mod tests {
         let expected = HashMap::from([(String::from("e"), String::from("f"))]);
         assert_eq!(actual, MyStruct { obj: expected });
     }
-    #[test]
-    fn test_header_seq_streaming_refill() {
-        #[derive(Deserialize, PartialEq, Debug)]
-        struct MyStruct {
-            color: (String, Vec<String>),
-            next: String,
-        }
+    type Header = (String, Vec<String>);
 
-        let data = b"color = rgb { 10 20 30 40 50 60 70 80 90 }\nnext = x";
+    fn header() -> Header {
+        let numbers = ["10", "20", "30", "40", "50", "60", "70", "80", "90"];
+        (String::from("rgb"), numbers.map(String::from).to_vec())
+    }
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct HeaderNewtype(Header);
+
+    #[derive(Deserialize, PartialEq, Debug, Default)]
+    #[serde(default)]
+    struct HeaderFields {
+        value: Option<Header>,
+        property: Option<Property<Header>>,
+        keys: HashMap<Header, String>,
+        elements: Vec<Header>,
+        options: Vec<Option<Header>>,
+        newtypes: Vec<HeaderNewtype>,
+    }
+
+    /// A header and its block read into a sequence type, in each position
+    /// that a header can take, with buffers small enough that the reader
+    /// refills inside the block while the header is held.
+    #[rstest]
+    #[case::value(b"value = rgb { 10 20 30 40 50 60 70 80 90 }", HeaderFields {
+        value: Some(header()),
+        ..HeaderFields::default()
+    })]
+    #[case::property(b"property < rgb { 10 20 30 40 50 60 70 80 90 }", HeaderFields {
+        property: Some(Property::new(Operator::LessThan, header())),
+        ..HeaderFields::default()
+    })]
+    #[case::key(b"keys = { rgb { 10 20 30 40 50 60 70 80 90 } = x }", HeaderFields {
+        keys: HashMap::from([(header(), String::from("x"))]),
+        ..HeaderFields::default()
+    })]
+    #[case::element(b"elements = { rgb { 10 20 30 40 50 60 70 80 90 } }", HeaderFields {
+        elements: vec![header()],
+        ..HeaderFields::default()
+    })]
+    #[case::option_element(b"options = { rgb { 10 20 30 40 50 60 70 80 90 } }", HeaderFields {
+        options: vec![Some(header())],
+        ..HeaderFields::default()
+    })]
+    #[case::newtype_element(b"newtypes = { rgb { 10 20 30 40 50 60 70 80 90 } }", HeaderFields {
+        newtypes: vec![HeaderNewtype(header())],
+        ..HeaderFields::default()
+    })]
+    fn test_header_seq_streaming_refill(#[case] data: &[u8], #[case] expected: HeaderFields) {
         for size in 16..=24 {
-            let reader = TokenReader::from_reader_with_buf(&data[..], vec![0; size]);
-            let actual: MyStruct = TextDeserializer::from_windows1252_reader(reader)
+            let reader = TokenReader::from_reader_with_buf(data, vec![0; size]);
+            let actual: HeaderFields = TextDeserializer::from_windows1252_reader(reader)
                 .deserialize()
                 .unwrap();
-            let numbers = ["10", "20", "30", "40", "50", "60", "70", "80", "90"];
-            assert_eq!(
-                actual,
-                MyStruct {
-                    color: (
-                        String::from("rgb"),
-                        numbers.iter().map(|x| String::from(*x)).collect()
-                    ),
-                    next: String::from("x"),
-                },
-                "buffer size {size}"
-            );
+            assert_eq!(actual, expected, "buffer size {size}");
         }
     }
 }
