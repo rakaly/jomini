@@ -311,6 +311,7 @@ jobs:
         cargo fuzz build fuzz_scalar_text
         cargo fuzz build fuzz_text
         cargo fuzz build fuzz_text_syntax
+        cargo fuzz build fuzz_text_contract
         cargo fuzz build fuzz_date
         cargo fuzz build fuzz_envelope
         cargo fuzz build fuzz_eu4

@@ -119,5 +119,11 @@ path = "fuzz_targets/fuzz_text_de.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "fuzz_text_contract"
+path = "fuzz_targets/fuzz_text_contract.rs"
+test = false
+doc = false
+
 [patch.crates-io]
 jomini = { path = "../crates/jomini" }

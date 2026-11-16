@@ -226,6 +226,12 @@ pub struct SyntaxTree<'t, 'a> {
 ///
 /// Panics if `source` is 4 GiB or larger, because the offsets are `u32`.
 #[must_use]
+#[doc(
+    alias = "game file",
+    alias = "line",
+    alias = "variables",
+    alias = "span"
+)]
 pub fn parse(source: &[u8]) -> Parse<'_> {
     parse_lex(source, LexFlavor::DEFAULT)
 }

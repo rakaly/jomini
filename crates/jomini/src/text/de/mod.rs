@@ -36,18 +36,17 @@
 //! # Ok::<(), jomini::Error>(())
 //! ```
 
-use super::dom::ValuesIter;
+use super::{
+    dom::ValuesIter,
+    wrappers::{HEADERED, KEY_HEADER, KEY_QUOTED, OptionDe, QUOTED, WrapperMap},
+};
 use crate::{
     DeserializeError, DeserializeErrorKind, Encoding, Error, TextTape, TextToken, Utf8Encoding,
     Windows1252Encoding,
     text::{ArrayReader, FieldsIter, ObjectReader, Operator, Reader, ScalarReader, ValueReader},
 };
-use serde::de::{self, Deserialize, DeserializeOwned, DeserializeSeed, Visitor};
-use std::{
-    borrow::Cow,
-    fmt::{self, Debug},
-    io::Read,
-};
+use serde::de::{self, Deserialize, DeserializeOwned, DeserializeSeed, IntoDeserializer, Visitor};
+use std::{borrow::Cow, fmt::Debug, io::Read};
 
 mod cursor;
 
@@ -57,6 +56,11 @@ pub use self::cursor::{ReaderSource, SliceSource, TextDeserializer};
 ///
 /// A `Property` is a specially marked type that signals to the deserializer to
 /// preserve operators.
+///
+/// Each text deserializer of this crate gives the operator. A field with no
+/// operator, such as `key { ... }`, has [`Operator::Equal`]. A value that is
+/// not the value of a field, such as an element of a sequence, has no
+/// operator, so a `Property` of it is an error.
 ///
 /// ```
 /// # #[cfg(feature = "derive")] {
@@ -92,49 +96,12 @@ pub use self::cursor::{ReaderSource, SliceSource, TextDeserializer};
 /// # }
 /// # }
 /// ```
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename = "_internal_jomini_property")]
 pub struct Property<T> {
     operator: Operator,
     value: T,
 }
-
-impl<T> fmt::Debug for Property<T>
-where
-    T: Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Property")
-            .field("operator", &self.operator)
-            .field("value", &self.value)
-            .finish()
-    }
-}
-
-impl<T> PartialEq for Property<T>
-where
-    T: PartialEq,
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.operator == other.operator && self.value == other.value
-    }
-}
-
-impl<T> Eq for Property<T> where T: Eq {}
-
-impl<T> Clone for Property<T>
-where
-    T: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            operator: self.operator,
-            value: self.value.clone(),
-        }
-    }
-}
-
-impl<T> Copy for Property<T> where T: Copy {}
 
 impl<T> Property<T> {
     /// Creates a new property
@@ -150,6 +117,11 @@ impl<T> Property<T> {
     /// Return a reference to the value
     pub fn value(&self) -> &T {
         &self.value
+    }
+
+    /// Return a mutable reference to the value
+    pub fn value_mut(&mut self) -> &mut T {
+        &mut self.value
     }
 
     /// Convert the property into the value
@@ -450,9 +422,47 @@ where
         self.deserialize_map(visitor)
     }
 
+    /// An owned value of the root is the block of the whole tape.
+    fn deserialize_newtype_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        #[cfg(feature = "syntax")]
+        if name == crate::text::syntax::de::VALUE {
+            use crate::text::{
+                dom::raw,
+                syntax::{
+                    OwnedValue,
+                    value::{tape, visit_owned},
+                },
+            };
+            let root = || {
+                OwnedValue::Block(match &self.kind {
+                    TextDeserializerKind::Owned { tape, encoding } => {
+                        tape::block(tape.tokens(), 0, tape.tokens().len(), true, encoding)
+                    }
+                    TextDeserializerKind::Borrowed { tape, encoding } => {
+                        tape::block(tape.tokens(), 0, tape.tokens().len(), true, encoding)
+                    }
+                    TextDeserializerKind::Reader { reader } => {
+                        let (tokens, start, end, encoding) = raw::object(reader);
+                        tape::block(tokens, start, end, true, encoding)
+                    }
+                })
+            };
+            return visit_owned(root, visitor);
+        }
+        let _ = name;
+        self.deserialize_any(visitor)
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        bytes byte_buf option unit unit_struct seq tuple
         tuple_struct enum ignored_any identifier
     }
 }
@@ -584,6 +594,67 @@ where
 
     fn read_scalar(&self) -> Result<crate::Scalar<'de>, Error> {
         self.reader().read_scalar().map_err(Error::from)
+    }
+
+    /// Return `true` when the value is a quoted scalar.
+    fn is_quoted(&self) -> bool {
+        let token = match &self.kind {
+            ValueKind::OperatorValue(x) => x.value.token(),
+            ValueKind::Value(x) => x.token(),
+            ValueKind::Scalar(x) => x.token(),
+            ValueKind::Array(_) => return false,
+        };
+        matches!(token, TextToken::Quoted(_))
+    }
+
+    /// Copy the value into an owned value.
+    #[cfg(feature = "syntax")]
+    fn owned(&self) -> crate::text::syntax::OwnedValue {
+        use crate::text::{
+            dom::raw,
+            syntax::{OwnedScalar, OwnedValue, value::tape},
+        };
+        match &self.kind {
+            ValueKind::OperatorValue(OperatorValue { value: x, .. }) | ValueKind::Value(x) => {
+                let (tokens, index, encoding) = raw::value(x);
+                tape::value(tokens, index, encoding)
+            }
+            ValueKind::Scalar(x) => {
+                let text = x.read_string();
+                OwnedValue::Scalar(match x.token() {
+                    TextToken::Quoted(_) => OwnedScalar::Quoted(text),
+                    _ => tape::unquoted(text),
+                })
+            }
+            ValueKind::Array(x) => {
+                let (tokens, start, end, encoding) = raw::array(x);
+                OwnedValue::Block(tape::block(tokens, start, end, false, encoding))
+            }
+        }
+    }
+
+    /// The header and the block of a headered block. The block keeps the
+    /// operator of the field, as in `a > rgb { 1 2 }`.
+    fn headered(&self) -> Option<(Self, Self)> {
+        let value = self.value_reader()?;
+        if !matches!(value.token(), TextToken::Header(_)) {
+            return None;
+        }
+        let mut parts = value.read_array().ok()?.values();
+        let header = parts.next()?;
+        let block = parts.next()?;
+        let block = match &self.kind {
+            ValueKind::OperatorValue(x) => ValueKind::OperatorValue(OperatorValue {
+                operator: x.operator,
+                value: block,
+            }),
+            _ => ValueKind::Value(block),
+        };
+        let part = |kind| ValueDeserializer {
+            kind,
+            config: self.config,
+        };
+        Some((part(ValueKind::Value(header)), part(block)))
     }
 }
 
@@ -882,13 +953,32 @@ where
 
     fn deserialize_newtype_struct<V>(
         self,
-        _name: &'static str,
+        name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_newtype_struct(self)
+        match name {
+            QUOTED => {
+                let quoted = self.is_quoted().into_deserializer();
+                visitor.visit_map(WrapperMap::new(KEY_QUOTED, quoted, self))
+            }
+            HEADERED => match self.headered() {
+                Some((header, block)) => {
+                    visitor.visit_map(WrapperMap::new(KEY_HEADER, OptionDe(Some(header)), block))
+                }
+                None => {
+                    let header = OptionDe::<Self>(None);
+                    visitor.visit_map(WrapperMap::new(KEY_HEADER, header, self))
+                }
+            },
+            #[cfg(feature = "syntax")]
+            crate::text::syntax::de::VALUE => {
+                crate::text::syntax::value::visit_owned(|| self.owned(), visitor)
+            }
+            _ => visitor.visit_newtype_struct(self),
+        }
     }
 
     fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -1190,6 +1280,7 @@ impl<'de> de::Deserializer<'de> for OperatorDeserializer {
 mod tests {
     use super::*;
     use crate::common::{Date, DateHour, UniformDate};
+    use crate::text::{Headered, MaybeQuoted};
     use jomini_derive::JominiDeserialize;
     use rstest::rstest;
     use serde::{
@@ -1201,9 +1292,14 @@ mod tests {
 
     fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
     where
-        T: Deserialize<'a>,
+        T: Deserialize<'a> + PartialEq + Debug,
     {
-        super::from_windows1252_slice(data)
+        let result = super::from_windows1252_slice(data);
+        #[cfg(feature = "syntax")]
+        if let Ok(expected) = &result {
+            check_syntax_tree(data, expected);
+        }
+        result
     }
 
     fn from_tape<'a, T>(data: &'a [u8]) -> Result<T, Error>
@@ -1213,9 +1309,8 @@ mod tests {
         TextTapeDeserializer::from_windows1252_slice(data)?.deserialize()
     }
 
-    /// Deserialize `data` from a tape, and assert that the `TextDeserializer`
-    /// gives the same value from a slice, from a reader, and from readers
-    /// with small buffers that hold the longest token.
+    /// Deserialize `data` from a tape, and assert that the other engines give
+    /// the same value, as [`from_text`] does.
     fn from_owned<T>(data: &[u8]) -> T
     where
         T: DeserializeOwned + PartialEq + Debug,
@@ -1224,8 +1319,22 @@ mod tests {
         let expected: T = TextTapeDeserializer::from_windows1252_tape(&tape)
             .deserialize()
             .unwrap();
-        let actual: T = super::from_windows1252_slice(data).unwrap();
-        assert_eq!(actual, expected, "slice");
+        assert_eq!(from_text::<T>(data), expected, "tape");
+        #[cfg(feature = "syntax")]
+        check_tape_value(data, &expected);
+        expected
+    }
+
+    /// Deserialize `data` with `TextDeserializer` from a slice, and assert
+    /// that it gives the same value from a reader and from readers with
+    /// small buffers that hold the longest token, and that the syntax tree
+    /// and the owned values of the syntax tree and of `TextDeserializer`
+    /// give it too.
+    fn from_text<T>(data: &[u8]) -> T
+    where
+        T: DeserializeOwned + PartialEq + Debug,
+    {
+        let expected: T = super::from_windows1252_slice(data).unwrap();
         let actual: T = super::from_windows1252_reader(data).unwrap();
         assert_eq!(actual, expected, "reader");
         for size in [8, 16, 64] {
@@ -1239,7 +1348,353 @@ mod tests {
                 ),
             }
         }
+        #[cfg(feature = "syntax")]
+        {
+            check_syntax_tree(data, &expected);
+            check_syntax_value(data, &expected);
+            check_owned_value(data, &expected);
+        }
         expected
+    }
+
+    /// The deserializer of the syntax tree must give the same result as the
+    /// deserializer of the tape.
+    #[cfg(feature = "syntax")]
+    fn check_syntax_tree<'a, T>(data: &'a [u8], expected: &T)
+    where
+        T: Deserialize<'a> + PartialEq + Debug,
+    {
+        let parse = crate::text::syntax::parse(data);
+        let actual: T = parse
+            .document(Windows1252Encoding::new())
+            .deserialize()
+            .unwrap();
+        assert_eq!(&actual, expected, "the syntax tree deserializer differs");
+    }
+
+    /// A value from the syntax tree must deserialize into the same result.
+    #[cfg(feature = "syntax")]
+    fn check_syntax_value<T>(data: &[u8], expected: &T)
+    where
+        T: DeserializeOwned + PartialEq + Debug,
+    {
+        use crate::text::syntax::OwnedBlock;
+        let parse = crate::text::syntax::parse(data);
+        let value = OwnedBlock::from_tree(parse.tree(), Windows1252Encoding::new());
+        let borrowed = T::deserialize(&value).unwrap();
+        assert_eq!(
+            &borrowed, expected,
+            "the borrowed value deserializer differs"
+        );
+        let owned = T::deserialize(value).unwrap();
+        assert_eq!(&owned, expected, "the owned value deserializer differs");
+    }
+
+    /// The owned block of the tape must deserialize into the same result.
+    #[cfg(feature = "syntax")]
+    fn check_tape_value<T>(data: &[u8], expected: &T)
+    where
+        T: DeserializeOwned + PartialEq + Debug,
+    {
+        use crate::text::syntax::OwnedBlock;
+        let tape = TextTape::from_slice(data).unwrap();
+        let block: OwnedBlock = TextTapeDeserializer::from_windows1252_tape(&tape)
+            .deserialize()
+            .unwrap();
+        let actual = T::deserialize(&block).unwrap();
+        assert_eq!(&actual, expected, "the owned value of the tape differs");
+    }
+
+    /// The owned block of `TextDeserializer` from a slice and from readers
+    /// must deserialize into the same result.
+    #[cfg(feature = "syntax")]
+    fn check_owned_value<T>(data: &[u8], expected: &T)
+    where
+        T: DeserializeOwned + PartialEq + Debug,
+    {
+        use crate::text::syntax::OwnedBlock;
+        let encoding = Windows1252Encoding::new();
+        let block: OwnedBlock = TextDeserializer::from_slice(data, encoding)
+            .deserialize()
+            .unwrap();
+        let actual = T::deserialize(&block).unwrap();
+        assert_eq!(&actual, expected, "the owned value of a slice differs");
+        for size in [8, 64] {
+            let buf = vec![0; size];
+            let block: OwnedBlock = TextDeserializer::from_reader_with_buf(data, encoding, buf)
+                .deserialize()
+                .unwrap();
+            let actual = T::deserialize(&block).unwrap();
+            assert_eq!(&actual, expected, "the owned value of a reader differs");
+        }
+    }
+
+    #[test]
+    fn test_maybe_quoted() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            a: MaybeQuoted<String>,
+            b: MaybeQuoted<String>,
+            c: MaybeQuoted<u32>,
+            d: MaybeQuoted<Vec<u32>>,
+        }
+
+        let data = b"a = \"@text\"\nb = @text\nc = 3\nd = { 1 2 }";
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(
+            actual,
+            MyStruct {
+                a: MaybeQuoted::Quoted(String::from("@text")),
+                b: MaybeQuoted::Unquoted(String::from("@text")),
+                c: MaybeQuoted::Unquoted(3),
+                d: MaybeQuoted::Unquoted(vec![1, 2]),
+            }
+        );
+    }
+
+    #[test]
+    fn test_maybe_quoted_keys() {
+        let data = b"\"a\" = 1 b = 2";
+        let actual: HashMap<MaybeQuoted<String>, u32> = from_owned(&data[..]);
+        let expected = HashMap::from([
+            (MaybeQuoted::Quoted(String::from("a")), 1),
+            (MaybeQuoted::Unquoted(String::from("b")), 2),
+        ]);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_headered() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            color: Headered<Vec<u8>>,
+            plain: Headered<Vec<u8>>,
+            hsv: Headered<[f32; 3]>,
+        }
+
+        let data = b"color = rgb { 1 2 3 } plain = { 4 5 6 } hsv = hsv { 0.5 0.25 1.0 }";
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(
+            actual,
+            MyStruct {
+                color: Headered::new(Some(String::from("rgb")), vec![1, 2, 3]),
+                plain: Headered::new(None, vec![4, 5, 6]),
+                hsv: Headered::new(Some(String::from("hsv")), [0.5, 0.25, 1.0]),
+            }
+        );
+    }
+
+    #[test]
+    fn test_headered_scalar() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            name: Headered<String>,
+            other: Option<u32>,
+        }
+
+        // A scalar with no block is the value, and the reader looks past it
+        // for a block.
+        let data = b"name = blue other = 1";
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(actual.name, Headered::new(None, String::from("blue")));
+        assert_eq!(actual.other, Some(1));
+
+        // A scalar that an empty block follows is the value.
+        let data = b"name = blue { } other = 1";
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(actual.name, Headered::new(None, String::from("blue")));
+        assert_eq!(actual.other, Some(1));
+
+        // So is a scalar that an open block at the end of the data follows.
+        let data = b"name = blue {";
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual.name, Headered::new(None, String::from("blue")));
+        let actual: MyStruct = from_windows1252_reader(&data[..]).unwrap();
+        assert_eq!(actual.name, Headered::new(None, String::from("blue")));
+    }
+
+    #[test]
+    fn test_headered_streaming_refill() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            a: Headered<Vec<u8>>,
+            b: Headered<Vec<u8>>,
+            c: Option<Headered<[u8; 3]>>,
+            q: MaybeQuoted<AnyValue>,
+            name: Headered<String>,
+        }
+
+        // Each buffer size splits the input at a different place, so some
+        // header is read past a refill.
+        let data = b"a = rgb { 1 2 3 } b = { 4 5 6 } c = hsv { 7 8 9 } q = rgb { 1 2 } name = blue";
+        let expected = MyStruct {
+            a: Headered::new(Some(String::from("rgb")), vec![1, 2, 3]),
+            b: Headered::new(None, vec![4, 5, 6]),
+            c: Some(Headered::new(Some(String::from("hsv")), [7, 8, 9])),
+            q: MaybeQuoted::Unquoted(AnyValue::Seq(vec![
+                AnyValue::Str(String::from("1")),
+                AnyValue::Str(String::from("2")),
+            ])),
+            name: Headered::new(None, String::from("blue")),
+        };
+        assert_eq!(from_owned::<MyStruct>(&data[..]), expected);
+        let encoding = Windows1252Encoding::new();
+        for size in 12..=data.len() + 1 {
+            let actual = TextDeserializer::from_reader_with_buf(&data[..], encoding, vec![0; size])
+                .deserialize::<MyStruct>()
+                .unwrap();
+            assert_eq!(actual, expected, "buffer size {size}");
+        }
+    }
+
+    #[test]
+    fn test_headered_operator() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            a: Headered<Property<Vec<u8>>>,
+            other: u32,
+        }
+
+        // The block of a header keeps the operator of the field, which a
+        // tape doesn't.
+        let data = b"a > rgb { 1 2 } other = 1";
+        let actual: MyStruct = from_text(&data[..]);
+        let expected = Headered::new(
+            Some(String::from("rgb")),
+            Property::new(Operator::GreaterThan, vec![1, 2]),
+        );
+        assert_eq!(actual.a, expected);
+        assert_eq!(actual.other, 1);
+    }
+
+    /// A quoted scalar is not a header, so the block after it is a block in
+    /// key position, which is skipped. The syntax parser reads the block as
+    /// a value without a key, which starts the remainder, a difference of
+    /// game files only.
+    #[test]
+    fn test_headered_quoted() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            a: Headered<MaybeQuoted<String>>,
+            other: u32,
+        }
+
+        let data = b"a = \"rgb\" { 1 2 } other = 1";
+        let expected = Headered::new(None, MaybeQuoted::Quoted(String::from("rgb")));
+        let actual: MyStruct = super::from_windows1252_slice(&data[..]).unwrap();
+        assert_eq!((&actual.a, actual.other), (&expected, 1));
+        let actual: MyStruct = from_windows1252_reader(&data[..]).unwrap();
+        assert_eq!((&actual.a, actual.other), (&expected, 1));
+    }
+
+    #[test]
+    fn test_headered_only_field_values() {
+        // A header is only recognized for the value of a field, so a
+        // headered block in a sequence is an error as with a tape.
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct List {
+            list: Vec<Headered<Vec<u8>>>,
+        }
+        let data = b"list = { rgb { 1 2 3 } { 4 5 6 } }";
+        assert!(from_windows1252_reader::<List, _>(&data[..]).is_err());
+        assert!(super::from_windows1252_slice::<List>(&data[..]).is_err());
+        assert!(from_tape::<List>(&data[..]).is_err());
+
+        // A key with a block after it is a key with no header.
+        let data = b"a { x = 1 } b = 2";
+        let actual: HashMap<Headered<String>, AnyValue> = from_owned(&data[..]);
+        let expected = HashMap::from([
+            (
+                Headered::new(None, String::from("a")),
+                AnyValue::Map(vec![(String::from("x"), AnyValue::Str(String::from("1")))]),
+            ),
+            (
+                Headered::new(None, String::from("b")),
+                AnyValue::Str(String::from("2")),
+            ),
+        ]);
+        assert_eq!(actual, expected);
+    }
+
+    /// The elements of a sequence, empty blocks too, are unquoted unless
+    /// they are quoted scalars, and have no header.
+    #[test]
+    fn test_wrappers_in_sequences() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            names: Vec<MaybeQuoted<String>>,
+            blocks: Vec<Headered<MaybeQuoted<Vec<u8>>>>,
+        }
+
+        let data = b"names = { a \"b\" c } blocks = { { 1 } { 2 3 } }";
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(
+            actual,
+            MyStruct {
+                names: vec![
+                    MaybeQuoted::Unquoted(String::from("a")),
+                    MaybeQuoted::Quoted(String::from("b")),
+                    MaybeQuoted::Unquoted(String::from("c")),
+                ],
+                blocks: vec![
+                    Headered::new(None, MaybeQuoted::Unquoted(vec![1])),
+                    Headered::new(None, MaybeQuoted::Unquoted(vec![2, 3])),
+                ],
+            }
+        );
+
+        // An empty block in a sequence is an element, which the tape drops.
+        let data = b"blocks = { {} { 2 3 } }";
+        let expected = vec![
+            Headered::new(None, MaybeQuoted::Unquoted(vec![])),
+            Headered::new(None, MaybeQuoted::Unquoted(vec![2, 3])),
+        ];
+        let actual: MyStructBlocks = from_slice(&data[..]).unwrap();
+        assert_eq!(actual.blocks, expected);
+        let actual: MyStructBlocks = from_windows1252_reader(&data[..]).unwrap();
+        assert_eq!(actual.blocks, expected);
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStructBlocks {
+            blocks: Vec<Headered<MaybeQuoted<Vec<u8>>>>,
+        }
+    }
+
+    /// `TextDeserializer` makes the owned value that the syntax parser
+    /// makes, from a slice and from a reader, as a field value and at the
+    /// root.
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn test_owned_value() {
+        use crate::text::syntax::{OwnedBlock, OwnedValue};
+
+        let data = b"a = { 1 2 } b = \"x\" c = rgb { 1 2 3 } d > 5 e = { f = { g = h } } i = j {} k = { # }\n l } m = @x n = { {} 1 }";
+        let encoding = Windows1252Encoding::new();
+        let parse = crate::text::syntax::parse(&data[..]);
+        let root = OwnedBlock::from_tree(parse.tree(), encoding);
+        let fields: HashMap<String, OwnedValue> = root
+            .fields()
+            .map(|f| (f.key.as_str().to_string(), f.value.clone()))
+            .collect();
+
+        let actual: OwnedBlock = TextDeserializer::from_slice(&data[..], encoding)
+            .deserialize()
+            .unwrap();
+        assert_eq!(actual, root);
+        let actual: HashMap<String, OwnedValue> = super::from_windows1252_slice(&data[..]).unwrap();
+        assert_eq!(actual, fields);
+        for size in 8..=data.len() + 1 {
+            let buf = vec![0; size];
+            let actual = TextDeserializer::from_reader_with_buf(&data[..], encoding, buf)
+                .deserialize::<HashMap<String, OwnedValue>>()
+                .unwrap();
+            assert_eq!(actual, fields, "buffer size {size}");
+            let buf = vec![0; size];
+            let actual = TextDeserializer::from_reader_with_buf(&data[..], encoding, buf)
+                .deserialize::<OwnedBlock>()
+                .unwrap();
+            assert_eq!(actual, root, "buffer size {size}");
+        }
     }
 
     #[test]
@@ -2487,6 +2942,7 @@ mod tests {
             Blue,
         }
 
+        #[derive(Debug, PartialEq)]
         struct Container;
 
         impl<'de> Deserialize<'de> for Container {
@@ -2734,7 +3190,14 @@ mod tests {
             string_field: String,
         }
 
-        let actual: MyStruct = from_owned(&data[..]);
+        // A syntax value keeps the decoded text, not the raw bytes, so this
+        // test does not use `from_owned`.
+        let tape = TextTape::from_slice(&data[..]).unwrap();
+        let actual: MyStruct = TextTapeDeserializer::from_windows1252_tape(&tape)
+            .deserialize()
+            .unwrap();
+        #[cfg(feature = "syntax")]
+        check_syntax_tree(&data[..], &actual);
         assert_eq!(actual.raw_field.0, b"Joe \\\"Captain\\\" Rogers ");
         assert_eq!(actual.string_field, "Joe \"Captain\" Rogers");
     }
@@ -3003,6 +3466,7 @@ mod tests {
 
     /// The root through `deserialize_map` on a tape, which has no
     /// `deserialize_any` for the root.
+    #[derive(Debug, PartialEq)]
     struct TapeRoot(AnyValue);
 
     impl<'de> Deserialize<'de> for TapeRoot {
@@ -3094,7 +3558,7 @@ mod tests {
     fn test_any_empty_key_mid_line() {
         let data = b"empty_key={ =b }";
         let expected = "{empty_key={=b}}";
-        let actual: AnyValue = from_slice(data).unwrap();
+        let actual: AnyValue = super::from_windows1252_slice(data).unwrap();
         assert_eq!(actual.to_string(), expected);
         let encoding = Windows1252Encoding::new();
         for size in 16..=data.len() + 1 {
@@ -3236,7 +3700,9 @@ mod tests {
         ..HeaderFields::default()
     })]
     fn test_header_seq_streaming_refill(#[case] data: &[u8], #[case] expected: HeaderFields) {
-        let actual: HeaderFields = from_slice(data).unwrap();
+        // The syntax parser reads a scalar and a block first in a block as a
+        // field, a difference of game files only.
+        let actual: HeaderFields = super::from_windows1252_slice(data).unwrap();
         assert_eq!(actual, expected);
         let encoding = Windows1252Encoding::new();
         for size in 16..=24 {

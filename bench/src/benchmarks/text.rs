@@ -1,8 +1,9 @@
 use crate::corpus::{self, Corpus, CorpusArchive, CorpusBytes, Game};
 use eu4save::models::GameState;
+use jomini::text::de::TextTapeDeserializer;
 use jomini::{TextDeserializer, TextTape, Windows1252Encoding};
 use serde::de::DeserializeOwned;
-use std::hint::black_box;
+use std::{hint::black_box, sync::OnceLock};
 
 const METADATA_TXT: &[u8] = include_bytes!("../../../crates/jomini/tests/fixtures/meta.txt");
 const EU4_TEXT: Corpus = Corpus::text(Game::Eu4);
@@ -89,6 +90,139 @@ pub(crate) fn de_reader<T: DeserializeOwned>(data: &[u8]) -> T {
         .unwrap()
 }
 
+/// Parse with the syntax parser into a `TextTape` and deserialize the tape.
+#[inline(never)]
+pub(crate) fn syntax_tape_de<T: DeserializeOwned>(data: &[u8]) -> T {
+    let tape = jomini::text::syntax::parse_tape(data)
+        .into_result()
+        .unwrap();
+    TextTapeDeserializer::from_windows1252_tape(&tape)
+        .deserialize()
+        .unwrap()
+}
+
+/// Parse into a syntax tree and deserialize the tree.
+#[inline(never)]
+pub(crate) fn syntax_tree_de<T: DeserializeOwned>(data: &[u8]) -> T {
+    jomini::text::syntax::parse(data)
+        .deserialize(Windows1252Encoding::new())
+        .unwrap()
+}
+
+/// A type that takes each value of a document, so that a benchmark measures a
+/// full deserialization and not a skip.
+pub(crate) struct Any;
+
+impl<'de> serde::Deserialize<'de> for Any {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Any, D::Error> {
+        deserializer.deserialize_any(AnyVisitor)
+    }
+}
+
+/// [`Any`] for the root of a file. `TextTapeDeserializer` reads the root only
+/// as a map.
+pub(crate) struct AnyRoot;
+
+impl<'de> serde::Deserialize<'de> for AnyRoot {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<AnyRoot, D::Error> {
+        deserializer.deserialize_map(AnyVisitor).map(|Any| AnyRoot)
+    }
+}
+
+struct AnyVisitor;
+
+impl<'de> serde::de::Visitor<'de> for AnyVisitor {
+    type Value = Any;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("any value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<Any, E> {
+        Ok(Any)
+    }
+
+    fn visit_i64<E>(self, _: i64) -> Result<Any, E> {
+        Ok(Any)
+    }
+
+    fn visit_u64<E>(self, _: u64) -> Result<Any, E> {
+        Ok(Any)
+    }
+
+    fn visit_f64<E>(self, _: f64) -> Result<Any, E> {
+        Ok(Any)
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Any, E> {
+        black_box(value.len());
+        Ok(Any)
+    }
+
+    fn visit_bytes<E>(self, value: &[u8]) -> Result<Any, E> {
+        black_box(value.len());
+        Ok(Any)
+    }
+
+    fn visit_unit<E>(self) -> Result<Any, E> {
+        Ok(Any)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Any, A::Error> {
+        while seq.next_element::<Any>()?.is_some() {}
+        Ok(Any)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Any, A::Error> {
+        while map.next_entry::<Any, Any>()?.is_some() {}
+        Ok(Any)
+    }
+}
+
+/// The `.txt` files under the directory of `JOMINI_GAME_DIR`, such as the
+/// `game/common` directory of CK3. Game files are not in the repository, so
+/// the game file benchmarks run only when the variable is set. A file that
+/// one of the paths rejects is left out, so each benchmark reads the same
+/// files.
+fn setup_game_files() -> Option<&'static [Vec<u8>]> {
+    static FILES: OnceLock<Option<Vec<Vec<u8>>>> = OnceLock::new();
+    FILES
+        .get_or_init(|| {
+            let root = std::env::var_os("JOMINI_GAME_DIR")?;
+            let mut paths = Vec::new();
+            let mut stack = vec![std::path::PathBuf::from(root)];
+            while let Some(dir) = stack.pop() {
+                for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().is_some_and(|e| e == "txt") {
+                        paths.push(path);
+                    }
+                }
+            }
+            paths.sort();
+            let files = paths
+                .iter()
+                .filter_map(|path| std::fs::read(path).ok())
+                .filter(|data| {
+                    let encoding = Windows1252Encoding::new();
+                    TextTapeDeserializer::from_windows1252_slice(data)
+                        .is_ok_and(|de| de.deserialize::<AnyRoot>().is_ok())
+                        && TextDeserializer::from_slice(data, encoding)
+                            .deserialize::<AnyRoot>()
+                            .is_ok()
+                        && jomini::text::syntax::parse_tape(data).into_result().is_ok()
+                        && jomini::text::syntax::parse(data)
+                            .deserialize::<AnyRoot, _>(encoding)
+                            .is_ok()
+                })
+                .collect();
+            Some(files)
+        })
+        .as_deref()
+}
+
 #[inline(never)]
 pub(crate) fn reader_count_compressed_archive(archive: &CorpusArchive) -> i32 {
     corpus::with_archive_reader(archive, |reader| {
@@ -168,6 +302,12 @@ pub mod criterion_benches {
         group.bench_function("meta/tape", |b| b.iter(|| tape_de::<Meta>(data)));
         group.bench_function("meta/slice", |b| b.iter(|| de_slice::<Meta>(data)));
         group.bench_function("meta/reader", |b| b.iter(|| de_reader::<Meta>(data)));
+        group.bench_function("meta/syntax_tape", |b| {
+            b.iter(|| syntax_tape_de::<Meta>(data))
+        });
+        group.bench_function("meta/syntax_tree", |b| {
+            b.iter(|| syntax_tree_de::<Meta>(data))
+        });
         group.finish();
 
         let data = setup_eu4_gamestate();
@@ -177,7 +317,32 @@ pub mod criterion_benches {
         group.bench_function("tape", |b| b.iter(|| tape_de::<GameState>(data)));
         group.bench_function("slice", |b| b.iter(|| de_slice::<GameState>(data)));
         group.bench_function("reader", |b| b.iter(|| de_reader::<GameState>(data)));
+        group.bench_function("syntax_tape", |b| {
+            b.iter(|| syntax_tape_de::<GameState>(data))
+        });
+        group.bench_function("syntax_tree", |b| {
+            b.iter(|| syntax_tree_de::<GameState>(data))
+        });
         group.finish();
+
+        if let Some(files) = setup_game_files() {
+            let mut group = c.benchmark_group("text/deserialize/game");
+            let bytes = files.iter().map(|data| data.len() as u64).sum();
+            group.throughput(Throughput::Bytes(bytes));
+            type Path = fn(&[u8]) -> AnyRoot;
+            let paths: [(&str, Path); 4] = [
+                ("tape", tape_de),
+                ("slice", de_slice),
+                ("syntax_tape", syntax_tape_de),
+                ("syntax_tree", syntax_tree_de),
+            ];
+            for (name, f) in paths {
+                group.bench_function(name, |b| {
+                    b.iter(|| files.iter().for_each(|data| _ = black_box(f(data))))
+                });
+            }
+            group.finish();
+        }
     }
 
     pub fn text_compressed(c: &mut Criterion) {
@@ -238,6 +403,8 @@ pub mod gungraun_benches {
     #[bench::tape(args = (setup_meta(), tape_de::<Meta>))]
     #[bench::slice(args = (setup_meta(), de_slice::<Meta>))]
     #[bench::reader(args = (setup_meta(), de_reader::<Meta>))]
+    #[bench::syntax_tape(args = (setup_meta(), syntax_tape_de::<Meta>))]
+    #[bench::syntax_tree(args = (setup_meta(), syntax_tree_de::<Meta>))]
     fn deserialize_meta_with(data: &[u8], f: fn(&[u8]) -> Meta) -> Meta {
         f(data)
     }
@@ -246,6 +413,8 @@ pub mod gungraun_benches {
     #[bench::tape(args = (setup_eu4_gamestate(), tape_de::<GameState>))]
     #[bench::slice(args = (setup_eu4_gamestate(), de_slice::<GameState>))]
     #[bench::reader(args = (setup_eu4_gamestate(), de_reader::<GameState>))]
+    #[bench::syntax_tape(args = (setup_eu4_gamestate(), syntax_tape_de::<GameState>))]
+    #[bench::syntax_tree(args = (setup_eu4_gamestate(), syntax_tree_de::<GameState>))]
     fn deserialize_gamestate(data: &[u8], f: fn(&[u8]) -> GameState) -> GameState {
         f(data)
     }

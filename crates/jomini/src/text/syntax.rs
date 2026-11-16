@@ -25,11 +25,14 @@
 //! highlighter, or editor tool. For other jobs, the crate has better
 //! choices:
 //!
-//! - To deserialize a file into your own types, use serde with
-//!   [`TextDeserializer`](crate::text::de::TextDeserializer).
-//! - To read a large save with little memory, use the streaming
-//!   [`TokenReader`](crate::text::TokenReader) or
-//!   [`from_windows1252_reader`](crate::text::de::from_windows1252_reader).
+//! - To only deserialize a save into your own types, use serde with
+//!   [`TextDeserializer`](crate::text::de::TextDeserializer), which streams
+//!   a slice or a reader. It is faster and uses less memory, but its errors
+//!   give a byte offset, not a line, it doesn't resolve `@variables`, and
+//!   it gives an error for the syntax of game files that only this parser
+//!   reads, such as parameter blocks and `[Interpolation]`.
+//! - To read the tokens of a large save with little memory, use the
+//!   streaming [`TokenReader`](crate::text::TokenReader).
 //! - To run existing code that reads a [`TextTape`], see
 //!   [Read into a `TextTape`](#read-into-a-texttape).
 //!
@@ -191,6 +194,23 @@
 //! acceptable. The tape discards the trivia. [`parse_tape`] lists where its
 //! tape differs from the tape of `from_slice`.
 //!
+#![cfg_attr(
+    feature = "serde",
+    doc = r#"
+# Deserialize into your own types
+
+[`Parse::deserialize`] deserializes the tree into serde types with no
+tape, and [`Parse::document`] reads a file that has syntax errors, or
+part of a file. A type that derives `Deserialize` for `TextDeserializer`
+needs no change, and each error gives the line, the column, and the path
+of keys. See the [`de`] module.
+
+To keep a whole document as data, read it into an [`OwnedBlock`]. The
+block keeps the quotes, the operators, the headers, and the order of the
+items. Later, you can deserialize the block into a type.
+"#
+)]
+//!
 //! # Walk the tree
 //!
 //! Under the typed view are the [`SyntaxNode`] and [`SyntaxToken`] cursors.
@@ -246,6 +266,8 @@
 mod ast;
 mod calc;
 mod cursor;
+#[cfg(feature = "serde")]
+pub mod de;
 mod edit;
 mod error;
 mod flavor;
@@ -259,6 +281,8 @@ mod tape;
 mod tests;
 mod text_size;
 mod tree;
+#[cfg(feature = "serde")]
+pub(crate) mod value;
 
 pub use ast::{
     AstNode, BinOp, BinaryExpr, Block, Calc, Code, DirectiveKind, Expr, Field, HeaderedBlock,
@@ -281,6 +305,8 @@ pub use text_size::{TextRange, TextSize};
 pub use tree::{
     NodeFlags, OwnedParse, Parse, SyntaxTree, parse, parse_owned, parse_owned_with, parse_with,
 };
+#[cfg(feature = "serde")]
+pub use value::{OwnedBlock, OwnedField, OwnedItem, OwnedParameter, OwnedScalar, OwnedValue};
 
 // The tape parser in `tape` reads these private items through this module.
 use ast::strip_quotes;

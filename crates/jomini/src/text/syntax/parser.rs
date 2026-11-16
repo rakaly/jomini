@@ -708,8 +708,9 @@ impl<'t, S: Sink> Parser<'t, S> {
     }
 
     /// Parse a field whose operator starts a line, as in `=1825.6.28` in an
-    /// EU4 save. The streaming reader also reads such an operator as the start
-    /// of a field. The key is a zero-width [`SyntaxKind::EmptyKey`] token at
+    /// EU4 save. `TextDeserializer` also reads such an operator as the start
+    /// of a field, and it does anywhere, where this parser reads only an
+    /// operator that starts a line. The key is a zero-width [`SyntaxKind::EmptyKey`] token at
     /// the operator.
     #[cold]
     fn parse_empty_key_field(&mut self) {

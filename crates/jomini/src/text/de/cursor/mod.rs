@@ -19,11 +19,13 @@
 
 mod scan;
 mod source;
+mod wrappers;
 
 pub use self::source::{ReaderSource, SliceSource};
 
 use self::scan::{Kind, Peek, Skip, Status, Tok};
 use self::source::{Reference, Source};
+use self::wrappers::{AnyRemainder, OperatorDeserializer};
 use crate::{
     Encoding, Error, ErrorKind, Scalar,
     text::{Operator, decode_quoted},
@@ -70,6 +72,20 @@ fn is_operator_start(x: u8) -> bool {
 /// sequence or used as a key, an operator as a value, a header before a map, an enum written as a
 /// block or whose header has no block, a sequence longer than its tuple,
 /// and a value that is read again after its read failed.
+///
+/// For game and mod files, `jomini::text::syntax::parse(data)` and its
+/// `deserialize(encoding)` or `document(encoding)` give errors with a line,
+/// a column, and the path of keys, resolve `@variables`, and read files
+/// with syntax errors, at the cost of a syntax tree in memory.
+///
+/// [`MaybeQuoted`](crate::text::MaybeQuoted) and
+/// [`Headered`](crate::text::Headered) keep the quotes and the header of a
+/// value, and with the `syntax` feature an owned value of the syntax module
+/// keeps all of a value. An owned value is parsed as
+/// `jomini::text::syntax::parse` parses it, with the default flavor, since
+/// `E` is only an encoding, so for a flavor that reads data differently, as
+/// `Hoi4Flavor` reads `$NAME$`, it can differ from the value of `parse_with`
+/// and that flavor.
 ///
 /// An error carries the byte offset of the token that caused it, if the
 /// error kind has no offset of its own. An unexpected end of the data, in a
@@ -1206,13 +1222,16 @@ impl<'de, S: Source<'de>, E: Encoding> TextDeserializer<S, E> {
 
     /// Visit the token that was read where a map is expected, which is not
     /// an open token. A header before a map, as in `o = rgb { s = 1 }`, is
-    /// an error that names the lossless parser.
+    /// an error that names the lossless parser, which reads the block as the
+    /// map, even for a visitor that would take the scalar.
     #[cold]
     #[inline(never)]
     fn visit_not_map<V>(&mut self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
     {
+        self.header_before_map()?;
+
         // As `visit_read`, without its block arm: the caller read a token
         // that is not an open token, and a struct visitor would otherwise
         // get a copy of its sequence code that is never run.
@@ -1225,29 +1244,26 @@ impl<'de, S: Source<'de>, E: Encoding> TextDeserializer<S, E> {
         };
         match result {
             Ok(value) => Ok(value),
-            Err(err) => {
-                let err = self.failed(err);
-                Err(self.not_map_error(err))
-            }
+            Err(err) => Err(self.failed(err)),
         }
     }
 
-    /// The error of `visit_not_map`, which names the lossless parser for a
-    /// header before a map, out of line since it doesn't depend on the
-    /// visitor.
+    /// The error for a header before a map, from `visit_not_map`, which
+    /// doesn't depend on the visitor.
     #[cold]
     #[inline(never)]
-    fn not_map_error(&mut self, err: Error) -> Error {
-        if self.tok.kind != Kind::Unquoted || self.peeked {
-            return err;
+    fn header_before_map(&mut self) -> Result<(), Error> {
+        if self.tok.kind == Kind::Unquoted
+            && !self.peeked
+            && let Some((open, b'{')) = self.peek_byte(self.pending, self.pending)?
+            && !matches!(self.peek_byte(open + 1, open + 1)?, Some((_, b'}')) | None)
+        {
+            return Err(Error::deserialize_msg(format!(
+                "TextDeserializer doesn't read {HEADER_MAP}, which {LOSSLESS} reads"
+            ))
+            .or_offset(self.tok_offset()));
         }
-
-        let err = err.or_offset(self.tok_offset());
-        match self.peek_byte(self.pending, self.pending) {
-            Ok(Some((_, b'{'))) => lossless_hint(err, HEADER_MAP),
-            Ok(_) => err,
-            Err(e) => e,
-        }
+        Ok(())
     }
 
     /// Visit the scalar of a field value that was read, or the block after
@@ -1419,9 +1435,27 @@ impl<'de, S: Source<'de>, E: Encoding> de::Deserializer<'de> for &'_ mut TextDes
         visitor.visit_map(map).map_err(|e| self.locate(e))
     }
 
+    /// An owned value of the root is the block of the whole data. Any other
+    /// newtype struct reads the root as `deserialize_any` does.
+    fn deserialize_newtype_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        #[cfg(feature = "syntax")]
+        if name == crate::text::syntax::de::VALUE {
+            return self.visit_root_owned(visitor);
+        }
+        let _ = name;
+        self.deserialize_any(visitor)
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        bytes byte_buf option unit unit_struct seq tuple
         tuple_struct enum ignored_any identifier
     }
 }
@@ -1712,14 +1746,20 @@ impl<'de, S: Source<'de>, E: Encoding> de::Deserializer<'de> for ValueDeserializ
         self.deserialize_ignored_any(visitor)
     }
 
+    /// A newtype struct whose name starts with `$` may be a wrapper type of
+    /// the crate, as [`MaybeQuoted`](crate::text::MaybeQuoted), which no
+    /// save model has, so the names are compared out of line.
     fn deserialize_newtype_struct<V>(
         self,
-        _name: &'static str,
+        name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
+        if name.starts_with('$') {
+            return self.visit_wrapper(name, visitor);
+        }
         visitor.visit_newtype_struct(self)
     }
 
@@ -1917,7 +1957,7 @@ impl<'de, S: Source<'de>, E: Encoding> de::SeqAccess<'de> for RemainderSeq<'_, S
                 Some(tok) if tok.kind == Kind::Operator => {
                     self.de.operator_element(tok)?;
                     return seed
-                        .deserialize(StaticDeserializer(tok.op.symbol()))
+                        .deserialize(OperatorDeserializer(tok.op.symbol()))
                         .map(Some);
                 }
                 Some(_) => break,
@@ -1972,8 +2012,132 @@ impl<'de, S: Source<'de>, E: Encoding> de::SeqAccess<'de> for HeaderSeq<'_, S, E
             _ => return Ok(None),
         }
 
-        seed.deserialize(ValueDeserializer::key(&mut *self.de))
-            .map(Some)
+        let value = ValueDeserializer::key(&mut *self.de);
+        if self.state == 1 {
+            seed.deserialize(HeaderToken(value)).map(Some)
+        } else {
+            seed.deserialize(value).map(Some)
+        }
+    }
+}
+
+/// The token of a [`HeaderSeq`], which is read as any value is, except that
+/// as a sequence it is the token alone, as the syntax parser reads it: the
+/// block after it is the next element of the [`HeaderSeq`].
+struct HeaderToken<'a, S, E>(ValueDeserializer<'a, S, E>);
+
+macro_rules! forward_to_value {
+    ($($method:ident)*) => {
+        $(
+            fn $method<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+            where
+                V: Visitor<'de>,
+            {
+                self.0.$method(visitor)
+            }
+        )*
+    };
+}
+
+impl<'de, S: Source<'de>, E: Encoding> de::Deserializer<'de> for HeaderToken<'_, S, E> {
+    type Error = Error;
+
+    forward_to_value! {
+        deserialize_any deserialize_bool deserialize_i8 deserialize_i16 deserialize_i32
+        deserialize_i64 deserialize_i128 deserialize_u8 deserialize_u16 deserialize_u32
+        deserialize_u64 deserialize_u128 deserialize_f32 deserialize_f64 deserialize_char
+        deserialize_str deserialize_string deserialize_bytes deserialize_byte_buf
+        deserialize_option deserialize_unit deserialize_map deserialize_identifier
+        deserialize_ignored_any
+    }
+
+    fn deserialize_unit_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.0.deserialize_unit_struct(name, visitor)
+    }
+
+    fn deserialize_newtype_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.0.deserialize_newtype_struct(name, visitor)
+    }
+
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_seq(TokenSeq(Some(self.0)))
+    }
+
+    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_tuple_struct<V>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        name: &'static str,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.0.deserialize_struct(name, fields, visitor)
+    }
+
+    fn deserialize_enum<V>(
+        self,
+        name: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.0.deserialize_enum(name, variants, visitor)
+    }
+}
+
+/// A sequence of one token.
+struct TokenSeq<'a, S, E>(Option<ValueDeserializer<'a, S, E>>);
+
+impl<'de, S: Source<'de>, E: Encoding> de::SeqAccess<'de> for TokenSeq<'_, S, E> {
+    type Error = Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        match self.0.take() {
+            Some(value) => seed.deserialize(value).map(Some),
+            None => Ok(None),
+        }
     }
 }
 
@@ -2024,9 +2188,22 @@ impl<'de> de::Deserializer<'de> for EmptyBlock {
         visitor.visit_unit()
     }
 
+    /// An empty block is unquoted, has no header, and is an empty owned
+    /// block.
+    fn deserialize_newtype_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.visit_wrapper(name, visitor)
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf unit unit_struct newtype_struct seq tuple
+        bytes byte_buf unit unit_struct seq tuple
         tuple_struct enum identifier
     }
 }
@@ -2158,8 +2335,8 @@ impl<'de, S: Source<'de>, E: Encoding> de::MapAccess<'de> for AnyMap<'_, S, E> {
         let de = &mut *self.de;
         if self.remainder {
             self.done = true;
-            let seq = AnySeq::new(de, self.root);
-            return seed.deserialize(de::value::SeqAccessDeserializer::new(seq));
+            let root = self.root;
+            return seed.deserialize(AnyRemainder { de, root });
         }
 
         // Unlike the typed map, this reads the operator as a token, as the
@@ -2237,7 +2414,7 @@ impl<'de, S: Source<'de>, E: Encoding> de::SeqAccess<'de> for AnySeq<'_, S, E> {
                     Kind::Operator => {
                         self.de.operator_element(tok)?;
                         return seed
-                            .deserialize(StaticDeserializer(tok.op.symbol()))
+                            .deserialize(OperatorDeserializer(tok.op.symbol()))
                             .map(Some);
                     }
                     _ => break,
