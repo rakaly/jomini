@@ -11,7 +11,7 @@ use crate::{
 use jomini::{
     binary::{BinaryFormatDeserializer, TokenResolver},
     text::ObjectReader,
-    TextDeserializer, TextTape, Utf8Encoding,
+    TextTape, TextTapeDeserializer, Utf8Encoding,
 };
 use serde::de::DeserializeOwned;
 
@@ -379,7 +379,7 @@ impl<'de, 'a: 'de, Resolver: TokenResolver> serde::de::Deserializer<'de>
             Ok(deser.deserialize_struct(name, fields, visitor)?)
         } else {
             let reader = jomini::text::TokenReader::new(&mut self.reader);
-            let mut deser = TextDeserializer::from_utf8_reader(reader);
+            let mut deser = TextTapeDeserializer::from_utf8_reader(reader);
             Ok(deser.deserialize_struct(name, fields, visitor)?)
         }
     }

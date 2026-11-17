@@ -6,7 +6,7 @@ use crate::{
     resolver::SegmentedResolver,
     Encoding, Eu4Error, Eu4ErrorKind, MeltOptions, MeltedDocument,
 };
-use jomini::{binary::TokenResolver, text::ObjectReader, TextDeserializer, TextTape};
+use jomini::{binary::TokenResolver, text::ObjectReader, TextTape, TextTapeDeserializer};
 use rawzip::{CompressionMethod, FileReader, ReaderAt};
 use serde::de::DeserializeOwned;
 use std::{
@@ -702,7 +702,7 @@ impl<'de, 'a: 'de, R: jomini::binary::TokenResolver> serde::de::Deserializer<'de
             Ok(deser.deserialize_struct(name, fields, visitor)?)
         } else {
             let reader = jomini::text::TokenReader::new(&mut self.reader);
-            let mut deser = TextDeserializer::from_encoded_reader(reader, Eu4Flavor::new());
+            let mut deser = TextTapeDeserializer::from_encoded_reader(reader, Eu4Flavor::new());
             Ok(deser.deserialize_struct(name, fields, visitor)?)
         }
     }

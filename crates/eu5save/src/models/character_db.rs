@@ -186,14 +186,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::TextDeserializer;
+    use jomini::TextTapeDeserializer;
 
     #[test]
     fn test_first_name_simple_string() {
         let data = r#"first_name="Margret Thatcher"
 birth_date=1925.1.1"#;
         let allocator = arena_serde::Arena::new();
-        let d = TextDeserializer::from_utf8_slice(data.as_bytes())
+        let d = TextTapeDeserializer::from_utf8_slice(data.as_bytes())
             .expect("Failed to create deserializer");
         let character: Character = Character::deserialize_in_arena(&d, &allocator)
             .expect("Failed to deserialize character with simple first_name");
@@ -209,7 +209,7 @@ custom_name="Margret Thatcher"
 }
 birth_date=1925.1.1"#;
         let allocator = arena_serde::Arena::new();
-        let d = TextDeserializer::from_utf8_slice(data.as_bytes())
+        let d = TextTapeDeserializer::from_utf8_slice(data.as_bytes())
             .expect("Failed to create deserializer");
         let character: Character = Character::deserialize_in_arena(&d, &allocator)
             .expect("Failed to deserialize character with object first_name with custom_name");
@@ -228,7 +228,7 @@ Custom_Name="Ronny"
 }
 birth_date=1925.1.1"#;
         let allocator = arena_serde::Arena::new();
-        let d = TextDeserializer::from_utf8_slice(data.as_bytes())
+        let d = TextTapeDeserializer::from_utf8_slice(data.as_bytes())
             .expect("Failed to create deserializer");
         let character: Character = Character::deserialize_in_arena(&d, &allocator)
             .expect("Failed to deserialize character with key-based custom name");

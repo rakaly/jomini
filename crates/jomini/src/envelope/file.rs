@@ -4,7 +4,7 @@ use crate::envelope::{
 };
 #[cfg(feature = "serde")]
 use crate::{
-    TextDeserializer, Utf8Encoding,
+    TextTapeDeserializer, Utf8Encoding,
     text::{self, de::TextReaderDeserializer},
 };
 use rawzip::{
@@ -1137,5 +1137,5 @@ impl<R: Read> Read for VerifyingReader<R> {
 
 #[cfg(feature = "serde")]
 fn text_deserializer<'r, R: Read + 'r>(reader: R) -> TextReaderDeserializer<'r, Utf8Encoding> {
-    TextDeserializer::from_utf8_reader(text::TokenReader::new(reader))
+    TextTapeDeserializer::from_utf8_reader(text::TokenReader::new(reader))
 }

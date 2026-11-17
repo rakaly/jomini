@@ -603,7 +603,7 @@ where
     where
         T: serde::Deserialize<'data>,
     {
-        T::deserialize(&crate::TextDeserializer::from_reader(self))
+        T::deserialize(&crate::TextTapeDeserializer::from_reader(self))
     }
 
     /// Return the number of key value pairs that the object contains.

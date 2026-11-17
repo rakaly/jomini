@@ -1,5 +1,7 @@
 use crate::corpus::{self, Corpus, CorpusArchive, CorpusBytes, Game};
-use jomini::TextTape;
+use eu4save::models::GameState;
+use jomini::{TextDeserializer, TextTape, Windows1252Encoding};
+use serde::de::DeserializeOwned;
 use std::hint::black_box;
 
 const METADATA_TXT: &[u8] = include_bytes!("../../../crates/jomini/tests/fixtures/meta.txt");
@@ -38,6 +40,35 @@ pub(crate) fn deserialize_meta(data: &[u8]) -> Meta {
     jomini::text::de::from_windows1252_slice(data).unwrap()
 }
 
+/// Deserialize with a `TokenReader` over the slice.
+#[inline(never)]
+pub(crate) fn token_reader_slice_de<T: DeserializeOwned>(data: &[u8]) -> T {
+    let reader = jomini::text::TokenReader::from_slice(data);
+    jomini::TextTapeDeserializer::from_windows1252_reader(reader)
+        .deserialize()
+        .unwrap()
+}
+
+/// Deserialize with a `TokenReader` that reads the slice as a reader.
+#[inline(never)]
+pub(crate) fn token_reader_io_de<T: DeserializeOwned>(data: &[u8]) -> T {
+    jomini::text::de::from_windows1252_reader(data).unwrap()
+}
+
+#[inline(never)]
+pub(crate) fn de_slice<T: DeserializeOwned>(data: &[u8]) -> T {
+    TextDeserializer::from_slice(data, Windows1252Encoding::new())
+        .deserialize()
+        .unwrap()
+}
+
+#[inline(never)]
+pub(crate) fn de_reader<T: DeserializeOwned>(data: &[u8]) -> T {
+    TextDeserializer::from_reader(data, Windows1252Encoding::new())
+        .deserialize()
+        .unwrap()
+}
+
 #[inline(never)]
 pub(crate) fn reader_count_compressed_archive(archive: &CorpusArchive) -> i32 {
     corpus::with_archive_reader(archive, |reader| {
@@ -65,6 +96,10 @@ fn setup_ck3() -> &'static [u8] {
 
 fn setup_meta() -> &'static [u8] {
     &METADATA_TXT["EU4txt".len()..]
+}
+
+fn setup_eu4_gamestate() -> &'static [u8] {
+    &setup_eu4()["EU4txt".len()..]
 }
 
 fn setup_eu4_archive() -> &'static CorpusArchive {
@@ -100,6 +135,28 @@ pub mod criterion_benches {
         let mut group = c.benchmark_group("text/deserialize");
         group.throughput(Throughput::Bytes(data.len() as u64));
         group.bench_function("meta", |b| b.iter(|| deserialize_meta(data)));
+        group.bench_function("meta/token_reader_slice", |b| {
+            b.iter(|| token_reader_slice_de::<Meta>(data))
+        });
+        group.bench_function("meta/token_reader_io", |b| {
+            b.iter(|| token_reader_io_de::<Meta>(data))
+        });
+        group.bench_function("meta/slice", |b| b.iter(|| de_slice::<Meta>(data)));
+        group.bench_function("meta/reader", |b| b.iter(|| de_reader::<Meta>(data)));
+        group.finish();
+
+        let data = setup_eu4_gamestate();
+        let mut group = c.benchmark_group("text/deserialize/gamestate");
+        group.sample_size(10);
+        group.throughput(Throughput::Bytes(data.len() as u64));
+        group.bench_function("token_reader_slice", |b| {
+            b.iter(|| token_reader_slice_de::<GameState>(data))
+        });
+        group.bench_function("token_reader_io", |b| {
+            b.iter(|| token_reader_io_de::<GameState>(data))
+        });
+        group.bench_function("slice", |b| b.iter(|| de_slice::<GameState>(data)));
+        group.bench_function("reader", |b| b.iter(|| de_reader::<GameState>(data)));
         group.finish();
     }
 
@@ -144,6 +201,24 @@ pub mod gungraun_benches {
     }
 
     #[library_benchmark]
+    #[bench::token_reader_slice(args = (setup_meta(), token_reader_slice_de::<Meta>))]
+    #[bench::token_reader_io(args = (setup_meta(), token_reader_io_de::<Meta>))]
+    #[bench::slice(args = (setup_meta(), de_slice::<Meta>))]
+    #[bench::reader(args = (setup_meta(), de_reader::<Meta>))]
+    fn deserialize_meta_with(data: &[u8], f: fn(&[u8]) -> Meta) -> Meta {
+        f(data)
+    }
+
+    #[library_benchmark]
+    #[bench::token_reader_slice(args = (setup_eu4_gamestate(), token_reader_slice_de::<GameState>))]
+    #[bench::token_reader_io(args = (setup_eu4_gamestate(), token_reader_io_de::<GameState>))]
+    #[bench::slice(args = (setup_eu4_gamestate(), de_slice::<GameState>))]
+    #[bench::reader(args = (setup_eu4_gamestate(), de_reader::<GameState>))]
+    fn deserialize_gamestate(data: &[u8], f: fn(&[u8]) -> GameState) -> GameState {
+        f(data)
+    }
+
+    #[library_benchmark]
     #[bench::eu4(setup = setup_eu4_archive)]
     #[bench::ck3(setup = setup_ck3_archive)]
     fn compressed_read(archive: &CorpusArchive) -> i32 {
@@ -152,6 +227,13 @@ pub mod gungraun_benches {
 
     library_benchmark_group!(
         name = text_benches,
-        benchmarks = [tape, reader, deserialize, compressed_read,]
+        benchmarks = [
+            tape,
+            reader,
+            deserialize,
+            deserialize_meta_with,
+            deserialize_gamestate,
+            compressed_read,
+        ]
     );
 }

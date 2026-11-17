@@ -336,14 +336,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::TextDeserializer;
+    use jomini::TextTapeDeserializer;
 
     fn deserialize_manager<'bump>(
         data: &str,
         allocator: &'bump arena_serde::Arena,
     ) -> MarketManager<'bump> {
         let deserializer =
-            TextDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
+            TextTapeDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
         MarketManager::deserialize_in_arena(&deserializer, allocator)
             .expect("market manager deserializes")
     }

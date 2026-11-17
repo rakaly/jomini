@@ -346,7 +346,10 @@ pub use self::text::{TextTape, TextToken, TextWriter, TextWriterBuilder};
 
 #[cfg(feature = "serde")]
 #[doc(inline)]
-pub use self::{binary::de::BinaryDeserializer, text::de::TextDeserializer};
+pub use self::{
+    binary::de::BinaryDeserializer,
+    text::de::{TextDeserializer, TextTapeDeserializer},
+};
 #[cfg(feature = "derive")]
 pub use jomini_derive::*;
 

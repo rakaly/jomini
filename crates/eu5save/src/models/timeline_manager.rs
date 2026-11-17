@@ -78,7 +78,7 @@ pub struct CountryRename<'bump> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::{TextDeserializer, common::PdsDate};
+    use jomini::{TextTapeDeserializer, common::PdsDate};
 
     fn deserialize<'bump>(
         data: &str,
@@ -90,7 +90,7 @@ mod tests {
         }
 
         let deserializer =
-            TextDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
+            TextTapeDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
         Wrapper::deserialize_in_arena(&deserializer, allocator)
             .expect("timeline manager deserializes")
             .timeline_manager

@@ -367,7 +367,7 @@ impl<T> Index<LocationIdx> for LocationIndexedVec<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::TextDeserializer;
+    use jomini::TextTapeDeserializer;
 
     /// Location 134 in a 1346 save: Denmark held it from the start of the
     /// campaign, and Skane took it on 1338.6.3.
@@ -393,7 +393,7 @@ mod tests {
 
         let allocator = arena_serde::Arena::new();
         let deserializer =
-            TextDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
+            TextTapeDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
         let location = Wrapper::deserialize_in_arena(&deserializer, &allocator)
             .expect("location deserializes")
             .location;
@@ -432,7 +432,7 @@ mod tests {
 
         let allocator = arena_serde::Arena::new();
         let deserializer =
-            TextDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
+            TextTapeDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
         let location = Wrapper::deserialize_in_arena(&deserializer, &allocator)
             .expect("location to deserialize")
             .location;
@@ -478,7 +478,7 @@ mod tests {
 
         let allocator = arena_serde::Arena::new();
         let deserializer =
-            TextDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
+            TextTapeDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
         let location = Wrapper::deserialize_in_arena(&deserializer, &allocator)
             .expect("location deserializes")
             .location;
@@ -514,7 +514,7 @@ mod tests {
 
         let allocator = arena_serde::Arena::new();
         let deserializer =
-            TextDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
+            TextTapeDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
         let location = Wrapper::deserialize_in_arena(&deserializer, &allocator)
             .expect("location deserializes")
             .location;
@@ -531,7 +531,7 @@ mod tests {
 
         let allocator = arena_serde::Arena::new();
         let deserializer =
-            TextDeserializer::from_utf8_slice(b"location={ population={ pops={ 3 } } }")
+            TextTapeDeserializer::from_utf8_slice(b"location={ population={ pops={ 3 } } }")
                 .expect("valid text data");
         let location = Wrapper::deserialize_in_arena(&deserializer, &allocator)
             .expect("location deserializes")
@@ -549,8 +549,8 @@ mod tests {
         }
 
         let allocator = arena_serde::Arena::new();
-        let deserializer =
-            TextDeserializer::from_utf8_slice(b"location={ owner=3 }").expect("valid text data");
+        let deserializer = TextTapeDeserializer::from_utf8_slice(b"location={ owner=3 }")
+            .expect("valid text data");
         let location = Wrapper::deserialize_in_arena(&deserializer, &allocator)
             .expect("location deserializes")
             .location;

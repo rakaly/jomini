@@ -1,9 +1,11 @@
 //! Types for parsing clausewitz plaintext input
 //!
 //! Main text deserialization APIs:
-//!  - [TextDeserializer::from_utf8_slice](crate::text::de::TextDeserializer::from_utf8_slice):
+//!  - [TextDeserializer]: Deserialize from a slice or a reader as the data
+//!    is read, with the offset of the token that caused an error.
+//!  - [TextTapeDeserializer::from_utf8_slice](crate::text::de::TextTapeDeserializer::from_utf8_slice):
 //!    Deserialize game and save files from a slice of data.
-//!  - [TextDeserializer::from_utf8_reader](crate::text::de::TextDeserializer::from_utf8_reader):
+//!  - [TextTapeDeserializer::from_utf8_reader](crate::text::de::TextTapeDeserializer::from_utf8_reader):
 //!    Deserialize streaming data with lower memory use for large models. See
 //!    [TokenReader] for details about the streaming parser.
 //!
@@ -33,7 +35,7 @@ mod writer;
 
 #[cfg(feature = "serde")]
 #[doc(inline)]
-pub use self::de::Property;
+pub use self::de::{Property, TextDeserializer, TextTapeDeserializer};
 pub use self::dom::{
     ArrayReader, FieldGroupsIter, FieldsIter, GroupEntry, GroupEntryIter, ObjectReader, Reader,
     ScalarReader, ValueReader, ValuesIter,

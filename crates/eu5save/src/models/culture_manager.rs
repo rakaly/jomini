@@ -214,7 +214,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::TextDeserializer;
+    use jomini::TextTapeDeserializer;
 
     #[test]
     fn parses_culture_with_name_tag() {
@@ -241,7 +241,7 @@ mod tests {
 
         let allocator = arena_serde::Arena::new();
         let deserializer =
-            TextDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
+            TextTapeDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
         let manager = CultureManager::deserialize_in_arena(&deserializer, &allocator)
             .expect("culture manager deserializes");
 
@@ -292,7 +292,7 @@ mod tests {
 
         let allocator = arena_serde::Arena::new();
         let deserializer =
-            TextDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
+            TextTapeDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
         let manager = CultureManager::deserialize_in_arena(&deserializer, &allocator)
             .expect("culture manager deserializes");
 
