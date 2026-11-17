@@ -142,8 +142,8 @@ pub struct Location<'bump> {
 /// One entry of a [`Location::ownership_history`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ArenaDeserialize)]
 pub struct LocationOwnership<'bump> {
-    /// The date the country took the location.
-    pub date: Eu5Date,
+    /// The date the country took the location, if recorded in the save.
+    pub date: Option<Eu5Date>,
     /// The country that took the location. An entry that makes the location
     /// unowned has no owner in the save and gets the dummy country, in the
     /// same way as [`Location::owner`]. Such an entry has the tag `---`.
@@ -367,7 +367,7 @@ impl<T> Index<LocationIdx> for LocationIndexedVec<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::{TextDeserializer, common::PdsDate};
+    use jomini::TextDeserializer;
 
     /// Location 134 in a 1346 save: Denmark held it from the start of the
     /// campaign, and Skane took it on 1338.6.3.
@@ -401,10 +401,10 @@ mod tests {
         let [first, second] = location.ownership_history else {
             panic!("expected two ownership entries")
         };
-        assert_eq!(first.date.game_fmt().to_string(), "1337.4.1");
+        assert_eq!(first.date, Eu5Date::from_ymd_opt(1337, 4, 1));
         assert_eq!(first.owner, CountryId::new(4));
         assert_eq!(first.tag.as_str(), "DAN");
-        assert_eq!(second.date.game_fmt().to_string(), "1338.6.3");
+        assert_eq!(second.date, Eu5Date::from_ymd_opt(1338, 6, 3));
         assert_eq!(second.owner, CountryId::new(5));
         assert_eq!(second.tag.as_str(), "SKE");
 
@@ -412,11 +412,9 @@ mod tests {
         assert_eq!(second.owner, location.owner);
     }
 
-    /// A location that never changed hands has no history.
-    /// A location can become unowned. The entry then has the tag `---` and no
-    /// owner at all.
+    /// A location can have an undated owner and later become unowned.
     #[test]
-    fn ownership_history_without_an_owner() {
+    fn ownership_history_with_missing_fields() {
         #[derive(ArenaDeserialize)]
         struct Wrapper<'bump> {
             location: Location<'bump>,
@@ -424,7 +422,6 @@ mod tests {
 
         let data = r#"location={
             ownership_history={ {
-                    date=1337.4.1
                     owner=606
                     tag="KOR"
                 } {
@@ -442,9 +439,11 @@ mod tests {
 
         let history = location.ownership_history;
         assert_eq!(history.len(), 2);
+        assert_eq!(history[0].date, None);
         assert_eq!(history[0].owner, CountryId::new(606));
+        assert_eq!(history[0].tag.as_str(), "KOR");
         assert!(history[1].owner.is_dummy());
-        assert_eq!(history[1].date.game_fmt().to_string(), "1352.3.1");
+        assert_eq!(history[1].date, Eu5Date::from_ymd_opt(1352, 3, 1));
     }
 
     #[test]
