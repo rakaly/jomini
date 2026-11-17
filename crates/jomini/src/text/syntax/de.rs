@@ -1,51 +1,25 @@
-//! **Experimental** serde deserialization that reads the syntax tree.
-//!
-//! [`Parse::deserialize`] and [`Parse::document`] read the
-//! [`SyntaxTree`] of a parse with the rules of
-//! [`TextDeserializer`](crate::TextDeserializer), so a type that derives
-//! [`Deserialize`] needs no change. Because the tree knows the position of
-//! each value, an [`Error`] tells the line, the column, and the path of keys.
-//!
-//! This deserializer is for the game and mod files that a tool also checks or
-//! changes, and for the syntax of game files that `TextDeserializer` does not
-//! read, such as `@variables` and parameter blocks. To only deserialize a
-//! save file, use `TextDeserializer`: it streams the file, so it is faster
-//! and uses less memory.
+//! Deserialize a game or mod file from its syntax tree for script syntax
+//! and diagnostics with a line, column, and key path. Use
+//! [`TextDeserializer`](crate::TextDeserializer) to stream a save.
 //!
 //! # Deserialize a file
 //!
+//! [`Parse::deserialize`] reads serde types and returns the first syntax
+//! error. It ignores a stray closing brace at the root.
+//!
 //! ```
-//! use jomini::{Windows1252Encoding, text::syntax::parse};
-//! use serde::Deserialize;
+//! use jomini::{Utf8Encoding, text::syntax::parse};
+//! use std::collections::HashMap;
 //!
-//! #[derive(Deserialize, Debug, PartialEq)]
-//! struct Area {
-//!     color: Vec<u8>,
-//!     remainder: Vec<u32>,
-//! }
-//!
-//! #[derive(Deserialize, Debug, PartialEq)]
-//! struct Areas {
-//!     brittany_area: Area,
-//! }
-//!
-//! let encoding = Windows1252Encoding::new();
-//! let source = b"brittany_area = { color = { 118 99 151 } 169 170 171 }";
-//! let areas: Areas = parse(source).deserialize(encoding)?;
-//! assert_eq!(areas.brittany_area.color, vec![118, 99, 151]);
-//! assert_eq!(areas.brittany_area.remainder, vec![169, 170, 171]);
-//!
-//! let source = b"brittany_area = {\n  color = blue\n}";
-//! let error = parse(source).deserialize::<Areas, _>(encoding).unwrap_err();
+//! let source = b"area = {\n  color = blue\n}";
+//! let error = parse(source)
+//!     .deserialize::<HashMap<String, HashMap<String, [u8; 3]>>, _>(Utf8Encoding::new())
+//!     .unwrap_err();
 //! assert_eq!(
 //!     error.to_string(),
-//!     r#"2:11: brittany_area.color[0]: invalid type: string "blue", expected u8"#
+//!     r#"2:11: area.color[0]: invalid type: string "blue", expected u8"#
 //! );
-//! # Ok::<(), jomini::text::syntax::de::Error>(())
 //! ```
-//!
-//! [`Parse::deserialize`] returns the first syntax error, except an extra
-//! closing brace (`}`), which `TextTape` ignores too.
 //!
 //! # Read a file that has syntax errors
 //!
@@ -94,47 +68,13 @@
 //!
 //! # Keep a document
 //!
-//! An [`OwnedBlock`](super::OwnedBlock) holds a whole document as data. It
-//! owns its text, so you can keep it after the source is gone. It keeps the
-//! quotes, the variables, the operators, the headers, duplicate keys, and
-//! the order of the items. It does not keep the comments and the
-//! whitespace. For them, keep the tree.
+//! An [`OwnedBlock`](super::OwnedBlock) owns the document's values. It keeps
+//! quotes, variables, operators, headers, duplicate keys, and item order.
+//! Keep the tree for comments and whitespace.
 //!
-//! A block deserializes as the root of a document. Thus it gives the same
-//! result as the tree:
-//!
-//! ```
-//! use jomini::{Utf8Encoding, text::syntax::{parse, OwnedBlock}};
-//! use serde::Deserialize;
-//!
-//! #[derive(Deserialize, Debug, PartialEq)]
-//! struct Areas {
-//!     brittany: Vec<u32>,
-//! }
-//!
-//! let parse = parse(b"brittany { 169 170 }");
-//! let root = OwnedBlock::from_tree(parse.tree(), Utf8Encoding::new());
-//! drop(parse);
-//!
-//! assert_eq!(Areas::deserialize(&root)?, Areas { brittany: vec![169, 170] });
-//! # Ok::<(), jomini::text::syntax::de::Error>(())
-//! ```
-//!
-//! # Keep what a serde type loses
-//!
-//! A plain serde type does not keep the quotes, the operator, the header
-//! (`rgb` in `rgb { 1 2 3 }`), or the position of a value. These wrapper
-//! types keep one of them:
-//!
-//! - [`MaybeQuoted`](crate::text::MaybeQuoted) keeps the quotes.
-//! - [`Property`](crate::text::Property) keeps the operator.
-//! - [`Headered`](crate::text::Headered) keeps the header.
-//! - [`Spanned`] keeps the byte range. Only the tree knows the position of
-//!   a value.
-//!
-//! The wrapper types also work with `TextDeserializer`. An
-//! [`OwnedBlock`](super::OwnedBlock) keeps all of these, except the
-//! position.
+//! [`Spanned`] keeps the byte range of a value. The shared text wrappers
+//! [`MaybeQuoted`](crate::text::MaybeQuoted), [`Property`](crate::text::Property),
+//! and [`Headered`](crate::text::Headered) keep quotes, operators, and headers.
 //!
 //! In `#[serde(flatten)]` or `#[serde(untagged)]` containers, serde first
 //! copies the data into its own model, which has no quotes and no headers.
@@ -146,11 +86,11 @@
 //!
 //! # Rules
 //!
-//! The deserializer uses the rules of `TextDeserializer`:
+//! See [where the deserializers differ](crate::text#where-the-deserializers-differ)
+//! for the contract with `TextDeserializer`.
 //!
 //! - Duplicate keys are separate map entries in source order. Use
-//!   `#[jomini(duplicated)]` of [`JominiDeserialize`](crate::JominiDeserialize)
-//!   to collect them.
+//!   `#[jomini(duplicated)]` with `JominiDeserialize` to collect them.
 //! - A container is an object when its first entry is a field with an
 //!   operator. Else it is an array. A map over an object gives the fields up
 //!   to the first bare value, then the key `remainder` with the rest.

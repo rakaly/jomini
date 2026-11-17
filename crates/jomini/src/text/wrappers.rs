@@ -191,23 +191,8 @@ impl Visitor<'_> for PrivateKey {
 /// [`Unquoted`](MaybeQuoted::Unquoted).
 ///
 /// Only a text deserializer of this crate knows the quotes. A different
-/// deserializer gives an error, and so does a field in a
-/// `#[serde(flatten)]` or `#[serde(untagged)]` container:
-///
-/// ```
-/// use jomini::text::{MaybeQuoted, de::from_utf8_slice};
-/// use serde::Deserialize;
-/// use std::collections::HashMap;
-///
-/// #[derive(Deserialize, Debug)]
-/// struct File {
-///     #[serde(flatten)]
-///     rest: HashMap<String, MaybeQuoted<String>>,
-/// }
-///
-/// let error = from_utf8_slice::<File>(b"a = \"@text\"").unwrap_err();
-/// assert!(error.to_string().contains("MaybeQuoted needs a jomini text deserializer"));
-/// ```
+/// deserializer gives an error, as does a field in a
+/// `#[serde(flatten)]` or `#[serde(untagged)]` container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MaybeQuoted<T> {
     /// The scalar had quotes, as in `"text"`.

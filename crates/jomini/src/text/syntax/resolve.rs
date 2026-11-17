@@ -1,28 +1,20 @@
-//! **Experimental.** Find the values of `@name` variables and `@[ ... ]`
-//! calculations.
+//! Resolve `@name` variables and `@[ ... ]` calculations in game and mod files.
+//! Use a syntax tree for resolution and `TextDeserializer` for saves that
+//! only need streaming deserialization.
 //!
-//! Some game files define variables and use them in other places:
-//!
-//! ```text
-//! @size = 0.5
-//! emblem = { scale = { @size @size } position = { @[1 - size] 0.5 } }
-//! ```
-//!
-//! The parser keeps the source text, so that a tool can write the file back
-//! unchanged. As a result, code that reads the tree sees `@size`, not `0.5`.
-//! [`resolve`] finds the value of each variable and each calculation, and
-//! returns the values in a [`Resolution`]. The tree does not change: you give
-//! the resolution to the code that reads the tree.
+//! [`resolve`] returns a [`Resolution`] alongside the tree, preserving its
+//! source text for tools that write the file back.
 //!
 //! # Deserialize with the values
 //!
 //! Pass the resolution to
-//! [`Document::with_resolution`](super::de::Document::with_resolution). The
+//! `Document::with_resolution` with the `serde` feature. The
 //! document then reads each variable and each calculation as its value. The
 //! document skips a definition such as `@size = 0.5`, so your type needs no
 //! field for it, even with `#[serde(deny_unknown_fields)]`:
 //!
 //! ```
+//! # #[cfg(feature = "serde")] {
 //! use jomini::{Utf8Encoding, text::syntax::{parse, resolve::resolve}};
 //! use serde::Deserialize;
 //!
@@ -48,7 +40,8 @@
 //!     .deserialize()?;
 //! assert_eq!(file.emblem.scale, [0.5, 0.5]);
 //! assert_eq!(file.emblem.position, [0.5, 0.5]);
-//! # Ok::<(), jomini::text::syntax::de::Error>(())
+//! # }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
 //! # Read one value without serde
@@ -93,28 +86,8 @@
 //! assert_eq!(resolution.variables().get("width"), Some(&ResolvedScalar::unquoted("8")));
 //! ```
 //!
-//! To deserialize a file with a scope, give its resolution to the document
-//! of its parse:
-//!
-//! ```
-//! use jomini::{Utf8Encoding, text::syntax::{parse, resolve::{Variables, resolve, resolve_with}}};
-//! use std::collections::HashMap;
-//!
-//! let colors = parse(b"@red = 4");
-//! let file = parse(b"@half = 2\nwidth = @[half * red]");
-//!
-//! let mut shared = Variables::new();
-//! shared.extend_from(resolve(colors.tree()).variables());
-//! let resolution = resolve_with(file.tree(), &shared);
-//! assert_eq!(resolution.errors(), []);
-//!
-//! let map: HashMap<String, f64> = file
-//!     .document(Utf8Encoding::new())
-//!     .with_resolution(resolution)?
-//!     .deserialize()?;
-//! assert_eq!(map["width"], 8.0);
-//! # Ok::<(), jomini::text::syntax::de::Error>(())
-//! ```
+//! To deserialize with a shared scope, pass its resolution to
+//! `Document::with_resolution` as above.
 //!
 //! # Resolve a file again after an edit
 //!
@@ -124,47 +97,10 @@
 //! definition in the file is a [`ResolveErrorKind::DefinedInScope`] error,
 //! and each reference gets the value from before the edit.
 //!
-//! To prevent this, keep one [`Variables`] set for each file. Make the scope
-//! for a file from the sets of the other files only:
-//!
-//! ```
-//! use jomini::text::syntax::{parse, Parse, resolve::{
-//!     Resolution, ResolveErrorKind, ResolvedScalar, Variables, resolve, resolve_with,
-//! }};
-//!
-//! let width = |parse: &Parse, resolution: &Resolution| {
-//!     resolution.get(parse.ast().get(b"width")?.value()?).cloned()
-//! };
-//!
-//! // One set of variables for each file.
-//! let colors = parse(b"@red = 4");
-//! let colors_variables = resolve(colors.tree()).variables().clone();
-//! let sizes = parse(b"@half = 2\nwidth = @[half * red]");
-//! let mut scope = Variables::new();
-//! scope.extend_from(&colors_variables);
-//! let sizes_variables = resolve_with(sizes.tree(), &scope).variables().clone();
-//!
-//! // The user changes `@half` to 3. The scope has only the variables of the
-//! // colors file.
-//! let edited = parse(b"@half = 3\nwidth = @[half * red]");
-//! let resolution = resolve_with(edited.tree(), &scope);
-//! assert_eq!(resolution.errors(), []);
-//! assert_eq!(width(&edited, &resolution), Some(ResolvedScalar::unquoted("12")));
-//!
-//! // Wrong: a scope that also holds the variables of the sizes file from
-//! // before the edit.
-//! let mut stale_scope = scope.clone();
-//! stale_scope.extend_from(&sizes_variables);
-//! let stale = resolve_with(edited.tree(), &stale_scope);
-//! assert_eq!(stale.errors()[0].kind, ResolveErrorKind::DefinedInScope);
-//! assert_eq!(width(&edited, &stale), Some(ResolvedScalar::unquoted("8")));
-//! ```
-//!
-//! A clone of a [`Variables`] set copies the names but shares the values, so
-//! a set for each file uses little memory. Alternatively, keep one combined
-//! scope, and take the variables of a file out of it with
-//! [`Variables::remove`] before you resolve the file again. Read the caveat
-//! on `remove` first.
+//! Keep one [`Variables`] set per file and build each scope from the other
+//! files' sets. Cloning a set copies names and shares values. If you use
+//! one combined scope, see the caveat in [`Variables::remove`] before
+//! removing a file's old definitions.
 //!
 //! # Find variables that have no value
 //!
@@ -174,7 +110,7 @@
 //! source. [`LineIndex`](super::LineIndex) converts its start to a line and a
 //! column.
 //!
-//! A [`Document`](super::de::Document) reads a variable or a calculation
+//! A `Document` reads a variable or a calculation
 //! that has no value as its source text. A number field then fails with an
 //! error such as `invalid type: string "@size", expected f32`, which does not
 //! tell the cause. Report the errors of the resolution before you

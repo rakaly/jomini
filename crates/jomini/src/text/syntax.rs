@@ -1,118 +1,44 @@
-//! A parser for the Clausewitz text format that keeps every byte of the
-//! source.
+//! Parse game and mod files into a lossless tree for diagnostics, formatting,
+//! linting, and editing.
 //!
-//! **Experimental:** the API can change in any release. Enable the
-//! `syntax` feature to use it.
+//! This module's API is **experimental**. Enable it with the `syntax` feature.
 //!
-//! The tree keeps the comments, the whitespace, and each operator, and each
-//! token knows its byte range in the source. The leaves of the tree
-//! reproduce the source exactly:
+//! For saves you only need to deserialize, see
+//! [choosing a text deserializer](super#choosing-a-text-deserializer).
 //!
-//! ```text
-//! concat(text of every leaf token, in order) == source
-//! ```
+//! # Read a field and find a comment
 //!
-//! A syntax error does not stop the parse. One pass finds every syntax error
-//! in a file, and the fields after most errors are still available. A missing
-//! closing quote is the exception: the string can continue to the next `"`
-//! and hide the fields in between. Usually a
-//! [`ProbablyUnclosedQuote`](SyntaxErrorKind::ProbablyUnclosedQuote) error
-//! shows such a string, but not always.
-//!
-//! Use this parser on game and mod files when you need positions, comments,
-//! or error recovery. For example, it can extract data and report each error
-//! at its position, or it can be the base of a formatter, linter,
-//! highlighter, or editor tool. For other jobs, the crate has better
-//! choices:
-//!
-//! - To only deserialize a save into your own types, use serde with
-//!   [`TextDeserializer`](crate::text::de::TextDeserializer), which streams
-//!   a slice or a reader. It is faster and uses less memory, but its errors
-//!   give a byte offset, not a line, it doesn't resolve `@variables`, and
-//!   it gives an error for the syntax of game files that only this parser
-//!   reads, such as parameter blocks and `[Interpolation]`.
-//! - To read the tokens of a large save with little memory, use the
-//!   streaming [`TokenReader`](crate::text::TokenReader).
-//! - To run existing code that reads a [`TextTape`], see
-//!   [Read into a `TextTape`](#read-into-a-texttape).
-//!
-//! # Read a file
-//!
-//! [`parse`] gives a [`Parse`]. [`Parse::ast`] gives the typed view of the
-//! file: a [`Root`] of items, where each [`Field`] has a key, an optional
-//! operator, and a [`Value`]. See [`Root`] for an overview of the typed
-//! view.
-//! [`Root::get`] and [`Block::get`] find a field by its key:
+//! Parse this snippet, then read its capital ID and find the comment in the
+//! same tree.
 //!
 //! ```
-//! use jomini::text::{Operator, syntax::parse};
+//! use jomini::text::syntax::{parse, SyntaxKind};
 //!
-//! let source = b"
-//! # Brittany
-//! capital = 169
-//! is_city = yes
-//! discovered_by = { western eastern }
-//! trigger = { num_of_cities >= 5 }
-//! ";
-//! let parse = parse(source);
-//! assert!(parse.errors().is_empty());
+//! let parsed = parse(b"capital = 169 # Paris");
+//! assert!(parsed.errors().is_empty());
 //!
-//! let root = parse.ast();
-//! let field = |key: &[u8]| root.get(key).unwrap();
+//! let capital = parsed.ast().get(b"capital").unwrap();
+//! assert_eq!(capital.value().unwrap().to_u64(), Some(169));
 //!
-//! assert_eq!(field(b"capital").value().unwrap().to_u64(), Some(169));
-//! assert_eq!(field(b"is_city").value().unwrap().to_bool(), Some(true));
-//!
-//! let discovered_by = field(b"discovered_by").value().unwrap().as_block().unwrap();
-//! assert_eq!(discovered_by.values().count(), 2);
-//!
-//! let trigger = field(b"trigger").value().unwrap().as_block().unwrap();
-//! let condition = trigger.fields().next().unwrap();
-//! assert_eq!(condition.key().as_bytes(), b"num_of_cities");
-//! assert_eq!(condition.op(), Some(Operator::GreaterThanEqual));
+//! let comment = parsed.tokens().find(|t| t.kind() == SyntaxKind::Comment).unwrap();
+//! assert_eq!(comment.text(), b"# Paris");
 //! ```
 //!
-//! A key, a scalar value, and a header (`rgb` in `rgb { 1 2 3 }`) are each a
-//! [`ScalarToken`]. It gives the bytes with or without the quotes, and the
-//! decoded text.
+//! [`Parse::ast`] gives you a typed [`Root`] for reading fields. The same
+//! parse gives you the original comments and whitespace through [`Parse::tokens`].
 //!
-//! In item position, a scalar directly before a block (`key { ... }`) is a
-//! [`Field`] with no operator. The parser does not decide if the scalar is a
-//! key or a header. In value position (`color = rgb { ... }`), the scalar and
-//! the block are a [`HeaderedBlock`], so the field has one value.
+//! # How-to guides
 //!
-//! The inner part of `@[calc]` is an expression subtree: see [`Calc`] and
-//! [`Expr`].
+//! ## Store the tree with its source
 //!
-//! # Keep a parse
+//! If you're storing the tree in a cache, pass the source as a `Vec<u8>`,
+//! `String`, or `Arc<[u8]>` to [`parse_owned`]. The returned [`OwnedParse`]
+//! holds both the source and the tree.
 //!
-//! [`parse`] does not copy the source. A [`Parse`] borrows it, and the text
-//! of each token has the lifetime of the source, so the text can outlive the
-//! `Parse`. To keep the tree and the source together, for example in a
-//! struct, a cache, or on another thread, use [`parse_owned`]. The
-//! [`OwnedParse`] that it returns owns the source and has the same query
-//! methods as `Parse`. The source can be a `Vec<u8>`, a `String`, or an
-//! `Arc<[u8]>`:
+//! ## Change a value
 //!
-//! ```
-//! use jomini::text::syntax::{parse_owned, OwnedParse};
-//!
-//! struct ModFile {
-//!     path: String,
-//!     parse: OwnedParse<Vec<u8>>,
-//! }
-//!
-//! let file = ModFile {
-//!     path: String::from("common/buildings/00_buildings.txt"),
-//!     parse: parse_owned(b"temple = { cost = 100 }".to_vec()),
-//! };
-//! assert_eq!(file.parse.ast().fields().count(), 1);
-//! ```
-//!
-//! # Change a value
-//!
-//! To change a value, replace the byte range of its token. The comments, the
-//! whitespace, and the order of the fields do not change:
+//! To change a value, replace the byte range of its token. This example
+//! updates two values and preserves the surrounding comments and whitespace.
 //!
 //! ```
 //! use jomini::text::syntax::{apply_edits, parse, TextEdit};
@@ -143,21 +69,19 @@
 //! [`format`](fn@format) writes the whole file again in a normalized style,
 //! and it keeps each comment.
 //!
-//! # Syntax errors
+//! ## Report and repair syntax errors
 //!
-//! [`Parse::errors`] gives each syntax error with its kind and its byte range.
-//! When the source ends before a `}`, `]`, or `)` closes its construct, the
-//! error has a [`MissingDelimiter`], and [`Parse::closing_edit`] gives one
-//! edit that inserts all of the missing delimiters at the end of the source.
+//! Read [`Parse::errors`] for the kind and byte range of each error.
+//! Use [`LineIndex`] to convert a byte offset to a line and column.
 //!
-//! The edit keeps the meaning of the file, because the parser and the game
-//! also close each open construct at the end of the source. When the file is
-//! cut off, that is also what the author wants. When a `}` was lost earlier
-//! in the file, the fields after it stay in the block, as `name = Jean` does
-//! here. The error gives the position of the `{`, so a tool can show it:
+//! If a file ends with an open construct, [`Parse::closing_edit`] can supply
+//! an edit that appends the missing delimiters. Show the opening delimiter
+//! in the diagnostic. If the author meant to close the block earlier,
+//! appending a delimiter leaves later fields inside the block. In this
+//! example, `name = Jean` stays inside `core`.
 //!
 //! ```
-//! use jomini::text::syntax::{apply_edits, parse, SyntaxErrorKind};
+//! use jomini::text::syntax::{apply_edits, parse, LineIndex, SyntaxErrorKind};
 //!
 //! let source = b"core = { FRA BUR\nname = Jean";
 //! let parse = parse(source);
@@ -165,6 +89,8 @@
 //! assert_eq!(error.kind, SyntaxErrorKind::UnclosedBlock);
 //! let delimiter = error.missing_delimiter.unwrap();
 //! assert_eq!(&source[delimiter.opening_range.to_range()], b"{");
+//! let opening = LineIndex::new(source).line_col(delimiter.opening_range.start());
+//! assert_eq!(opening.to_string(), "1:8");
 //!
 //! let core = parse.ast().get(b"core").unwrap();
 //! assert!(core.value().unwrap().as_block().unwrap().get(b"name").is_some());
@@ -174,60 +100,81 @@
 //! # Ok::<(), jomini::text::syntax::EditError>(())
 //! ```
 //!
-//! A line break does not end a field, but a scalar that an operator follows
-//! is the key of the next field. Thus `b =` followed by `c = 2` on the next
-//! line gives a [`MissingValue`](SyntaxErrorKind::MissingValue) error at `b =`
-//! and the field `c = 2`.
+//! ## Read into a `TextTape`
 //!
-//! To report the position of an error, [`LineIndex`] converts its byte offset
-//! to a line and a column.
-//!
-//! # Read into a `TextTape`
-//!
-//! For existing code that uses the
-//! [`ObjectReader`](crate::text::ObjectReader), the deserializer, or the JSON
-//! conversion, use [`parse_tape`]. It parses with the same grammar as
-//! [`parse`], and it writes a [`TextTape`] that this code reads without a
-//! change. Unlike [`TextTape::from_slice`](crate::TextTape::from_slice), it
-//! does not stop at the first syntax error: a [`TapeParse`] holds the tape
-//! and all of the errors, and the caller decides which errors are
-//! acceptable. The tape discards the trivia. [`parse_tape`] lists where its
-//! tape differs from the tape of `from_slice`.
+//! [`parse_tape`] builds a [`TextTape`] for existing tape readers and returns
+//! the syntax errors alongside it. The tape drops comments and whitespace.
 //!
 #![cfg_attr(
     feature = "serde",
     doc = r#"
-# Deserialize into your own types
+## Deserialize into your own types
 
-[`Parse::deserialize`] deserializes the tree into serde types with no
-tape, and [`Parse::document`] reads a file that has syntax errors, or
-part of a file. A type that derives `Deserialize` for `TextDeserializer`
-needs no change, and each error gives the line, the column, and the path
-of keys. See the [`de`] module. To read `@name` variables and `@[ ... ]`
-calculations as their values, not as their source text, use [`resolve`].
-
-To keep a whole document as data, read it into an [`OwnedBlock`]. The
-block keeps the quotes, the operators, the headers, and the order of the
-items. Later, you can deserialize the block into a type.
+Use [`Parse::deserialize`] for a strict read or [`Parse::document`] to read
+a file with syntax errors. See [`de`] for partial reads and diagnostics
+and [`resolve`] for reading variables and calculations as values.
 "#
 )]
 //!
-//! # Walk the tree
+//! ## Walk the tree
 //!
-//! Under the typed view are the [`SyntaxNode`] and [`SyntaxToken`] cursors.
-//! [`Parse::tree`] gives the [`SyntaxTree`] view, which finds nodes and
-//! tokens by position or by identity. The views and the cursors have two
-//! lifetimes: `'t` for the tree and `'a` for the source.
-//! Each node and token has a [`SyntaxKind`] and a [`TextRange`].
-//! [`SyntaxNode::children`] gives the trivia too, and
-//! [`SyntaxNode::significant_children`] does not. [`SyntaxTree::token_at_offset`]
-//! and [`SyntaxTree::covering_element`] find the element at an editor
-//! position. [`NodeId`] and [`TokenId`] are dense indices, so a pass can keep
-//! its data for each node in a `Vec`.
+//! Use [`Root::get`] or [`Block::get`] to look up a field by key. For
+//! editor positions or access to trivia, get the [`SyntaxTree`] with
+//! [`Parse::tree`]. Use [`SyntaxTree::token_at_offset`] or
+//! [`SyntaxTree::covering_element`] to find an element by byte offset.
+//! [`SyntaxTree::debug_tree`] displays nodes and tokens with their byte ranges.
+//!
+//! ## Parse HoI4 files
+//!
+//! Pass [`Hoi4Flavor`] or the flavor from the `hoi4save` crate to
+//! [`parse_with`], [`parse_owned_with`], or [`parse_tape_with`].
+//!
+//! # Syntax reference
+//!
+//! ## Fields and values
+//!
+//! Keys, scalar values, and block headers are all [`ScalarToken`]s. A token
+//! gives you the bytes with or without quotes, and the decoded text.
+//!
+//! Where a new entry can begin, `rgb { 1 2 3 }` parses as a [`Field`] with no
+//! operator. Its key is `rgb` and its value is the block. What `rgb` means
+//! there depends on the game's rules.
+//!
+//! In `color = rgb { 1 2 3 }`, the key is `color`. The parser groups `rgb`
+//! and the block into a single value, a [`HeaderedBlock`] with `rgb` as its
+//! header.
+//!
+//! The inner part of `@[calc]` is an expression subtree: see [`Calc`] and
+//! [`Expr`].
+//!
+//! ## Error recovery
+//!
+//! The parser continues after syntax errors. A missing closing quote can
+//! hide fields up to the next quote. See
+//! [`ProbablyUnclosedQuote`](SyntaxErrorKind::ProbablyUnclosedQuote).
+//! When a construct reaches the end of the source without its closing
+//! delimiter, [`MissingDelimiter`] gives the opening delimiter's range.
+//!
+//! A field can span multiple lines. When the next token is a scalar
+//! followed by an operator, the parser starts a new field. For example,
+//! `b =` followed by `c = 2` on the next line gives a
+//! [`MissingValue`](SyntaxErrorKind::MissingValue) error at `b =` and
+//! a field for `c = 2`.
+//!
+//! ## Nodes, tokens, and trivia
+//!
+//! Each [`SyntaxNode`] and [`SyntaxToken`] has a [`SyntaxKind`] and a byte
+//! range ([`TextRange`]). [`SyntaxNode::children`] includes trivia, while
+//! [`SyntaxNode::significant_children`] skips it. [`NodeId`] and [`TokenId`]
+//! are dense indices that can index a `Vec` of per-element data.
+//!
+//! A [`Parse`] borrows the source, so token text can outlive the parse.
+//! The tree views and cursors have two lifetimes, `'t` for the tree and
+//! `'a` for the source.
 //!
 //! The trivia between two tokens belongs to the nearest node that contains
-//! both tokens. Thus a comment at the end of a line is often not in the
-//! field before it:
+//! both tokens. Here, the comment between two top-level fields belongs to
+//! the root.
 //!
 //! ```
 //! use jomini::text::syntax::{parse, AstNode, SyntaxKind};
@@ -240,27 +187,16 @@ items. Later, you can deserialize the block into a type.
 //! assert_eq!(comment.parent().unwrap().kind(), SyntaxKind::Root);
 //! ```
 //!
-//! [`SyntaxTree::debug_tree`] shows each node and token with its kind and its
-//! byte range. The `syntax` example prints it for a file or for stdin. It
-//! can also print the tokens, the formatted file, and the syntax errors at
-//! their line and column:
+//! # How game support works
 //!
-//! ```sh
-//! printf 'building = { cost = 100 } # wood\n' | cargo run --features syntax --example syntax -- --tree --no-trivia
-//! cargo run --features syntax --example syntax -- --tokens --no-trivia FILE
-//! cargo run --features syntax --example syntax -- --help
-//! ```
+//! The games share a grammar for fields and blocks. The parser also
+//! recognizes constructs from individual games, including `@variables`,
+//! `@[calc]`, `$macros$`, `[[param] ... ]`, and `code [[ ... ]]`. A tool can
+//! use the same tree APIs across games and apply the rules of its target
+//! game when it interprets that tree.
 //!
-//! # Games
-//!
-//! One parser reads the files of all of the games. The lexer accepts the
-//! syntax of each game (`@variables`, `@[calc]`, `$macros$`,
-//! `[[param] ... ]`, and `code [[ ... ]]`).
-//! Your code, not the parser, decides if a construct is correct for a game.
-//! A [`TextFlavor`](crate::text::TextFlavor) selects the few cases where the lexers of the games are
-//! different. For HoI4 files, pass [`Hoi4Flavor`], or the flavor of the
-//! hoi4save crate, to [`parse_with`], [`parse_owned_with`], or
-//! [`parse_tape_with`]: HoI4 has no `$NAME$` macro parameters.
+//! A [`TextFlavor`](crate::text::TextFlavor) handles differences in how the
+//! games tokenize text. For example, in HoI4, `$NAME$` is ordinary text.
 //!
 //! [`TextTape`]: crate::TextTape
 

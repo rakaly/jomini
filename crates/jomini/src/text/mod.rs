@@ -1,67 +1,58 @@
-//! Types for parsing clausewitz plaintext input
+//! Types for parsing Clausewitz text.
 //!
-//! To deserialize text with serde:
+//! # Choosing a text deserializer
 //!
-//! | To deserialize | Use |
+//! Enable the `serde` feature to deserialize into Rust types.
+//!
+//! | Input | Use |
 //! |---|---|
-//! | saves, and any data that you only read | [`TextDeserializer::from_slice`] or [`TextDeserializer::from_reader`], or the shortcuts [`de::from_windows1252_slice`], [`de::from_utf8_slice`], [`de::from_windows1252_reader`], and [`de::from_utf8_reader`] |
-#![cfg_attr(
-    feature = "syntax",
-    doc = "| game and mod files: errors with a line, a column, and the path of keys, `@variables`, the byte range of a value, files with syntax errors, and the syntax of game files that `TextDeserializer` gives an error for | [`syntax::parse`]`(data)`, then [`deserialize(encoding)`](syntax::Parse::deserialize) or [`document(encoding)`](syntax::Parse::document) |"
-)]
-#![cfg_attr(
-    not(feature = "syntax"),
-    doc = "| game and mod files: errors with a line, a column, and the path of keys, `@variables`, the byte range of a value, files with syntax errors, and the syntax of game files that `TextDeserializer` gives an error for | `jomini::text::syntax::parse(data)`, then `deserialize(encoding)` or `document(encoding)`, with the `syntax` feature |"
-)]
-//! | a [`TextTape`] that is already parsed | [`de::TextTapeDeserializer`] |
-//!
-//! [`TextDeserializer`] reads what the syntax parser,
-//! `jomini::text::syntax::parse`, reads, with the same values, or gives an
-//! error that names it, for the constructs of game files that it doesn't
-//! read, such as the parameter blocks of script. It also reads data that
-//! the syntax parser rejects: an operator that starts a field with an empty
-//! key in the middle of a line, and a block that the end of the data leaves
-//! open, which `syntax::parse(data).document(encoding)` reads too. And it
-//! reads a few constructs of game files that no save has differently, since
-//! telling them apart would cost work for each field: `?=` attached to its
-//! key, as in `x.holder?= { }`; a key that a block follows without an
-//! operator, as in `x { }`, first in a block or in a block without fields;
-//! a block where a key is expected, after a block or a quoted scalar, or
-//! first in a block, which is skipped; an operator right after a block,
-//! as in `{ a = b }={ 1 2 3 }`; an operator at the start of a line after a
-//! value in a sequence, which the syntax parser reads as a field with an
-//! empty key; and a calculation that a block follows, as in `@[ x ] { }`.
-//!
-//! If the serde deserialization API is too high level, one can build
-//! abstractions ontop of:
-//!  - [TextTape::from_slice]: Realizes a pseudo AST onto
-//!    a linear tape. Cleans up and normalizes data.
-//!  - [TokenReader]: An incremental text lexer designed for handling large
-//!    saves in a memory efficient manner.
-//!
-//! Some additional APIs are available to make working with a [TextTape] more
-//! ergonomic for DOM-like use cases.
-//! - [FieldGroupsIter]
-//! - [FieldsIter]
-//! - [ValuesIter]
-//!
 #![cfg_attr(
     feature = "serde",
-    doc = r#"
-A plain serde type does not keep the operator, the quotes, or the header of
-a value. To keep them, wrap the type of the field in [`Property`],
-[`MaybeQuoted`], or [`Headered`].
-"#
+    doc = "| Saves and other data you only need to deserialize | [`TextDeserializer`] from a [slice](TextDeserializer::from_slice) or [reader](TextDeserializer::from_reader) |"
 )]
 #![cfg_attr(
-    feature = "syntax",
-    doc = r#"
-When you need positions, comments, or recovery from syntax errors in game and
-mod files, use the **experimental** [`syntax`] module. It parses text into a
-lossless tree that keeps every byte, so a tool can extract data, format,
-edit, or check a file.
-"#
+    not(feature = "serde"),
+    doc = "| Saves and other data you only need to deserialize | `TextDeserializer` from a slice or reader |"
 )]
+#![cfg_attr(
+    all(feature = "syntax", feature = "serde"),
+    doc = "| Game and mod files that need diagnostics, recovery, or script syntax | [`syntax::parse`], then [`deserialize(encoding)`](syntax::Parse::deserialize) or [`document(encoding)`](syntax::Parse::document) |"
+)]
+#![cfg_attr(
+    feature = "serde",
+    doc = "| An already parsed [`TextTape`] | [`de::TextTapeDeserializer`] |"
+)]
+//!
+//! `TextDeserializer` reads as it deserializes, keeping memory use low and
+//! avoiding the cost of building a tree. Enable the `syntax` feature for a
+//! tree that keeps every byte for formatting and editing.
+//! The tree also supports diagnostics with line, column, and key path,
+//! error recovery, and variable resolution.
+//!
+//! ## Where the deserializers differ
+//!
+//! For input the syntax parser accepts, `TextDeserializer` yields the same
+//! value as `syntax::parse(data).deserialize(encoding)` or an error that names
+//! `jomini::text::syntax::parse`. This includes errors for parameter blocks
+//! (`[[x] …]`), bracketed scalars (`[GetName]`), and reading an object as a sequence.
+//!
+//! Known exceptions to that contract:
+//!
+//! | Construct | `TextDeserializer` | `syntax` |
+//! |---|---|---|
+//! | Attached operator in `x.holder?= { }` | Reads `x.holder?` as the key | Reads `?=` as the operator |
+//! | `x { }` as the first nonempty item or in a block without other fields | Reads a field or a headered block | Can read the scalar and block as separate items |
+//! | Bare block where a key is expected | Skips the block | Keeps it as a bare value |
+//! | Operator immediately after a block | Can use the block as the key | Reads an empty key or a bare value |
+//! | Line-start operator after a value in a sequence | Reads the operator and value | Includes an empty key |
+//! | Calculation followed by a block | Can use the calculation as the key | Keeps the calculation as a value |
+//!
+//! Streaming also accepts an empty key in the middle of a line and closes open
+//! blocks at end of input. The tree reports syntax errors for these cases.
+//! A recovering `document(encoding)` can still read the unclosed blocks.
+//!
+//! For lower-level access, use [`TokenReader`] to stream tokens or [`TextTape`]
+//! for legacy tape readers.
 
 #[cfg(feature = "serde")]
 pub mod de;

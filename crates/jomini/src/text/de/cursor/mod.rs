@@ -39,92 +39,47 @@ fn is_operator_start(x: u8) -> bool {
     matches!(x, b'=' | b'<' | b'>' | b'!' | b'?')
 }
 
-/// A serde deserializer for text data that streams from a slice or a reader.
+/// A serde deserializer for Clausewitz text from a slice or a reader.
 ///
-/// The data is read as it is deserialized, so a reader's data isn't buffered
-/// in full: only a window of it is kept, which must hold the longest token.
-/// From a slice, strings are borrowed from the data where the encoding
-/// allows, as in `&'a str` fields. The source `S` is a [`SliceSource`] from
-/// [`from_slice`](Self::from_slice) or a [`ReaderSource`] from
-/// [`from_reader`](Self::from_reader). Nothing can borrow from a reader's
-/// buffer, so its `deserialize` takes a `DeserializeOwned` type.
+/// [`from_slice`](Self::from_slice) can borrow strings from the input when
+/// the encoding permits it. [`from_reader`](Self::from_reader) reads through
+/// a fixed-size buffer and requires a `DeserializeOwned` result.
 ///
-/// The root of the data is an object. Its fields can be deserialized into a
-/// struct or a map, and `deserialize_any` reads the data as a self-describing
-/// format: a block whose first item is a field is a map, and any other block
-/// is a sequence, whose empty blocks are elements. A `}` at the root, which
-/// closes no block, is skipped, and the end of the data closes the blocks
-/// that are open, as the games do.
+/// The root is an object. For `deserialize_any`, a block whose first item is
+/// a field is a map. Other blocks are sequences, including their empty blocks.
+/// A stray `}` at the root is skipped. End of input closes open blocks.
+/// An enum variant is a scalar, or a headered value such as `rgb { 1 2 3 }`
+/// when the variant has data.
 ///
-/// An enum variant is a scalar. A variant with data is a field value with a
-/// header, as in `color = rgb { 1 2 3 }`, whose block is the data.
-///
-/// A value without a key in an object, as the `80` of `{ 80 0=1 1=2 }`,
-/// starts the remainder of the object: a struct reads every part that is
-/// left, keys, operators, and values, as a sequence in its `remainder`
-/// field.
-///
-/// It reads what the lossless parser, `jomini::text::syntax::parse`, reads,
-/// or gives an error that names it: for a parameter or code block of
-/// script, as in `[[scope] set_variable = x ]`, a scalar that starts with a
-/// bracket, as in `[GetName]`, a `!` or `?` that is not part of an operator,
-/// a value without a key in a map that is not a struct, an object read as a
-/// sequence or used as a key, an operator as a value, a header before a map, an enum written as a
-/// block or whose header has no block, a sequence longer than its tuple,
-/// and a value that is read again after its read failed.
-///
-/// For game and mod files, `jomini::text::syntax::parse(data)` and its
-/// `deserialize(encoding)` or `document(encoding)` give errors with a line,
-/// a column, and the path of keys, resolve `@variables`, and read files
-/// with syntax errors, at the cost of a syntax tree in memory.
-///
-/// [`MaybeQuoted`](crate::text::MaybeQuoted) and
-/// [`Headered`](crate::text::Headered) keep the quotes and the header of a
-/// value, and with the `syntax` feature an owned value of the syntax module
-/// keeps all of a value. An owned value is parsed as
-/// `jomini::text::syntax::parse` parses it, with the default flavor, since
-/// `E` is only an encoding, so for a flavor that reads data differently, as
-/// `Hoi4Flavor` reads `$NAME$`, it can differ from the value of `parse_with`
-/// and that flavor.
-///
-/// An error carries the byte offset of the token that caused it, if the
-/// error kind has no offset of its own. An unexpected end of the data, in a
-/// quoted string or where a value is expected, is at the length of the
-/// data.
+/// Errors carry byte offsets. Unexpected end of input reports its length.
+#[cfg_attr(
+    feature = "syntax",
+    doc = "If an error names [`jomini::text::syntax::parse`](crate::text::syntax::parse), see [where the deserializers differ](crate::text#where-the-deserializers-differ)."
+)]
+#[cfg_attr(
+    not(feature = "syntax"),
+    doc = "If an error names `jomini::text::syntax::parse`, see [where the deserializers differ](crate::text#where-the-deserializers-differ)."
+)]
 ///
 /// ```
-/// # #[cfg(feature = "derive")] {
-/// use jomini::{Windows1252Encoding, text::de::TextDeserializer};
+/// use jomini::{TextDeserializer, Windows1252Encoding};
 /// use serde::Deserialize;
 ///
-/// #[derive(Deserialize, Debug, PartialEq)]
-/// struct Save<'a> {
-///     player: &'a str,
-///     date: jomini::common::Date,
+/// #[derive(Debug, Deserialize, PartialEq)]
+/// struct Save {
 ///     prestige: f64,
 /// }
 ///
-/// let data = b"player=\"ENG\"\ndate=1444.11.11\nprestige=12.5";
+/// let data = b"prestige=12.5";
 /// let encoding = Windows1252Encoding::new();
-/// let save: Save = TextDeserializer::from_slice(data, encoding).deserialize()?;
-/// assert_eq!(save.player, "ENG");
-/// assert_eq!(save.prestige, 12.5);
+/// let expected = Save { prestige: 12.5 };
+/// assert_eq!(TextDeserializer::from_slice(data, encoding).deserialize::<Save>()?, expected);
+/// assert_eq!(TextDeserializer::from_reader(&data[..], encoding).deserialize::<Save>()?, expected);
 ///
-/// // A reader is read in a fixed size buffer.
-/// #[derive(Deserialize, Debug, PartialEq)]
-/// struct Owned {
-///     player: String,
-/// }
-///
-/// let save: Owned = TextDeserializer::from_reader(&data[..], encoding).deserialize()?;
-/// assert_eq!(save.player, "ENG");
-///
-/// // A field whose value can't be deserialized reports where it starts.
 /// let err = TextDeserializer::from_slice(b"prestige=high", encoding)
 ///     .deserialize::<Save>()
 ///     .unwrap_err();
 /// assert_eq!(err.offset(), Some(9));
-/// # }
 /// # Ok::<(), jomini::Error>(())
 /// ```
 pub struct TextDeserializer<S, E> {

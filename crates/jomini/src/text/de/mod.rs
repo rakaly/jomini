@@ -1,40 +1,54 @@
-//! Serde deserialization of text data.
+//! Deserialize Clausewitz text with serde. See
+//! [choosing a text deserializer](super#choosing-a-text-deserializer) for
+//! when to stream the input and when to parse a tree.
 //!
-//! [`TextDeserializer`] deserializes text data from a slice or from a reader
-//! as the data is read. From a slice, strings can borrow from the data, and
-//! from a reader, only a fixed size window of the data is held in memory.
-//! The functions [`from_windows1252_slice`], [`from_utf8_slice`],
-//! [`from_windows1252_reader`], and [`from_utf8_reader`] are shorthands for
-//! it with an encoding.
+//! The shortcuts select an encoding:
+//! [`from_windows1252_slice`], [`from_utf8_slice`],
+//! [`from_windows1252_reader`], and [`from_utf8_reader`].
 //!
-//! [`TextTapeDeserializer`] deserializes a [`TextTape`] that was already
-//! parsed, such as one that is also read with an [`ObjectReader`].
+//! # Read a large or compressed save
+//!
+//! Pass a file or a decompression reader to [`TextDeserializer::from_reader`].
+//! It buffers 32 KiB of input. To set the buffer size, pass a vector of that
+//! length to [`TextDeserializer::from_reader_with_buf`]. If a token and its
+//! lookahead exceed the buffer, deserialization returns
+//! [`BufferTooSmall`](crate::ErrorKind::BufferTooSmall). Retry from the start
+//! of the input with a larger buffer.
+//!
+//! # Handle mixed blocks
+//!
+//! If a streaming error names `jomini::text::syntax::parse`, use the syntax
+//! parser for that file or adjust the model. For example, EU4's `map/area.txt`
+//! mixes named fields and bare province IDs. Streaming into
+//! `HashMap<String, Vec<u16>>` fails. Give the area struct a field for the
+//! color and a `remainder` field for the IDs:
 //!
 //! ```
-//! use jomini::{Windows1252Encoding, text::de::TextDeserializer};
+//! use jomini::text::de::from_windows1252_slice;
 //! use serde::Deserialize;
+//! use std::collections::HashMap;
 //!
-//! #[derive(Deserialize, Debug, PartialEq)]
-//! struct Save {
-//!     player: String,
-//!     prestige: f64,
+//! #[derive(Debug, Deserialize, PartialEq)]
+//! struct Area {
+//!     color: [u8; 3],
+//!     remainder: Vec<u16>,
 //! }
 //!
-//! let data = b"player=ENG prestige=12.5";
-//! let expected = Save { player: String::from("ENG"), prestige: 12.5 };
-//!
-//! let save: Save = jomini::text::de::from_windows1252_slice(data)?;
-//! assert_eq!(save, expected);
-//!
-//! let save: Save = jomini::text::de::from_windows1252_reader(&data[..])?;
-//! assert_eq!(save, expected);
-//!
-//! let encoding = Windows1252Encoding::new();
-//! let save: Save = TextDeserializer::from_reader_with_buf(&data[..], encoding, vec![0; 64])
-//!     .deserialize()?;
-//! assert_eq!(save, expected);
+//! let data = b"area = { color = { 1 2 3 } 169 170 }";
+//! let areas: HashMap<String, Area> = from_windows1252_slice(data)?;
+//! assert_eq!(areas["area"], Area { color: [1, 2, 3], remainder: vec![169, 170] });
 //! # Ok::<(), jomini::Error>(())
 //! ```
+//!
+//! With `syntax`, `parse(data).deserialize(encoding)` also supports the map of
+//! vectors. Each vector contains the province IDs.
+//!
+//! For a sparse save array such as `income_taxes={ 80 0=278.75 1=433.88 }`,
+//! read `remainder: Vec<String>` in the array's struct. The sequence starts
+//! at the bare length and includes each index, operator, and value in order.
+//!
+//! Use [`Property`], [`MaybeQuoted`](super::MaybeQuoted), or
+//! [`Headered`](super::Headered) to preserve operators, quotes, or headers.
 
 use super::{
     dom::ValuesIter,
@@ -52,49 +66,24 @@ mod cursor;
 
 pub use self::cursor::{ReaderSource, SliceSource, TextDeserializer};
 
-/// Represents the field value that contains an operator
+/// A field value with its operator.
 ///
-/// A `Property` is a specially marked type that signals to the deserializer to
-/// preserve operators.
-///
-/// Each text deserializer of this crate gives the operator. A field with no
-/// operator, such as `key { ... }`, has [`Operator::Equal`]. A value that is
-/// not the value of a field, such as an element of a sequence, has no
-/// operator, so a `Property` of it is an error.
+/// A field without an explicit operator, such as `key { ... }`, yields
+/// [`Operator::Equal`]. A bare value such as a sequence element has no
+/// operator and cannot be read as a `Property`.
 ///
 /// ```
-/// # #[cfg(feature = "derive")] {
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// use jomini::text::{Operator, Property};
+/// use jomini::text::{Operator, Property, de::from_utf8_slice};
 /// use serde::Deserialize;
 ///
-/// let data = b"modifier = { abc=yes factor=2 num > 2 }";
-/// let actual: MyStruct = jomini::text::de::from_windows1252_slice(&data[..])?;
-/// assert_eq!(
-///     actual,
-///     MyStruct {
-///         modifier: Modifier {
-///             abc: true,
-///             factor: Property::new(Operator::Equal, 2),
-///             num: Property::new(Operator::GreaterThan, 2)
-///         }
-///     }
-/// );
-///
-/// #[derive(Deserialize, Debug, PartialEq)]
-/// struct Modifier {
-///     abc: bool,
-///     factor: Property<u8>,
-///     num: Property<u8>,
+/// #[derive(Deserialize)]
+/// struct Trigger {
+///     size: Property<u8>,
 /// }
 ///
-/// #[derive(Deserialize, Debug, PartialEq)]
-/// struct MyStruct {
-///     modifier: Modifier,
-/// }
-/// # Ok(())
-/// # }
-/// # }
+/// let trigger: Trigger = from_utf8_slice(b"size > 2")?;
+/// assert_eq!(trigger.size, Property::new(Operator::GreaterThan, 2));
+/// # Ok::<(), jomini::Error>(())
 /// ```
 #[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename = "_internal_jomini_property")]
@@ -134,20 +123,6 @@ impl<T> Property<T> {
 ///
 /// Strings can borrow from `data`, as in `&'a str` fields. This is
 /// [`TextDeserializer::from_slice`] with a [`Windows1252Encoding`].
-///
-/// ```
-/// use serde::Deserialize;
-///
-/// #[derive(Deserialize, Debug, PartialEq)]
-/// struct Save<'a> {
-///     player: &'a str,
-///     prestige: f64,
-/// }
-///
-/// let save: Save = jomini::text::de::from_windows1252_slice(b"player=ENG prestige=12.5")?;
-/// assert_eq!(save, Save { player: "ENG", prestige: 12.5 });
-/// # Ok::<(), jomini::Error>(())
-/// ```
 pub fn from_windows1252_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
 where
     T: Deserialize<'a>,
@@ -192,84 +167,19 @@ where
     TextDeserializer::from_slice(data, Utf8Encoding::new()).deserialize()
 }
 
-/// A serde deserializer over a parsed [`TextTape`].
+/// A serde deserializer over an already parsed [`TextTape`].
 ///
-/// Use it to deserialize a tape that is already on hand, such as one that is
-/// also read with an [`ObjectReader`] or deserialized into several types. To
-/// deserialize a slice or a reader, [`TextDeserializer`] and the
-/// [`from_windows1252_slice`] family of functions read the data without
-/// building a tape first.
+/// Use this legacy deserializer when you already have a tape or an
+/// [`ObjectReader`] over one.
+/// See [choosing a text deserializer](super#choosing-a-text-deserializer)
+/// for new code.
 ///
-/// A tape normalizes the data before it is deserialized, so the two read
-/// some data differently. A tape can't be deserialized at the root with
-/// `deserialize_any`. [`TextDeserializer`] reads what the lossless parser,
-/// `jomini::text::syntax::parse`, reads, or gives an error that names it,
-/// for these data, which a tape reads:
-///
-/// - a value without a key in a map that is not a struct, as in
-///   `x = { b c }` read into a map, where a struct reads it into its
-///   `remainder` field, as a tape does
-/// - an object read as a sequence, as with the scalars that trail its
-///   fields, as in `area = { color = { 1 2 3 } 169 170 }`, or as
-///   `{ a = 1 }` read as `[a, =, 1]`, and an operator as a value
-/// - an object as a key, as in `obj = { { a = b }={ 1 2 3 } }`, into a
-///   sequence of keys and values
-/// - a header before a map, as in `o = rgb { s = 1 }`
-/// - an enum written as a block, as in `a = { rgb = { 1 2 3 } }` or
-///   `a = { rgb { 1 2 3 } }`, whose first item is the variant, and an enum
-///   variant with data whose header has no block or an empty one
-/// - the elements after those of a tuple, as in `rgb { 1 2 3 4 }` read
-///   into three numbers, which a tape drops
-/// - a parameter block or code block of script, as in
-///   `[[scope] set_variable = x ]`, which a tape reads as a field named
-///   after the parameter, a scalar that starts with a bracket, as in
-///   `picture = [GetName]`, which a tape splits at the brackets, and a `!`
-///   or `?` that is not part of an operator
-/// - a value read again after its read failed, as a retry in another type,
-///   which a tape reads again
-///
-/// And [`TextDeserializer`] reads these differently from a tape:
-///
-/// - an empty block in an array, as in `intel = { {} { civilian = -10 } }`,
-///   is an element, also with `deserialize_any`, so a positional list keeps
-///   its indices, where a tape drops the empty blocks at the start
-/// - a value without a key that starts an object, as the length of a
-///   sparse array in a save, `income_taxes={ 80 0=278.75 1=433.88 }`,
-///   starts its remainder, where a tape gives an error, and so does a block
-///   at the start of the data that is not empty
-/// - the end of the data closes every block that is open, where a tape
-///   closes only one object
-/// - an error carries the byte offset of the token that caused it
-///
-/// Since the Clausewitz text format is not self describing, one should not use
-/// the [`flatten` serde attribute][0], as [flattened structs won't type
-/// cast][1], and instead prefer to deserialize in two steps:
-///
-/// ```
-/// use jomini::{TextTape, text::de::TextTapeDeserializer};
-/// use serde::Deserialize;
-///
-/// #[derive(Debug, Clone, Deserialize, PartialEq)]
-/// pub struct StructB {
-///   field1: String,
-/// }
-///
-/// #[derive(Debug, Clone, Deserialize, PartialEq)]
-/// pub struct StructC {
-///   field2: i32,
-/// }
-///
-/// let data = b"field1=ENG field2=2";
-/// let tape = TextTape::from_slice(&data[..])?;
-/// let b: StructB = TextTapeDeserializer::from_windows1252_tape(&tape).deserialize()?;
-/// let c: StructC = TextTapeDeserializer::from_windows1252_tape(&tape).deserialize()?;
-/// assert_eq!(b, StructB { field1: "ENG".to_string() });
-/// assert_eq!(c, StructC { field2: 2 });
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-///
-/// [0]: https://serde.rs/attr-flatten.html
-/// [1]: https://github.com/serde-rs/serde/issues/1529
+/// The tape normalizes the input before deserialization. For example, it
+/// drops leading empty blocks in sequences and extra elements in tuples.
+/// At the root it requires a struct or map and rejects `deserialize_any`.
+/// You can deserialize the same tape into several types, including after
+/// a failed read. Separate reads also let each type request conversion of
+/// its fields when `#[serde(flatten)]` would bypass that conversion.
 pub struct TextTapeDeserializer<'a, 'b, E> {
     kind: TextDeserializerKind<'a, 'b, E>,
 }

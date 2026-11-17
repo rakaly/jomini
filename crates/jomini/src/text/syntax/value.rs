@@ -1,4 +1,4 @@
-//! **Experimental** owned value for the Clausewitz format.
+//! Owned values for the Clausewitz format.
 
 mod de;
 pub(crate) mod tape;
@@ -9,7 +9,7 @@ use super::SyntaxTree;
 use super::de::{Doc, Item as DocItem, Rest, View};
 use crate::{Encoding, Scalar, text::Operator};
 
-/// **Experimental.** An owned value of a document.
+/// An owned value of a document.
 ///
 /// An owned value is like `serde_json::Value`. It also keeps the data that
 /// the serde data model does not: quotes, variables, operators, headers,
@@ -101,8 +101,7 @@ pub enum OwnedValue {
     HeaderedBlock(OwnedScalar, OwnedBlock),
 }
 
-/// **Experimental.** An owned scalar: a scalar value, the key of a field, or
-/// the header of a block.
+/// An owned scalar value, field key, or block header.
 ///
 /// The variant tells how the source writes the scalar, so a program can
 /// expand a variable and keep quoted text as it is:
@@ -202,7 +201,7 @@ impl PartialEq<&str> for OwnedScalar {
     }
 }
 
-/// **Experimental.** The items of a block in source order.
+/// The items of a block in source order.
 ///
 /// A block keeps each field, also when a key occurs more than one time:
 ///
@@ -269,7 +268,7 @@ pub struct OwnedBlock {
     items: Vec<OwnedItem>,
 }
 
-/// **Experimental.** An item of an [`OwnedBlock`].
+/// An item of an [`OwnedBlock`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum OwnedItem {
@@ -281,7 +280,7 @@ pub enum OwnedItem {
     Parameter(OwnedParameter),
 }
 
-/// **Experimental.** A `key <op> value` field.
+/// A `key <op> value` field.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct OwnedField {
@@ -295,8 +294,7 @@ pub struct OwnedField {
     pub value: OwnedValue,
 }
 
-/// **Experimental.** A conditional parameter block, `[[name] ... ]` or
-/// `[[!name] ... ]`.
+/// A conditional parameter block, `[[name] ... ]` or `[[!name] ... ]`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct OwnedParameter {
