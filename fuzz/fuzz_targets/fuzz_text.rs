@@ -1,7 +1,7 @@
 #![no_main]
 use jomini::{
-    Encoding, TextTapeDeserializer, TextToken,
-    text::{ArrayReader, ObjectReader, ValueReader},
+    Encoding, TextToken,
+    text::{ArrayReader, ObjectReader, ValueReader, de::TextTapeDeserializer},
 };
 use libfuzzer_sys::fuzz_target;
 use serde::Deserialize;

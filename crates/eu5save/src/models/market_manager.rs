@@ -336,7 +336,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::TextTapeDeserializer;
+    use jomini::text::de::TextTapeDeserializer;
 
     fn deserialize_manager<'bump>(
         data: &str,

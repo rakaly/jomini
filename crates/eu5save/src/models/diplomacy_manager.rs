@@ -287,7 +287,7 @@ pub enum DiplomacySubjectType {
 mod tests {
     use super::*;
     use arena_serde::ArenaDeserialize;
-    use jomini::TextTapeDeserializer;
+    use jomini::text::de::TextTapeDeserializer;
 
     fn deserialize_manager<'bump>(
         data: &str,

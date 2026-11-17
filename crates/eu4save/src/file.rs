@@ -6,7 +6,7 @@ use crate::{
     resolver::SegmentedResolver,
     Encoding, Eu4Error, Eu4ErrorKind, MeltOptions, MeltedDocument,
 };
-use jomini::{binary::TokenResolver, text::ObjectReader, TextTape, TextTapeDeserializer};
+use jomini::{binary::TokenResolver, text::ObjectReader, TextDeserializer, TextTape};
 use rawzip::{CompressionMethod, FileReader, ReaderAt};
 use serde::de::DeserializeOwned;
 use std::{
@@ -172,9 +172,7 @@ impl<'a> Eu4SliceFile<'a> {
     {
         match &self.kind {
             Eu4SliceFileKind::Text(data) => {
-                Eu4Modeller::from_reader(Box::new(data.0), &EMPTY_RESOLVER)
-                    .with_encoding(Encoding::Text)
-                    .deserialize()
+                Ok(TextDeserializer::from_slice(data.0, Eu4Flavor::new()).deserialize()?)
             }
             Eu4SliceFileKind::Binary(data) => data.deserializer(resolver).deserialize(),
             Eu4SliceFileKind::Zip(archive) => {
@@ -701,8 +699,7 @@ impl<'de, 'a: 'de, R: jomini::binary::TokenResolver> serde::de::Deserializer<'de
                 .from_reader(&mut self.reader, &self.resolver);
             Ok(deser.deserialize_struct(name, fields, visitor)?)
         } else {
-            let reader = jomini::text::TokenReader::new(&mut self.reader);
-            let mut deser = TextTapeDeserializer::from_encoded_reader(reader, Eu4Flavor::new());
+            let mut deser = TextDeserializer::from_reader(&mut self.reader, Eu4Flavor::new());
             Ok(deser.deserialize_struct(name, fields, visitor)?)
         }
     }

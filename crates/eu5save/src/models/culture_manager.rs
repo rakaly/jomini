@@ -214,7 +214,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::TextTapeDeserializer;
+    use jomini::text::de::TextTapeDeserializer;
 
     #[test]
     fn parses_culture_with_name_tag() {

@@ -203,15 +203,6 @@ fn test_any(#[case] data: &[u8], #[case] expected: &str, #[case] min_buf: usize)
             }
         }
     }
-
-    // The old reader gives the same values, except that it drops the empty
-    // blocks at the start of a sequence and the operators in a remainder.
-    if !expected.contains("[] ") && !expected.contains("remainder=") {
-        let reader = crate::text::TokenReader::from_slice(data);
-        let mut old = crate::TextTapeDeserializer::from_windows1252_reader(reader);
-        let old = AnyValue::deserialize(&mut old).unwrap().to_string();
-        assert_eq!(old, expected);
-    }
 }
 
 #[test]
@@ -371,8 +362,7 @@ fn test_empty_key() {
         Property::new(Operator::Equal, String::from("1461.11.17"))
     );
 
-    // An object read as a sequence is an error, where the old streaming
-    // reader gives each token, operators too.
+    // An object read as a sequence is an error.
     #[derive(Deserialize, PartialEq, Debug)]
     struct Seq {
         cooldowns: Vec<String>,
@@ -399,7 +389,7 @@ fn test_skips_field_with_block_key() {
 
 /// Deserialize `data` with a `TextTape`.
 fn from_tape<T: DeserializeOwned>(data: &[u8]) -> Result<T, Error> {
-    crate::TextTapeDeserializer::from_windows1252_slice(data)?.deserialize()
+    crate::text::de::TextTapeDeserializer::from_windows1252_slice(data)?.deserialize()
 }
 
 #[derive(Deserialize, PartialEq, Debug)]
@@ -1219,10 +1209,6 @@ fn test_typed() {
             kind: Kind2::Beta,
         }
     );
-
-    // The old streaming reader gives the same value.
-    let old: Typed = crate::text::de::from_windows1252_reader(TYPED).unwrap();
-    assert_eq!(old, actual);
 }
 
 #[test]
@@ -1365,44 +1351,30 @@ struct Fields {
 
 /// An error is at the start of the token that caused it, or at the length
 /// of the data when the data ends where a value is expected or in a quoted
-/// string, from a slice and from readers that refill anywhere. The old
-/// streaming reader gives only an unexpected close an offset, which is
-/// after the close.
+/// string, from a slice and from readers that refill anywhere.
 #[rstest]
-#[case::missing_value_in_block(b"a={ 1 2 } c={ x=", "unexpected end of file (offset: 16)", None)]
+#[case::missing_value_in_block(b"a={ 1 2 } c={ x=", "unexpected end of file (offset: 16)")]
 #[case::unexpected_close(
     b"a={ 1 2 }\nb=}",
-    "invalid syntax encountered: did not expect end (offset: 12)",
-    Some(13)
+    "invalid syntax encountered: did not expect end (offset: 12)"
 )]
 #[case::bad_number(
     b"a={ 1 2 } b=abc",
-    "invalid type: string \"abc\", expected u8 (offset: 12)",
-    None
+    "invalid type: string \"abc\", expected u8 (offset: 12)"
 )]
 #[case::bad_quoted_number(
     b"a={ 1 2 } b=\"abc\"",
-    "invalid type: string \"abc\", expected u8 (offset: 12)",
-    None
+    "invalid type: string \"abc\", expected u8 (offset: 12)"
 )]
-#[case::bad_element(
-    b"a={ 1 x }",
-    "invalid type: string \"x\", expected u8 (offset: 6)",
-    None
-)]
-#[case::missing_value(b"a={ 1 2 } b=", "unexpected end of file (offset: 12)", None)]
-#[case::unclosed_quote(b"a={ 1 2 } b=\"abc", "unexpected end of file (offset: 16)", None)]
-#[case::missing_field(b"b=1\n", "missing field `a` (offset: 4)", None)]
+#[case::bad_element(b"a={ 1 x }", "invalid type: string \"x\", expected u8 (offset: 6)")]
+#[case::missing_value(b"a={ 1 2 } b=", "unexpected end of file (offset: 12)")]
+#[case::unclosed_quote(b"a={ 1 2 } b=\"abc", "unexpected end of file (offset: 16)")]
+#[case::missing_field(b"b=1\n", "missing field `a` (offset: 4)")]
 #[case::missing_map_value(
     b"a={ 1 2 } c={ x=y z }",
-    "TextDeserializer doesn't read a value without a key, as the `80` of `{ 80 0=1 }`, except into the `remainder` field of a struct, which jomini::text::syntax::parse reads (offset: 18)",
-    Some(21)
+    "TextDeserializer doesn't read a value without a key, as the `80` of `{ 80 0=1 }`, except into the `remainder` field of a struct, which jomini::text::syntax::parse reads (offset: 18)"
 )]
-fn test_error_offsets(
-    #[case] data: &[u8],
-    #[case] expected: &str,
-    #[case] old_offset: Option<usize>,
-) {
+fn test_error_offsets(#[case] data: &[u8], #[case] expected: &str) {
     let err = from_windows1252_slice::<Fields>(data).unwrap_err();
     assert_eq!(err.to_string(), expected);
     let err = from_windows1252_reader::<Fields>(data).unwrap_err();
@@ -1413,9 +1385,6 @@ fn test_error_offsets(
         let err = trickle::<Fields>(data, size).unwrap_err();
         assert_eq!(err.to_string(), expected, "trickle buffer size {size}");
     }
-
-    let old = crate::text::de::from_windows1252_reader::<Fields, _>(data).unwrap_err();
-    assert_eq!(old.offset(), old_offset, "{old}");
 }
 
 /// A token that doesn't fit in the buffer is located where it starts, after
@@ -1436,13 +1405,6 @@ fn test_buffer_too_small_offset() {
         err.to_string(),
         "token exceeds buffer capacity (offset: 47)"
     );
-
-    // The old streaming reader gives no offset.
-    let reader = crate::text::TokenReader::from_reader_with_buf(&data[..], vec![0; 16]);
-    let mut old = crate::TextTapeDeserializer::from_windows1252_reader(reader);
-    let err = old.deserialize::<Fields>().unwrap_err();
-    assert!(matches!(err.kind(), ErrorKind::BufferTooSmall), "{err}");
-    assert_eq!(err.offset(), None);
 }
 
 /// A string other than `bad`, read with `deserialize_any`.
@@ -1513,7 +1475,7 @@ struct SavegameVersion {
 }
 
 /// The typed fields of an EU4 save's meta are the same from each path and
-/// from the old streaming reader.
+/// from a tape.
 #[test]
 #[cfg_attr(miri, ignore)] // too slow
 fn test_meta_fixture() {
@@ -1522,25 +1484,35 @@ fn test_meta_fixture() {
     assert_eq!(actual.player, "ENG");
     assert_eq!(actual.savegame_version.second, 28);
     assert_eq!(actual.dlc_enabled.len(), 13);
-    let old: Meta = crate::text::de::from_windows1252_reader(data).unwrap();
-    assert_eq!(old, actual);
+    let tape: Meta = crate::text::de::TextTapeDeserializer::from_windows1252_slice(data)
+        .unwrap()
+        .deserialize()
+        .unwrap();
+    assert_eq!(tape, actual);
 }
 
-/// `deserialize_any` reads the fixtures into the same values from a slice,
-/// from readers of each buffer size, and from the old streaming reader.
-#[rstest]
-#[case::meta(&include_bytes!("../../../../tests/fixtures/meta.txt")["EU4txt".len()..], 44)]
-#[case::ck3_header(&include_bytes!("../../../../tests/fixtures/ck3-header.txt")[..], 36)]
-#[case::savegame(&include_bytes!("../../../../tests/fixtures/savegame.txt")[..], 17)]
-#[case::string_array(&include_bytes!("../../../../tests/fixtures/string-array.txt")[..], 23)]
-#[case::nested_hidden_obj(&include_bytes!("../../../../tests/fixtures/nested-hidden-obj.txt")[..], 16)]
-#[cfg_attr(miri, ignore)] // too slow
-fn test_any_fixture(#[case] data: &[u8], #[case] min_buf: usize) {
-    let reader = crate::text::TokenReader::from_slice(data);
-    let mut old = crate::TextTapeDeserializer::from_windows1252_reader(reader);
-    let expected = AnyValue::deserialize(&mut old).unwrap();
+/// The FNV-1a hash of `text`, to pin long values in a test.
+fn fnv1a(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, x| {
+        (hash ^ u64::from(x)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
 
-    assert_eq!(from_windows1252_slice::<AnyValue>(data).unwrap(), expected);
+/// `deserialize_any` reads the fixtures into the same values from a slice
+/// and from readers of each buffer size. The values are pinned by the
+/// length and hash of their text, which the `TextReaderDeserializer` that
+/// this replaced gave.
+#[rstest]
+#[case::meta(&include_bytes!("../../../../tests/fixtures/meta.txt")["EU4txt".len()..], 44, (1319, 0xf77c_3b8e_ce84_e350))]
+#[case::ck3_header(&include_bytes!("../../../../tests/fixtures/ck3-header.txt")[..], 36, (15654, 0x0754_83ac_69be_2750))]
+#[case::savegame(&include_bytes!("../../../../tests/fixtures/savegame.txt")[..], 17, (66, 0x5d41_1fb2_b313_01cf))]
+#[case::string_array(&include_bytes!("../../../../tests/fixtures/string-array.txt")[..], 23, (87, 0xff60_dd74_0ea3_0c3b))]
+#[case::nested_hidden_obj(&include_bytes!("../../../../tests/fixtures/nested-hidden-obj.txt")[..], 16, (88, 0x8846_d9ee_ee88_110c))]
+#[cfg_attr(miri, ignore)] // too slow
+fn test_any_fixture(#[case] data: &[u8], #[case] min_buf: usize, #[case] pinned: (usize, u64)) {
+    let expected = from_windows1252_slice::<AnyValue>(data).unwrap();
+    let text = expected.to_string();
+    assert_eq!((text.len(), fnv1a(&text)), pinned, "{text}");
     assert_eq!(from_windows1252_reader::<AnyValue>(data).unwrap(), expected);
     assert_eq!(trickle::<AnyValue>(data, 4096).unwrap(), expected);
     for size in 4..=128 {

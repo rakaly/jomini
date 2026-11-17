@@ -174,11 +174,8 @@ pub mod criterion_benches {
 
         group.bench_function("matching-ledger", |b| {
             b.iter(|| {
-                let reader = jomini::text::TokenReader::from_slice(data.as_bytes());
                 let _: CountryLedger =
-                    jomini::TextTapeDeserializer::from_windows1252_reader(reader)
-                        .deserialize()
-                        .unwrap();
+                    jomini::text::de::from_windows1252_slice(data.as_bytes()).unwrap();
             })
         });
 
@@ -193,11 +190,8 @@ pub mod criterion_benches {
 
         group.bench_function("skip-ledger", |b| {
             b.iter(|| {
-                let reader = jomini::text::TokenReader::from_slice(data2.as_bytes());
                 let _: CountryLedger =
-                    jomini::TextTapeDeserializer::from_windows1252_reader(reader)
-                        .deserialize()
-                        .unwrap();
+                    jomini::text::de::from_windows1252_slice(data2.as_bytes()).unwrap();
             })
         });
 

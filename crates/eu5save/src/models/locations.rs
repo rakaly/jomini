@@ -367,7 +367,7 @@ impl<T> Index<LocationIdx> for LocationIndexedVec<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::TextTapeDeserializer;
+    use jomini::text::de::TextTapeDeserializer;
 
     /// Location 134 in a 1346 save: Denmark held it from the start of the
     /// campaign, and Skane took it on 1338.6.3.

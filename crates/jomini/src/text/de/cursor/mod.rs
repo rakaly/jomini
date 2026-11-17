@@ -26,10 +26,16 @@ use self::scan::{Kind, Peek, Skip, Status, Tok};
 use self::source::{Reference, Source};
 use crate::{
     Encoding, Error, ErrorKind, Scalar,
-    text::{Operator, decode_quoted, reader::is_operator_start},
+    text::{Operator, decode_quoted},
 };
 use serde::de::{self, Deserialize, DeserializeOwned, DeserializeSeed, Visitor};
 use std::{borrow::Cow, io::Read};
+
+/// Return true when the byte starts an operator.
+#[inline]
+fn is_operator_start(x: u8) -> bool {
+    matches!(x, b'=' | b'<' | b'>' | b'!' | b'?')
+}
 
 /// A serde deserializer for text data that streams from a slice or a reader.
 ///

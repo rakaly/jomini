@@ -3,7 +3,7 @@ use jomini::{
     binary::{
         de::BinaryReaderDeserializer, BinaryDeserializerBuilder, BinaryFlavor, TokenResolver,
     },
-    text::de::TextReaderDeserializer,
+    text::de::{ReaderSource, TextDeserializer},
     Utf8Encoding,
 };
 use serde::de::DeserializeOwned;
@@ -15,10 +15,10 @@ pub use jomini::envelope::*;
 /// An uncompressed CK3 debug save backed by a forward-only reader.
 pub type Ck3DebugFile<R> = JominiTextFile<R>;
 
-/// Type alias for Ck3 text deserializer
+/// Type alias for Ck3 text deserializer over a reader `R`
 ///
 /// A lazy way to avoid the need to reimplement deserializer
-pub type Ck3TextDeserializer<'r> = TextReaderDeserializer<'r, Utf8Encoding>;
+pub type Ck3TextDeserializer<R> = TextDeserializer<ReaderSource<R>, Utf8Encoding>;
 pub type Ck3BinaryDeserializer<'r, 'res, RES> =
     BinaryReaderDeserializer<'r, 'res, RES, Box<dyn BinaryFlavor>>;
 

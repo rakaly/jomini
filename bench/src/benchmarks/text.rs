@@ -40,19 +40,13 @@ pub(crate) fn deserialize_meta(data: &[u8]) -> Meta {
     jomini::text::de::from_windows1252_slice(data).unwrap()
 }
 
-/// Deserialize with a `TokenReader` over the slice.
+/// Deserialize from a `TextTape` parsed from the slice.
 #[inline(never)]
-pub(crate) fn token_reader_slice_de<T: DeserializeOwned>(data: &[u8]) -> T {
-    let reader = jomini::text::TokenReader::from_slice(data);
-    jomini::TextTapeDeserializer::from_windows1252_reader(reader)
+pub(crate) fn tape_de<T: DeserializeOwned>(data: &[u8]) -> T {
+    jomini::text::de::TextTapeDeserializer::from_windows1252_slice(data)
+        .unwrap()
         .deserialize()
         .unwrap()
-}
-
-/// Deserialize with a `TokenReader` that reads the slice as a reader.
-#[inline(never)]
-pub(crate) fn token_reader_io_de<T: DeserializeOwned>(data: &[u8]) -> T {
-    jomini::text::de::from_windows1252_reader(data).unwrap()
 }
 
 #[inline(never)]
@@ -135,12 +129,7 @@ pub mod criterion_benches {
         let mut group = c.benchmark_group("text/deserialize");
         group.throughput(Throughput::Bytes(data.len() as u64));
         group.bench_function("meta", |b| b.iter(|| deserialize_meta(data)));
-        group.bench_function("meta/token_reader_slice", |b| {
-            b.iter(|| token_reader_slice_de::<Meta>(data))
-        });
-        group.bench_function("meta/token_reader_io", |b| {
-            b.iter(|| token_reader_io_de::<Meta>(data))
-        });
+        group.bench_function("meta/tape", |b| b.iter(|| tape_de::<Meta>(data)));
         group.bench_function("meta/slice", |b| b.iter(|| de_slice::<Meta>(data)));
         group.bench_function("meta/reader", |b| b.iter(|| de_reader::<Meta>(data)));
         group.finish();
@@ -149,12 +138,7 @@ pub mod criterion_benches {
         let mut group = c.benchmark_group("text/deserialize/gamestate");
         group.sample_size(10);
         group.throughput(Throughput::Bytes(data.len() as u64));
-        group.bench_function("token_reader_slice", |b| {
-            b.iter(|| token_reader_slice_de::<GameState>(data))
-        });
-        group.bench_function("token_reader_io", |b| {
-            b.iter(|| token_reader_io_de::<GameState>(data))
-        });
+        group.bench_function("tape", |b| b.iter(|| tape_de::<GameState>(data)));
         group.bench_function("slice", |b| b.iter(|| de_slice::<GameState>(data)));
         group.bench_function("reader", |b| b.iter(|| de_reader::<GameState>(data)));
         group.finish();
@@ -201,8 +185,7 @@ pub mod gungraun_benches {
     }
 
     #[library_benchmark]
-    #[bench::token_reader_slice(args = (setup_meta(), token_reader_slice_de::<Meta>))]
-    #[bench::token_reader_io(args = (setup_meta(), token_reader_io_de::<Meta>))]
+    #[bench::tape(args = (setup_meta(), tape_de::<Meta>))]
     #[bench::slice(args = (setup_meta(), de_slice::<Meta>))]
     #[bench::reader(args = (setup_meta(), de_reader::<Meta>))]
     fn deserialize_meta_with(data: &[u8], f: fn(&[u8]) -> Meta) -> Meta {
@@ -210,8 +193,7 @@ pub mod gungraun_benches {
     }
 
     #[library_benchmark]
-    #[bench::token_reader_slice(args = (setup_eu4_gamestate(), token_reader_slice_de::<GameState>))]
-    #[bench::token_reader_io(args = (setup_eu4_gamestate(), token_reader_io_de::<GameState>))]
+    #[bench::tape(args = (setup_eu4_gamestate(), tape_de::<GameState>))]
     #[bench::slice(args = (setup_eu4_gamestate(), de_slice::<GameState>))]
     #[bench::reader(args = (setup_eu4_gamestate(), de_reader::<GameState>))]
     fn deserialize_gamestate(data: &[u8], f: fn(&[u8]) -> GameState) -> GameState {

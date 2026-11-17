@@ -78,7 +78,7 @@ pub struct CountryRename<'bump> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::{TextTapeDeserializer, common::PdsDate};
+    use jomini::{common::PdsDate, text::de::TextTapeDeserializer};
 
     fn deserialize<'bump>(
         data: &str,

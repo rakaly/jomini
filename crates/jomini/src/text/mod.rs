@@ -1,13 +1,16 @@
 //! Types for parsing clausewitz plaintext input
 //!
-//! Main text deserialization APIs:
-//!  - [TextDeserializer]: Deserialize from a slice or a reader as the data
-//!    is read, with the offset of the token that caused an error.
-//!  - [TextTapeDeserializer::from_utf8_slice](crate::text::de::TextTapeDeserializer::from_utf8_slice):
-//!    Deserialize game and save files from a slice of data.
-//!  - [TextTapeDeserializer::from_utf8_reader](crate::text::de::TextTapeDeserializer::from_utf8_reader):
-//!    Deserialize streaming data with lower memory use for large models. See
-//!    [TokenReader] for details about the streaming parser.
+//! To deserialize text with serde:
+//!
+//! | To deserialize | Use |
+//! |---|---|
+//! | a slice or a reader | [`TextDeserializer::from_slice`] or [`TextDeserializer::from_reader`], or the shortcuts [`de::from_windows1252_slice`], [`de::from_utf8_slice`], [`de::from_windows1252_reader`], and [`de::from_utf8_reader`] |
+//! | a [`TextTape`] that is already parsed | [`de::TextTapeDeserializer`] |
+//!
+//! [`TextDeserializer`] reads what the lossless parser,
+//! `jomini::text::syntax::parse`, reads, or gives an error that names it,
+//! for the constructs of game files that it doesn't read, such as
+//! parameter blocks of script. Read those files with the lossless parser.
 //!
 //! If the serde deserialization API is too high level, one can build
 //! abstractions ontop of:
@@ -22,7 +25,6 @@
 //! - [FieldsIter]
 //! - [ValuesIter]
 
-/// text deserialization
 #[cfg(feature = "serde")]
 pub mod de;
 mod dom;
@@ -35,7 +37,7 @@ mod writer;
 
 #[cfg(feature = "serde")]
 #[doc(inline)]
-pub use self::de::{Property, TextDeserializer, TextTapeDeserializer};
+pub use self::de::{Property, TextDeserializer};
 pub use self::dom::{
     ArrayReader, FieldGroupsIter, FieldsIter, GroupEntry, GroupEntryIter, ObjectReader, Reader,
     ScalarReader, ValueReader, ValuesIter,

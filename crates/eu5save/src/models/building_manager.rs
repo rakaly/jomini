@@ -272,7 +272,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::TextTapeDeserializer;
+    use jomini::text::de::TextTapeDeserializer;
     use rstest::rstest;
 
     fn parse_building<'bump>(data: &str, arena: &'bump arena_serde::Arena) -> Building<'bump> {

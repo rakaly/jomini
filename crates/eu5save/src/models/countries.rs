@@ -844,7 +844,7 @@ impl<'bump> ArenaDeserialize<'bump> for CountryName<'bump> {
 mod tests {
     use super::*;
     use arena_serde::ArenaDeserialize;
-    use jomini::TextTapeDeserializer;
+    use jomini::{TextDeserializer, Utf8Encoding, text::de::TextTapeDeserializer};
 
     #[derive(ArenaDeserialize)]
     struct Wrapper<'bump> {
@@ -871,10 +871,9 @@ mod tests {
             countries: Countries<'bump>,
         }
 
-        // `Countries` reads its keys as an enum, which only the reader based
-        // deserializer supports. This is the same path the save file takes.
-        let mut deserializer =
-            TextTapeDeserializer::from_utf8_reader(jomini::text::TokenReader::new(data.as_bytes()));
+        // `Countries` reads its keys as an enum, which the tape deserializer
+        // doesn't support.
+        let mut deserializer = TextDeserializer::from_slice(data.as_bytes(), Utf8Encoding::new());
         Wrapper::deserialize_in_arena(&mut deserializer, allocator)
             .expect("countries deserialize")
             .countries

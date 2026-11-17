@@ -7,18 +7,10 @@
 //! buffer, from a reader with the small buffer, and from a reader that
 //! returns a byte per read into the small buffer. These give the same value
 //! or the same error, with its offset, except that a small buffer may be too
-//! small for a token. The old streaming reader, `TextReaderDeserializer`,
-//! gives the same generic value and keys as the slice whenever both
-//! succeed, unless the data has what it reads differently: a `}` at the
-//! root that closes no block, a scalar that holds a `"`, a `#`, or a brace,
-//! an empty block, a value without a key in an object, a block where a key
-//! is expected after a block or a quoted scalar, or an operator where a key
-//! is expected. Typed values
-//! differ by design, as an enum variant with data, a scalar read as a
-//! sequence, and a value that is read once, so they aren't compared.
+//! small for a token.
 use jomini::{
-    Encoding, Error, ErrorKind, TextTapeDeserializer, Utf8Encoding, Windows1252Encoding,
-    text::{Property, TextDeserializer, Token, TokenReader},
+    Encoding, Error, ErrorKind, Utf8Encoding, Windows1252Encoding,
+    text::{Property, TextDeserializer},
 };
 use libfuzzer_sys::fuzz_target;
 use serde::{
@@ -182,12 +174,8 @@ fn outcome<T: fmt::Debug>(result: Result<T, Error>) -> Outcome {
     })
 }
 
-fn check<T, E>(
-    data: &[u8],
-    size: usize,
-    encoding: E,
-    old: Option<impl FnOnce(&[u8]) -> Result<T, Error>>,
-) where
+fn check<T, E>(data: &[u8], size: usize, encoding: E)
+where
     T: DeserializeOwned + fmt::Debug,
     E: Encoding + Clone,
 {
@@ -216,143 +204,16 @@ fn check<T, E>(
             "{name}: trickle with {size} byte buffer vs slice"
         );
     }
-
-    let Some(old) = old else {
-        return;
-    };
-    if old_reader_differs(data) {
-        return;
-    }
-    let old = outcome(old(data));
-    if let (Ok(new), Ok(old)) = (&slice, &old) {
-        assert_eq!(new, old, "{name}: slice vs old reader");
-    }
 }
 
-/// Whether the old reader is known to read `data` differently: it reads
-/// `==` after a key as the operator `=` and the scalar `=`, it skips a
-/// byte order mark after the start of the data, it reads a backspace, a
-/// vertical tab, and a form feed as whitespace in some places and not in
-/// others, and it reads what [`tokens_differ`] finds differently.
-fn old_reader_differs(data: &[u8]) -> bool {
-    data.windows(2).any(|w| w == b"==")
-        || data.iter().any(|x| matches!(x, b'\x08' | b'\x0b' | b'\x0c'))
-        || data
-            .get(1..)
-            .is_some_and(|d| d.windows(3).any(|w| w == b"\xef\xbb\xbf"))
-        || tokens_differ(data)
-}
-
-/// Whether the data has what the old reader reads differently: a `}` that
-/// closes no block, where it ends the root; a scalar that holds a `"`, a
-/// `#`, or a brace, as in `@[x}]`, which a skipped block reads as the
-/// start of a string, a comment, or a block; an empty block, which it drops
-/// at the start of a sequence; a key without a value before a `}`, which it
-/// reads as the value; a value without a key in an object, which starts the
-/// remainder of the object, whose operators it drops, and at the root,
-/// where it reads the next scalar as its value; a block where a key is
-/// expected after a block or a quoted scalar, which it skips and which
-/// starts the remainder; an operator where a key is expected, as the empty
-/// key of `=1825.6.28`, whose value it reads without a header, or after
-/// another operator; or data that doesn't tokenize.
-fn tokens_differ(data: &[u8]) -> bool {
-    #[derive(Clone, Copy, PartialEq)]
-    enum Prev {
-        Open,
-        Operator,
-        Scalar,
-        Quoted,
-        Other,
-    }
-
-    let mut reader = TokenReader::from_slice(data);
-
-    // Whether each block that is open, and the root, has a field.
-    let mut objects = vec![true];
-    let (mut prev, mut before) = (Prev::Other, Prev::Other);
-
-    // Whether the last token is a scalar where a key is expected in an
-    // object, which needs an operator or a block after it.
-    let mut object_key = false;
-    loop {
-        let token = reader.next();
-        if object_key && !matches!(token, Ok(Some(Token::Operator(_) | Token::Open))) {
-            return true;
-        }
-        object_key = objects.last() == Some(&true)
-            && matches!(token, Ok(Some(Token::Unquoted(_) | Token::Quoted(_))))
-            && !matches!(prev, Prev::Operator);
-
-        let next = match token {
-            Ok(Some(Token::Open))
-                if objects.last() == Some(&true)
-                    && (prev == Prev::Other
-                        || (prev == Prev::Quoted && before == Prev::Operator)) =>
-            {
-                return true;
-            }
-            Ok(Some(Token::Open)) => {
-                objects.push(false);
-                Prev::Open
-            }
-            Ok(Some(Token::Close)) => {
-                let key = matches!(prev, Prev::Scalar | Prev::Quoted) && before != Prev::Operator;
-                if prev == Prev::Open || (key && objects.last() == Some(&true)) {
-                    return true;
-                }
-                objects.pop();
-                if objects.is_empty() {
-                    return true;
-                }
-                Prev::Other
-            }
-            Ok(Some(Token::Operator(_)))
-                if !matches!(prev, Prev::Scalar | Prev::Quoted) || before == Prev::Operator =>
-            {
-                return true;
-            }
-            Ok(Some(Token::Operator(_))) => {
-                if let Some(x) = objects.last_mut() {
-                    *x = true;
-                }
-                Prev::Operator
-            }
-            Ok(Some(Token::Unquoted(x)))
-                if x.as_bytes()
-                    .iter()
-                    .any(|&b| matches!(b, b'"' | b'#' | b'{' | b'}')) =>
-            {
-                return true;
-            }
-            Ok(Some(Token::Unquoted(_))) => Prev::Scalar,
-            Ok(Some(Token::Quoted(_))) => Prev::Quoted,
-            Ok(None) => return false,
-            Err(_) => return true,
-        };
-        before = prev;
-        prev = next;
-    }
-}
-
-fn check_all<E: Encoding + Clone>(
-    data: &[u8],
-    size: usize,
-    encoding: E,
-    old: impl Fn(&[u8]) -> jomini::text::de::TextReaderDeserializer<'_, E>,
-) {
-    check::<AnyValue, E>(
-        data,
-        size,
-        encoding.clone(),
-        Some(|d: &[u8]| old(d).deserialize()),
-    );
-    let typed: Option<fn(&[u8]) -> Result<Typed, Error>> = None;
-    check::<Typed, E>(data, size, encoding.clone(), typed);
-    check::<Keys, E>(data, size, encoding, Some(|d: &[u8]| old(d).deserialize()));
+fn check_all<E: Encoding + Clone>(data: &[u8], size: usize, encoding: E) {
+    check::<AnyValue, E>(data, size, encoding.clone());
+    check::<Typed, E>(data, size, encoding.clone());
+    check::<Keys, E>(data, size, encoding);
 }
 
 /// The stack of the thread that deserializes, large enough for a document
-/// that nests a block in each byte, as neither reader limits the depth.
+/// that nests a block in each byte, as the deserializer doesn't limit the depth.
 const STACK_SIZE: usize = 256 << 20;
 
 fuzz_target!(|input: &[u8]| {
@@ -366,13 +227,9 @@ fuzz_target!(|input: &[u8]| {
     let utf8 = enc & 1 == 1;
     let worker = move || {
         if utf8 {
-            check_all(&data, size, Utf8Encoding::new(), |d| {
-                TextTapeDeserializer::from_utf8_reader(TokenReader::from_slice(d))
-            });
+            check_all(&data, size, Utf8Encoding::new());
         } else {
-            check_all(&data, size, Windows1252Encoding::new(), |d| {
-                TextTapeDeserializer::from_windows1252_reader(TokenReader::from_slice(d))
-            });
+            check_all(&data, size, Windows1252Encoding::new());
         }
     };
 

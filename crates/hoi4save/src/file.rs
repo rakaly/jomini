@@ -11,7 +11,7 @@ use crate::{
 use jomini::{
     binary::{BinaryFormatDeserializer, TokenResolver},
     text::ObjectReader,
-    TextTape, TextTapeDeserializer, Utf8Encoding,
+    TextDeserializer, TextTape, Utf8Encoding,
 };
 use serde::de::DeserializeOwned;
 
@@ -111,7 +111,9 @@ impl<'a> Hoi4SliceFile<'a> {
         T: DeserializeOwned,
     {
         match &self.kind {
-            Hoi4SliceFileKind::Text(data) => data.deserializer().deserialize(),
+            Hoi4SliceFileKind::Text(data) => {
+                Ok(TextDeserializer::from_slice(data.0, Utf8Encoding::new()).deserialize()?)
+            }
             Hoi4SliceFileKind::Binary(data) => data.clone().deserializer(resolver).deserialize(),
         }
     }
@@ -378,8 +380,7 @@ impl<'de, 'a: 'de, Resolver: TokenResolver> serde::de::Deserializer<'de>
             );
             Ok(deser.deserialize_struct(name, fields, visitor)?)
         } else {
-            let reader = jomini::text::TokenReader::new(&mut self.reader);
-            let mut deser = TextTapeDeserializer::from_utf8_reader(reader);
+            let mut deser = TextDeserializer::from_reader(&mut self.reader, Utf8Encoding::new());
             Ok(deser.deserialize_struct(name, fields, visitor)?)
         }
     }

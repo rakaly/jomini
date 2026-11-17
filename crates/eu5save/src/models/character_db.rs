@@ -186,7 +186,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::TextTapeDeserializer;
+    use jomini::text::de::TextTapeDeserializer;
 
     #[test]
     fn test_first_name_simple_string() {
