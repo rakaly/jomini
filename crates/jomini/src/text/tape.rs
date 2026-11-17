@@ -683,6 +683,15 @@ impl<'a> ParserState<'a, '_> {
                             state = ParseState::KeyValueSeparator;
                         }
 
+                        // An operator where a key is expected starts a field
+                        // whose key is the empty string, as in `=1825.6.28`
+                        // in an EU4 save. The push is inline: calling a
+                        // `#[cold]` helper here makes the parser 10% slower.
+                        b'=' | b'<' | b'>' => {
+                            self.token_tape.push(TextToken::Unquoted(Scalar::new(b"")));
+                            state = ParseState::KeyValueSeparator;
+                        }
+
                         _ => {
                             data = self.parse_scalar(data);
                             state = ParseState::KeyValueSeparator;
@@ -861,6 +870,11 @@ impl<'a> ParserState<'a, '_> {
                         }
                         b'@' => {
                             data = self.parse_variable(data)?;
+                        }
+                        // A block that starts with an operator is an object
+                        // whose first key is the empty string.
+                        b'=' | b'<' | b'>' => {
+                            self.token_tape.push(TextToken::Unquoted(Scalar::new(b"")));
                         }
                         _ => {
                             data = self.parse_scalar(data);
@@ -1806,14 +1820,89 @@ mod tests {
     }
 
     #[test]
-    fn test_equal_identifier() {
+    fn test_empty_key_exact() {
         let data = br#"=="bar""#;
 
         assert_eq!(
             parse(&data[..]).unwrap().token_tape,
             vec![
-                TextToken::Unquoted(Scalar::new(b"=")),
+                TextToken::Unquoted(Scalar::new(b"")),
+                TextToken::Operator(Operator::Exact),
                 TextToken::Quoted(Scalar::new(b"bar")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_empty_key_first_in_object() {
+        let data = b"cooldowns={\n\t=1825.1.11\n\ttrade_favors_for_men=1826.6.22\n}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"cooldowns")),
+                TextToken::Object {
+                    end: 6,
+                    mixed: false
+                },
+                TextToken::Unquoted(Scalar::new(b"")),
+                TextToken::Unquoted(Scalar::new(b"1825.1.11")),
+                TextToken::Unquoted(Scalar::new(b"trade_favors_for_men")),
+                TextToken::Unquoted(Scalar::new(b"1826.6.22")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_empty_key_mid_object() {
+        let data = b"cooldowns={\n\tiqta_mechanic=1824.11.12\n\t=1825.7.26\n}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"cooldowns")),
+                TextToken::Object {
+                    end: 6,
+                    mixed: false
+                },
+                TextToken::Unquoted(Scalar::new(b"iqta_mechanic")),
+                TextToken::Unquoted(Scalar::new(b"1824.11.12")),
+                TextToken::Unquoted(Scalar::new(b"")),
+                TextToken::Unquoted(Scalar::new(b"1825.7.26")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_empty_key_only_field() {
+        let data = b"cooldowns={\n\t=1825.6.28\n}";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"cooldowns")),
+                TextToken::Object {
+                    end: 4,
+                    mixed: false
+                },
+                TextToken::Unquoted(Scalar::new(b"")),
+                TextToken::Unquoted(Scalar::new(b"1825.6.28")),
+                TextToken::End(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_operator_on_next_line_after_key() {
+        let data = b"name\n= \"x\"";
+
+        assert_eq!(
+            parse(&data[..]).unwrap().token_tape,
+            vec![
+                TextToken::Unquoted(Scalar::new(b"name")),
+                TextToken::Quoted(Scalar::new(b"x")),
             ]
         );
     }

@@ -29,6 +29,12 @@ pub enum Token<'a> {
     Quoted(Scalar<'a>),
 }
 
+/// Return true when the byte starts an operator.
+#[inline]
+pub(crate) fn is_operator_start(x: u8) -> bool {
+    matches!(x, b'=' | b'<' | b'>' | b'!' | b'?')
+}
+
 /// Kind of text token represented by a [TokenReader].
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TokenKind {
@@ -825,6 +831,89 @@ impl<'a> TokenReader<'a> {
         }
     }
 
+    /// Skip the whitespace and comments at the start of the buffered data
+    /// and return the next byte without consuming it.
+    ///
+    /// Returns `None` when the buffered data runs out first. An unterminated
+    /// comment at the end of the buffer is left unconsumed so that
+    /// [`fill_buffer`](Self::fill_buffer) carries it over.
+    #[inline]
+    pub(crate) fn peek_buffered(&mut self) -> Option<u8> {
+        // Values in saves are followed by a newline and tabs, which a
+        // single word skips.
+        let window = self.source.window();
+        if let Some(chunk) = window.first_chunk::<8>() {
+            let whitespace = leading_whitespace(u64::from_le_bytes(*chunk)) as usize;
+            if let Some(&x) = chunk.get(whitespace)
+                && !matches!(x, b' ' | b'\r' | b';' | b'#')
+            {
+                self.advance(whitespace);
+                return Some(x);
+            }
+        }
+
+        self.peek_buffered_slow()
+    }
+
+    fn peek_buffered_slow(&mut self) -> Option<u8> {
+        let window = self.source.window();
+        let mut consumed = 0;
+        let next = loop {
+            match window.get(consumed) {
+                Some(b' ' | b'\t' | b'\n' | b'\r' | b';') => consumed += 1,
+                Some(b'#') => match window[consumed..].iter().position(|&x| x == b'\n') {
+                    Some(newline) => consumed += newline + 1,
+                    None => break None,
+                },
+                Some(&x) => break Some(x),
+                None => break None,
+            }
+        };
+        self.advance(consumed);
+        next
+    }
+
+    /// Read the operator that comes next, or return `None` when the next
+    /// token is not an operator, consuming only whitespace and comments.
+    #[inline]
+    pub(crate) fn read_operator(&mut self) -> Result<Option<Operator>, ReaderError> {
+        match self.source.window().first() {
+            Some(b'=') => {
+                self.advance(1);
+                Ok(Some(Operator::Equal))
+            }
+            _ => self.read_operator_slow(),
+        }
+    }
+
+    fn read_operator_slow(&mut self) -> Result<Option<Operator>, ReaderError> {
+        loop {
+            match self.peek_buffered() {
+                Some(x) if is_operator_start(x) => {
+                    return match self.read()? {
+                        Token::Operator(op) => Ok(Some(op)),
+                        _ => unreachable!("operator bytes read as an operator"),
+                    };
+                }
+                Some(_) => return Ok(None),
+                None if self.fill_buffer()? => {}
+                None => return Ok(None),
+            }
+        }
+    }
+
+    /// Read more data into the buffer, keeping the unconsumed bytes.
+    ///
+    /// Tokens borrowed from the reader are invalidated in streaming mode.
+    /// Returns `false` once the data is exhausted.
+    #[cold]
+    pub(crate) fn fill_buffer(&mut self) -> Result<bool, ReaderError> {
+        match self.source.refill() {
+            Ok(read) => Ok(read != 0),
+            Err(e) => Err(self.parser_error(e)),
+        }
+    }
+
     /// Consume the token reader and return the parser source.
     #[inline]
     pub fn into_source(self) -> ParserSource<'a> {
@@ -842,24 +931,13 @@ impl<'a> TokenReader<'a> {
     /// assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"1444.11.11")));
     /// assert!(matches!(reader.read().unwrap_err().kind(), ReaderErrorKind::Eof));
     /// ```
-    #[inline]
+    #[inline(always)]
     pub fn read(&mut self) -> Result<Token<'_>, ReaderError> {
         let s = std::ptr::addr_of!(self);
         match self.next_token() {
             Ok(Some(x)) => Ok(unsafe { (*s).token_from_kind(x) }),
             Ok(None) => Err(unsafe { (*s).eof_error() }),
             Err(e) => Err(e),
-        }
-    }
-
-    #[inline]
-    pub(crate) fn read_expect_equals(&mut self) -> Result<Token<'_>, ReaderError> {
-        match self.source.window().first() {
-            Some(b'=') => {
-                self.advance(1);
-                Ok(Token::Operator(Operator::Equal))
-            }
-            _ => self.read(),
         }
     }
 
@@ -873,7 +951,7 @@ impl<'a> TokenReader<'a> {
     /// assert_eq!(reader.read().unwrap(), Token::Unquoted(Scalar::new(b"1444.11.11")));
     /// assert_eq!(reader.next().unwrap(), None);
     /// ```
-    #[inline]
+    #[inline(always)]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Token<'_>>, ReaderError> {
         let s = std::ptr::addr_of!(self);
