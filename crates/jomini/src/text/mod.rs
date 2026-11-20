@@ -60,6 +60,8 @@ mod dom;
 mod escape;
 mod flavor;
 mod fnv;
+#[cfg(feature = "syntax")]
+pub mod lint;
 mod operator;
 mod reader;
 #[cfg(feature = "syntax")]

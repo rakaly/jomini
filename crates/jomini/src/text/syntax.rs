@@ -234,7 +234,7 @@ pub use cursor::{
 pub use edit::{EditError, TextEdit, apply_edits};
 pub use error::{MissingDelimiter, SyntaxError, SyntaxErrorKind, UnclosedConstruct};
 pub use flavor::Hoi4Flavor;
-use flavor::LexFlavor;
+pub(crate) use flavor::LexFlavor;
 pub use format::{FormatOptions, format};
 pub use kind::SyntaxKind;
 pub use line_index::{LineCol, LineIndex};
@@ -256,6 +256,7 @@ use lexer::{
     quote_hides_fields, scan_quoted, scan_unquoted, skip_whitespace, starts_line,
 };
 use parser::Sink;
+pub(crate) use tree::parse_lex;
 #[cfg(test)]
 use tree::run;
-use tree::{parse_lex, run_items};
+use tree::run_items;
