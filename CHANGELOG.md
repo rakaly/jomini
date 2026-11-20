@@ -1,3 +1,32 @@
+## v0.38.0 - 2026-11-20
+
+So this is a big release. Probably the biggest release since the initial release of jomini. It finally realizes the proper split when it comes to parsing Paradox text files. Save files can be 500 MB or larger, so the parser prioritizes memory efficiency and performance by exploiting the subset of text syntax seen in saves.
+
+Game files have more complex syntax. Tools that read them may also need to resolve variables and calculations, report syntax errors, or edit a file while preserving its comments and formatting.
+
+### Game and Mod Files
+
+The new experimental `text::syntax` module is available through the opt-in `syntax` feature.
+
+- The lossless syntax tree preserves comments and whitespace and supports error recovery, targeted edits, formatting, and `TextTape` conversion. [#291](https://github.com/rakaly/jomini/pull/291)
+- Parse parameter blocks and bracketed expressions like `[GetName]`. Use `TextFlavor` to select game-specific lexer behavior. [#291](https://github.com/rakaly/jomini/pull/291)
+- With `serde`, use `Parse::deserialize` for typed reads or `Parse::document` for partial reads and recovery. Errors can include line, column, and key path. [#295](https://github.com/rakaly/jomini/pull/295)
+- Use `OwnedValue` and `OwnedBlock` to edit loosely typed data and deserialize it later. They preserve duplicate keys, order, operators, headers, and quotes (`42` and `"42"`). Typed wrappers include `MaybeQuoted`, `Headered`, and `syntax::de::Spanned`. [#295](https://github.com/rakaly/jomini/pull/295)
+- Resolve `@variables` and `@[calc]` expressions, including variables from other files. Use `Document::with_resolution` to deserialize the results. [#299](https://github.com/rakaly/jomini/pull/299)
+
+### Save File Deserialization
+
+- Slice and reader helpers share a streaming `TextDeserializer` engine written in safe Rust. Slices can borrow strings, and readers use a fixed-size buffer. [#310](https://github.com/rakaly/jomini/pull/310) [#311](https://github.com/rakaly/jomini/pull/311)
+- On a 39 MB EU4 text save, Windows-1252 slice deserialization went from **134.8 ms to 41.0 ms** and the reader went from 46.6 ms to 43.0 ms. [#311](https://github.com/rakaly/jomini/pull/311)
+- Streaming errors report byte offsets. The deserializer keeps empty blocks in arrays and handles empty keys, sparse arrays with a leading length, and headered enums such as `rgb { 1 2 3 }`. [#308](https://github.com/rakaly/jomini/pull/308) [#311](https://github.com/rakaly/jomini/pull/311)
+- Binary deserialization went from **267 ms to 192 ms** on an EU5 1.4 gamestate. Other tested EU5 fixtures took 26–29% less time. [#297](https://github.com/rakaly/jomini/pull/297)
+
+### Breaking Changes
+
+- The old tape-backed `TextDeserializer` is now `jomini::text::de::TextTapeDeserializer`. Replace `TextReaderDeserializer` and the `TokenReader`-based constructors with `TextDeserializer::from_reader(reader, encoding)`. Envelope return types and save-crate aliases now carry the reader type. [#311](https://github.com/rakaly/jomini/pull/311)
+- Slice helpers now follow the reader's map and sequence rules. Use `text::syntax::parse` for script constructs like parameter blocks and bracketed scalars that the streaming deserializer rejects. [Behavior differences](crates/jomini/src/text/mod.rs) [Migration examples](crates/jomini/src/text/de/mod.rs) [#313](https://github.com/rakaly/jomini/pull/313)
+- `Encoding::decode` now preserves backslashes, including in binary strings. Quoted text unescapes `\\` and `\"` only. Use `text::unescape` when decoding quoted tokens by hand. [#305](https://github.com/rakaly/jomini/pull/305)
+
 ## v0.37.2 - 2026-10-15
 
 ### Added
