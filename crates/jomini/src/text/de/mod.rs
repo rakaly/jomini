@@ -1,105 +1,96 @@
+//! Deserialize Clausewitz text with serde. See
+//! [choosing a text deserializer](super#choosing-a-text-deserializer) for
+//! when to stream the input and when to parse a tree.
+//!
+//! The shortcuts select an encoding:
+//! [`from_windows1252_slice`], [`from_utf8_slice`],
+//! [`from_windows1252_reader`], and [`from_utf8_reader`].
+//!
+//! # Read a large or compressed save
+//!
+//! Pass a file or a decompression reader to [`TextDeserializer::from_reader`].
+//! It buffers 32 KiB of input. To set the buffer size, pass a vector of that
+//! length to [`TextDeserializer::from_reader_with_buf`]. If a token and its
+//! lookahead exceed the buffer, deserialization returns
+//! [`BufferTooSmall`](crate::ErrorKind::BufferTooSmall). Retry from the start
+//! of the input with a larger buffer.
+//!
+//! # Handle mixed blocks
+//!
+//! If a streaming error names `jomini::text::syntax::parse`, use the syntax
+//! parser for that file or adjust the model. For example, EU4's `map/area.txt`
+//! mixes named fields and bare province IDs. Streaming into
+//! `HashMap<String, Vec<u16>>` fails. Give the area struct a field for the
+//! color and a `remainder` field for the IDs:
+//!
+//! ```
+//! use jomini::text::de::from_windows1252_slice;
+//! use serde::Deserialize;
+//! use std::collections::HashMap;
+//!
+//! #[derive(Debug, Deserialize, PartialEq)]
+//! struct Area {
+//!     color: [u8; 3],
+//!     remainder: Vec<u16>,
+//! }
+//!
+//! let data = b"area = { color = { 1 2 3 } 169 170 }";
+//! let areas: HashMap<String, Area> = from_windows1252_slice(data)?;
+//! assert_eq!(areas["area"], Area { color: [1, 2, 3], remainder: vec![169, 170] });
+//! # Ok::<(), jomini::Error>(())
+//! ```
+//!
+//! With `syntax`, `parse(data).deserialize(encoding)` also supports the map of
+//! vectors. Each vector contains the province IDs.
+//!
+//! For a sparse save array such as `income_taxes={ 80 0=278.75 1=433.88 }`,
+//! read `remainder: Vec<String>` in the array's struct. The sequence starts
+//! at the bare length and includes each index, operator, and value in order.
+//!
+//! Use [`Property`], [`MaybeQuoted`](super::MaybeQuoted), or
+//! [`Headered`](super::Headered) to preserve operators, quotes, or headers.
+
 use super::{
-    TokenReader, decode_quoted,
     dom::ValuesIter,
-    reader::{Token, is_operator_start},
+    wrappers::{HEADERED, KEY_HEADER, KEY_QUOTED, OptionDe, QUOTED, WrapperMap},
 };
 use crate::{
-    DeserializeError, DeserializeErrorKind, Encoding, Error, Scalar, TextTape, TextToken,
-    Utf8Encoding, Windows1252Encoding,
+    DeserializeError, DeserializeErrorKind, Encoding, Error, TextTape, TextToken, Utf8Encoding,
+    Windows1252Encoding,
     text::{ArrayReader, FieldsIter, ObjectReader, Operator, Reader, ScalarReader, ValueReader},
 };
-use serde::de::{self, Deserialize, DeserializeOwned, DeserializeSeed, Visitor};
-use std::{
-    borrow::Cow,
-    fmt::{self, Debug},
-    io::Read,
-};
+use serde::de::{self, Deserialize, DeserializeOwned, DeserializeSeed, IntoDeserializer, Visitor};
+use std::{borrow::Cow, fmt::Debug, io::Read};
 
-/// Represents the field value that contains an operator
+mod cursor;
+
+pub use self::cursor::{ReaderSource, SliceSource, TextDeserializer};
+
+/// A field value with its operator.
 ///
-/// A `Property` is a specially marked type that signals to the deserializer to
-/// preserve operators.
+/// A field without an explicit operator, such as `key { ... }`, yields
+/// [`Operator::Equal`]. A bare value such as a sequence element has no
+/// operator and cannot be read as a `Property`.
 ///
 /// ```
-/// # #[cfg(feature = "derive")] {
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// use jomini::{
-///     text::{Operator, Property},
-///     JominiDeserialize, TextDeserializer,
-/// };
+/// use jomini::text::{Operator, Property, de::from_utf8_slice};
 /// use serde::Deserialize;
 ///
-/// let data = b"modifier = { abc=yes factor=2 num > 2 }";
-/// let actual: MyStruct = jomini::text::de::from_windows1252_slice(&data[..])?;
-/// assert_eq!(
-///     actual,
-///     MyStruct {
-///         modifier: Modifier {
-///             abc: true,
-///             factor: Property::new(Operator::Equal, 2),
-///             num: Property::new(Operator::GreaterThan, 2)
-///         }
-///     }
-/// );
-///
-/// #[derive(Deserialize, Debug, PartialEq)]
-/// struct Modifier {
-///     abc: bool,
-///     factor: Property<u8>,
-///     num: Property<u8>,
+/// #[derive(Deserialize)]
+/// struct Trigger {
+///     size: Property<u8>,
 /// }
 ///
-/// #[derive(Deserialize, Debug, PartialEq)]
-/// struct MyStruct {
-///     modifier: Modifier,
-/// }
-/// # Ok(())
-/// # }
-/// # }
+/// let trigger: Trigger = from_utf8_slice(b"size > 2")?;
+/// assert_eq!(trigger.size, Property::new(Operator::GreaterThan, 2));
+/// # Ok::<(), jomini::Error>(())
 /// ```
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename = "_internal_jomini_property")]
 pub struct Property<T> {
     operator: Operator,
     value: T,
 }
-
-impl<T> fmt::Debug for Property<T>
-where
-    T: Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Property")
-            .field("operator", &self.operator)
-            .field("value", &self.value)
-            .finish()
-    }
-}
-
-impl<T> PartialEq for Property<T>
-where
-    T: PartialEq,
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.operator == other.operator && self.value == other.value
-    }
-}
-
-impl<T> Eq for Property<T> where T: Eq {}
-
-impl<T> Clone for Property<T>
-where
-    T: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            operator: self.operator,
-            value: self.value.clone(),
-        }
-    }
-}
-
-impl<T> Copy for Property<T> where T: Copy {}
 
 impl<T> Property<T> {
     /// Creates a new property
@@ -117,1291 +108,79 @@ impl<T> Property<T> {
         &self.value
     }
 
+    /// Return a mutable reference to the value
+    pub fn value_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+
     /// Convert the property into the value
     pub fn into_value(self) -> T {
         self.value
     }
 }
 
-/// Convenience method for parsing the given text data and deserializing as windows1252 encoded.
+/// Deserialize Windows-1252 text data from a slice.
+///
+/// Strings can borrow from `data`, as in `&'a str` fields. This is
+/// [`TextDeserializer::from_slice`] with a [`Windows1252Encoding`].
 pub fn from_windows1252_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
 where
     T: Deserialize<'a>,
 {
-    TextDeserializer::from_windows1252_slice(data)?.deserialize()
+    TextDeserializer::from_slice(data, Windows1252Encoding::new()).deserialize()
 }
 
-/// Create a Windows1252 text value from a reader.
+/// Deserialize Windows-1252 text data from a reader.
 ///
-/// This uses the streaming parser described by [`TokenReader`].
+/// The data is deserialized as it is read through a fixed size buffer, so
+/// it isn't held in memory in full. This is
+/// [`TextDeserializer::from_reader`] with a [`Windows1252Encoding`].
 pub fn from_windows1252_reader<T, R>(reader: R) -> Result<T, Error>
 where
     T: DeserializeOwned,
     R: Read,
 {
-    TextDeserializer::from_windows1252_reader(TokenReader::new(reader)).deserialize()
+    TextDeserializer::from_reader(reader, Windows1252Encoding::new()).deserialize()
 }
 
-/// Convenience method for deserializing streaming utf8 data into a Rust value
+/// Deserialize UTF-8 text data from a reader.
 ///
-/// This uses the streaming parser described by [`TokenReader`].
+/// The data is deserialized as it is read through a fixed size buffer, so
+/// it isn't held in memory in full. This is
+/// [`TextDeserializer::from_reader`] with a [`Utf8Encoding`].
 pub fn from_utf8_reader<T, R>(reader: R) -> Result<T, Error>
 where
     T: DeserializeOwned,
     R: Read,
 {
-    TextDeserializer::from_utf8_reader(TokenReader::new(reader)).deserialize()
+    TextDeserializer::from_reader(reader, Utf8Encoding::new()).deserialize()
 }
 
-/// Convenience method for parsing the given text data and deserializing as utf8 encoded.
+/// Deserialize UTF-8 text data from a slice.
+///
+/// Strings can borrow from `data`, as in `&'a str` fields. This is
+/// [`TextDeserializer::from_slice`] with a [`Utf8Encoding`].
 pub fn from_utf8_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
 where
     T: Deserialize<'a>,
 {
-    TextDeserializer::from_utf8_slice(data)?.deserialize()
+    TextDeserializer::from_slice(data, Utf8Encoding::new()).deserialize()
 }
 
-/// A [`Token`] whose scalar is held by a raw pointer.
+/// A serde deserializer over an already parsed [`TextTape`].
 ///
-/// A reference to a scalar asserts that the reader's buffer is not written
-/// to while the reference is live, and serde passes deserializers and
-/// accessors by value, which keeps references in their fields live for the
-/// whole visit. A refill moves the buffer, so tokens that are held while the
-/// reader may advance are stored raw, and turned back into a [`Token`] only
-/// while the scalar is unchanged.
-#[derive(Clone, Copy)]
-enum RawToken {
-    Open,
-    Close,
-    Operator(Operator),
-    Unquoted(*const [u8]),
-    Quoted(*const [u8]),
-}
-
-impl RawToken {
-    #[inline]
-    fn new(token: Token<'_>) -> Self {
-        match token {
-            Token::Open => RawToken::Open,
-            Token::Close => RawToken::Close,
-            Token::Operator(op) => RawToken::Operator(op),
-            Token::Unquoted(s) => RawToken::Unquoted(s.as_bytes()),
-            Token::Quoted(s) => RawToken::Quoted(s.as_bytes()),
-        }
-    }
-
-    /// Return the token.
-    ///
-    /// # Safety
-    ///
-    /// The bytes of a scalar must not have been moved or overwritten since
-    /// the token was read.
-    #[inline]
-    unsafe fn get<'a>(self) -> Token<'a> {
-        match self {
-            RawToken::Open => Token::Open,
-            RawToken::Close => Token::Close,
-            RawToken::Operator(op) => Token::Operator(op),
-            RawToken::Unquoted(s) => Token::Unquoted(Scalar::new(unsafe { &*s })),
-            RawToken::Quoted(s) => Token::Quoted(Scalar::new(unsafe { &*s })),
-        }
-    }
-}
-
-/// A serde deserializer over streaming data
-pub struct TextReaderDeserializer<'r, E> {
-    reader: TokenReader<'r>,
-    encoding: E,
-
-    /// The operator of the field with an empty key that is being read. The
-    /// key consumed the operator, so the value does not read one.
-    empty_key_op: Option<Operator>,
-
-    /// Holds a scalar that `peek_after` read past while the reader refilled
-    /// its buffer.
-    scratch: Vec<u8>,
-}
-
-impl<'r, E: Encoding> TextReaderDeserializer<'r, E> {
-    /// Deserialize into provided type
-    pub fn deserialize<T>(&mut self) -> Result<T, Error>
-    where
-        T: DeserializeOwned,
-    {
-        T::deserialize(self)
-    }
-}
-
-impl<'r, E> TextReaderDeserializer<'r, E> {
-    /// Return the first byte after the whitespace and comments that follow
-    /// `token` without consuming it, or `None` at the end of the data.
-    ///
-    /// Reading more data moves the buffer that a scalar token points into,
-    /// so before refilling, the scalar is copied into the scratch buffer and
-    /// `token` is rewritten to point to it. The copy stays valid until the
-    /// next refill in this function copies another scalar, so the token must
-    /// be consumed before the next lookahead.
-    #[inline]
-    fn peek_after(&mut self, token: &mut RawToken) -> Result<Option<u8>, Error> {
-        match self.reader.peek_buffered() {
-            Some(x) => Ok(Some(x)),
-            None => self.peek_after_refill(token),
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn peek_after_refill(&mut self, token: &mut RawToken) -> Result<Option<u8>, Error> {
-        if let RawToken::Quoted(scalar) | RawToken::Unquoted(scalar) = token
-            && !std::ptr::eq(scalar.cast::<u8>(), self.scratch.as_ptr())
-        {
-            // SAFETY: the scalar was read since the last refill, so its bytes
-            // are unchanged.
-            self.scratch.clear();
-            self.scratch.extend_from_slice(unsafe { &**scalar });
-            *scalar = std::ptr::slice_from_raw_parts(self.scratch.as_ptr(), self.scratch.len());
-        }
-
-        while self.reader.fill_buffer()? {
-            if let Some(x) = self.reader.peek_buffered() {
-                return Ok(Some(x));
-            }
-        }
-
-        Ok(None)
-    }
-}
-
-impl<'de, 'r, E: Encoding> de::Deserializer<'de> for &'_ mut TextReaderDeserializer<'r, E> {
-    type Error = Error;
-
-    /// The root is an object, so it is visited as a map.
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        let me = std::ptr::addr_of!(self);
-        visitor.visit_map(TextReaderAnyMap::new(me, true, None))
-    }
-
-    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        let me = std::ptr::addr_of!(self);
-        visitor.visit_map(TextReaderMap::new(me, true))
-    }
-
-    fn deserialize_struct<V>(
-        self,
-        _name: &'static str,
-        _fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_map(visitor)
-    }
-
-    serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct enum ignored_any identifier
-    }
-}
-
-/// A map over the fields of an object.
+/// Use this legacy deserializer when you already have a tape or an
+/// [`ObjectReader`] over one.
+/// See [choosing a text deserializer](super#choosing-a-text-deserializer)
+/// for new code.
 ///
-/// An operator where a key is expected, as in `=1825.6.28` in an EU4 save,
-/// starts a field whose key is the empty string. An operator after a block
-/// in key position, as in `{ a = b }={ 1 2 3 }`, makes the block the key,
-/// so the map skips the field.
-struct TextReaderMap<'a, 'r, E> {
-    de: *const &'a mut TextReaderDeserializer<'r, E>,
-    root: bool,
-}
-
-impl<'a, 'r, E> TextReaderMap<'a, 'r, E> {
-    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, root: bool) -> Self {
-        TextReaderMap { de, root }
-    }
-}
-
-impl<'a, 'r, E: Encoding> TextReaderMap<'a, 'r, E> {
-    /// Return the key of a field that starts with the operator.
-    #[cold]
-    fn empty_key(&mut self, op: Operator) -> Token<'static> {
-        unsafe { self.de.read() }.empty_key_op = Some(op);
-        Token::Unquoted(Scalar::new(b""))
-    }
-
-    /// Return the operator of a field whose value does not follow an
-    /// operator: the operator of the empty key, or `=` for `key { ... }`.
-    #[cold]
-    fn missing_operator(&mut self) -> Operator {
-        let de = unsafe { self.de.read() };
-        de.empty_key_op.take().unwrap_or(Operator::Equal)
-    }
-
-    /// Skip the block that the reader read where a key is expected, and
-    /// skip the field when the block is its key. Return the next key, or
-    /// `None` at the end of the object.
-    #[cold]
-    fn key_after_block(&mut self) -> Result<Option<Token<'a>>, Error> {
-        let mut after_block = true;
-        unsafe { self.de.read() }.reader.skip_container()?;
-        loop {
-            match unsafe { self.de.read() }.reader.next()? {
-                Some(Token::Close) => return Ok(None),
-                Some(Token::Open) => {
-                    unsafe { self.de.read() }.reader.skip_container()?;
-                    after_block = true;
-                }
-                Some(Token::Operator(_)) if after_block => {
-                    let reader = &mut unsafe { self.de.read() }.reader;
-                    match reader.read()? {
-                        Token::Open => reader.skip_container()?,
-                        Token::Close => return Ok(None),
-                        _ => {}
-                    }
-                    after_block = false;
-                }
-                Some(Token::Operator(op)) => return Ok(Some(self.empty_key(op))),
-                Some(token) => return Ok(Some(token)),
-                None if self.root => return Ok(None),
-                None => return Err(unsafe { self.de.read() }.reader.eof_error().into()),
-            }
-        }
-    }
-}
-
-impl<'de, 'r, E: Encoding> de::MapAccess<'de> for TextReaderMap<'_, 'r, E> {
-    type Error = Error;
-
-    #[inline]
-    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
-    where
-        K: DeserializeSeed<'de>,
-    {
-        let token = match unsafe { self.de.read() }.reader.next() {
-            Ok(Some(Token::Close)) => return Ok(None),
-            Ok(Some(Token::Open)) => match self.key_after_block()? {
-                Some(token) => token,
-                None => return Ok(None),
-            },
-            Ok(Some(Token::Operator(op))) => self.empty_key(op),
-            Ok(Some(token)) => token,
-            Ok(None) if self.root => return Ok(None),
-            Ok(None) => return Err(unsafe { self.de.read() }.reader.eof_error().into()),
-            Err(e) => return Err(e.into()),
-        };
-
-        seed.deserialize(TextReaderTokenDeserializer::new(self.de, token))
-            .map(Some)
-    }
-
-    #[inline]
-    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
-    where
-        V: DeserializeSeed<'de>,
-    {
-        let op = match unsafe { self.de.read() }.reader.read_operator()? {
-            Some(op) => op,
-            None => self.missing_operator(),
-        };
-
-        seed.deserialize(TextReaderValueDeserializer { de: self.de, op })
-    }
-}
-
-/// Deserializes a token that was read.
-///
-/// Serde passes deserializers by value, which would keep a reference to a
-/// scalar live for the whole visit, so the token is held raw. A header read
-/// into a sequence, as in `color = rgb { 1 2 3 }`, reads the block while
-/// the deserializer of the header is live, and the reader may refill.
-struct TextReaderTokenDeserializer<'a, 'r, E> {
-    de: *const &'a mut TextReaderDeserializer<'r, E>,
-    token: RawToken,
-    op: Operator,
-}
-
-impl<'a, 'r, E> TextReaderTokenDeserializer<'a, 'r, E> {
-    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, token: Token<'a>) -> Self {
-        Self::raw(de, RawToken::new(token))
-    }
-
-    fn raw(de: *const &'a mut TextReaderDeserializer<'r, E>, token: RawToken) -> Self {
-        Self {
-            de,
-            token,
-            op: Operator::Equal,
-        }
-    }
-
-    #[inline]
-    fn token(&self) -> Token<'a> {
-        // SAFETY: the reader advances past the token only after the token
-        // is visited.
-        unsafe { self.token.get() }
-    }
-
-    #[inline]
-    fn scalar(&self) -> Option<Scalar<'a>> {
-        match self.token {
-            // SAFETY: as in `token`.
-            RawToken::Unquoted(s) | RawToken::Quoted(s) => Some(Scalar::new(unsafe { &*s })),
-            _ => None,
-        }
-    }
-}
-
-impl<'a, 'de: 'a, 'r, E: Encoding> TextReaderTokenDeserializer<'a, 'r, E> {
-    /// Visit the block whose open token was just read. The first item
-    /// decides its kind like a [`TextTape`] does: a field (a scalar followed
-    /// by an operator, or an operator with an empty key) makes it a map, and
-    /// anything else, including an empty block, makes it a sequence. The
-    /// first token is replayed to the map or sequence. Empty blocks before
-    /// the first item are skipped, as a `TextTape` does.
-    #[inline(never)]
-    fn visit_block<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        let mut first = RawToken::new(unsafe { self.de.read() }.reader.read()?);
-        while matches!(first, RawToken::Open)
-            && unsafe { self.de.read() }.peek_after(&mut first)? == Some(b'}')
-        {
-            let reader = &mut unsafe { self.de.read() }.reader;
-            reader.read()?;
-            first = RawToken::new(reader.read()?);
-        }
-
-        let is_map = match first {
-            RawToken::Close => {
-                return visitor.visit_seq(TextReaderAnySeq::new(self.de, false, None));
-            }
-            RawToken::Operator(_) => true,
-            RawToken::Open => false,
-            RawToken::Quoted(_) | RawToken::Unquoted(_) => {
-                let next = unsafe { self.de.read() }.peek_after(&mut first)?;
-                next.is_some_and(is_operator_start)
-            }
-        };
-
-        if is_map {
-            visitor.visit_map(TextReaderAnyMap::new(self.de, false, Some(first)))
-        } else {
-            visitor.visit_seq(TextReaderAnySeq::new(self.de, false, Some(first)))
-        }
-    }
-
-    /// Visit the token without looking ahead: a scalar as its text, an
-    /// operator as its symbol, and a block as a sequence. Typed
-    /// deserialization falls back to this when the token does not match the
-    /// requested type, so the visitor can report the mismatch, and typed
-    /// visitors are not instantiated with the maps of `deserialize_any`.
-    fn visit_token<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        match self.token() {
-            Token::Open => visitor.visit_seq(TextReaderSeq::new(self.de)),
-            Token::Close => Err(Error::invalid_syntax(
-                "did not expect end",
-                unsafe { self.de.read() }.reader.position(),
-            )),
-            Token::Operator(x) => visitor.visit_str(x.symbol()),
-            Token::Unquoted(s) => visit_text(self.encoding().decode(s.as_bytes()), visitor),
-            Token::Quoted(s) => visit_text(decode_quoted(self.encoding(), s.as_bytes()), visitor),
-        }
-    }
-
-    fn encoding(&self) -> &'a E {
-        &unsafe { self.de.read() }.encoding
-    }
-}
-
-#[inline]
-fn visit_text<'de, V: Visitor<'de>>(text: Cow<'_, str>, visitor: V) -> Result<V::Value, Error> {
-    match text {
-        Cow::Borrowed(x) => visitor.visit_str(x),
-        Cow::Owned(x) => visitor.visit_string(x),
-    }
-}
-
-impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
-    for TextReaderTokenDeserializer<'a, 'r, E>
-{
-    type Error = Error;
-
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        match self.token() {
-            Token::Open => self.visit_block(visitor),
-            _ => self.visit_token(visitor),
-        }
-    }
-
-    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        match self.scalar().and_then(|x| x.to_bool().ok()) {
-            Some(x) => visitor.visit_bool(x),
-            None => self.visit_token(visitor),
-        }
-    }
-
-    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_i64(visitor)
-    }
-
-    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_i64(visitor)
-    }
-
-    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_i64(visitor)
-    }
-
-    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        match self.scalar().and_then(|x| x.to_i64().ok()) {
-            Some(x) => visitor.visit_i64(x),
-            None => self.visit_token(visitor),
-        }
-    }
-
-    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_u64(visitor)
-    }
-
-    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_u64(visitor)
-    }
-
-    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_u64(visitor)
-    }
-
-    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        match self.scalar().and_then(|x| x.to_u64().ok()) {
-            Some(x) => visitor.visit_u64(x),
-            None => self.visit_token(visitor),
-        }
-    }
-
-    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_f64(visitor)
-    }
-
-    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        match self.scalar().and_then(|x| x.to_f64().ok()) {
-            Some(x) => visitor.visit_f64(x),
-            None => self.visit_token(visitor),
-        }
-    }
-
-    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.visit_token(visitor)
-    }
-
-    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        let encoding = &unsafe { self.de.read() }.encoding;
-        // SAFETY: as in `token`.
-        let decoded = match self.token {
-            RawToken::Unquoted(s) => encoding.decode(unsafe { &*s }),
-            RawToken::Quoted(s) => decode_quoted(encoding, unsafe { &*s }),
-            _ => return self.visit_token(visitor),
-        };
-
-        match decoded {
-            Cow::Borrowed(x) => visitor.visit_str(x),
-            Cow::Owned(x) => visitor.visit_string(x),
-        }
-    }
-
-    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_str(visitor)
-    }
-
-    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        match self.scalar() {
-            Some(s) => visitor.visit_bytes(s.as_bytes()),
-            None => self.visit_token(visitor),
-        }
-    }
-
-    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_bytes(visitor)
-    }
-
-    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_some(self)
-    }
-
-    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_ignored_any(visitor)
-    }
-
-    fn deserialize_unit_struct<V>(
-        self,
-        _name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_ignored_any(visitor)
-    }
-
-    fn deserialize_newtype_struct<V>(
-        self,
-        _name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_newtype_struct(self)
-    }
-
-    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visit_seq_after(self.de, self.token, visitor)
-    }
-
-    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_seq(visitor)
-    }
-
-    fn deserialize_tuple_struct<V>(
-        self,
-        _name: &'static str,
-        _len: usize,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_seq(visitor)
-    }
-
-    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        if matches!(self.token, RawToken::Open) {
-            visitor.visit_map(TextReaderMap::new(self.de, false))
-        } else {
-            self.visit_token(visitor)
-        }
-    }
-
-    fn deserialize_struct<V>(
-        self,
-        name: &'static str,
-        _fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        if name == "_internal_jomini_property" {
-            visitor.visit_map(PropertyReaderMap {
-                de: self.de,
-                token: self.token,
-                op: self.op,
-                state: 0,
-            })
-        } else {
-            self.deserialize_map(visitor)
-        }
-    }
-
-    fn deserialize_enum<V>(
-        self,
-        _name: &'static str,
-        _variants: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_enum(TextReaderEnum::new(self.de, self.token))
-    }
-
-    fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_str(visitor)
-    }
-
-    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        if matches!(self.token, RawToken::Open) {
-            unsafe { self.de.read() }.reader.skip_container()?;
-        }
-        visitor.visit_unit()
-    }
-}
-
-/// Implement deserialize methods that read the token of a field value and
-/// deserialize it with a [`TextReaderTokenDeserializer`].
-macro_rules! forward_to_token {
-    ($($method:ident)*) => {$(
-        fn $method<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-        where
-            V: Visitor<'de>,
-        {
-            self.read()?.$method(visitor)
-        }
-    )*};
-}
-
-/// Deserializes a field value, reading its token when a deserialize method
-/// is called.
-///
-/// Holding no token lets `deserialize_any` look past a scalar for a header
-/// block, as in `color = rgb { 1 2 3 }`, even when that refills the reader's
-/// buffer: the scalar is then held only by a local [`RawToken`], which
-/// `peek_after` moves to the scratch buffer before refilling.
-struct TextReaderValueDeserializer<'a, 'r, E> {
-    de: *const &'a mut TextReaderDeserializer<'r, E>,
-    op: Operator,
-}
-
-impl<'a, 'r, E> TextReaderValueDeserializer<'a, 'r, E> {
-    #[inline]
-    fn read(self) -> Result<TextReaderTokenDeserializer<'a, 'r, E>, Error> {
-        let token = unsafe { self.de.read() }.reader.read()?;
-        let mut deser = TextReaderTokenDeserializer::new(self.de, token);
-        deser.op = self.op;
-        Ok(deser)
-    }
-}
-
-impl<'a, 'de: 'a, 'r, E: Encoding> de::Deserializer<'de>
-    for TextReaderValueDeserializer<'a, 'r, E>
-{
-    type Error = Error;
-
-    /// Visit a scalar, or the block after it when the scalar is a header. An
-    /// empty block after the scalar is skipped and the scalar is visited, as
-    /// a `TextTape` does.
-    #[inline(never)]
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        let de = unsafe { self.de.read() };
-        let mut token = RawToken::new(de.reader.read()?);
-        if matches!(token, RawToken::Unquoted(_) | RawToken::Quoted(_))
-            && de.peek_after(&mut token)? == Some(b'{')
-        {
-            de.reader.read()?;
-            if de.peek_after(&mut token)? != Some(b'}') {
-                let block = TextReaderTokenDeserializer::new(self.de, Token::Open);
-                return block.visit_block(visitor);
-            }
-            de.reader.read()?;
-        }
-
-        // A scalar that was read past a refill was moved to the scratch
-        // buffer.
-        let mut deser = TextReaderTokenDeserializer::raw(self.de, token);
-        deser.op = self.op;
-        deser.deserialize_any(visitor)
-    }
-
-    forward_to_token! {
-        deserialize_bool deserialize_i8 deserialize_i16 deserialize_i32 deserialize_i64
-        deserialize_i128 deserialize_u8 deserialize_u16 deserialize_u32 deserialize_u64
-        deserialize_u128 deserialize_f32 deserialize_f64 deserialize_char deserialize_str
-        deserialize_string deserialize_bytes deserialize_byte_buf deserialize_unit
-        deserialize_map deserialize_identifier deserialize_ignored_any
-    }
-
-    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        let token = unsafe { self.de.read() }.reader.read()?;
-        visit_seq_after(self.de, RawToken::new(token), visitor)
-    }
-
-    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_some(self)
-    }
-
-    fn deserialize_unit_struct<V>(
-        self,
-        name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.read()?.deserialize_unit_struct(name, visitor)
-    }
-
-    fn deserialize_newtype_struct<V>(
-        self,
-        _name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_newtype_struct(self)
-    }
-
-    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_seq(visitor)
-    }
-
-    fn deserialize_tuple_struct<V>(
-        self,
-        _name: &'static str,
-        _len: usize,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_seq(visitor)
-    }
-
-    fn deserialize_struct<V>(
-        self,
-        name: &'static str,
-        fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.read()?.deserialize_struct(name, fields, visitor)
-    }
-
-    fn deserialize_enum<V>(
-        self,
-        name: &'static str,
-        variants: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.read()?.deserialize_enum(name, variants, visitor)
-    }
-}
-
-/// Visit the sequence that `token` starts: the block it opens, or a header
-/// and its block, as in `color = rgb { 1 2 3 }`. The token is raw, as the
-/// reader refills while the sequence is read.
-#[inline]
-fn visit_seq_after<'a, 'de: 'a, 'r, E: Encoding, V: Visitor<'de>>(
-    de: *const &'a mut TextReaderDeserializer<'r, E>,
-    token: RawToken,
-    visitor: V,
-) -> Result<V::Value, Error> {
-    if matches!(token, RawToken::Open) {
-        let mut seq = TextReaderSeq::new(de);
-        let result = visitor.visit_seq(&mut seq)?;
-        if !seq.hit_end {
-            // For when we are deserializing an array that doesn't read
-            // the closing token, we close it for them
-            if !matches!(unsafe { de.read() }.reader.read()?, Token::Close) {
-                return Err(Error::invalid_syntax(
-                    "Expected sequence to be terminated with an end token",
-                    unsafe { de.read() }.reader.position(),
-                ));
-            }
-        }
-
-        Ok(result)
-    } else {
-        visitor.visit_seq(&mut TextReaderInitSeq::new(de, token))
-    }
-}
-
-struct TextReaderSeq<'a, 'r, E> {
-    de: *const &'a mut TextReaderDeserializer<'r, E>,
-    hit_end: bool,
-}
-
-impl<'a, 'r, E> TextReaderSeq<'a, 'r, E> {
-    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>) -> Self {
-        TextReaderSeq { de, hit_end: false }
-    }
-}
-
-impl<'de, 'r, E: Encoding> de::SeqAccess<'de> for TextReaderSeq<'_, 'r, E> {
-    type Error = Error;
-
-    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
-    where
-        T: DeserializeSeed<'de>,
-    {
-        match unsafe { self.de.read() }.reader.read()? {
-            Token::Close => {
-                self.hit_end = true;
-                Ok(None)
-            }
-            token => seed
-                .deserialize(TextReaderTokenDeserializer::new(self.de, token))
-                .map(Some),
-        }
-    }
-}
-
-/// For deserializing a sequence where there is an initial token that is not
-/// Token::Open. Useful for deserializing header containers:
-///
-/// ```plain
-/// color = rgb { 100 10 200 }
-/// ```
-struct TextReaderInitSeq<'a, 'r, E> {
-    de: *const &'a mut TextReaderDeserializer<'r, E>,
-    token: Option<RawToken>,
-}
-
-impl<'a, 'r, E> TextReaderInitSeq<'a, 'r, E> {
-    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, token: RawToken) -> Self {
-        TextReaderInitSeq {
-            de,
-            token: Some(token),
-        }
-    }
-}
-
-impl<'de, 'r, E: Encoding> de::SeqAccess<'de> for TextReaderInitSeq<'_, 'r, E> {
-    type Error = Error;
-
-    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
-    where
-        T: DeserializeSeed<'de>,
-    {
-        if let Some(token) = self.token.take() {
-            return seed
-                .deserialize(TextReaderTokenDeserializer::raw(self.de, token))
-                .map(Some);
-        }
-
-        match unsafe { self.de.read() }.reader.read()? {
-            Token::Close => Ok(None),
-            token => seed
-                .deserialize(TextReaderTokenDeserializer::new(self.de, token))
-                .map(Some),
-        }
-    }
-}
-
-/// A map over a block that `deserialize_any` found to be an object, or over
-/// the root.
-///
-/// Like a [`TextTape`] object, scalars that trail the fields, as in
-/// `{ a = b c d }`, are yielded as a sequence under the key `remainder`. The
-/// sequence runs to the end of the block, so a field after the trailing
-/// scalars (`{ a = b c d = e }`, which a `TextTape` rejects) is read as the
-/// elements `d`, `=`, and `e`.
-struct TextReaderAnyMap<'a, 'r, E> {
-    map: TextReaderMap<'a, 'r, E>,
-
-    /// The first key, read while deciding the kind of block.
-    first: Option<RawToken>,
-
-    /// The first trailing scalar, once the `remainder` key is yielded.
-    remainder: Option<RawToken>,
-    done: bool,
-}
-
-impl<'a, 'r, E> TextReaderAnyMap<'a, 'r, E> {
-    fn new(
-        de: *const &'a mut TextReaderDeserializer<'r, E>,
-        root: bool,
-        first: Option<RawToken>,
-    ) -> Self {
-        TextReaderAnyMap {
-            map: TextReaderMap::new(de, root),
-            first,
-            remainder: None,
-            done: false,
-        }
-    }
-}
-
-impl<'de, 'r, E: Encoding> de::MapAccess<'de> for TextReaderAnyMap<'_, 'r, E> {
-    type Error = Error;
-
-    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
-    where
-        K: DeserializeSeed<'de>,
-    {
-        if self.done {
-            return Ok(None);
-        }
-
-        let de = self.map.de;
-        let token = match self.first.take() {
-            Some(token) => match unsafe { token.get() } {
-                Token::Operator(op) => self.map.empty_key(op),
-                token => token,
-            },
-            None => loop {
-                match unsafe { de.read() }.reader.next()? {
-                    // A `TextTape` skips an unbalanced close at the root
-                    Some(Token::Close) if self.map.root => {}
-                    Some(Token::Close) => return Ok(None),
-                    Some(Token::Open) => match self.map.key_after_block()? {
-                        Some(token) => break token,
-                        None => return Ok(None),
-                    },
-                    Some(Token::Operator(op)) => break self.map.empty_key(op),
-                    Some(token) => {
-                        let mut token = RawToken::new(token);
-                        match unsafe { de.read() }.peek_after(&mut token)? {
-                            Some(x) if is_operator_start(x) || x == b'{' => {
-                                break unsafe { token.get() };
-                            }
-                            _ => {
-                                self.remainder = Some(token);
-                                return seed.deserialize(StaticDeserializer("remainder")).map(Some);
-                            }
-                        }
-                    }
-                    None if self.map.root => return Ok(None),
-                    None => return Err(unsafe { de.read() }.reader.eof_error().into()),
-                }
-            },
-        };
-
-        seed.deserialize(TextReaderTokenDeserializer::new(de, token))
-            .map(Some)
-    }
-
-    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
-    where
-        V: DeserializeSeed<'de>,
-    {
-        match self.remainder.take() {
-            Some(token) => {
-                self.done = true;
-                let mut seq = TextReaderAnySeq::new(self.map.de, self.map.root, Some(token));
-                seq.skip_operators = true;
-                seed.deserialize(de::value::SeqAccessDeserializer::new(seq))
-            }
-            // Unlike the typed map, this reads the operator as a token, as
-            // the lookahead may have skipped the whitespace before an `==`.
-            None => {
-                let de = self.map.de;
-                let reader = &mut unsafe { de.read() }.reader;
-                match reader.read()? {
-                    Token::Operator(op) => seed.deserialize(TextReaderValueDeserializer { de, op }),
-                    token => {
-                        let mut deser = TextReaderTokenDeserializer::new(de, token);
-                        deser.op = self.map.missing_operator();
-                        seed.deserialize(deser)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// A sequence over a block that `deserialize_any` found to be an array, or
-/// over the scalars that trail the fields of an object.
-struct TextReaderAnySeq<'a, 'r, E> {
-    de: *const &'a mut TextReaderDeserializer<'r, E>,
-    root: bool,
-
-    /// The first element, read while deciding the kind of block.
-    first: Option<RawToken>,
-    done: bool,
-
-    /// Operators are not elements, as in the remainder of an object, where
-    /// a `TextTape` drops them.
-    skip_operators: bool,
-}
-
-impl<'a, 'r, E> TextReaderAnySeq<'a, 'r, E> {
-    /// Create a sequence whose first element is `first`, or that is empty
-    /// when the block's close token was read in its place.
-    fn new(
-        de: *const &'a mut TextReaderDeserializer<'r, E>,
-        root: bool,
-        first: Option<RawToken>,
-    ) -> Self {
-        TextReaderAnySeq {
-            de,
-            root,
-            done: first.is_none(),
-            first,
-            skip_operators: false,
-        }
-    }
-}
-
-impl<'de, 'r, E: Encoding> de::SeqAccess<'de> for TextReaderAnySeq<'_, 'r, E> {
-    type Error = Error;
-
-    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
-    where
-        T: DeserializeSeed<'de>,
-    {
-        if self.done {
-            return Ok(None);
-        }
-
-        let token = match self.first.take() {
-            Some(token) => unsafe { token.get() },
-            None => loop {
-                match unsafe { self.de.read() }.reader.next()? {
-                    Some(Token::Close) => {
-                        self.done = true;
-                        return Ok(None);
-                    }
-                    Some(Token::Operator(_)) if self.skip_operators => {}
-                    Some(token) => break token,
-                    None if self.root => {
-                        self.done = true;
-                        return Ok(None);
-                    }
-                    None => return Err(unsafe { self.de.read() }.reader.eof_error().into()),
-                }
-            },
-        };
-
-        seed.deserialize(TextReaderTokenDeserializer::new(self.de, token))
-            .map(Some)
-    }
-}
-
-struct TextReaderEnum<'a, 'r, E> {
-    de: *const &'a mut TextReaderDeserializer<'r, E>,
-    token: RawToken,
-}
-
-impl<'a, 'r, E> TextReaderEnum<'a, 'r, E> {
-    fn new(de: *const &'a mut TextReaderDeserializer<'r, E>, token: RawToken) -> Self {
-        TextReaderEnum { de, token }
-    }
-}
-
-impl<'de, 'r, E: Encoding> de::EnumAccess<'de> for TextReaderEnum<'_, 'r, E> {
-    type Error = Error;
-    type Variant = Self;
-
-    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self), Self::Error>
-    where
-        V: de::DeserializeSeed<'de>,
-    {
-        let variant = seed.deserialize(TextReaderTokenDeserializer::raw(self.de, self.token))?;
-        Ok((variant, self))
-    }
-}
-
-impl<'de, 'r, E: Encoding> de::VariantAccess<'de> for TextReaderEnum<'_, 'r, E> {
-    type Error = Error;
-
-    fn unit_variant(self) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value, Self::Error>
-    where
-        T: DeserializeSeed<'de>,
-    {
-        Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(
-                "unsupported enum deserialization. Please file issue",
-            ),
-        }))
-    }
-
-    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(
-                "unsupported enum deserialization. Please file issue",
-            ),
-        }))
-    }
-
-    fn struct_variant<V>(
-        self,
-        _fields: &'static [&'static str],
-        _visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(Error::from(DeserializeError {
-            kind: DeserializeErrorKind::Unsupported(
-                "unsupported enum deserialization. Please file issue",
-            ),
-        }))
-    }
-}
-
-struct PropertyReaderMap<'a, 'r, E> {
-    de: *const &'a mut TextReaderDeserializer<'r, E>,
-    op: Operator,
-    token: RawToken,
-    state: usize,
-}
-
-impl<'de, 'r, E: Encoding> de::MapAccess<'de> for PropertyReaderMap<'_, 'r, E> {
-    type Error = Error;
-
-    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
-    where
-        K: DeserializeSeed<'de>,
-    {
-        match self.state {
-            0 => seed.deserialize(StaticDeserializer("operator")).map(Some),
-            1 => seed.deserialize(StaticDeserializer("value")).map(Some),
-            _ => Ok(None),
-        }
-    }
-
-    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
-    where
-        V: DeserializeSeed<'de>,
-    {
-        self.state += 1;
-        if self.state == 1 {
-            seed.deserialize(OperatorDeserializer(self.op))
-        } else {
-            seed.deserialize(TextReaderTokenDeserializer::raw(self.de, self.token))
-        }
-    }
-}
-
-/// A structure to deserialize text data into Rust values.
-///
-/// The example below demonstrates how to deserialize data
-///
-/// ```
-/// use jomini::{TextDeserializer, TextTape};
-/// use serde::Deserialize;
-///
-/// #[derive(Debug, Clone, Deserialize, PartialEq)]
-/// pub struct StructA {
-///   field1: String,
-///   field2: i32,
-/// }
-///
-/// let data = b"field1=ENG field2=2";
-/// let a: StructA = TextDeserializer::from_windows1252_slice(&data[..])?.deserialize()?;
-/// assert_eq!(a, StructA {
-///   field1: "ENG".to_string(),
-///   field2: 2,
-/// });
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-///
-/// Since the Clausewitz text format is not self describing, one should not use
-/// the [`flatten` serde attribute][0], as [flattened structs won't type
-/// cast][1], and instead prefer to deserialize in two steps:
-///
-/// ```
-/// use jomini::{TextDeserializer, TextTape};
-/// use serde::Deserialize;
-///
-/// #[derive(Debug, Clone, Deserialize, PartialEq)]
-/// pub struct StructB {
-///   field1: String,
-/// }
-///
-/// #[derive(Debug, Clone, Deserialize, PartialEq)]
-/// pub struct StructC {
-///   field2: i32,
-/// }
-///
-/// let data = b"field1=ENG field2=2";
-/// let tape = TextTape::from_slice(&data[..])?;
-/// let b: StructB = TextDeserializer::from_windows1252_tape(&tape).deserialize()?;
-/// let c: StructC = TextDeserializer::from_windows1252_tape(&tape).deserialize()?;
-/// assert_eq!(b, StructB { field1: "ENG".to_string() });
-/// assert_eq!(c, StructC { field2: 2 });
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-///
-/// [0]: https://serde.rs/attr-flatten.html
-/// [1]: https://github.com/serde-rs/serde/issues/1529
-pub struct TextDeserializer<'a, 'b, E> {
+/// The tape normalizes the input before deserialization. For example, it
+/// drops leading empty blocks in sequences and extra elements in tuples.
+/// At the root it requires a struct or map and rejects `deserialize_any`.
+/// You can deserialize the same tape into several types, including after
+/// a failed read. Separate reads also let each type request conversion of
+/// its fields when `#[serde(flatten)]` would bypass that conversion.
+pub struct TextTapeDeserializer<'a, 'b, E> {
     kind: TextDeserializerKind<'a, 'b, E>,
 }
 
@@ -1411,53 +190,13 @@ enum TextDeserializerKind<'a, 'b, E> {
     Reader { reader: &'b ObjectReader<'a, 'b, E> },
 }
 
-impl TextDeserializer<'_, '_, Windows1252Encoding> {
-    /// Create a Windows1252 text deserializer over a reader.
-    ///
-    /// This uses the streaming parser described by [`TokenReader`].
-    pub fn from_windows1252_reader<'r>(
-        reader: TokenReader<'r>,
-    ) -> TextReaderDeserializer<'r, Windows1252Encoding> {
-        TextDeserializer::from_encoded_reader(reader, Windows1252Encoding)
-    }
-}
-
-impl TextDeserializer<'_, '_, Utf8Encoding> {
-    /// Create a UTF8 text deserializer over a reader
-    ///
-    /// This uses the streaming parser described by [`TokenReader`].
-    pub fn from_utf8_reader<'r>(
-        reader: TokenReader<'r>,
-    ) -> TextReaderDeserializer<'r, Utf8Encoding> {
-        TextDeserializer::from_encoded_reader(reader, Utf8Encoding)
-    }
-}
-
-impl<E: Encoding> TextDeserializer<'_, '_, E> {
-    /// Create a text deserializer over a reader.
-    ///
-    /// The deserializer decodes quoted strings with the given encoding.
-    /// It uses the streaming parser described by [`TokenReader`].
-    pub fn from_encoded_reader<'r>(
-        reader: TokenReader<'r>,
-        encoding: E,
-    ) -> TextReaderDeserializer<'r, E> {
-        TextReaderDeserializer {
-            reader,
-            encoding,
-            empty_key_op: None,
-            scratch: Vec::new(),
-        }
-    }
-}
-
-impl<'a, 'b> TextDeserializer<'a, 'b, Windows1252Encoding> {
-    /// Convenience method for parsing the given text data and deserializing as windows1252 encoded.
+impl<'a, 'b> TextTapeDeserializer<'a, 'b, Windows1252Encoding> {
+    /// Parse `data` into a [`TextTape`] to deserialize, decoding quoted strings as Windows-1252.
     pub fn from_windows1252_slice(
         data: &'a [u8],
-    ) -> Result<TextDeserializer<'a, 'b, Windows1252Encoding>, Error> {
+    ) -> Result<TextTapeDeserializer<'a, 'b, Windows1252Encoding>, Error> {
         let tape = TextTape::from_slice(data)?;
-        Ok(TextDeserializer {
+        Ok(TextTapeDeserializer {
             kind: TextDeserializerKind::Owned {
                 tape,
                 encoding: Windows1252Encoding::new(),
@@ -1468,8 +207,8 @@ impl<'a, 'b> TextDeserializer<'a, 'b, Windows1252Encoding> {
     /// Deserialize the given text tape assuming quoted strings are windows1252 encoded.
     pub fn from_windows1252_tape(
         tape: &'b TextTape<'a>,
-    ) -> TextDeserializer<'a, 'b, Windows1252Encoding> {
-        TextDeserializer {
+    ) -> TextTapeDeserializer<'a, 'b, Windows1252Encoding> {
+        TextTapeDeserializer {
             kind: TextDeserializerKind::Borrowed {
                 tape,
                 encoding: Windows1252Encoding::new(),
@@ -1478,13 +217,13 @@ impl<'a, 'b> TextDeserializer<'a, 'b, Windows1252Encoding> {
     }
 }
 
-impl<'a, 'b> TextDeserializer<'a, 'b, Utf8Encoding> {
-    /// Convenience method for parsing the given text data and deserializing as utf8 encoded.
+impl<'a, 'b> TextTapeDeserializer<'a, 'b, Utf8Encoding> {
+    /// Parse `data` into a [`TextTape`] to deserialize, decoding quoted strings as UTF-8.
     pub fn from_utf8_slice(
         data: &'a [u8],
-    ) -> Result<TextDeserializer<'a, 'b, Utf8Encoding>, Error> {
+    ) -> Result<TextTapeDeserializer<'a, 'b, Utf8Encoding>, Error> {
         let tape = TextTape::from_slice(data)?;
-        Ok(TextDeserializer {
+        Ok(TextTapeDeserializer {
             kind: TextDeserializerKind::Owned {
                 tape,
                 encoding: Utf8Encoding::new(),
@@ -1493,8 +232,8 @@ impl<'a, 'b> TextDeserializer<'a, 'b, Utf8Encoding> {
     }
 
     /// Deserialize the given text tape assuming quoted strings are utf8 encoded.
-    pub fn from_utf8_tape(tape: &'b TextTape<'a>) -> TextDeserializer<'a, 'b, Utf8Encoding> {
-        TextDeserializer {
+    pub fn from_utf8_tape(tape: &'b TextTape<'a>) -> TextTapeDeserializer<'a, 'b, Utf8Encoding> {
+        TextTapeDeserializer {
             kind: TextDeserializerKind::Borrowed {
                 tape,
                 encoding: Utf8Encoding::new(),
@@ -1503,17 +242,17 @@ impl<'a, 'b> TextDeserializer<'a, 'b, Utf8Encoding> {
     }
 }
 
-impl<'a, 'b, E> TextDeserializer<'a, 'b, E>
+impl<'a, 'b, E> TextTapeDeserializer<'a, 'b, E>
 where
     E: Encoding + Clone,
 {
     /// Deserialize the given text tape assuming quoted strings can be decoded
     /// according to the given encoder
-    pub fn from_encoded_tape(tape: &'b TextTape<'a>, encoding: E) -> TextDeserializer<'a, 'b, E>
+    pub fn from_encoded_tape(tape: &'b TextTape<'a>, encoding: E) -> TextTapeDeserializer<'a, 'b, E>
     where
         E: Encoding + Clone,
     {
-        TextDeserializer {
+        TextTapeDeserializer {
             kind: TextDeserializerKind::Borrowed { tape, encoding },
         }
     }
@@ -1521,11 +260,11 @@ where
     /// Create text deserialization from an object reader
     ///
     /// See example at [ObjectReader::deserialize]
-    pub fn from_reader(reader: &'b ObjectReader<'a, 'b, E>) -> TextDeserializer<'a, 'b, E>
+    pub fn from_reader(reader: &'b ObjectReader<'a, 'b, E>) -> TextTapeDeserializer<'a, 'b, E>
     where
         E: Encoding + Clone,
     {
-        TextDeserializer {
+        TextTapeDeserializer {
             kind: TextDeserializerKind::Reader { reader },
         }
     }
@@ -1539,7 +278,7 @@ where
     }
 }
 
-impl<'de, E> de::Deserializer<'de> for &'_ TextDeserializer<'de, '_, E>
+impl<'de, E> de::Deserializer<'de> for &'_ TextTapeDeserializer<'de, '_, E>
 where
     E: Encoding + Clone,
 {
@@ -1593,9 +332,47 @@ where
         self.deserialize_map(visitor)
     }
 
+    /// An owned value of the root is the block of the whole tape.
+    fn deserialize_newtype_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        #[cfg(feature = "syntax")]
+        if name == crate::text::syntax::de::VALUE {
+            use crate::text::{
+                dom::raw,
+                syntax::{
+                    OwnedValue,
+                    value::{tape, visit_owned},
+                },
+            };
+            let root = || {
+                OwnedValue::Block(match &self.kind {
+                    TextDeserializerKind::Owned { tape, encoding } => {
+                        tape::block(tape.tokens(), 0, tape.tokens().len(), true, encoding)
+                    }
+                    TextDeserializerKind::Borrowed { tape, encoding } => {
+                        tape::block(tape.tokens(), 0, tape.tokens().len(), true, encoding)
+                    }
+                    TextDeserializerKind::Reader { reader } => {
+                        let (tokens, start, end, encoding) = raw::object(reader);
+                        tape::block(tokens, start, end, true, encoding)
+                    }
+                })
+            };
+            return visit_owned(root, visitor);
+        }
+        let _ = name;
+        self.deserialize_any(visitor)
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        bytes byte_buf option unit unit_struct seq tuple
         tuple_struct enum ignored_any identifier
     }
 }
@@ -1727,6 +504,67 @@ where
 
     fn read_scalar(&self) -> Result<crate::Scalar<'de>, Error> {
         self.reader().read_scalar().map_err(Error::from)
+    }
+
+    /// Return `true` when the value is a quoted scalar.
+    fn is_quoted(&self) -> bool {
+        let token = match &self.kind {
+            ValueKind::OperatorValue(x) => x.value.token(),
+            ValueKind::Value(x) => x.token(),
+            ValueKind::Scalar(x) => x.token(),
+            ValueKind::Array(_) => return false,
+        };
+        matches!(token, TextToken::Quoted(_))
+    }
+
+    /// Copy the value into an owned value.
+    #[cfg(feature = "syntax")]
+    fn owned(&self) -> crate::text::syntax::OwnedValue {
+        use crate::text::{
+            dom::raw,
+            syntax::{OwnedScalar, OwnedValue, value::tape},
+        };
+        match &self.kind {
+            ValueKind::OperatorValue(OperatorValue { value: x, .. }) | ValueKind::Value(x) => {
+                let (tokens, index, encoding) = raw::value(x);
+                tape::value(tokens, index, encoding)
+            }
+            ValueKind::Scalar(x) => {
+                let text = x.read_string();
+                OwnedValue::Scalar(match x.token() {
+                    TextToken::Quoted(_) => OwnedScalar::Quoted(text),
+                    _ => tape::unquoted(text),
+                })
+            }
+            ValueKind::Array(x) => {
+                let (tokens, start, end, encoding) = raw::array(x);
+                OwnedValue::Block(tape::block(tokens, start, end, false, encoding))
+            }
+        }
+    }
+
+    /// The header and the block of a headered block. The block keeps the
+    /// operator of the field, as in `a > rgb { 1 2 }`.
+    fn headered(&self) -> Option<(Self, Self)> {
+        let value = self.value_reader()?;
+        if !matches!(value.token(), TextToken::Header(_)) {
+            return None;
+        }
+        let mut parts = value.read_array().ok()?.values();
+        let header = parts.next()?;
+        let block = parts.next()?;
+        let block = match &self.kind {
+            ValueKind::OperatorValue(x) => ValueKind::OperatorValue(OperatorValue {
+                operator: x.operator,
+                value: block,
+            }),
+            _ => ValueKind::Value(block),
+        };
+        let part = |kind| ValueDeserializer {
+            kind,
+            config: self.config,
+        };
+        Some((part(ValueKind::Value(header)), part(block)))
     }
 }
 
@@ -2025,13 +863,32 @@ where
 
     fn deserialize_newtype_struct<V>(
         self,
-        _name: &'static str,
+        name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_newtype_struct(self)
+        match name {
+            QUOTED => {
+                let quoted = self.is_quoted().into_deserializer();
+                visitor.visit_map(WrapperMap::new(KEY_QUOTED, quoted, self))
+            }
+            HEADERED => match self.headered() {
+                Some((header, block)) => {
+                    visitor.visit_map(WrapperMap::new(KEY_HEADER, OptionDe(Some(header)), block))
+                }
+                None => {
+                    let header = OptionDe::<Self>(None);
+                    visitor.visit_map(WrapperMap::new(KEY_HEADER, header, self))
+                }
+            },
+            #[cfg(feature = "syntax")]
+            crate::text::syntax::de::VALUE => {
+                crate::text::syntax::value::visit_owned(|| self.owned(), visitor)
+            }
+            _ => visitor.visit_newtype_struct(self),
+        }
     }
 
     fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -2333,6 +1190,7 @@ impl<'de> de::Deserializer<'de> for OperatorDeserializer {
 mod tests {
     use super::*;
     use crate::common::{Date, DateHour, UniformDate};
+    use crate::text::{Headered, MaybeQuoted};
     use jomini_derive::JominiDeserialize;
     use rstest::rstest;
     use serde::{
@@ -2344,24 +1202,409 @@ mod tests {
 
     fn from_slice<'a, T>(data: &'a [u8]) -> Result<T, Error>
     where
-        T: Deserialize<'a>,
+        T: Deserialize<'a> + PartialEq + Debug,
     {
-        super::from_windows1252_slice(data)
+        let result = super::from_windows1252_slice(data);
+        #[cfg(feature = "syntax")]
+        if let Ok(expected) = &result {
+            check_syntax_tree(data, expected);
+        }
+        result
     }
 
+    fn from_tape<'a, T>(data: &'a [u8]) -> Result<T, Error>
+    where
+        T: Deserialize<'a>,
+    {
+        TextTapeDeserializer::from_windows1252_slice(data)?.deserialize()
+    }
+
+    /// Deserialize `data` from a tape, and assert that the other engines give
+    /// the same value, as [`from_text`] does.
     fn from_owned<T>(data: &[u8]) -> T
     where
         T: DeserializeOwned + PartialEq + Debug,
     {
         let tape = TextTape::from_slice(data).unwrap();
-        let x1: T = TextDeserializer::from_windows1252_tape(&tape)
+        let expected: T = TextTapeDeserializer::from_windows1252_tape(&tape)
             .deserialize()
             .unwrap();
-        let reader = TokenReader::new(data);
-        let mut des = TextDeserializer::from_windows1252_reader(reader);
-        let x2 = T::deserialize(&mut des).unwrap();
-        assert_eq!(x1, x2);
-        x1
+        assert_eq!(from_text::<T>(data), expected, "tape");
+        #[cfg(feature = "syntax")]
+        check_tape_value(data, &expected);
+        expected
+    }
+
+    /// Deserialize `data` with `TextDeserializer` from a slice, and assert
+    /// that it gives the same value from a reader and from readers with
+    /// small buffers that hold the longest token, and that the syntax tree
+    /// and the owned values of the syntax tree and of `TextDeserializer`
+    /// give it too.
+    fn from_text<T>(data: &[u8]) -> T
+    where
+        T: DeserializeOwned + PartialEq + Debug,
+    {
+        let expected: T = super::from_windows1252_slice(data).unwrap();
+        let actual: T = super::from_windows1252_reader(data).unwrap();
+        assert_eq!(actual, expected, "reader");
+        for size in [8, 16, 64] {
+            let buf = vec![0; size];
+            let encoding = Windows1252Encoding::new();
+            match TextDeserializer::from_reader_with_buf(data, encoding, buf).deserialize::<T>() {
+                Ok(actual) => assert_eq!(actual, expected, "reader with {size} byte buffer"),
+                Err(err) => assert!(
+                    matches!(err.kind(), crate::ErrorKind::BufferTooSmall),
+                    "reader with {size} byte buffer: {err}"
+                ),
+            }
+        }
+        #[cfg(feature = "syntax")]
+        {
+            check_syntax_tree(data, &expected);
+            check_syntax_value(data, &expected);
+            check_owned_value(data, &expected);
+        }
+        expected
+    }
+
+    /// The deserializer of the syntax tree must give the same result as the
+    /// deserializer of the tape.
+    #[cfg(feature = "syntax")]
+    fn check_syntax_tree<'a, T>(data: &'a [u8], expected: &T)
+    where
+        T: Deserialize<'a> + PartialEq + Debug,
+    {
+        let parse = crate::text::syntax::parse(data);
+        let actual: T = parse
+            .document(Windows1252Encoding::new())
+            .deserialize()
+            .unwrap();
+        assert_eq!(&actual, expected, "the syntax tree deserializer differs");
+    }
+
+    /// A value from the syntax tree must deserialize into the same result.
+    #[cfg(feature = "syntax")]
+    fn check_syntax_value<T>(data: &[u8], expected: &T)
+    where
+        T: DeserializeOwned + PartialEq + Debug,
+    {
+        use crate::text::syntax::OwnedBlock;
+        let parse = crate::text::syntax::parse(data);
+        let value = OwnedBlock::from_tree(parse.tree(), Windows1252Encoding::new());
+        let borrowed = T::deserialize(&value).unwrap();
+        assert_eq!(
+            &borrowed, expected,
+            "the borrowed value deserializer differs"
+        );
+        let owned = T::deserialize(value).unwrap();
+        assert_eq!(&owned, expected, "the owned value deserializer differs");
+    }
+
+    /// The owned block of the tape must deserialize into the same result.
+    #[cfg(feature = "syntax")]
+    fn check_tape_value<T>(data: &[u8], expected: &T)
+    where
+        T: DeserializeOwned + PartialEq + Debug,
+    {
+        use crate::text::syntax::OwnedBlock;
+        let tape = TextTape::from_slice(data).unwrap();
+        let block: OwnedBlock = TextTapeDeserializer::from_windows1252_tape(&tape)
+            .deserialize()
+            .unwrap();
+        let actual = T::deserialize(&block).unwrap();
+        assert_eq!(&actual, expected, "the owned value of the tape differs");
+    }
+
+    /// The owned block of `TextDeserializer` from a slice and from readers
+    /// must deserialize into the same result.
+    #[cfg(feature = "syntax")]
+    fn check_owned_value<T>(data: &[u8], expected: &T)
+    where
+        T: DeserializeOwned + PartialEq + Debug,
+    {
+        use crate::text::syntax::OwnedBlock;
+        let encoding = Windows1252Encoding::new();
+        let block: OwnedBlock = TextDeserializer::from_slice(data, encoding)
+            .deserialize()
+            .unwrap();
+        let actual = T::deserialize(&block).unwrap();
+        assert_eq!(&actual, expected, "the owned value of a slice differs");
+        for size in [8, 64] {
+            let buf = vec![0; size];
+            let block: OwnedBlock = TextDeserializer::from_reader_with_buf(data, encoding, buf)
+                .deserialize()
+                .unwrap();
+            let actual = T::deserialize(&block).unwrap();
+            assert_eq!(&actual, expected, "the owned value of a reader differs");
+        }
+    }
+
+    #[test]
+    fn test_maybe_quoted() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            a: MaybeQuoted<String>,
+            b: MaybeQuoted<String>,
+            c: MaybeQuoted<u32>,
+            d: MaybeQuoted<Vec<u32>>,
+        }
+
+        let data = b"a = \"@text\"\nb = @text\nc = 3\nd = { 1 2 }";
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(
+            actual,
+            MyStruct {
+                a: MaybeQuoted::Quoted(String::from("@text")),
+                b: MaybeQuoted::Unquoted(String::from("@text")),
+                c: MaybeQuoted::Unquoted(3),
+                d: MaybeQuoted::Unquoted(vec![1, 2]),
+            }
+        );
+    }
+
+    #[test]
+    fn test_maybe_quoted_keys() {
+        let data = b"\"a\" = 1 b = 2";
+        let actual: HashMap<MaybeQuoted<String>, u32> = from_owned(&data[..]);
+        let expected = HashMap::from([
+            (MaybeQuoted::Quoted(String::from("a")), 1),
+            (MaybeQuoted::Unquoted(String::from("b")), 2),
+        ]);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_headered() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            color: Headered<Vec<u8>>,
+            plain: Headered<Vec<u8>>,
+            hsv: Headered<[f32; 3]>,
+        }
+
+        let data = b"color = rgb { 1 2 3 } plain = { 4 5 6 } hsv = hsv { 0.5 0.25 1.0 }";
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(
+            actual,
+            MyStruct {
+                color: Headered::new(Some(String::from("rgb")), vec![1, 2, 3]),
+                plain: Headered::new(None, vec![4, 5, 6]),
+                hsv: Headered::new(Some(String::from("hsv")), [0.5, 0.25, 1.0]),
+            }
+        );
+    }
+
+    #[test]
+    fn test_headered_scalar() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            name: Headered<String>,
+            other: Option<u32>,
+        }
+
+        // A scalar with no block is the value, and the reader looks past it
+        // for a block.
+        let data = b"name = blue other = 1";
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(actual.name, Headered::new(None, String::from("blue")));
+        assert_eq!(actual.other, Some(1));
+
+        // A scalar that an empty block follows is the value.
+        let data = b"name = blue { } other = 1";
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(actual.name, Headered::new(None, String::from("blue")));
+        assert_eq!(actual.other, Some(1));
+
+        // So is a scalar that an open block at the end of the data follows.
+        let data = b"name = blue {";
+        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual.name, Headered::new(None, String::from("blue")));
+        let actual: MyStruct = from_windows1252_reader(&data[..]).unwrap();
+        assert_eq!(actual.name, Headered::new(None, String::from("blue")));
+    }
+
+    #[test]
+    fn test_headered_streaming_refill() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            a: Headered<Vec<u8>>,
+            b: Headered<Vec<u8>>,
+            c: Option<Headered<[u8; 3]>>,
+            q: MaybeQuoted<AnyValue>,
+            name: Headered<String>,
+        }
+
+        // Each buffer size splits the input at a different place, so some
+        // header is read past a refill.
+        let data = b"a = rgb { 1 2 3 } b = { 4 5 6 } c = hsv { 7 8 9 } q = rgb { 1 2 } name = blue";
+        let expected = MyStruct {
+            a: Headered::new(Some(String::from("rgb")), vec![1, 2, 3]),
+            b: Headered::new(None, vec![4, 5, 6]),
+            c: Some(Headered::new(Some(String::from("hsv")), [7, 8, 9])),
+            q: MaybeQuoted::Unquoted(AnyValue::Seq(vec![
+                AnyValue::Str(String::from("1")),
+                AnyValue::Str(String::from("2")),
+            ])),
+            name: Headered::new(None, String::from("blue")),
+        };
+        assert_eq!(from_owned::<MyStruct>(&data[..]), expected);
+        let encoding = Windows1252Encoding::new();
+        for size in 12..=data.len() + 1 {
+            let actual = TextDeserializer::from_reader_with_buf(&data[..], encoding, vec![0; size])
+                .deserialize::<MyStruct>()
+                .unwrap();
+            assert_eq!(actual, expected, "buffer size {size}");
+        }
+    }
+
+    #[test]
+    fn test_headered_operator() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            a: Headered<Property<Vec<u8>>>,
+            other: u32,
+        }
+
+        // The block of a header keeps the operator of the field, which a
+        // tape doesn't.
+        let data = b"a > rgb { 1 2 } other = 1";
+        let actual: MyStruct = from_text(&data[..]);
+        let expected = Headered::new(
+            Some(String::from("rgb")),
+            Property::new(Operator::GreaterThan, vec![1, 2]),
+        );
+        assert_eq!(actual.a, expected);
+        assert_eq!(actual.other, 1);
+    }
+
+    /// A quoted scalar is not a header, so the block after it is a block in
+    /// key position, which is skipped. The syntax parser reads the block as
+    /// a value without a key, which starts the remainder, a difference of
+    /// game files only.
+    #[test]
+    fn test_headered_quoted() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            a: Headered<MaybeQuoted<String>>,
+            other: u32,
+        }
+
+        let data = b"a = \"rgb\" { 1 2 } other = 1";
+        let expected = Headered::new(None, MaybeQuoted::Quoted(String::from("rgb")));
+        let actual: MyStruct = super::from_windows1252_slice(&data[..]).unwrap();
+        assert_eq!((&actual.a, actual.other), (&expected, 1));
+        let actual: MyStruct = from_windows1252_reader(&data[..]).unwrap();
+        assert_eq!((&actual.a, actual.other), (&expected, 1));
+    }
+
+    #[test]
+    fn test_headered_only_field_values() {
+        // A header is only recognized for the value of a field, so a
+        // headered block in a sequence is an error as with a tape.
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct List {
+            list: Vec<Headered<Vec<u8>>>,
+        }
+        let data = b"list = { rgb { 1 2 3 } { 4 5 6 } }";
+        assert!(from_windows1252_reader::<List, _>(&data[..]).is_err());
+        assert!(super::from_windows1252_slice::<List>(&data[..]).is_err());
+        assert!(from_tape::<List>(&data[..]).is_err());
+
+        // A key with a block after it is a key with no header.
+        let data = b"a { x = 1 } b = 2";
+        let actual: HashMap<Headered<String>, AnyValue> = from_owned(&data[..]);
+        let expected = HashMap::from([
+            (
+                Headered::new(None, String::from("a")),
+                AnyValue::Map(vec![(String::from("x"), AnyValue::Str(String::from("1")))]),
+            ),
+            (
+                Headered::new(None, String::from("b")),
+                AnyValue::Str(String::from("2")),
+            ),
+        ]);
+        assert_eq!(actual, expected);
+    }
+
+    /// The elements of a sequence, empty blocks too, are unquoted unless
+    /// they are quoted scalars, and have no header.
+    #[test]
+    fn test_wrappers_in_sequences() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            names: Vec<MaybeQuoted<String>>,
+            blocks: Vec<Headered<MaybeQuoted<Vec<u8>>>>,
+        }
+
+        let data = b"names = { a \"b\" c } blocks = { { 1 } { 2 3 } }";
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(
+            actual,
+            MyStruct {
+                names: vec![
+                    MaybeQuoted::Unquoted(String::from("a")),
+                    MaybeQuoted::Quoted(String::from("b")),
+                    MaybeQuoted::Unquoted(String::from("c")),
+                ],
+                blocks: vec![
+                    Headered::new(None, MaybeQuoted::Unquoted(vec![1])),
+                    Headered::new(None, MaybeQuoted::Unquoted(vec![2, 3])),
+                ],
+            }
+        );
+
+        // An empty block in a sequence is an element, which the tape drops.
+        let data = b"blocks = { {} { 2 3 } }";
+        let expected = vec![
+            Headered::new(None, MaybeQuoted::Unquoted(vec![])),
+            Headered::new(None, MaybeQuoted::Unquoted(vec![2, 3])),
+        ];
+        let actual: MyStructBlocks = from_slice(&data[..]).unwrap();
+        assert_eq!(actual.blocks, expected);
+        let actual: MyStructBlocks = from_windows1252_reader(&data[..]).unwrap();
+        assert_eq!(actual.blocks, expected);
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStructBlocks {
+            blocks: Vec<Headered<MaybeQuoted<Vec<u8>>>>,
+        }
+    }
+
+    /// `TextDeserializer` makes the owned value that the syntax parser
+    /// makes, from a slice and from a reader, as a field value and at the
+    /// root.
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn test_owned_value() {
+        use crate::text::syntax::{OwnedBlock, OwnedValue};
+
+        let data = b"a = { 1 2 } b = \"x\" c = rgb { 1 2 3 } d > 5 e = { f = { g = h } } i = j {} k = { # }\n l } m = @x n = { {} 1 }";
+        let encoding = Windows1252Encoding::new();
+        let parse = crate::text::syntax::parse(&data[..]);
+        let root = OwnedBlock::from_tree(parse.tree(), encoding);
+        let fields: HashMap<String, OwnedValue> = root
+            .fields()
+            .map(|f| (f.key.as_str().to_string(), f.value.clone()))
+            .collect();
+
+        let actual: OwnedBlock = TextDeserializer::from_slice(&data[..], encoding)
+            .deserialize()
+            .unwrap();
+        assert_eq!(actual, root);
+        let actual: HashMap<String, OwnedValue> = super::from_windows1252_slice(&data[..]).unwrap();
+        assert_eq!(actual, fields);
+        for size in 8..=data.len() + 1 {
+            let buf = vec![0; size];
+            let actual = TextDeserializer::from_reader_with_buf(&data[..], encoding, buf)
+                .deserialize::<HashMap<String, OwnedValue>>()
+                .unwrap();
+            assert_eq!(actual, fields, "buffer size {size}");
+            let buf = vec![0; size];
+            let actual = TextDeserializer::from_reader_with_buf(&data[..], encoding, buf)
+                .deserialize::<OwnedBlock>()
+                .unwrap();
+            assert_eq!(actual, root, "buffer size {size}");
+        }
     }
 
     #[test]
@@ -2392,6 +1635,8 @@ mod tests {
         }
 
         let actual: MyStruct = from_slice(&data[..]).unwrap();
+        assert_eq!(actual, MyStruct { field1: "ENG" });
+        let actual: MyStruct = from_tape(&data[..]).unwrap();
         assert_eq!(actual, MyStruct { field1: "ENG" });
     }
 
@@ -2677,7 +1922,7 @@ mod tests {
 
     #[test]
     fn test_string_array() {
-        let data = include_bytes!("../../tests/fixtures/string-array.txt");
+        let data = include_bytes!("../../../tests/fixtures/string-array.txt");
         #[derive(Deserialize, PartialEq, Debug)]
         struct MyStruct {
             dlc_enabled: Vec<String>,
@@ -2700,7 +1945,7 @@ mod tests {
 
     #[test]
     fn test_nested_object() {
-        let data = include_bytes!("../../tests/fixtures/savegame.txt");
+        let data = include_bytes!("../../../tests/fixtures/savegame.txt");
 
         #[derive(Deserialize, PartialEq, Debug)]
         struct MyStruct {
@@ -2751,7 +1996,7 @@ mod tests {
 
     #[test]
     fn test_array_of_objects() {
-        let data = include_bytes!("../../tests/fixtures/campaign_stats.txt");
+        let data = include_bytes!("../../../tests/fixtures/campaign_stats.txt");
 
         #[derive(Deserialize, PartialEq, Debug)]
         struct MyStruct {
@@ -3069,13 +2314,27 @@ mod tests {
             Rgb(u8, u8, u8),
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual,
             MyStruct {
                 color: MyColor::Rgb(10, 11, 12),
             },
         );
+    }
+
+    #[test]
+    fn test_close_at_root() {
+        let data = b"c={ x=y } } a=1 } } b=2 }";
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            a: u32,
+            b: u32,
+        }
+
+        let actual: MyStruct = from_owned(&data[..]);
+        assert_eq!(actual, MyStruct { a: 1, b: 2 });
     }
 
     #[test]
@@ -3110,8 +2369,16 @@ mod tests {
             169 170 171 172 4384
         }"#;
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_tape(&data[..]).unwrap();
         assert_eq!(actual.brittany_area, vec![169, 170, 171, 172, 4384]);
+
+        // The `TextDeserializer` reads the block as a sequence of each token,
+        // and the error names the lossless parser.
+        let err = from_slice::<MyStruct>(&data[..]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid type: string \"color\", expected u16; TextDeserializer doesn't read an object as a sequence, as the scalars that trail its fields or an object used as a key, which jomini::text::syntax::parse reads (offset: 33)"
+        );
 
         #[derive(Deserialize, Debug, PartialEq)]
         struct MyStruct {
@@ -3127,7 +2394,7 @@ mod tests {
         }
         another_area = { 100 }"#;
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_owned(&data[..]);
         assert_eq!(
             actual.brittany_area,
             MyArea {
@@ -3585,6 +2852,7 @@ mod tests {
             Blue,
         }
 
+        #[derive(Debug, PartialEq)]
         struct Container;
 
         impl<'de> Deserialize<'de> for Container {
@@ -3617,7 +2885,16 @@ mod tests {
         color1 = Red
         color2 = { 255 0 0 }
         "#;
-        let _: Container = from_slice(data.as_bytes()).unwrap();
+        let _: Container = from_tape(data.as_bytes()).unwrap();
+
+        // A value is read once: the `TextDeserializer` read `Red` for the
+        // `Color` that failed, so the second `next_value` is an error at
+        // `Red`, rather than a read of the key after it.
+        let err = from_slice::<Container>(data.as_bytes()).err().unwrap();
+        assert_eq!(
+            err.to_string(),
+            "TextDeserializer doesn't read a value again after its read failed, which jomini::text::syntax::parse does (offset: 18)"
+        );
     }
 
     #[test]
@@ -3635,12 +2912,20 @@ mod tests {
             obj: (ObjectKey, Vec<i32>),
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_tape(&data[..]).unwrap();
         assert_eq!(
             actual,
             MyStruct {
                 obj: (ObjectKey { a: "b".to_string() }, vec![1, 2, 3])
             }
+        );
+
+        // The `TextDeserializer` doesn't read the operator as an element,
+        // and the error names the lossless parser.
+        let err = from_slice::<MyStruct>(&data[..]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "TextDeserializer doesn't read an operator as a value, as in `a = =` or in an object read as a sequence, which jomini::text::syntax::parse reads (offset: 15)"
         );
     }
 
@@ -3654,7 +2939,7 @@ mod tests {
             obj: (Vec<String>, Vec<i32>),
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_tape(&data[..]).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -3678,7 +2963,7 @@ mod tests {
             obj: (ObjectKey, i32),
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_tape(&data[..]).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -3744,7 +3029,7 @@ mod tests {
             obj: ObjectTemplateList,
         }
 
-        let actual: MyStruct = from_slice(&data[..]).unwrap();
+        let actual: MyStruct = from_tape(&data[..]).unwrap();
         assert_eq!(
             actual,
             MyStruct {
@@ -3815,7 +3100,14 @@ mod tests {
             string_field: String,
         }
 
-        let actual: MyStruct = from_owned(&data[..]);
+        // A syntax value keeps the decoded text, not the raw bytes, so this
+        // test does not use `from_owned`.
+        let tape = TextTape::from_slice(&data[..]).unwrap();
+        let actual: MyStruct = TextTapeDeserializer::from_windows1252_tape(&tape)
+            .deserialize()
+            .unwrap();
+        #[cfg(feature = "syntax")]
+        check_syntax_tree(&data[..], &actual);
         assert_eq!(actual.raw_field.0, b"Joe \\\"Captain\\\" Rogers ");
         assert_eq!(actual.string_field, "Joe \"Captain\" Rogers");
     }
@@ -4084,6 +3376,7 @@ mod tests {
 
     /// The root through `deserialize_map` on a tape, which has no
     /// `deserialize_any` for the root.
+    #[derive(Debug, PartialEq)]
     struct TapeRoot(AnyValue);
 
     impl<'de> Deserialize<'de> for TapeRoot {
@@ -4092,23 +3385,23 @@ mod tests {
         }
     }
 
-    fn reader_any(reader: TokenReader) -> String {
-        let mut deserializer = TextDeserializer::from_windows1252_reader(reader);
-        AnyValue::deserialize(&mut deserializer)
-            .unwrap()
-            .to_string()
-    }
-
-    /// `deserialize_any` through the streaming reader over a slice, and over
-    /// buffers small enough that refills land inside the lookahead and inside
-    /// blocks whose first token was replayed. `tape` is whether a tape gives
-    /// the same value; it rejects fields after trailing scalars and
-    /// operators in arrays.
+    /// `deserialize_any` from a slice, and from readers with buffers small
+    /// enough that refills land inside the lookahead and inside blocks whose
+    /// first token was replayed. `tape` is whether a tape gives the same
+    /// value; it rejects fields after trailing scalars and operators in
+    /// arrays.
     #[rstest]
     #[case::block_kind(
-        b"object={ a=b c<2 } array={ 1 2 } empty={} objects={ { a=b } { c=d } } leading_empty={ {} {} 3 } empty_key={ =b }",
-        "{object={a=b c=2} array=[1 2] empty=[] objects=[{a=b} {c=d}] leading_empty=[3] empty_key={=b}}",
+        b"object={ a=b c<2 } array={ 1 2 } empty={} objects={ { a=b } { c=d } } empty_key={\n=b }",
+        "{object={a=b c=2} array=[1 2] empty=[] objects=[{a=b} {c=d}] empty_key={=b}}",
         true
+    )]
+    // An empty block is an element of a sequence, which a tape drops at the
+    // start, and not a value in an object.
+    #[case::empty_blocks(
+        b"leading={ {} {} 3 } only={ {} {} } object={ {} a=b }",
+        "{leading=[[] [] 3] only=[[] []] object={a=b}}",
+        false
     )]
     // A `key { }` field is a field after the first, but as the first item a
     // scalar followed by a block makes the block an array.
@@ -4132,7 +3425,7 @@ mod tests {
     #[case::remainder(b"object={ a=b c d }", "{object={a=b remainder=[c d]}}", true)]
     #[case::field_after_remainder(
         b"object={ a=b c d=e }",
-        "{object={a=b remainder=[c d e]}}",
+        "{object={a=b remainder=[c d = e]}}",
         false
     )]
     #[case::operator_in_array(b"array={ a b=c }", "{array=[a b = c]}", false)]
@@ -4150,14 +3443,47 @@ mod tests {
         true
     )]
     fn test_any(#[case] data: &[u8], #[case] expected: &str, #[case] tape: bool) {
-        assert_eq!(reader_any(TokenReader::from_slice(data)), expected);
+        let actual: AnyValue = from_slice(data).unwrap();
+        assert_eq!(actual.to_string(), expected);
+        let encoding = Windows1252Encoding::new();
         for size in 20..=40 {
-            let reader = TokenReader::from_reader_with_buf(data, vec![0; size]);
-            assert_eq!(reader_any(reader), expected, "buffer size {size}");
+            let actual = TextDeserializer::from_reader_with_buf(data, encoding, vec![0; size])
+                .deserialize::<AnyValue>()
+                .unwrap();
+            assert_eq!(actual.to_string(), expected, "buffer size {size}");
         }
 
-        let tape_value = from_slice::<TapeRoot>(data).map(|x| x.0.to_string());
-        assert_eq!(tape_value.ok().as_deref() == Some(expected), tape);
+        // The lossless parser recovers from some data that `TextTape`
+        // rejects.
+        let tape_value = from_tape::<TapeRoot>(data).map(|x| x.0.to_string());
+        if tape || !cfg!(all(jomini_syntax_tape, feature = "syntax")) {
+            assert_eq!(tape_value.ok().as_deref() == Some(expected), tape);
+        }
+    }
+
+    /// An operator in key position is a field with an empty key also when
+    /// it does not start a line. The lossless parser reads only an operator
+    /// that starts a line as a field with an empty key, so its tape differs.
+    #[test]
+    fn test_any_empty_key_mid_line() {
+        let data = b"empty_key={ =b }";
+        let expected = "{empty_key={=b}}";
+        let actual: AnyValue = super::from_windows1252_slice(data).unwrap();
+        assert_eq!(actual.to_string(), expected);
+        let encoding = Windows1252Encoding::new();
+        for size in 16..=data.len() + 1 {
+            let actual = TextDeserializer::from_reader_with_buf(&data[..], encoding, vec![0; size])
+                .deserialize::<AnyValue>()
+                .unwrap();
+            assert_eq!(actual.to_string(), expected, "buffer size {size}");
+        }
+
+        let tape: TapeRoot = from_tape(data).unwrap();
+        if cfg!(all(jomini_syntax_tape, feature = "syntax")) {
+            assert_eq!(tape.0.to_string(), "{empty_key=[b]}");
+        } else {
+            assert_eq!(tape.0.to_string(), expected);
+        }
     }
 
     #[cfg(feature = "json")]
@@ -4183,18 +3509,19 @@ mod tests {
         }
 
         // The tape gives the key and the value of each field.
-        let actual: MyStruct = from_slice(EMPTY_KEY_FIRST).unwrap();
+        let actual: MyStruct = from_tape(EMPTY_KEY_FIRST).unwrap();
         assert_eq!(
             actual.cooldowns,
             vec!["", "1825.1.11", "trade_favors_for_men", "1826.6.22"]
         );
 
-        // The streaming reader gives each token of the block, operators too.
-        let actual: MyStruct = from_windows1252_reader(EMPTY_KEY_FIRST).unwrap();
-        assert_eq!(
-            actual.cooldowns,
-            vec!["=", "1825.1.11", "trade_favors_for_men", "=", "1826.6.22"]
-        );
+        // The deserializer doesn't read an object as a sequence, and the
+        // error names the lossless parser.
+        let expected = "TextDeserializer doesn't read an operator as a value, as in `a = =` or in an object read as a sequence, which jomini::text::syntax::parse reads (offset: 13)";
+        let err = from_slice::<MyStruct>(EMPTY_KEY_FIRST).unwrap_err();
+        assert_eq!(err.to_string(), expected);
+        let err = from_windows1252_reader::<MyStruct, _>(EMPTY_KEY_FIRST).unwrap_err();
+        assert_eq!(err.to_string(), expected);
     }
 
     #[test]
@@ -4283,11 +3610,16 @@ mod tests {
         ..HeaderFields::default()
     })]
     fn test_header_seq_streaming_refill(#[case] data: &[u8], #[case] expected: HeaderFields) {
+        // The syntax parser reads a scalar and a block first in a block as a
+        // field, a difference of game files only.
+        let actual: HeaderFields = super::from_windows1252_slice(data).unwrap();
+        assert_eq!(actual, expected);
+        let encoding = Windows1252Encoding::new();
         for size in 16..=24 {
-            let reader = TokenReader::from_reader_with_buf(data, vec![0; size]);
-            let actual: HeaderFields = TextDeserializer::from_windows1252_reader(reader)
-                .deserialize()
-                .unwrap();
+            let actual: HeaderFields =
+                TextDeserializer::from_reader_with_buf(data, encoding, vec![0; size])
+                    .deserialize()
+                    .unwrap();
             assert_eq!(actual, expected, "buffer size {size}");
         }
     }

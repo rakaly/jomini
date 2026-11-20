@@ -22,57 +22,112 @@ Converters](https://github.com/ParadoxGameConverters) and
 
 ## Quick Start
 
-Below is a demonstration of deserializing plaintext data using serde.
-Several additional serde-like attributes are used to reconcile the serde
-data model with structure of these files.
+Deserialize a Windows-1252 text snippet into a Rust struct. Clausewitz
+files can repeat the same key. Here, `#[jomini(duplicated)]` collects
+each `core` entry into `cores`.
 
 ```rust
 # #[cfg(feature = "derive")] {
-use jomini::{
-    text::{Operator, Property},
-    JominiDeserialize,
-};
+use jomini::{JominiDeserialize, text::de::from_windows1252_slice};
 
-#[derive(JominiDeserialize, PartialEq, Debug)]
-pub struct Model {
-    human: bool,
-    first: Option<u16>,
-    third: Property<u16>,
-    #[jomini(alias = "forth")]
-    fourth: u16,
+#[derive(JominiDeserialize)]
+struct Country {
     #[jomini(alias = "core", duplicated)]
     cores: Vec<String>,
-    names: Vec<String>,
-    #[jomini(take_last)]
-    checksum: String,
 }
 
-let data = br#"
-    human = yes
-    third < 5
-    forth = 10
-    core = "HAB"
-    names = { "Johan" "Frederick" }
-    core = FRA
-    checksum = "first"
-    checksum = "second"
-"#;
-
-let expected = Model {
-    human: true,
-    first: None,
-    third: Property::new(Operator::LessThan, 5),
-    fourth: 10,
-    cores: vec!["HAB".to_string(), "FRA".to_string()],
-    names: vec!["Johan".to_string(), "Frederick".to_string()],
-    checksum: "second".to_string(),
-};
-
-let actual: Model = jomini::text::de::from_windows1252_slice(data)?;
-assert_eq!(actual, expected);
+let country: Country = from_windows1252_slice(b"core=HAB core=FRA")?;
+assert_eq!(country.cores, ["HAB", "FRA"]);
 # }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+A brace-delimited list also maps to a `Vec`. Here, the values all come
+from a single `discovered_by` entry.
+
+```rust
+# #[cfg(feature = "derive")] {
+use jomini::{JominiDeserialize, text::de::from_windows1252_slice};
+
+#[derive(JominiDeserialize)]
+struct Province {
+    discovered_by: Vec<String>,
+}
+
+let province: Province = from_windows1252_slice(b"discovered_by = { western eastern }")?;
+assert_eq!(province.discovered_by, ["western", "eastern"]);
+# }
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+See [choosing a text deserializer](text#choosing-a-text-deserializer) for the
+trade-offs and compatibility rules.
+
+## Working with Save Files
+
+### Saves without an envelope
+
+For EU4 and HoI4, check the header for the payload format (for example,
+`EU4txt` or `EU4bin`) and strip it. Use the game's encoding for text. For
+binary token resolution, see [Binary Deserialization](#binary-deserialization).
+A date can be a string in text and an integer in binary.
+
+*/
+#![cfg_attr(
+    all(feature = "envelope", feature = "serde"),
+    doc = r##"
+### Saves with an envelope
+
+For EU5, Victoria 3, CK3, and Imperator saves on disk, use
+[`JominiFile::from_file`](envelope::JominiFile::from_file). The [`envelope`] module
+describes the format and ZIP support.
+
+With `envelope` and `serde`, read the in-game date from a minimal Imperator save.
+
+```rust
+use jomini::{common::Date, envelope::{JominiFile, SaveMetadataKind}};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Metadata {
+    date: Date,
+}
+
+let file = JominiFile::from_slice(b"SAV0100c18f0de80000000e\ndate=450.10.1\n")?;
+let SaveMetadataKind::Text(mut metadata) = file.meta()? else {
+    return Err("expected text metadata".into());
+};
+let metadata: Metadata = metadata.deserializer().deserialize()?;
+assert_eq!(metadata.date, Date::from_ymd(450, 10, 1));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+"##
+)]
+#![cfg_attr(
+    all(feature = "syntax", feature = "serde"),
+    doc = r##"
+## Reading Game and Mod Files
+
+Use the [`text::syntax`] module when you need a lossless tree
+for diagnostics, recovery, or editing. With `syntax` and `serde` enabled,
+you can deserialize game syntax such as bracketed expressions into a model.
+
+```rust
+use jomini::{Utf8Encoding, text::syntax::parse};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Portrait {
+    picture: String,
+}
+
+let portrait: Portrait = parse(b"picture = [GetName]").deserialize(Utf8Encoding::new())?;
+assert_eq!(portrait.picture, "[GetName]");
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+"##
+)]
+/*!
 
 ## Binary Deserialization
 
@@ -184,56 +239,16 @@ Couple notes:
 - This does not obviate need for the token to string resolver as tokens may be used as values.
 - If the `token` attribute is specified on one field on a struct, it must be specified on all fields of that struct.
 
-## Caveats
+## Low-level Text APIs
 
-Before calling any Jomini API, callers are expected to:
-
-- Determine the correct format (text or binary) ahead of time.
-- Strip off any header that may be present (eg: `EU4txt` / `EU4bin`)
-- Provide the token resolver for the binary format
-- Provide the conversion to reconcile how, for example, a date may be encoded as an integer in
-  the binary format, but as a string when in plaintext.
-
-## The Mid-level API
-
-If the automatic deserialization via `JominiDeserialize` is too high level, there is a mid-level
-api where one can easily iterate through the parsed document and interrogate fields for
-their information.
-
-```rust
-use jomini::TextTape;
-
-let data = b"name=aaa name=bbb core=123 name=ccc name=ddd";
-let tape = TextTape::from_slice(data).unwrap();
-let reader = tape.windows1252_reader();
-
-for (key, _op, value) in reader.fields() {
-    println!("{:?}={:?}", key.read_str(), value.read_str().unwrap());
-}
-```
-
-For even lower level of parisng, see the respective [binary] and [text] module documentation.
+[`text::TokenReader`] streams tokens. Legacy [`TextTape`] readers iterate
+over a parsed tape or convert it to JSON with the `json` feature.
 
 */
 #![cfg_attr(
-    feature = "json",
+    feature = "syntax",
     doc = r##"
-### JSON
-
-The mid-level API also provides the excellent utility of converting the
-plaintext Clausewitz format to JSON when the `json` feature is enabled.
-
-```rust
-use jomini::TextTape;
-
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let tape = TextTape::from_slice(b"foo=bar")?;
-let reader = tape.windows1252_reader();
-let actual = reader.json().to_string();
-assert_eq!(actual, r#"{"foo":"bar"}"#);
-# Ok(())
-# }
-```
+For lossless tree access, use [`text::syntax`].
 "##
 )]
 /*!
@@ -275,54 +290,11 @@ assert_eq!(&out, b"hello=world\nfoo=bar");
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Working with Save Files
-
-Modern Paradox games (EU5, Victoria 3, CK3, Imperator) based on the _Jomini game
-engine_ (an unfortunate naming collision), share a structured container, or
-envelope, for metadata and game state. When the `envelope` feature is enabled,
-it provides a uniform API for working with the envelope, handling both
-compressed (ZIP-based) and uncompressed save files in plaintext and binary.
-
-Notable games **not** using this format include EU4 and HOI4, which use
-different save file structures.
-
-### Basic Usage
-
-The `JominiFile` API is tailored to efficiently and ergonomically work over slices and files:
-
-```rust
-# #[cfg(feature = "envelope")] {
-use jomini::envelope::JominiFile;
-use std::io::Read;
-
-// Load a plaintext save file
-let data = include_bytes!("../tests/fixtures/envelopes/text.txt");
-let save = JominiFile::from_slice(data)?;
-
-// Access the header to check format information
-let header = save.header();
-println!("Save format: {:?}", header.kind());
-
-// Extract and read the metadata
-let mut metadata = save.meta()?;
-let mut meta_content = String::new();
-metadata.read_to_string(&mut meta_content)?;
-println!("Metadata: {}", meta_content);
-
-// Extract and read the gamestate
-let mut gamestate = save.gamestate()?;
-let mut game_content = String::new();
-gamestate.read_to_string(&mut game_content)?;
-println!("Gamestate: {}", game_content);
-# }
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-`JominiFile` can be used as a building block for deserialization or melting
-capabilities.
-
 */
 #![warn(missing_docs)]
+// docs.rs builds with `--cfg docsrs`. Each item that a feature enables then
+// shows the feature that it needs.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 pub mod binary;
 pub mod common;
 mod data;

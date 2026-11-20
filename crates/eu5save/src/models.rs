@@ -303,7 +303,7 @@ impl<'bump> Gamestate<'bump> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::TextDeserializer;
+    use jomini::{TextDeserializer, Utf8Encoding};
 
     #[test]
     fn test_gamestate_is_send_sync() {
@@ -323,8 +323,7 @@ mod tests {
         }
 
         let allocator = arena_serde::Arena::new();
-        let mut deserializer =
-            TextDeserializer::from_utf8_reader(jomini::text::TokenReader::new(data.as_bytes()));
+        let mut deserializer = TextDeserializer::from_slice(data.as_bytes(), Utf8Encoding::new());
         let metadata = Wrapper::deserialize_in_arena(&mut deserializer, &allocator)
             .expect("metadata deserializes")
             .metadata;

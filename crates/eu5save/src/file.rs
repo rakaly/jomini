@@ -2,7 +2,7 @@ use crate::{Eu5BinaryFormat, Eu5Error, Eu5ErrorKind, MeltOptions, melt};
 use jomini::{
     Encoding, Utf8Encoding,
     binary::{BinaryFlavor, BinaryFormatDeserializer, TokenResolver},
-    text::de::TextReaderDeserializer,
+    text::de::{ReaderSource, TextDeserializer},
 };
 use serde::de::DeserializeOwned;
 use std::io::{Read, Write};
@@ -13,10 +13,10 @@ pub use jomini::envelope::*;
 /// An uncompressed EU5 debug save backed by a forward-only reader.
 pub type Eu5DebugFile<R> = JominiTextFile<R>;
 
-/// Type alias for Eu5 text deserializer
+/// Type alias for Eu5 text deserializer over a reader `R`
 ///
 /// A lazy way to avoid the need to reimplement deserializer
-pub type Eu5TextDeserializer<'r> = TextReaderDeserializer<'r, Utf8Encoding>;
+pub type Eu5TextDeserializer<R> = TextDeserializer<ReaderSource<R>, Utf8Encoding>;
 pub type Eu5BinaryDeserializer<'r, 'res, RES> =
     BinaryFormatDeserializer<'r, Eu5BinaryFormat<'res, RES>>;
 
@@ -320,6 +320,8 @@ impl Encoding for Eu5Flavor {
         self.0.decode(data)
     }
 }
+
+impl jomini::text::TextFlavor for Eu5Flavor {}
 
 fn string_lookup_parse(mut data: &[u8]) -> Vec<&'_ str> {
     let mut result = Vec::new();

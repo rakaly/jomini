@@ -287,14 +287,14 @@ pub enum DiplomacySubjectType {
 mod tests {
     use super::*;
     use arena_serde::ArenaDeserialize;
-    use jomini::TextDeserializer;
+    use jomini::text::de::TextTapeDeserializer;
 
     fn deserialize_manager<'bump>(
         data: &str,
         allocator: &'bump arena_serde::Arena,
     ) -> DiplomacyManager<'bump> {
         let deserializer =
-            TextDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
+            TextTapeDeserializer::from_utf8_slice(data.as_bytes()).expect("valid text data");
 
         DiplomacyManager::deserialize_in_arena(&deserializer, allocator)
             .expect("diplomacy manager deserializes")

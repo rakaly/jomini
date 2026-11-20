@@ -1,7 +1,7 @@
 use crate::{flavor::ImperatorFlavor, melt, ImperatorError, ImperatorErrorKind, MeltOptions};
 use jomini::{
     binary::{de::BinaryReaderDeserializer, BinaryDeserializerBuilder, TokenResolver},
-    text::de::TextReaderDeserializer,
+    text::de::{ReaderSource, TextDeserializer},
     Utf8Encoding,
 };
 use serde::de::DeserializeOwned;
@@ -13,10 +13,10 @@ pub use jomini::envelope::*;
 /// An uncompressed Imperator debug save backed by a forward-only reader.
 pub type ImperatorDebugFile<R> = JominiTextFile<R>;
 
-/// Type alias for Imperator text deserializer
+/// Type alias for Imperator text deserializer over a reader `R`
 ///
 /// A lazy way to avoid the need to reimplement deserializer
-pub type ImperatorTextDeserializer<'r> = TextReaderDeserializer<'r, Utf8Encoding>;
+pub type ImperatorTextDeserializer<R> = TextDeserializer<ReaderSource<R>, Utf8Encoding>;
 pub type ImperatorBinaryDeserializer<'r, 'res, RES> =
     BinaryReaderDeserializer<'r, 'res, RES, ImperatorFlavor>;
 

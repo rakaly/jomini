@@ -603,7 +603,7 @@ where
     where
         T: serde::Deserialize<'data>,
     {
-        T::deserialize(&crate::TextDeserializer::from_reader(self))
+        T::deserialize(&crate::text::de::TextTapeDeserializer::from_reader(self))
     }
 
     /// Return the number of key value pairs that the object contains.
@@ -1784,5 +1784,43 @@ mod tests {
             let reader = tape.windows1252_reader();
             iterate_object(reader);
         }
+    }
+}
+
+/// The tokens of a reader, the range of its value, and its encoding, for
+/// the owned value of the lossless module.
+#[cfg(all(feature = "serde", feature = "syntax"))]
+pub(crate) mod raw {
+    use super::{ArrayReader, ObjectReader, TextToken, ValueReader};
+
+    /// The tokens and the index of the value.
+    pub(crate) fn value<'r, 'data, 'tokens, E>(
+        reader: &'r ValueReader<'data, 'tokens, E>,
+    ) -> (&'tokens [TextToken<'data>], usize, &'r E) {
+        (reader.tokens, reader.value_ind, &reader.encoding)
+    }
+
+    /// The tokens and the range of the entries of an object.
+    pub(crate) fn object<'r, 'data, 'tokens, E>(
+        reader: &'r ObjectReader<'data, 'tokens, E>,
+    ) -> (&'tokens [TextToken<'data>], usize, usize, &'r E) {
+        (
+            reader.tokens,
+            reader.start_ind,
+            reader.end_ind,
+            &reader.encoding,
+        )
+    }
+
+    /// The tokens and the range of the values of an array.
+    pub(crate) fn array<'r, 'data, 'tokens, E>(
+        reader: &'r ArrayReader<'data, 'tokens, E>,
+    ) -> (&'tokens [TextToken<'data>], usize, usize, &'r E) {
+        (
+            reader.tokens,
+            reader.start_ind,
+            reader.end_ind,
+            &reader.encoding,
+        )
     }
 }

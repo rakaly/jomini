@@ -5,12 +5,29 @@ use crate::{
 use std::{fmt, mem::MaybeUninit};
 
 /// An error that can occur when processing data
-#[derive(Debug)]
-pub struct Error(Box<ErrorKind>);
+pub struct Error(Box<ErrorImpl>);
+
+struct ErrorImpl {
+    kind: ErrorKind,
+
+    /// The byte offset of an error whose kind has none.
+    offset: Option<usize>,
+}
 
 impl Error {
     pub(crate) fn new(kind: ErrorKind) -> Error {
-        Error(Box::new(kind))
+        Error(Box::new(ErrorImpl { kind, offset: None }))
+    }
+
+    /// Set the offset of an error that has none, so that the most specific
+    /// offset, set closest to where the error was raised, is kept.
+    #[cfg(feature = "serde")]
+    #[cold]
+    pub(crate) fn or_offset(mut self, offset: usize) -> Error {
+        if self.offset().is_none() {
+            self.0.offset = Some(offset);
+        }
+        self
     }
 
     #[inline(never)]
@@ -34,23 +51,40 @@ impl Error {
         Self::new(ErrorKind::Deserialize(DeserializeError { kind }))
     }
 
+    #[cfg(feature = "serde")]
     pub(crate) fn deserialize_msg(msg: impl Into<Box<str>>) -> Self {
         Self::deserialize(DeserializeErrorKind::Message(msg.into()))
     }
 
     /// Return the specific type of error
     pub fn kind(&self) -> &ErrorKind {
-        &self.0
+        &self.0.kind
     }
 
     /// Unwrap this error into its underlying type
+    ///
+    /// The kind does not keep every offset that [`offset`](Self::offset)
+    /// returns, so read the offset first when it is needed.
     pub fn into_kind(self) -> ErrorKind {
-        *self.0
+        self.0.kind
     }
 
     /// Returns the byte offset that the error occurs (if available)
     pub fn offset(&self) -> Option<usize> {
-        self.0.offset()
+        self.0.kind.offset().or(self.0.offset)
+    }
+}
+
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0.offset {
+            Some(offset) => f
+                .debug_struct("Error")
+                .field("kind", &self.0.kind)
+                .field("offset", &offset)
+                .finish(),
+            None => f.debug_tuple("Error").field(&self.0.kind).finish(),
+        }
     }
 }
 
@@ -106,7 +140,7 @@ impl ErrorKind {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match *self.0 {
+        match self.0.kind {
             ErrorKind::Deserialize(ref err) => Some(err),
             ErrorKind::Io(ref err) => Some(err),
             _ => None,
@@ -114,9 +148,20 @@ impl std::error::Error for Error {
     }
 }
 
+/// An error whose kind has no offset is followed by the offset it was given.
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self.0 {
+        self.0.kind.fmt_kind(f)?;
+        match self.0.offset {
+            Some(offset) => write!(f, " (offset: {})", offset),
+            None => Ok(()),
+        }
+    }
+}
+
+impl ErrorKind {
+    fn fmt_kind(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
             ErrorKind::Eof => write!(f, "unexpected end of file"),
             ErrorKind::StackEmpty { offset } => write!(
                 f,
@@ -133,7 +178,7 @@ impl std::fmt::Display for Error {
                 "invalid syntax encountered: {} (offset: {})",
                 msg, offset
             ),
-            ErrorKind::Deserialize(ref err) => err.fmt(f),
+            ErrorKind::Deserialize(ref err) => fmt::Display::fmt(err, f),
             ErrorKind::Io(ref err) => write!(f, "io error: {}", err),
             ErrorKind::BufferTooSmall => {
                 write!(f, "token exceeds buffer capacity")

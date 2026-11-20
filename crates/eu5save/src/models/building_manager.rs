@@ -272,11 +272,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::TextDeserializer;
+    use jomini::text::de::TextTapeDeserializer;
     use rstest::rstest;
 
     fn parse_building<'bump>(data: &str, arena: &'bump arena_serde::Arena) -> Building<'bump> {
-        let deserializer = TextDeserializer::from_utf8_slice(data.as_bytes()).unwrap();
+        let deserializer = TextTapeDeserializer::from_utf8_slice(data.as_bytes()).unwrap();
         Building::deserialize_in_arena(&deserializer, arena).unwrap()
     }
 
@@ -284,7 +284,7 @@ mod tests {
     fn buildings_from_eu5_1_4_save() {
         let arena = arena_serde::Arena::new();
         let data = include_bytes!("../../tests/fixtures/buildings-1.4.txt");
-        let deserializer = TextDeserializer::from_utf8_slice(data).unwrap();
+        let deserializer = TextTapeDeserializer::from_utf8_slice(data).unwrap();
         let manager = BuildingManager::deserialize_in_arena(&deserializer, &arena).unwrap();
         assert_eq!(
             manager.database.ids,
@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn database_skips_none_entries() {
         let arena = arena_serde::Arena::new();
-        let deserializer = TextDeserializer::from_utf8_slice(
+        let deserializer = TextTapeDeserializer::from_utf8_slice(
             b"database={ 0=none 1={ type=barracks location=4873 } 2=none }",
         )
         .unwrap();
@@ -373,7 +373,7 @@ mod tests {
     #[case("location=4873", "kind")]
     fn missing_required_field(#[case] data: &str, #[case] field: &str) {
         let arena = arena_serde::Arena::new();
-        let deserializer = TextDeserializer::from_utf8_slice(data.as_bytes()).unwrap();
+        let deserializer = TextTapeDeserializer::from_utf8_slice(data.as_bytes()).unwrap();
         let error = Building::deserialize_in_arena(&deserializer, &arena).unwrap_err();
         assert!(
             error

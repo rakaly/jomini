@@ -4,8 +4,8 @@ use crate::envelope::{
 };
 #[cfg(feature = "serde")]
 use crate::{
-    TextDeserializer, Utf8Encoding,
-    text::{self, de::TextReaderDeserializer},
+    Utf8Encoding,
+    text::de::{ReaderSource, TextDeserializer},
 };
 use rawzip::{
     CompressionMethod, FileReader, RangeReader, ReaderAt, ZipArchiveEntryWayfinder, ZipReader,
@@ -481,8 +481,8 @@ impl<R: Read> JominiTextFile<R> {
 
     /// Creates a text deserializer for the remaining save data.
     #[cfg(feature = "serde")]
-    pub fn deserializer(&mut self) -> TextReaderDeserializer<'_, Utf8Encoding> {
-        text_deserializer(&mut self.reader)
+    pub fn deserializer(&mut self) -> TextDeserializer<ReaderSource<&mut R>, Utf8Encoding> {
+        TextDeserializer::from_reader(&mut self.reader, Utf8Encoding::new())
     }
 }
 
@@ -551,8 +551,10 @@ impl<E, R: ReaderAt> SaveData<E, R> {
 #[cfg(feature = "serde")]
 impl<R: ReaderAt> SaveData<TextEncoding, R> {
     /// Creates a text deserializer for this save data
-    pub fn deserializer(&self) -> TextReaderDeserializer<'_, Utf8Encoding> {
-        text_deserializer(self.body.cursor())
+    pub fn deserializer(
+        &self,
+    ) -> TextDeserializer<ReaderSource<ReaderAtCursor<'_, R>>, Utf8Encoding> {
+        TextDeserializer::from_reader(self.body.cursor(), Utf8Encoding::new())
     }
 }
 
@@ -688,8 +690,8 @@ impl<R: Read> Read for SaveMetadata<BinaryEncoding, R> {
 #[cfg(feature = "serde")]
 impl<R: Read> SaveMetadata<TextEncoding, R> {
     /// Creates a text deserializer for this metadata
-    pub fn deserializer(&mut self) -> TextReaderDeserializer<'_, Utf8Encoding> {
-        text_deserializer(&mut self.reader)
+    pub fn deserializer(&mut self) -> TextDeserializer<ReaderSource<&mut R>, Utf8Encoding> {
+        TextDeserializer::from_reader(&mut self.reader, Utf8Encoding::new())
     }
 }
 
@@ -808,8 +810,8 @@ impl<R: Read, E> Read for SaveContent<E, R> {
 #[cfg(feature = "serde")]
 impl<R: Read> SaveContent<TextEncoding, R> {
     /// Creates a text deserializer for this content
-    pub fn deserializer(&mut self) -> TextReaderDeserializer<'_, Utf8Encoding> {
-        text_deserializer(&mut self.reader)
+    pub fn deserializer(&mut self) -> TextDeserializer<ReaderSource<&mut R>, Utf8Encoding> {
+        TextDeserializer::from_reader(&mut self.reader, Utf8Encoding::new())
     }
 }
 
@@ -1133,9 +1135,4 @@ impl<R: Read> Read for VerifyingReader<R> {
         }
         Ok(n)
     }
-}
-
-#[cfg(feature = "serde")]
-fn text_deserializer<'r, R: Read + 'r>(reader: R) -> TextReaderDeserializer<'r, Utf8Encoding> {
-    TextDeserializer::from_utf8_reader(text::TokenReader::new(reader))
 }

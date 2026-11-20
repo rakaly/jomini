@@ -131,14 +131,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jomini::TextDeserializer;
+    use jomini::{TextDeserializer, Utf8Encoding};
 
     fn deserialize<'bump>(
         data: &str,
         allocator: &'bump arena_serde::Arena,
     ) -> Result<SubUnitManager<'bump>, jomini::Error> {
-        let mut deserializer =
-            TextDeserializer::from_utf8_reader(jomini::text::TokenReader::new(data.as_bytes()));
+        let mut deserializer = TextDeserializer::from_slice(data.as_bytes(), Utf8Encoding::new());
         SubUnitManager::deserialize_in_arena(&mut deserializer, allocator)
     }
 

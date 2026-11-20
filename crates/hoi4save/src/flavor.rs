@@ -10,6 +10,9 @@ use std::borrow::Cow;
 
 const SAVE_VERSION_ID: u16 = 0x349d;
 
+/// The encoding and the number formats of HoI4 data: UTF-8 text without
+/// `$NAME$` macro parameters, which the syntax parser of jomini reads too.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Hoi4Flavor;
 
 impl Hoi4Flavor {
@@ -28,6 +31,13 @@ impl Hoi4Flavor {
 impl Encoding for Hoi4Flavor {
     fn decode<'a>(&self, data: &'a [u8]) -> Cow<'a, str> {
         Utf8Encoding::decode(data)
+    }
+}
+
+/// HoI4 text has no `$NAME$` macro parameters.
+impl jomini::text::TextFlavor for Hoi4Flavor {
+    fn macros(&self) -> bool {
+        false
     }
 }
 impl BinaryFlavor for Hoi4Flavor {

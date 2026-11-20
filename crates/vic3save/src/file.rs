@@ -2,7 +2,7 @@ use crate::{MeltOptions, Vic3Error, Vic3ErrorKind, flavor::Vic3Flavor, melt};
 use jomini::{
     Utf8Encoding,
     binary::{BinaryDeserializerBuilder, TokenResolver, de::BinaryReaderDeserializer},
-    text::de::TextReaderDeserializer,
+    text::de::{ReaderSource, TextDeserializer},
 };
 use serde::de::DeserializeOwned;
 use std::io::{Read, Write};
@@ -13,10 +13,10 @@ pub use jomini::envelope::*;
 /// An uncompressed Vic3 debug save backed by a forward-only reader.
 pub type Vic3DebugFile<R> = JominiTextFile<R>;
 
-/// Type alias for Vic3 text deserializer
+/// Type alias for Vic3 text deserializer over a reader `R`
 ///
 /// A lazy way to avoid the need to reimplement deserializer
-pub type Vic3TextDeserializer<'r> = TextReaderDeserializer<'r, Utf8Encoding>;
+pub type Vic3TextDeserializer<R> = TextDeserializer<ReaderSource<R>, Utf8Encoding>;
 pub type Vic3BinaryDeserializer<'r, 'res, RES> =
     BinaryReaderDeserializer<'r, 'res, RES, Vic3Flavor>;
 
