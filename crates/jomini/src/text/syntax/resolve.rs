@@ -64,14 +64,24 @@
 //!
 //! # Use variables from other files
 //!
-//! A file can use a variable that a different file defines. Give the
-//! variables of the other files to [`resolve_with`] as one [`Variables`]
-//! set. This set is the *scope* of the file. To resolve a file with a scope:
+//! A file can use a variable that a shared file defines, such as a CK3 file
+//! of `reader_export` or a Vic3 file of `gui/shared`. Give the variables of
+//! the shared files to [`resolve_with`] as one [`Variables`] set. This set
+//! is the *scope* of the file. The scope holds the variables of the files
+//! that share them, not of every file. To resolve a file with a scope:
 //!
-//! 1. Resolve each shared file with [`resolve`].
-//! 2. Get the variables of each shared file with [`Resolution::variables`].
-//! 3. Combine them into one set with [`Variables::extend_from`].
-//! 4. Resolve the file that uses them with [`resolve_with`] and the scope.
+//! 1. Resolve the shared files in the order that the game loads them, each
+//!    with [`resolve_with`] and the variables of the shared files before it.
+//! 2. Add the [`Resolution::variables`] of each shared file to the scope
+//!    with [`Variables::extend_from`], in the same order.
+//! 3. Resolve each file that uses them with [`resolve_with`] and the scope.
+//!
+//! [`Resolution::variables`] of a file holds each name that the file
+//! defines, also a name that its scope has. So when shared files define the
+//! same name, the scope depends on their order: the value of the last file
+//! wins. A name whose last definition in a file has an error is not in that
+//! file's variables, so a value from an earlier file stays in the combined
+//! scope; the error is in that file's errors.
 //!
 //! ```
 //! use jomini::text::syntax::{parse, resolve::{ResolvedScalar, Variables, resolve, resolve_with}};
@@ -86,29 +96,67 @@
 //! assert_eq!(resolution.variables().get("width"), Some(&ResolvedScalar::unquoted("8")));
 //! ```
 //!
+//! A definition applies from its position until the next definition of the
+//! name, and the scope counts as definitions before the file starts. So a
+//! file can define a name that the scope has, as many Vic3 GUI files
+//! redefine a variable of `gui/shared/layout.gui`, and the right side of
+//! each definition reads the value before it:
+//!
+//! ```
+//! use jomini::text::syntax::{parse, resolve::{ResolvedScalar, Variables, resolve_with}};
+//!
+//! let scope: Variables = [("width", "1")].into_iter().collect();
+//! let parse = parse(b"a = @width\n@width = @[width + 1]\nb = @width");
+//! let resolution = resolve_with(parse.tree(), &scope);
+//! let resolved = |key: &[u8]| resolution.get(parse.ast().get(key)?.value()?);
+//! assert_eq!(resolution.errors(), []);
+//! assert_eq!(resolved(b"a"), Some(&ResolvedScalar::unquoted("1")));
+//! assert_eq!(resolved(b"b"), Some(&ResolvedScalar::unquoted("2")));
+//! assert_eq!(resolution.variables().get("width"), Some(&ResolvedScalar::unquoted("2")));
+//! ```
+//!
 //! To deserialize with a shared scope, pass its resolution to
 //! `Document::with_resolution` as above.
 //!
 //! # Resolve a file again after an edit
 //!
 //! An editor resolves a file again after each change. The scope for the file
-//! must not hold the variables of the file itself. When a combined scope
-//! still holds the variables of the file from before the edit, each
-//! definition in the file is a [`ResolveErrorKind::DefinedInScope`] error,
-//! and each reference gets the value from before the edit.
+//! must not hold the variables of the file itself. A definition of the file
+//! replaces the value of the scope only from its position, so when a
+//! combined scope still holds the variables of the file from before the
+//! edit, a use before the definition gets the value from before the edit
+//! and has no error. Here, `a` should be an undefined variable, but the
+//! stale scope gives it the old value `1` with no error:
 //!
-//! Keep one [`Variables`] set per file and build each scope from the other
-//! files' sets. Cloning a set copies names and shares values. If you use
-//! one combined scope, see the caveat in [`Variables::remove`] before
-//! removing a file's old definitions.
+//! ```
+//! use jomini::text::syntax::{parse, resolve::{ResolvedScalar, resolve, resolve_with}};
+//!
+//! let old = parse(b"@x = 1");
+//! let stale = resolve(old.tree()).variables().clone();
+//!
+//! let edited = parse(b"a = @x\n@x = 2\nb = @x");
+//! let resolution = resolve_with(edited.tree(), &stale);
+//! let resolved = |key: &[u8]| resolution.get(edited.ast().get(key)?.value()?);
+//! assert_eq!(resolution.errors(), []);
+//! assert_eq!(resolved(b"a"), Some(&ResolvedScalar::unquoted("1")));
+//! assert_eq!(resolved(b"b"), Some(&ResolvedScalar::unquoted("2")));
+//! ```
+//!
+//! Keep one [`Variables`] set per shared file, in load order. After an edit
+//! of a shared file, resolve it again with the sets of the shared files
+//! before it, then resolve each later shared file again. A clone of a set
+//! shares the names and the values. If you use one combined scope, see the
+//! caveat in [`Variables::remove`] before removing a file's old definitions.
 //!
 //! # Find variables that have no value
 //!
 //! When the resolver cannot find the value of a variable or a calculation, it
-//! records a [`ResolveError`] in [`Resolution::errors`]. The
-//! [`range`](ResolveError::range) of the error is a byte range of the
-//! source. [`LineIndex`](super::LineIndex) converts its start to a line and a
-//! column.
+//! records a [`ResolveError`] in [`Resolution::errors`]. When a definition
+//! has an error, each use of the name until the next definition has no
+//! value, and the error is at the definition. The
+//! [`range`](ResolveError::range) of the error is a byte
+//! range of the source. [`LineIndex`](super::LineIndex) converts its start
+//! to a line and a column.
 //!
 //! A `Document` reads a variable or a calculation
 //! that has no value as its source text. A number field then fails with an
@@ -133,6 +181,13 @@
 //! assert_eq!(messages, ["1:9: undefined variable"]);
 //! ```
 //!
+//! # Find each definition
+//!
+//! A second definition of a name is not an error. To find one, as a linter
+//! does, or to find the definition that a use reads, as an editor does for
+//! "go to definition", use [`Resolution::definitions`] and
+//! [`Resolution::definition`].
+//!
 //! The rules that the resolver follows are in the
 //! [`resolve_with`](resolve_with#rules) documentation.
 
@@ -142,8 +197,9 @@ use super::{
 };
 use crate::{Encoding, Scalar, text::decode_quoted};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 /// The value of a variable or a calculation: its text, and whether the text
@@ -289,25 +345,29 @@ impl From<Vec<u8>> for ResolvedScalar {
 ///
 /// A set is the scope that [`resolve_with`] reads, and
 /// [`Resolution::variables`] gives the variables that one file defines. That
-/// set does not include the variables of the scope:
+/// set does not include the variables of the scope that the file only uses.
+/// A variable of the scope that the file defines has the value of the file:
 ///
 /// ```
 /// use jomini::text::syntax::{parse, resolve::{ResolvedScalar, Variables, resolve_with}};
 ///
 /// let mut scope = Variables::new();
 /// scope.insert("half", "0.5");
+/// scope.insert("width", "1");
 ///
-/// let parse = parse(b"@quarter = @[half / 2]\nx = @half");
+/// let parse = parse(b"@quarter = @[half / 2]\nx = @half\n@width = 2");
 /// let resolution = resolve_with(parse.tree(), &scope);
 /// assert_eq!(resolution.errors(), []);
-/// assert_eq!(resolution.variables().get("quarter"), Some(&ResolvedScalar::unquoted("0.25")));
-/// assert_eq!(resolution.variables().get("half"), None);
+/// let variables = resolution.variables();
+/// assert_eq!(variables.get("quarter"), Some(&ResolvedScalar::unquoted("0.25")));
+/// assert_eq!(variables.get("half"), None);
+/// assert_eq!(variables.get("width"), Some(&ResolvedScalar::unquoted("2")));
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Variables {
     /// Each value is shared with each reference of a [`Resolution`] that
     /// gives it, so a long value is stored one time.
-    values: HashMap<Box<[u8]>, ResolvedScalar>,
+    values: HashMap<Arc<[u8]>, ResolvedScalar>,
 }
 
 impl Variables {
@@ -383,13 +443,14 @@ impl Variables {
     }
 
     /// Add each variable of `other` to this set, for example to combine the
-    /// variables of several files. When both sets have a name, the value of
-    /// `other` replaces the value of this set. The sets share the values, so
-    /// the function copies only the names.
+    /// variables of several shared files into a scope. When both sets have a
+    /// name, the value of `other` replaces the value of this set. The sets
+    /// share the names and the values, so the function copies no text.
     ///
     /// ```
     /// use jomini::text::syntax::{parse, resolve::{ResolvedScalar, Variables, resolve, resolve_with}};
     ///
+    /// // Two shared files, where the second uses a variable of the first.
     /// let first = parse(b"@half = 0.5");
     /// let second = parse(b"@quarter = @[half / 2]");
     /// let mut scope = Variables::new();
@@ -407,7 +468,7 @@ impl Variables {
 
 /// Add variables from names and values. When the set already has a name,
 /// the new value replaces the old value. To add the variables of a different
-/// set, use [`Variables::extend_from`], which copies only the names.
+/// set, use [`Variables::extend_from`], which copies no text.
 impl<K: AsRef<[u8]>, V: Into<ResolvedScalar>> Extend<(K, V)> for Variables {
     fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
         for (name, value) in iter {
@@ -436,7 +497,7 @@ impl<'v> IntoIterator for &'v Variables {
 /// The names and the values of a set of [`Variables`], from
 /// [`Variables::iter`].
 #[derive(Debug, Clone)]
-pub struct Iter<'v>(std::collections::hash_map::Iter<'v, Box<[u8]>, ResolvedScalar>);
+pub struct Iter<'v>(std::collections::hash_map::Iter<'v, Arc<[u8]>, ResolvedScalar>);
 
 impl<'v> Iterator for Iter<'v> {
     type Item = (&'v [u8], &'v ResolvedScalar);
@@ -473,17 +534,6 @@ pub enum ResolveErrorKind {
     /// The right side of a variable definition is not a scalar, a variable,
     /// or a calculation. For example, it is a block, as in `@x = { 1 2 }`.
     UnsupportedDefinition,
-    /// The file defines the variable a second time. The variable keeps the
-    /// value of the first definition.
-    Redefined,
-    /// The file defines a variable that the scope of [`resolve_with`]
-    /// already has, such as a CK3 variable of `reader_export`. The variable
-    /// keeps the value of the scope.
-    ///
-    /// This error often means that the scope holds the variables of the file
-    /// itself. See [Resolve a file again after an
-    /// edit](crate::text::syntax::resolve#resolve-a-file-again-after-an-edit).
-    DefinedInScope,
 }
 
 impl ResolveErrorKind {
@@ -495,8 +545,6 @@ impl ResolveErrorKind {
             Self::NotFinite => "result is not a finite number",
             Self::UnsupportedCalculation => "unsupported calculation",
             Self::UnsupportedDefinition => "variable value is not a scalar or a calculation",
-            Self::Redefined => "variable is already defined",
-            Self::DefinedInScope => "variable is already defined in the scope",
         }
     }
 }
@@ -526,7 +574,10 @@ pub struct ResolveError {
     /// The byte range of the variable, or of the part of the calculation that
     /// has the error. For example, the range of `@[1 / 0]` is the range of
     /// `1 / 0`, and the range of an undefined variable in a calculation is
-    /// the range of its name.
+    /// the range of its name. For an
+    /// [`UnsupportedDefinition`](ResolveErrorKind::UnsupportedDefinition), it
+    /// is the right side of the definition, or the whole directive for a
+    /// `@:register_variable` with no value.
     pub range: TextRange,
 }
 
@@ -558,11 +609,13 @@ impl std::error::Error for ResolveError {}
 /// [`is_for`](Resolution::is_for).
 #[derive(Debug, Clone)]
 pub struct Resolution {
-    /// The value of each variable token, sorted by token.
-    tokens: Vec<(TokenId, ResolvedScalar)>,
-    /// The value of each calculation and each `@:load_variable` node,
-    /// sorted by node.
-    nodes: Vec<(NodeId, ResolvedScalar)>,
+    /// What each variable token reads, sorted by token.
+    tokens: Vec<Recorded<TokenId>>,
+    /// The value of each calculation and what each `@:load_variable` node
+    /// reads, sorted by node.
+    nodes: Vec<Recorded<NodeId>>,
+    /// Each definition of the file, in source order.
+    definitions: Vec<DefinitionData>,
     variables: Variables,
     errors: Vec<ResolveError>,
     /// The identity of the parse of the tree.
@@ -570,28 +623,121 @@ pub struct Resolution {
 }
 
 impl Resolution {
-    /// An error for each variable and each calculation that has no value.
+    /// The errors of the variables and the calculations that have no value.
+    /// A use of a variable whose definition has an error has no error of its
+    /// own: the error is at the definition.
     pub fn errors(&self) -> &[ResolveError] {
         &self.errors
     }
 
-    /// The variables that the file defines, each with the value it has after
-    /// the whole file is read. This set does not include the variables of the
-    /// scope.
+    /// The variables that the file defines, each with the value of its last
+    /// definition. This set includes a variable of the scope that the file
+    /// defines, with the value of the file, and does not include the
+    /// variables of the scope that the file only uses. A name whose last
+    /// definition has an error is not in the set.
     pub fn variables(&self) -> &Variables {
         &self.variables
     }
 
+    /// Each definition of a variable in the file, in source order. A
+    /// definition that has an error is also in the list, with no value.
+    ///
+    /// Use the definitions to find what the file defines more than one time,
+    /// or to show which definition a use reads, with
+    /// [`definition`](Resolution::definition). Here, a linter reports each
+    /// definition that replaces a definition of the file:
+    ///
+    /// ```
+    /// use jomini::text::syntax::{LineIndex, parse, resolve::{Definition, Replaced, resolve}};
+    ///
+    /// let source = b"@a = 1\n@b = 2\n@a = @[a + 1]";
+    /// let parse = parse(source);
+    /// let resolution = resolve(parse.tree());
+    /// assert_eq!(resolution.errors(), []);
+    ///
+    /// let lines = LineIndex::new(source);
+    /// let at = |definition: Definition| lines.line_col(definition.key_range().start());
+    /// let messages: Vec<String> = resolution
+    ///     .definitions()
+    ///     .filter_map(|definition| match definition.replaces()? {
+    ///         Replaced::Definition(previous) => Some(format!(
+    ///             "{}: @{} is already defined at {}",
+    ///             at(definition),
+    ///             String::from_utf8_lossy(definition.name()),
+    ///             at(previous),
+    ///         )),
+    ///         Replaced::Scope => None,
+    ///     })
+    ///     .collect();
+    /// assert_eq!(messages, ["3:1: @a is already defined at 1:1"]);
+    /// ```
+    pub fn definitions(&self) -> Definitions<'_> {
+        Definitions {
+            resolution: self,
+            indices: 0..self.definitions.len(),
+        }
+    }
+
+    /// The definition of the file that the variable or the
+    /// `@:load_variable` directive in the [`Value`] node `value` reads.
+    ///
+    /// Returns `None` when:
+    ///
+    /// - `value` is not a variable or a `@:load_variable` directive. A
+    ///   calculation can read several definitions, so it has no definition,
+    ///   and a name in a calculation, such as `x` in `@[x + 1]`, is not a
+    ///   [`Value`] node.
+    /// - `value` reads a variable of the scope, or an undefined variable.
+    /// - `value` is a `@name` in a code payload, a conditional parameter
+    ///   block, or the body of `@:define` or `@:insert`, which the resolver
+    ///   does not examine.
+    /// - `value` is from a different parse. See
+    ///   [`is_for`](Resolution::is_for).
+    ///
+    /// A `@@name` key is not a [`Value`] node, so this function cannot find
+    /// what it reads.
+    ///
+    /// A use of a definition that has an error gives the definition, whose
+    /// [`value`](Definition::value) is `None`.
+    ///
+    /// ```
+    /// use jomini::text::syntax::{parse, resolve::{ResolvedScalar, Variables, resolve_with}};
+    ///
+    /// let scope: Variables = [("w", "1")].into_iter().collect();
+    /// let parse = parse(b"a = @w\n@w = 2\nb = @w\n@w = 3\nc = @w");
+    /// let resolution = resolve_with(parse.tree(), &scope);
+    /// let read = |key: &[u8]| resolution.definition(parse.ast().get(key)?.value()?);
+    /// assert_eq!(read(b"a"), None);
+    /// assert_eq!(read(b"b").map(|d| d.key_range().to_range()), Some(7..9));
+    /// let c = read(b"c").unwrap();
+    /// assert_eq!(c.key_range().to_range(), 21..23);
+    /// assert_eq!(c.value(), Some(&ResolvedScalar::unquoted("3")));
+    /// ```
+    pub fn definition(&self, value: Value<'_, '_>) -> Option<Definition<'_>> {
+        if !self.is_for(tree_of(value)) {
+            return None;
+        }
+        let definition = match value {
+            Value::Scalar(token) => find(&self.tokens, token.id())?.definition,
+            Value::ReaderDirective(directive) => {
+                find(&self.nodes, directive.syntax().id())?.definition
+            }
+            _ => None,
+        }?;
+        Some(Definition {
+            resolution: self,
+            index: definition.get(),
+        })
+    }
+
     /// The value of a variable token.
     pub(crate) fn token(&self, id: TokenId) -> Option<&ResolvedScalar> {
-        let index = self.tokens.binary_search_by_key(&id, |(id, _)| *id).ok()?;
-        Some(&self.tokens[index].1)
+        find(&self.tokens, id)?.value.as_ref()
     }
 
     /// The value of a calculation or a `@:load_variable` node.
     pub(crate) fn node(&self, id: NodeId) -> Option<&ResolvedScalar> {
-        let index = self.nodes.binary_search_by_key(&id, |(id, _)| *id).ok()?;
-        Some(&self.nodes[index].1)
+        find(&self.nodes, id)?.value.as_ref()
     }
 
     /// Return `true` when this is the resolution of `tree`: the tree is of
@@ -621,6 +767,8 @@ impl Resolution {
     /// - `value` is a scalar that is not a variable, or a block.
     /// - The resolver recorded an error for `value`. See
     ///   [`errors`](Resolution::errors).
+    /// - `value` uses a variable whose definition has an error, which is at
+    ///   the definition.
     /// - `value` is from a different parse. See
     ///   [`is_for`](Resolution::is_for).
     ///
@@ -636,11 +784,7 @@ impl Resolution {
     /// assert_eq!(resolved(b"w"), None);
     /// ```
     pub fn get(&self, value: Value<'_, '_>) -> Option<&ResolvedScalar> {
-        let tree = match value.syntax() {
-            SyntaxElement::Node(node) => node.tree,
-            SyntaxElement::Token(token) => token.tree,
-        };
-        if !self.is_for(tree) {
+        if !self.is_for(tree_of(value)) {
             return None;
         }
         match value {
@@ -652,19 +796,217 @@ impl Resolution {
     }
 }
 
+fn tree_of<'t, 'a>(value: Value<'t, 'a>) -> SyntaxTree<'t, 'a> {
+    match value.syntax() {
+        SyntaxElement::Node(node) => node.tree,
+        SyntaxElement::Token(token) => token.tree,
+    }
+}
+
+fn find<I: Ord + Copy>(records: &[Recorded<I>], id: I) -> Option<&Recorded<I>> {
+    let index = records.binary_search_by_key(&id, |record| record.id).ok()?;
+    Some(&records[index])
+}
+
+/// What a variable token, a calculation, or a `@:load_variable` node gives.
+#[derive(Debug, Clone)]
+struct Recorded<I> {
+    id: I,
+    /// The definition of the file that a use reads. `None` for a use of the
+    /// scope and for a calculation.
+    definition: Option<DefinitionIndex>,
+    /// `None` for a use of a definition that has an error.
+    value: Option<ResolvedScalar>,
+}
+
+impl Recorded<()> {
+    fn with_id<I>(self, id: I) -> Recorded<I> {
+        Recorded {
+            id,
+            definition: self.definition,
+            value: self.value,
+        }
+    }
+}
+
+/// An index of `Resolution::definitions` plus one. An `Option` of it takes
+/// four bytes, so on a 64-bit target a `Recorded<TokenId>` takes no more
+/// space than a token id and a value: the index fits in their padding.
+#[derive(Debug, Clone, Copy)]
+struct DefinitionIndex(NonZeroU32);
+
+impl DefinitionIndex {
+    fn new(index: u32) -> Option<Self> {
+        index.checked_add(1).and_then(NonZeroU32::new).map(Self)
+    }
+
+    fn get(self) -> usize {
+        self.0.get() as usize - 1
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DefinitionData {
+    name: Arc<[u8]>,
+    key: TextRange,
+    value: Option<ResolvedScalar>,
+    replaces: Replaces,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Replaces {
+    Nothing,
+    Scope,
+    /// The index of the previous definition of the name.
+    Definition(u32),
+}
+
+/// A definition of a variable in a file, such as `@size = 0.5` or
+/// `@:register_variable size = 0.5`. Get the definitions from
+/// [`Resolution::definitions`] and [`Resolution::definition`].
+///
+/// Two definitions are equal when they are the same definition of the same
+/// resolution.
+#[derive(Clone, Copy)]
+pub struct Definition<'r> {
+    resolution: &'r Resolution,
+    index: usize,
+}
+
+impl<'r> Definition<'r> {
+    fn data(&self) -> &'r DefinitionData {
+        &self.resolution.definitions[self.index]
+    }
+
+    /// The name of the variable, with no `@`.
+    pub fn name(&self) -> &'r [u8] {
+        &self.data().name
+    }
+
+    /// The byte range of the name in the source: the key `@size` of
+    /// `@size = 0.5`, or `size` of `@:register_variable size = 0.5`.
+    pub fn key_range(&self) -> TextRange {
+        self.data().key
+    }
+
+    /// The value of the definition, or `None` when the definition has no
+    /// value: its right side has an error, reads a variable that has no
+    /// value, or is missing. The error is in [`Resolution::errors`], at the
+    /// definition or at the earlier definition that has no value, or, for a
+    /// definition with `=` and no value such as `@size =`, in the parse
+    /// errors.
+    pub fn value(&self) -> Option<&'r ResolvedScalar> {
+        self.data().value.as_ref()
+    }
+
+    /// What the definition replaces: the previous definition of the name in
+    /// the file, or else a variable of the scope. `None` for the first
+    /// definition of a name that the scope does not have.
+    pub fn replaces(&self) -> Option<Replaced<'r>> {
+        match self.data().replaces {
+            Replaces::Nothing => None,
+            Replaces::Scope => Some(Replaced::Scope),
+            Replaces::Definition(index) => Some(Replaced::Definition(Definition {
+                resolution: self.resolution,
+                index: index as usize,
+            })),
+        }
+    }
+}
+
+impl PartialEq for Definition<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.resolution, other.resolution) && self.index == other.index
+    }
+}
+
+impl Eq for Definition<'_> {}
+
+impl std::hash::Hash for Definition<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::ptr::from_ref(self.resolution).hash(state);
+        self.index.hash(state);
+    }
+}
+
+impl fmt::Debug for Definition<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Definition")
+            .field("name", &String::from_utf8_lossy(self.name()))
+            .field("key_range", &self.key_range())
+            .field("value", &self.value())
+            .finish()
+    }
+}
+
+/// What a [`Definition`] replaces, from [`Definition::replaces`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Replaced<'r> {
+    /// A variable of the scope of [`resolve_with`].
+    Scope,
+    /// The previous definition of the name in the file.
+    Definition(Definition<'r>),
+}
+
+/// The definitions of a file in source order, from
+/// [`Resolution::definitions`].
+#[derive(Clone)]
+pub struct Definitions<'r> {
+    resolution: &'r Resolution,
+    indices: std::ops::Range<usize>,
+}
+
+/// The definitions that are left.
+impl fmt::Debug for Definitions<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.clone()).finish()
+    }
+}
+
+impl<'r> Iterator for Definitions<'r> {
+    type Item = Definition<'r>;
+
+    fn next(&mut self) -> Option<Definition<'r>> {
+        let index = self.indices.next()?;
+        Some(Definition {
+            resolution: self.resolution,
+            index,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.indices.size_hint()
+    }
+}
+
+impl DoubleEndedIterator for Definitions<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let index = self.indices.next_back()?;
+        Some(Definition {
+            resolution: self.resolution,
+            index,
+        })
+    }
+}
+
+impl ExactSizeIterator for Definitions<'_> {}
+
+impl std::iter::FusedIterator for Definitions<'_> {}
+
 /// Find the value of each variable and each calculation of `tree`.
 ///
-/// A variable that the tree does not define is a
-/// [`UndefinedVariable`](ResolveErrorKind::UndefinedVariable) error. To use
-/// the variables of other files, use [`resolve_with`]. The resolver follows
-/// the [rules](resolve_with#rules) of `resolve_with`.
+/// A use of a variable that the tree does not define before the use is a
+/// [`UndefinedVariable`](ResolveErrorKind::UndefinedVariable) error. A use
+/// of a definition that has an error has no value and no second error.
+/// To use the variables of other files, use [`resolve_with`]. The resolver
+/// follows the [rules](resolve_with#rules) of `resolve_with`.
 pub fn resolve(tree: SyntaxTree<'_, '_>) -> Resolution {
     resolve_with(tree, &Variables::new())
 }
 
 /// Find the value of each variable and each calculation of `tree`. A
-/// variable that the tree does not define comes from `scope`, the variables
-/// of other files.
+/// variable that the tree does not define yet comes from `scope`, the
+/// variables of other files.
 ///
 /// ```
 /// use jomini::text::syntax::{parse, resolve::{ResolvedScalar, Variables, resolve_with}};
@@ -685,11 +1027,25 @@ pub fn resolve(tree: SyntaxTree<'_, '_>) -> Resolution {
 ///   variable. The right side is a scalar, a different variable, or a
 ///   calculation. The CK3 directive `@:register_variable size = 0.5` also
 ///   defines a variable.
-/// - A definition applies from its position to the end of the file. A block
-///   does not limit it: a definition in a block also applies after the
-///   block, because the game replaces the variables before it parses the
-///   blocks. A use before the definition is an
-///   [`UndefinedVariable`](ResolveErrorKind::UndefinedVariable) error.
+/// - A definition applies from its position until the next definition of
+///   the name. The scope counts as definitions before the file starts. A
+///   block does not limit a definition: a definition in a block also
+///   applies after the block, because the game replaces the variables
+///   before it parses the blocks. A use before the first definition of the
+///   name gets the value of the scope, and is an
+///   [`UndefinedVariable`](ResolveErrorKind::UndefinedVariable) error when
+///   the scope does not have the name.
+/// - The right side of a definition reads the variables before it, so
+///   `@x = @[x + 1]` adds one to the previous value of `x`, of the file or
+///   of the scope. A second definition of a name is not an error. To find
+///   one, use [`Resolution::definitions`].
+/// - When a definition has an error, each use of the name until the next
+///   definition has no value, also when the scope has the name. The error
+///   is at the definition, and the uses have no errors. A
+///   `@:register_variable size` with no `= value` is an
+///   [`UnsupportedDefinition`](ResolveErrorKind::UnsupportedDefinition)
+///   error; a definition with `=` and no value, such as `@size =`, has only
+///   a parse error.
 /// - In value position, `@:load_variable size` is the same as `@size`. In
 ///   key position, `@@size` puts the value of `size` in place of the key:
 ///   after `@size = width`, the field `@@size = 3` reads as `width = 3`.
@@ -706,28 +1062,42 @@ pub fn resolve(tree: SyntaxTree<'_, '_>) -> Resolution {
 ///   (`[[name] ... ]`). The game applies their contents only where a script
 ///   gives the parameters. [`Resolution::get`] returns `None` for a `@name`
 ///   in them, and a document reads its source text.
-/// - When the resolver cannot find a value, it records a [`ResolveError`].
-///   [`Resolution::get`] then returns `None`, and a document reads the
-///   source text. The variants of [`ResolveErrorKind`] give the other rules,
-///   such as what a second definition of a name does.
+/// - When the resolver cannot find a value, it records a [`ResolveError`],
+///   except for the cases above. [`Resolution::get`] then returns `None`,
+///   and a document reads the source text. The variants of
+///   [`ResolveErrorKind`] give the other rules.
 pub fn resolve_with(tree: SyntaxTree<'_, '_>, scope: &Variables) -> Resolution {
     let mut resolver = Resolver {
         scope,
-        failed: HashSet::new(),
+        latest: HashMap::new(),
         out: Resolution {
             tokens: Vec::new(),
             nodes: Vec::new(),
+            definitions: Vec::new(),
             variables: Variables::new(),
             errors: Vec::new(),
             parse_id: tree.data.parse_id,
         },
     };
     resolver.walk(tree.root());
-    let mut out = resolver.out;
+    let Resolver {
+        latest, mut out, ..
+    } = resolver;
+    out.variables.values.reserve(latest.len());
+    for (name, index) in latest {
+        if let Some(value) = &out.definitions[index as usize].value {
+            out.variables.values.insert(name, value.clone());
+        }
+    }
     // The walk is in source order, so the lists are almost always sorted
     // already.
-    out.tokens.sort_unstable_by_key(|(id, _)| *id);
-    out.nodes.sort_unstable_by_key(|(id, _)| *id);
+    out.tokens.sort_unstable_by_key(|record| record.id);
+    out.nodes.sort_unstable_by_key(|record| record.id);
+    // A cache can keep the resolution for a long time.
+    out.tokens.shrink_to_fit();
+    out.nodes.shrink_to_fit();
+    out.definitions.shrink_to_fit();
+    out.errors.shrink_to_fit();
     out
 }
 
@@ -778,8 +1148,8 @@ pub fn evaluate_with(calc: Calc<'_, '_>, scope: &Variables) -> Result<f64, Vec<R
 
 enum Lookup<'s> {
     Found(&'s [u8]),
-    /// The definition of the variable has an error, which the resolver
-    /// records one time.
+    /// The last definition of the variable has an error, which the
+    /// resolver records one time.
     Failed,
     Missing,
 }
@@ -788,10 +1158,19 @@ enum Lookup<'s> {
 /// definition that has an error, which the resolver records one time.
 type EvalResult = Result<f64, Vec<ResolveError>>;
 
+/// What a use of a variable reads.
+enum Read<'r> {
+    /// The definition of the file at this index, and its value, if any.
+    File(u32, Option<&'r ResolvedScalar>),
+    Scope(&'r ResolvedScalar),
+    Missing,
+}
+
 struct Resolver<'s> {
     scope: &'s Variables,
-    /// The variables whose last definition has an error.
-    failed: HashSet<Box<[u8]>>,
+    /// The last definition of each name so far, as an index of
+    /// `out.definitions`. The name is shared with the definitions.
+    latest: HashMap<Arc<[u8]>, u32>,
     out: Resolution,
 }
 
@@ -816,7 +1195,7 @@ impl Resolver<'_> {
                     if let Some(token) = ScalarToken::cast(token)
                         && token.variable_name().is_some()
                     {
-                        self.reference(token);
+                        self.variable(token);
                     }
                     continue;
                 }
@@ -839,52 +1218,62 @@ impl Resolver<'_> {
         }
     }
 
-    fn lookup(&self, name: &[u8]) -> Lookup<'_> {
-        if let Some(value) = self.out.variables.get(name) {
-            Lookup::Found(value.as_bytes())
-        } else if self.failed.contains(name) {
-            Lookup::Failed
+    /// The last definition of `name` in the file so far, or else the scope.
+    fn read(&self, name: &[u8]) -> Read<'_> {
+        if let Some(&index) = self.latest.get(name) {
+            let value = self.out.definitions[index as usize].value.as_ref();
+            Read::File(index, value)
         } else if let Some(value) = self.scope.get(name) {
-            Lookup::Found(value.as_bytes())
+            Read::Scope(value)
         } else {
-            Lookup::Missing
+            Read::Missing
         }
+    }
+
+    fn lookup(&self, name: &[u8]) -> Lookup<'_> {
+        match self.read(name) {
+            Read::File(_, Some(value)) | Read::Scope(value) => Lookup::Found(value.as_bytes()),
+            Read::File(_, None) => Lookup::Failed,
+            Read::Missing => Lookup::Missing,
+        }
+    }
+
+    /// What a use of `name` reads. A missing variable is an error at
+    /// `range` and gives `None`.
+    fn read_named(&mut self, name: &[u8], range: TextRange) -> Option<Recorded<()>> {
+        let (definition, value) = match self.read(name) {
+            Read::File(index, value) => (DefinitionIndex::new(index), value.cloned()),
+            Read::Scope(value) => (None, Some(value.clone())),
+            Read::Missing => {
+                let error = ResolveError::new(ResolveErrorKind::UndefinedVariable, range);
+                self.out.errors.push(error);
+                return None;
+            }
+        };
+        Some(Recorded {
+            id: (),
+            definition,
+            value,
+        })
     }
 
     /// The value of a variable token, which it also records, or `None`
     /// when it has no value.
     fn variable(&mut self, token: ScalarToken<'_, '_>) -> Option<ResolvedScalar> {
         let name = token.variable_name().unwrap_or(token.text());
-        let value = self.variable_named(name, token.text_range())?;
-        self.out.tokens.push((token.id(), value.clone()));
-        Some(value)
-    }
-
-    /// The value of the variable `name`, or `None` when it has no value.
-    /// An error is at `range`.
-    fn variable_named(&mut self, name: &[u8], range: TextRange) -> Option<ResolvedScalar> {
-        if let Some(value) = self.out.variables.get(name) {
-            return Some(value.clone());
-        }
-        if self.failed.contains(name) {
-            return None;
-        }
-        if let Some(value) = self.scope.get(name) {
-            return Some(value.clone());
-        }
-        let error = ResolveError::new(ResolveErrorKind::UndefinedVariable, range);
-        self.out.errors.push(error);
-        None
+        let read = self.read_named(name, token.text_range())?;
+        let value = read.value.clone();
+        self.out.tokens.push(read.with_id(token.id()));
+        value
     }
 
     /// The value of a `@:load_variable` directive, which it also records.
     fn load_variable(&mut self, directive: ReaderDirective<'_, '_>) -> Option<ResolvedScalar> {
         let argument = directive.argument()?;
-        let value = self.variable_named(argument.text(), argument.text_range())?;
-        self.out
-            .nodes
-            .push((directive.syntax().id(), value.clone()));
-        Some(value)
+        let read = self.read_named(argument.text(), argument.text_range())?;
+        let value = read.value.clone();
+        self.out.nodes.push(read.with_id(directive.syntax().id()));
+        value
     }
 
     /// A CK3 reader directive. `@:register_variable` defines a variable,
@@ -898,7 +1287,15 @@ impl Resolver<'_> {
         match directive.kind() {
             DirectiveKind::RegisterVariable => {
                 if let Some(argument) = directive.argument() {
-                    self.define_value(argument, argument.text(), directive.value());
+                    let value = directive.value();
+                    // With `=` and no value, the parser has an error.
+                    if value.is_none() && directive.op_token().is_none() {
+                        let range = directive.syntax().text_range();
+                        let error =
+                            ResolveError::new(ResolveErrorKind::UnsupportedDefinition, range);
+                        self.out.errors.push(error);
+                    }
+                    self.define_value(argument, argument.text(), value);
                 }
             }
             DirectiveKind::LoadVariable => {
@@ -908,19 +1305,23 @@ impl Resolver<'_> {
         }
     }
 
-    fn reference(&mut self, token: ScalarToken<'_, '_>) {
-        self.variable(token);
-    }
-
-    fn calc(&mut self, calc: Calc<'_, '_>) {
-        let value = eval_calc(calc, &|name| self.lookup(name));
-        match value {
+    /// The value of a calculation, which it also records, or `None` when
+    /// it has an error.
+    fn calc(&mut self, calc: Calc<'_, '_>) -> Option<ResolvedScalar> {
+        match eval_calc(calc, &|name| self.lookup(name)) {
             Ok(value) => {
-                self.out
-                    .nodes
-                    .push((calc.syntax().id(), format_number(value)));
+                let value = format_number(value);
+                self.out.nodes.push(Recorded {
+                    id: calc.syntax().id(),
+                    definition: None,
+                    value: Some(value.clone()),
+                });
+                Some(value)
             }
-            Err(errors) => self.out.errors.extend(errors),
+            Err(errors) => {
+                self.out.errors.extend(errors);
+                None
+            }
         }
     }
 
@@ -930,24 +1331,14 @@ impl Resolver<'_> {
         self.define_value(key, name, field.value());
     }
 
-    /// Define the variable `name` with `value`. The name is at `key`.
+    /// Define the variable `name` with `value`. The name is at `key`. The
+    /// right side reads the variables before the definition.
     fn define_value(
         &mut self,
         key: ScalarToken<'_, '_>,
         name: &[u8],
         value: Option<Value<'_, '_>>,
     ) {
-        if self.out.variables.get(name).is_some() || self.failed.contains(name) {
-            let error = ResolveError::new(ResolveErrorKind::Redefined, key.text_range());
-            self.out.errors.push(error);
-            return;
-        }
-        if self.scope.get(name).is_some() {
-            let error = ResolveError::new(ResolveErrorKind::DefinedInScope, key.text_range());
-            self.out.errors.push(error);
-            return;
-        }
-        let name: Box<[u8]> = name.into();
         let value = match value {
             Some(Value::Scalar(token)) => match token.kind() {
                 SyntaxKind::Variable => self.variable(token),
@@ -958,37 +1349,42 @@ impl Resolver<'_> {
             {
                 self.load_variable(directive)
             }
-            Some(Value::Calc(calc)) => {
-                let value = eval_calc(calc, &|name| self.lookup(name));
-                match value {
-                    Ok(value) => {
-                        let value = format_number(value);
-                        self.out.nodes.push((calc.syntax().id(), value.clone()));
-                        Some(value)
-                    }
-                    Err(error) => {
-                        self.out.errors.extend(error);
-                        None
-                    }
-                }
-            }
+            Some(Value::Calc(calc)) => self.calc(calc),
             Some(value) => {
                 let range = value.syntax().text_range();
                 let error = ResolveError::new(ResolveErrorKind::UnsupportedDefinition, range);
                 self.out.errors.push(error);
                 None
             }
-            // The parser gives a syntax error for a field with no value.
+            // The parser gives a syntax error for a definition with `=` and
+            // no value, and `directive` records an error for a
+            // `@:register_variable` with no `=`.
             None => None,
         };
-        match value {
-            Some(value) => {
-                self.out.variables.values.insert(name, value);
+        let index = self.out.definitions.len() as u32;
+        let (name, replaces) = match self.latest.get_mut(name) {
+            Some(latest) => {
+                let previous = std::mem::replace(latest, index);
+                let name = self.out.definitions[previous as usize].name.clone();
+                (name, Replaces::Definition(previous))
             }
             None => {
-                self.failed.insert(name);
+                let replaces = if self.scope.contains(name) {
+                    Replaces::Scope
+                } else {
+                    Replaces::Nothing
+                };
+                let name: Arc<[u8]> = name.into();
+                self.latest.insert(name.clone(), index);
+                (name, replaces)
             }
-        }
+        };
+        self.out.definitions.push(DefinitionData {
+            name,
+            key: key.text_range(),
+            value,
+            replaces,
+        });
     }
 }
 
@@ -1089,4 +1485,18 @@ fn eval<'s>(expr: Expr<'_, '_>, lookup: &dyn Fn(&[u8]) -> Lookup<'s>) -> EvalRes
 fn parse_number(text: &[u8]) -> Option<f64> {
     let text = text.strip_suffix(b"f").unwrap_or(text);
     std::str::from_utf8(text).ok()?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 32-bit target, such as wasm32, has no padding for the index.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn a_use_records_its_definition_in_no_more_space() {
+        let plain = std::mem::size_of::<(TokenId, ResolvedScalar)>();
+        assert_eq!(std::mem::size_of::<Recorded<TokenId>>(), plain);
+        assert_eq!(std::mem::size_of::<Recorded<NodeId>>(), plain);
+    }
 }

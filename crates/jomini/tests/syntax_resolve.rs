@@ -15,8 +15,8 @@ use jomini::{
             de::{Document, Error},
             parse, parse_with,
             resolve::{
-                Resolution, ResolveErrorKind, ResolvedScalar, Variables, evaluate, evaluate_with,
-                resolve, resolve_with,
+                Replaced, Resolution, ResolveErrorKind, ResolvedScalar, Variables, evaluate,
+                evaluate_with, resolve, resolve_with,
             },
         },
     },
@@ -52,6 +52,14 @@ fn resolved<T: DeserializeOwned>(
         .with_resolution(resolution.clone())
         .and_then(|de| de.deserialize());
     (result, resolution)
+}
+
+/// The kind and the byte range of each error.
+fn located(source: &[u8], scope: &Variables) -> Vec<(ResolveErrorKind, std::ops::Range<usize>)> {
+    let parse = parse(source);
+    let resolution = resolve_with(parse.tree(), scope);
+    let errors = resolution.errors().iter();
+    errors.map(|e| (e.kind, e.range.to_range())).collect()
 }
 
 fn kinds(source: &[u8]) -> Vec<ResolveErrorKind> {
@@ -236,13 +244,53 @@ fn undefined_variable_keeps_its_text() {
 
 #[test]
 fn failed_definition_has_one_error() {
+    let none = Variables::new();
     let source = b"@a = @[1 / 0]\nx = @a\ny = @[a + 1]";
-    assert_eq!(kinds(source), [ResolveErrorKind::NotFinite]);
-
-    // A second definition is an error, and the failed one stays.
     assert_eq!(
-        kinds(b"@a = @[1 / 0]\n@a = 1\nx = @a"),
-        [ResolveErrorKind::NotFinite, ResolveErrorKind::Redefined]
+        located(source, &none),
+        [(ResolveErrorKind::NotFinite, 7..12)]
+    );
+
+    // A later definition gives the name a value again.
+    let source = b"@a = @[1 / 0]\nx = @a\n@a = 1\ny = @a";
+    let parse = parse(source);
+    let resolution = resolve(parse.tree());
+    let errors: Vec<_> = resolution
+        .errors()
+        .iter()
+        .map(|e| (e.kind, e.range.to_range()))
+        .collect();
+    assert_eq!(errors, [(ResolveErrorKind::NotFinite, 7..12)]);
+    let resolved = |key: &[u8]| resolution.get(parse.ast().get(key)?.value()?);
+    assert_eq!(resolved(b"x"), None);
+    assert_eq!(resolved(b"y"), Some(&ResolvedScalar::unquoted("1")));
+    assert_eq!(
+        resolution.variables().get("a"),
+        Some(&ResolvedScalar::unquoted("1"))
+    );
+
+    // A failed definition after a successful one leaves the name with no
+    // value.
+    let source = b"@a = 1\nx = @a\n@a = @[1 / 0]\ny = @a\nz = @[a + 1]";
+    let parse = syntax::parse(source);
+    let resolution = resolve(parse.tree());
+    let errors: Vec<_> = resolution
+        .errors()
+        .iter()
+        .map(|e| (e.kind, e.range.to_range()))
+        .collect();
+    assert_eq!(errors, [(ResolveErrorKind::NotFinite, 21..26)]);
+    let resolved = |key: &[u8]| resolution.get(parse.ast().get(key)?.value()?);
+    assert_eq!(resolved(b"x"), Some(&ResolvedScalar::unquoted("1")));
+    assert_eq!(resolved(b"y"), None);
+    assert_eq!(resolved(b"z"), None);
+    assert_eq!(resolution.variables().get("a"), None);
+
+    // An alias of itself with no scope has no value. The error is at the
+    // right side.
+    assert_eq!(
+        located(b"@x = @x", &none),
+        [(ResolveErrorKind::UndefinedVariable, 5..7)]
     );
 }
 
@@ -252,25 +300,450 @@ fn source_order_and_scope() {
     scope.insert("size", "1");
     scope.insert("other", "3");
 
-    // A variable that the file does not define comes from the scope. A
-    // definition of a name that the scope has is an error, and the value
-    // of the scope stays, as for a CK3 `reader_export` variable.
+    // A variable that the file does not define yet comes from the scope. A
+    // definition of a name that the scope has replaces the value of the
+    // scope from its position.
     let source = b"a = @size\n@size = 2\nb = @size\nc = @[size + other]";
     let (file, resolution) = resolved::<HashMap<String, f64>>(source, &scope);
     let file = file.unwrap();
-    assert_eq!((file["a"], file["b"], file["c"]), (1.0, 1.0, 4.0));
-    assert_eq!(resolution.variables().get("size"), None);
+    assert_eq!((file["a"], file["b"], file["c"]), (1.0, 2.0, 5.0));
+    assert_eq!(
+        resolution.variables().get("size"),
+        Some(&ResolvedScalar::unquoted("2"))
+    );
     assert_eq!(resolution.variables().get("other"), None);
-    let errors = resolution.errors();
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].kind, ResolveErrorKind::DefinedInScope);
-    assert_eq!(&source[errors[0].range.to_range()], b"@size");
+    assert_eq!(resolution.errors(), []);
 
     // A reference before the definition, and no scope.
     assert_eq!(
         kinds(b"a = @size\n@size = 2"),
         [ResolveErrorKind::UndefinedVariable]
     );
+}
+
+/// From the Vic3 GUI files, which redefine `@panel_width_plus_70` of
+/// `gui/shared/layout.gui`.
+#[test]
+fn a_definition_reads_the_value_of_the_scope_that_it_replaces() {
+    let scope: Variables = [("x", "1")].into_iter().collect();
+    let source = b"a = @x\n@x = @[x + 1]\nb = @x";
+    let (file, resolution) = resolved::<HashMap<String, f64>>(source, &scope);
+    assert_eq!(resolution.errors(), []);
+    let file = file.unwrap();
+    assert_eq!((file["a"], file["b"]), (1.0, 2.0));
+    assert_eq!(
+        resolution.variables().get("x"),
+        Some(&ResolvedScalar::unquoted("2"))
+    );
+
+    // An alias of the same name also reads the value of the scope.
+    let (file, resolution) = resolved::<HashMap<String, f64>>(b"@x = @x\nb = @x", &scope);
+    assert_eq!(resolution.errors(), []);
+    assert_eq!(file.unwrap()["b"], 1.0);
+    assert_eq!(
+        resolution.variables().get("x"),
+        Some(&ResolvedScalar::unquoted("1"))
+    );
+
+    // The scope is not changed, so a calculation of the scope alone reads
+    // the old value.
+    let parse = parse(source);
+    let calc = parse.root().descendants().find_map(Calc::cast).unwrap();
+    assert_eq!(evaluate_with(calc, &scope), Ok(2.0));
+    assert_eq!(scope.get("x"), Some(&ResolvedScalar::unquoted("1")));
+}
+
+#[test]
+fn a_failed_definition_over_the_scope_has_no_value() {
+    let scope: Variables = [("x", "1")].into_iter().collect();
+    let source = b"a = @x\n@x = @[1 / 0]\nb = @x\nc = @[x + 1]\nd = @:load_variable x\n@@x = k";
+    let parse = parse(source);
+    assert!(parse.errors().is_empty(), "{:?}", parse.errors());
+    let resolution = resolve_with(parse.tree(), &scope);
+    let errors = resolution.errors();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].kind, ResolveErrorKind::NotFinite);
+    assert_eq!(&source[errors[0].range.to_range()], b"1 / 0");
+    assert_eq!(resolution.variables().get("x"), None);
+
+    let resolved = |key: &[u8]| resolution.get(parse.ast().get(key)?.value()?);
+    assert_eq!(resolved(b"a"), Some(&ResolvedScalar::unquoted("1")));
+    assert_eq!(resolved(b"b"), None);
+    assert_eq!(resolved(b"c"), None);
+    assert_eq!(resolved(b"d"), None);
+
+    // The key `@@x` keeps its source text.
+    let file: HashMap<String, String> = parse
+        .document(Utf8Encoding::new())
+        .with_resolution(resolution)
+        .and_then(|de| de.deserialize())
+        .unwrap();
+    assert_eq!(file["@@x"], "k");
+    assert_eq!(file["b"], "@x");
+
+    // Each failed definition leaves the later uses with no value, also
+    // after a successful definition, and none of them reads the scope.
+    type Case<'c> = (&'c [u8], &'c [(ResolveErrorKind, std::ops::Range<usize>)]);
+    let cases: [Case; 3] = [
+        (
+            // The error is at the `1 / 0` of line 2.
+            b"@x = 3\n@x = @[1 / 0]\nb = @x\nc = @[x * 2]",
+            &[(ResolveErrorKind::NotFinite, 14..19)],
+        ),
+        (
+            // The error is at `@y`.
+            b"@x = @y\nb = @x\nc = @[x * 2]",
+            &[(ResolveErrorKind::UndefinedVariable, 5..7)],
+        ),
+        (
+            // The error is at `{ 1 }`.
+            b"blk = { @x = { 1 } }\nb = @x\nc = @[x * 2]",
+            &[(ResolveErrorKind::UnsupportedDefinition, 13..18)],
+        ),
+    ];
+    for (source, expected) in cases {
+        assert_eq!(located(source, &scope), expected);
+        let parse = syntax::parse(source);
+        let resolution = resolve_with(parse.tree(), &scope);
+        assert_eq!(resolution.variables().get("x"), None);
+        let resolved = |key: &[u8]| resolution.get(parse.ast().get(key)?.value()?);
+        assert_eq!(resolved(b"b"), None);
+        assert_eq!(resolved(b"c"), None);
+    }
+}
+
+#[test]
+fn a_definition_applies_until_the_next_definition() {
+    let source = b"@a = 1\nx = @a\n@a = @[a + 1]\ny = @a\n@a = 5\nz = @[a * 2]";
+    let (file, resolution) = resolved::<HashMap<String, f64>>(source, &Variables::new());
+    assert_eq!(resolution.errors(), []);
+    let file = file.unwrap();
+    assert_eq!((file["x"], file["y"], file["z"]), (1.0, 2.0, 10.0));
+    assert_eq!(
+        resolution.variables().get("a"),
+        Some(&ResolvedScalar::unquoted("5"))
+    );
+
+    // The right side of each definition is resolved, also over the scope.
+    let scope: Variables = [("x", "1")].into_iter().collect();
+    let source = b"@x = 2\n@x = @y\na = @x";
+    assert_eq!(
+        located(source, &scope),
+        [(ResolveErrorKind::UndefinedVariable, 12..14)]
+    );
+    let parse = parse(source);
+    let resolution = resolve_with(parse.tree(), &scope);
+    let a = parse.ast().get(b"a").unwrap().value().unwrap();
+    assert_eq!(resolution.get(a), None);
+    assert_eq!(resolution.variables().get("x"), None);
+}
+
+#[test]
+fn definitions_are_in_source_order_with_what_they_replace() {
+    let scope: Variables = [("x", "1")].into_iter().collect();
+    let source = b"@x = 2\n@y = @[1 / 0]\nblk = { @x = @[x + 1] }\n@:register_variable y = 5\n\
+        t = @x\nu = @y\nv = @:load_variable y\nw = @[x + y]";
+    let parse = parse(source);
+    assert!(parse.errors().is_empty(), "{:?}", parse.errors());
+    let resolution = resolve_with(parse.tree(), &scope);
+    assert_eq!(
+        located(source, &scope),
+        [(ResolveErrorKind::NotFinite, 14..19)]
+    );
+
+    let definitions: Vec<_> = resolution.definitions().collect();
+    assert_eq!(resolution.definitions().len(), 4);
+    let summary: Vec<_> = definitions
+        .iter()
+        .map(|d| (d.name(), d.key_range().to_range(), d.value()))
+        .collect();
+    let three = ResolvedScalar::unquoted("3");
+    let five = ResolvedScalar::unquoted("5");
+    assert_eq!(
+        summary,
+        [
+            (&b"x"[..], 0..2, Some(&ResolvedScalar::unquoted("2"))),
+            (&b"y"[..], 7..9, None),
+            (&b"x"[..], 29..31, Some(&three)),
+            (&b"y"[..], 65..66, Some(&five)),
+        ]
+    );
+    assert_eq!(definitions[0].replaces(), Some(Replaced::Scope));
+    assert_eq!(definitions[1].replaces(), None);
+    assert_eq!(
+        definitions[2].replaces(),
+        Some(Replaced::Definition(definitions[0]))
+    );
+    assert_eq!(
+        definitions[3].replaces(),
+        Some(Replaced::Definition(definitions[1]))
+    );
+    let last: Vec<_> = resolution.definitions().rev().map(|d| d.name()).collect();
+    assert_eq!(last, [&b"y"[..], b"x", b"y", b"x"]);
+
+    // A use of a variable or a `@:load_variable` gives the definition it
+    // reads. A calculation reads several, so it gives none.
+    let value = |key: &[u8]| parse.ast().get(key).unwrap().value().unwrap();
+    assert_eq!(resolution.definition(value(b"t")), Some(definitions[2]));
+    assert_eq!(resolution.definition(value(b"u")), Some(definitions[3]));
+    assert_eq!(resolution.definition(value(b"v")), Some(definitions[3]));
+    assert_eq!(resolution.definition(value(b"w")), None);
+    assert_eq!(
+        resolution.get(value(b"w")),
+        Some(&ResolvedScalar::unquoted("8"))
+    );
+
+    // A different parse of the same source has no definitions here.
+    let again = syntax::parse(source);
+    let t = again.ast().get(b"t").unwrap().value().unwrap();
+    assert_eq!(resolution.definition(t), None);
+}
+
+#[test]
+fn a_use_gives_the_definition_it_reads_through_an_alias_and_in_a_block() {
+    let source = b"@a = @[1 / 0]\n@b = @a\nx = @b\nblk = { y = @b }";
+    let parse = parse(source);
+    let resolution = resolve(parse.tree());
+    assert_eq!(
+        located(source, &Variables::new()),
+        [(ResolveErrorKind::NotFinite, 7..12)]
+    );
+    let definitions: Vec<_> = resolution.definitions().collect();
+    assert_eq!(definitions.len(), 2);
+
+    // `@b = @a` has no value because `@a` has none, with no second error.
+    let x = parse.ast().get(b"x").unwrap().value().unwrap();
+    let b = resolution.definition(x).unwrap();
+    assert_eq!(b, definitions[1]);
+    assert_eq!(b.name(), b"b");
+    assert_eq!(b.key_range().to_range(), 14..16);
+    assert_eq!(b.value(), None);
+    assert_eq!(b.replaces(), None);
+
+    // The right side of the alias reads `@a`.
+    let alias = parse.ast().fields().nth(1).unwrap().value().unwrap();
+    assert_eq!(resolution.definition(alias), Some(definitions[0]));
+
+    // A use in a block reads `@b`.
+    let blk = parse.ast().get(b"blk").unwrap().value().unwrap();
+    let y = blk.as_block().unwrap().get(b"y").unwrap().value().unwrap();
+    assert_eq!(resolution.definition(y), Some(definitions[1]));
+}
+
+#[test]
+fn definitions_are_equal_only_in_one_resolution() {
+    let parse = parse(b"@a = 1\n@b = 2");
+    let resolution = resolve(parse.tree());
+    let clone = resolution.clone();
+    let first = resolution.definitions().next().unwrap();
+    let first_of_clone = clone.definitions().next().unwrap();
+    assert_eq!(first.name(), first_of_clone.name());
+    assert_ne!(first, first_of_clone);
+
+    let mut set: std::collections::HashSet<_> = resolution.definitions().collect();
+    assert_eq!(set.len(), 2);
+    assert!(!set.insert(first));
+    assert!(set.insert(first_of_clone));
+    // The debug text lists the definitions that are left.
+    let mut rest = resolution.definitions();
+    rest.next();
+    assert_eq!(
+        format!("{rest:?}"),
+        "[Definition { name: \"b\", key_range: 7..9, value: Some(Unquoted(\"2\")) }]"
+    );
+}
+
+#[test]
+fn definitions_skip_what_the_resolver_does_not_examine() {
+    let source = b"@:define m = { @a = 1 }\n\
+        template t {\n\tcode [[\n\t\t@b = 2\n\t\tu = @a\n\t]]\n}\n\
+        [[p] @c = 3 v = @a ]\n@d = 4\n@a = 5\nz = @a";
+    let parse = parse(source);
+    assert!(parse.errors().is_empty(), "{:?}", parse.errors());
+    let resolution = resolve(parse.tree());
+    assert_eq!(resolution.errors(), []);
+    let definitions: Vec<_> = resolution.definitions().collect();
+    let names: Vec<_> = definitions.iter().map(|d| d.name()).collect();
+    assert_eq!(names, [b"d", b"a"]);
+
+    // The variable token that starts at `offset`, as a value.
+    let tree = parse.tree();
+    let use_at = |offset: usize| {
+        let token = tree
+            .significant_tokens()
+            .find(|token| token.text_range().to_range().start == offset)
+            .unwrap();
+        Value::Scalar(syntax::ScalarToken::cast(token).unwrap())
+    };
+    let offset_of = |text: &[u8]| {
+        let start = source.windows(text.len()).position(|w| w == text).unwrap();
+        start + text.len() - 2
+    };
+    for key in [&b"u = @a"[..], b"v = @a"] {
+        let value = use_at(offset_of(key));
+        assert_eq!(resolution.get(value), None);
+        assert_eq!(resolution.definition(value), None);
+    }
+    let z = parse.ast().get(b"z").unwrap().value().unwrap();
+    assert_eq!(resolution.definition(z), Some(definitions[1]));
+    assert_eq!(resolution.get(z), Some(&ResolvedScalar::unquoted("5")));
+}
+
+#[test]
+fn register_variable_with_no_value_is_an_error() {
+    let source = b"@:register_variable a\nx = @a";
+    let parse = parse(source);
+    assert!(parse.errors().is_empty(), "{:?}", parse.errors());
+    let resolution = resolve(parse.tree());
+    assert_eq!(
+        located(source, &Variables::new()),
+        [(ResolveErrorKind::UnsupportedDefinition, 0..21)]
+    );
+    let x = parse.ast().get(b"x").unwrap().value().unwrap();
+    assert_eq!(resolution.get(x), None);
+    let a = resolution.definition(x).unwrap();
+    assert_eq!(a.name(), b"a");
+    assert_eq!(a.key_range().to_range(), 20..21);
+    assert_eq!(a.value(), None);
+}
+
+#[test]
+fn register_variable_with_an_operator_and_no_value_has_a_parse_error() {
+    let parse = parse(b"@:register_variable a =\nx = @a");
+    let kinds: Vec<_> = parse.errors().iter().map(|e| e.kind).collect();
+    assert_eq!(kinds, [syntax::SyntaxErrorKind::MissingValue]);
+    let resolution = resolve(parse.tree());
+    assert_eq!(resolution.errors(), []);
+    let x = parse.ast().get(b"x").unwrap().value().unwrap();
+    assert_eq!(resolution.get(x), None);
+    let a = resolution.definition(x).unwrap();
+    assert_eq!(a.name(), b"a");
+    assert_eq!(a.value(), None);
+}
+
+#[test]
+fn a_failed_definition_of_a_later_file_keeps_the_earlier_value_in_the_scope() {
+    let first = parse(b"@w = 1");
+    let second = syntax::parse(b"@w = @[1 / 0]");
+    let mut scope = Variables::new();
+    scope.extend_from(resolve(first.tree()).variables());
+    let resolution = resolve_with(second.tree(), &scope);
+    let errors: Vec<_> = resolution
+        .errors()
+        .iter()
+        .map(|e| (e.kind, e.range.to_range()))
+        .collect();
+    assert_eq!(errors, [(ResolveErrorKind::NotFinite, 7..12)]);
+    assert_eq!(resolution.variables().get("w"), None);
+    scope.extend_from(resolution.variables());
+    assert_eq!(scope.get("w"), Some(&ResolvedScalar::unquoted("1")));
+}
+
+#[test]
+fn a_use_gives_its_definition_also_when_the_definition_failed() {
+    let scope: Variables = [("x", "1")].into_iter().collect();
+    let source = b"a = @x\n@x = @[1 / 0]\nb = @x\nc = @missing";
+    let parse = parse(source);
+    let resolution = resolve_with(parse.tree(), &scope);
+    let value = |key: &[u8]| parse.ast().get(key).unwrap().value().unwrap();
+
+    // `a` reads the scope.
+    assert_eq!(resolution.definition(value(b"a")), None);
+    assert_eq!(
+        resolution.get(value(b"a")),
+        Some(&ResolvedScalar::unquoted("1"))
+    );
+
+    let failed = resolution.definition(value(b"b")).unwrap();
+    assert_eq!(failed.name(), b"x");
+    assert_eq!(failed.key_range().to_range(), 7..9);
+    assert_eq!(failed.value(), None);
+    assert_eq!(failed.replaces(), Some(Replaced::Scope));
+    assert_eq!(resolution.get(value(b"b")), None);
+
+    assert_eq!(resolution.definition(value(b"c")), None);
+    let errors: Vec<_> = resolution
+        .errors()
+        .iter()
+        .map(|e| (e.kind, e.range.to_range()))
+        .collect();
+    assert_eq!(
+        errors,
+        [
+            (ResolveErrorKind::NotFinite, 14..19),
+            (ResolveErrorKind::UndefinedVariable, 32..40)
+        ]
+    );
+}
+
+#[test]
+fn a_calculation_reads_the_scope_and_then_the_file() {
+    let scope: Variables = [("x", "1")].into_iter().collect();
+    let source = b"a = @[x + @x]\n@x = 5\nb = @[x + @x]";
+    let (file, resolution) = resolved::<HashMap<String, f64>>(source, &scope);
+    assert_eq!(resolution.errors(), []);
+    let file = file.unwrap();
+    assert_eq!((file["a"], file["b"]), (2.0, 10.0));
+}
+
+#[test]
+fn a_definition_in_a_block_replaces_the_scope_after_the_block() {
+    let scope: Variables = [("w", "1")].into_iter().collect();
+    let source = b"a = @w\nblock = { @w = 4 c = @w }\nb = @w";
+    let parse = parse(source);
+    let resolution = resolve_with(parse.tree(), &scope);
+    assert_eq!(resolution.errors(), []);
+    let file: OwnedBlock = parse
+        .document(Utf8Encoding::new())
+        .with_resolution(resolution)
+        .and_then(|de| de.deserialize())
+        .unwrap();
+    assert_eq!(file.get("a"), Some(&OwnedValue::unquoted("1")));
+    assert_eq!(file.get("b"), Some(&OwnedValue::unquoted("4")));
+    let OwnedValue::Block(block) = file.get("block").unwrap() else {
+        panic!("not a block");
+    };
+    assert_eq!(block.get("c"), Some(&OwnedValue::unquoted("4")));
+}
+
+#[test]
+fn register_variable_and_key_variables_read_a_definition_over_the_scope() {
+    let scope: Variables = [("size", "1"), ("name", "old")].into_iter().collect();
+    let source = b"@@name = a\n@:register_variable size = @[size * 3]\n@name = new\n\
+        x = @:load_variable size\n@@name = b";
+    let parse = parse(source);
+    assert!(parse.errors().is_empty(), "{:?}", parse.errors());
+    let resolution = resolve_with(parse.tree(), &scope);
+    assert_eq!(resolution.errors(), []);
+    let file: HashMap<String, String> = parse
+        .document(Utf8Encoding::new())
+        .with_resolution(resolution)
+        .and_then(|de| de.deserialize())
+        .unwrap();
+    assert_eq!(file.len(), 3);
+    assert_eq!(file["old"], "a");
+    assert_eq!(file["x"], "3");
+    assert_eq!(file["new"], "b");
+
+    // Each form of definition replaces the one before it.
+    let source =
+        b"@size = 2\n@:register_variable size = @[size + 5]\n@@size = a\n@size = b\n@@size = c";
+    let twice = syntax::parse(source);
+    assert!(twice.errors().is_empty(), "{:?}", twice.errors());
+    let resolution = resolve_with(twice.tree(), &scope);
+    assert_eq!(resolution.errors(), []);
+    assert_eq!(
+        resolution.variables().get("size"),
+        Some(&ResolvedScalar::unquoted("b"))
+    );
+    let file: HashMap<String, String> = twice
+        .document(Utf8Encoding::new())
+        .with_resolution(resolution)
+        .and_then(|de| de.deserialize())
+        .unwrap();
+    assert_eq!(file.len(), 2);
+    assert_eq!(file["7"], "a");
+    assert_eq!(file["b"], "c");
 }
 
 #[test]
@@ -370,17 +843,6 @@ fn calculation_of_a_definition_has_a_value() {
     );
 }
 
-#[test]
-fn second_definition_keeps_the_first() {
-    let source = b"@a = 1\n@a = 2\nx = @a";
-    let (file, resolution) = resolved::<HashMap<String, f64>>(source, &Variables::new());
-    assert_eq!(file.unwrap()["x"], 1.0);
-    let errors = resolution.errors();
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].kind, ResolveErrorKind::Redefined);
-    assert_eq!(&source[errors[0].range.to_range()], b"@a");
-}
-
 /// A definition in a block applies after the block, as in the GUI files of
 /// Vic3 and Imperator.
 #[test]
@@ -389,6 +851,18 @@ fn definition_in_a_block_applies_after_the_block() {
     let (file, resolution) = resolved::<HashMap<String, OwnedValue>>(source, &Variables::new());
     assert!(resolution.errors().is_empty());
     assert_eq!(file.unwrap()["b"], OwnedValue::unquoted("4"));
+
+    // A second definition in a block also applies after the block.
+    let source = b"@w = 2\na = { x = @w @w = @[w * 2] y = @w }\nb = @w";
+    let (file, resolution) = resolved::<OwnedBlock>(source, &Variables::new());
+    assert_eq!(resolution.errors(), []);
+    let file = file.unwrap();
+    assert_eq!(file.get("b"), Some(&OwnedValue::unquoted("4")));
+    let OwnedValue::Block(block) = file.get("a").unwrap() else {
+        panic!("not a block");
+    };
+    assert_eq!(block.get("x"), Some(&OwnedValue::unquoted("2")));
+    assert_eq!(block.get("y"), Some(&OwnedValue::unquoted("4")));
 }
 
 /// The CK3 reader directives that define and read variables.
@@ -431,10 +905,7 @@ fn reader_directive_blocks_are_not_examined() {
         kinds(b"x = @:load_variable missing"),
         [ResolveErrorKind::UndefinedVariable]
     );
-    assert_eq!(
-        kinds(b"@:register_variable a = 1\n@a = 2"),
-        [ResolveErrorKind::Redefined]
-    );
+    assert_eq!(kinds(b"@:register_variable a = 1\n@a = 2"), []);
 }
 
 #[test]
@@ -890,23 +1361,29 @@ fn a_file_resolves_again_without_its_old_variables() {
     shared.extend_from(&a_variables);
     shared.extend_from(resolve(b.tree()).variables());
 
-    // A set that has the old variables of the file gives the old values.
-    let edited = parse(b"@x = 2\ny = @x");
+    // A set that has the old variables of the file gives the old value to a
+    // use before the definition, with no error.
+    let edited = parse(b"v = @x\n@x = 2\ny = @x");
     let stale = resolve_with(edited.tree(), &shared);
-    let kinds: Vec<_> = stale.errors().iter().map(|e| e.kind).collect();
-    assert_eq!(kinds, [ResolveErrorKind::DefinedInScope]);
+    assert_eq!(stale.errors(), []);
+    let v = edited.ast().get(b"v").unwrap().value().unwrap();
     let y = edited.ast().get(b"y").unwrap().value().unwrap();
-    assert_eq!(stale.get(y), Some(&ResolvedScalar::unquoted("1")));
-    assert!(stale.variables().is_empty());
+    assert_eq!(stale.get(v), Some(&ResolvedScalar::unquoted("1")));
+    assert_eq!(stale.get(y), Some(&ResolvedScalar::unquoted("2")));
 
-    // Remove the old variables of the file, and the file gets its own.
+    // Remove the old variables of the file: the use before the definition
+    // is then an undefined variable, at the `@x` of `v = @x`.
     for (name, value) in &a_variables {
         assert_eq!(shared.remove(name).as_ref(), Some(value));
     }
     assert!(!shared.contains("x"));
     assert!(shared.contains("z"));
     let resolution = resolve_with(edited.tree(), &shared);
-    assert_eq!(resolution.errors(), []);
+    let errors = resolution.errors();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].kind, ResolveErrorKind::UndefinedVariable);
+    assert_eq!(errors[0].range.to_range(), 4..6);
+    assert_eq!(resolution.get(v), None);
     assert_eq!(resolution.get(y), Some(&ResolvedScalar::unquoted("2")));
 
     // insert gives the old value.
@@ -916,4 +1393,93 @@ fn a_file_resolves_again_without_its_old_variables() {
     names.sort();
     assert_eq!(names, [&b"w"[..], b"z"]);
     assert_eq!(shared.iter().len(), 2);
+}
+
+/// Only `@:load_variable` gives a value to a definition. A different
+/// directive on the right side is not a value.
+#[test]
+fn a_directive_other_than_load_variable_is_not_a_definition_value() {
+    let none = Variables::new();
+    for (source, range) in [
+        (&b"@x = @:insert m\ny = @x"[..], 5..15),
+        (b"@:register_variable x = @:log \"t\"\ny = @x", 24..33),
+    ] {
+        let parse = parse(source);
+        assert!(parse.errors().is_empty(), "{:?}", parse.errors());
+        assert_eq!(
+            located(source, &none),
+            [(ResolveErrorKind::UnsupportedDefinition, range)]
+        );
+        let resolution = resolve(parse.tree());
+        let definitions: Vec<_> = resolution.definitions().collect();
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].value(), None);
+        let y = parse.ast().get(b"y").unwrap().value().unwrap();
+        assert_eq!(resolution.get(y), None);
+    }
+}
+
+#[test]
+fn a_calculation_that_gives_negative_zero_gives_zero() {
+    let source = b"x = @[0 * -1]\ny = @[-0]\n@z = @[0 / -2]";
+    let parse = parse(source);
+    let resolution = resolve(parse.tree());
+    assert_eq!(resolution.errors(), []);
+    let resolved = |key: &[u8]| resolution.get(parse.ast().get(key)?.value()?);
+    assert_eq!(resolved(b"x"), Some(&ResolvedScalar::unquoted("0")));
+    assert_eq!(resolved(b"y"), Some(&ResolvedScalar::unquoted("0")));
+    assert_eq!(
+        resolution.variables().get("z"),
+        Some(&ResolvedScalar::unquoted("0"))
+    );
+}
+
+#[test]
+fn definitions_hash_by_identity() {
+    use std::hash::BuildHasher;
+    let hasher =
+        std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default();
+    let parse = parse(b"@a = 1\n@a = 1\nx = @a");
+    let resolution = resolve(parse.tree());
+    let definitions: Vec<_> = resolution.definitions().collect();
+    assert_eq!(definitions.len(), 2);
+    let x = parse.ast().get(b"x").unwrap().value().unwrap();
+    let second = resolution.definition(x).unwrap();
+    assert_eq!(second, definitions[1]);
+    assert_eq!(hasher.hash_one(second), hasher.hash_one(definitions[1]));
+    assert_ne!(
+        hasher.hash_one(definitions[0]),
+        hasher.hash_one(definitions[1])
+    );
+    let replaced = definitions[1].replaces().unwrap();
+    assert_eq!(replaced, Replaced::Definition(definitions[0]));
+    assert_eq!(
+        hasher.hash_one(replaced),
+        hasher.hash_one(Replaced::Definition(definitions[0]))
+    );
+}
+
+#[test]
+fn errors_and_sets_describe_themselves() {
+    let parse = parse(b"x = @[1 / 0]\ny = @size");
+    let resolution = resolve(parse.tree());
+    let errors = resolution.errors();
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors[0].message(), "result is not a finite number");
+    assert_eq!(
+        errors[0].to_string(),
+        "result is not a finite number at 6..11"
+    );
+    assert_eq!(errors[1].message(), "undefined variable");
+    assert_eq!(errors[1].to_string(), "undefined variable at 17..22");
+    assert_eq!(
+        ResolveErrorKind::UnsupportedDefinition.to_string(),
+        "variable value is not a scalar or a calculation"
+    );
+
+    let mut set = Variables::new();
+    assert!(set.is_empty());
+    set.insert("a", "1");
+    assert!(!set.is_empty());
+    assert_eq!(set.len(), 1);
 }
