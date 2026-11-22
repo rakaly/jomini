@@ -1067,6 +1067,23 @@ mod tests {
         matches_grammar(&source, LexFlavor::DEFAULT) && matches_grammar(&source, LexFlavor::HOI4)
     }
 
+    /// The fast path and the full grammar give the same tape for a source
+    /// that starts with a BOM.
+    #[quickcheck]
+    fn fused_matches_grammar_bom(source: Vec<u8>) -> bool {
+        const ALPHABET: &[u8] = b"abc\"\\{}[]<>!?= \t\r\n;#@$:";
+        let source: Vec<u8> = super::super::BOM
+            .iter()
+            .copied()
+            .chain(
+                source
+                    .iter()
+                    .map(|b| ALPHABET[*b as usize % ALPHABET.len()]),
+            )
+            .collect();
+        matches_grammar(&source, LexFlavor::DEFAULT) && matches_grammar(&source, LexFlavor::HOI4)
+    }
+
     #[quickcheck]
     fn fused_matches_grammar_entries(entries: Vec<u8>) -> bool {
         const ENTRIES: &[&[u8]] = &[

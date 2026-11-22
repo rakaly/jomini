@@ -3344,3 +3344,23 @@ fn quote_that_hides_fields_is_an_error() {
     assert!(!quote_hides_fields(b"\"a\nb = c\""));
     assert!(!quote_hides_fields(b"\"a\nb ="));
 }
+
+/// An operator directly after a leading BOM starts the first line, so it
+/// starts a field with an empty key. The formatter removes the line break
+/// after the BOM, and the output must still have that field.
+#[test]
+fn operator_after_bom_starts_a_line() {
+    for source in [&b"\xef\xbb\xbf= a"[..], b"\xef\xbb\xbf\n= a"] {
+        let tree = parse(source);
+        assert_eq!(tree.errors(), [], "{source:?}");
+        assert_eq!(parse_tape(source).errors(), [], "{source:?}");
+        let field = tree.ast().fields().next().unwrap();
+        assert_eq!(field.key().kind(), SyntaxKind::EmptyKey);
+        assert_eq!(field.op(), Some(Operator::Equal));
+
+        let formatted = format(source);
+        assert_eq!(formatted, b"\xef\xbb\xbf= a\n", "{source:?}");
+        assert_eq!(significant(&formatted), significant(source));
+        assert_eq!(format(&formatted), formatted);
+    }
+}

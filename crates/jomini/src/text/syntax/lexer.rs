@@ -134,13 +134,23 @@ pub(super) fn is_ws(b: u8) -> bool {
 ///     =1825.6.28
 /// }
 /// ```
+///
+/// A leading BOM is not part of the first line, so an operator directly after
+/// it starts the line, the same as an operator at the start of a file
+/// without a BOM.
 #[cold]
 pub(super) fn starts_line(source: &[u8], i: usize) -> bool {
-    match source[..i]
+    let start = if source.starts_with(BOM) {
+        BOM.len()
+    } else {
+        0
+    };
+    let line = source.get(start..i).unwrap_or_default();
+    match line
         .iter()
         .rposition(|&b| !is_ws(b) || b == b'\n' || b == b'\r')
     {
-        Some(at) => matches!(source[at], b'\n' | b'\r'),
+        Some(at) => matches!(line[at], b'\n' | b'\r'),
         None => true,
     }
 }
