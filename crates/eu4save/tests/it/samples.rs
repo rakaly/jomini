@@ -1,7 +1,7 @@
 use crate::utils;
 use eu4save::{
     file::{Eu4FileEntryName, Eu4FsFileKind},
-    models::{CountryEvent, Meta},
+    models::{CountryEvent, Meta, Rival},
     query::{
         BuildingConstruction, BuildingEvent, NationEvent, NationEventKind, NationEvents,
         PlayerHistory, Query,
@@ -56,6 +56,26 @@ fn test_eu4_text() -> Result<(), Box<dyn Error>> {
         .unwrap()
         .decision_seed;
     assert_eq!(reb_decision, 684859145);
+
+    let dan_rivals = &query.country(&"DAN".parse()?).unwrap().rivals;
+    let start = Eu4Date::from_ymd(1444, 11, 11);
+    assert_eq!(
+        dan_rivals,
+        &vec![
+            Rival {
+                country: "ENG".parse()?,
+                date: start
+            },
+            Rival {
+                country: "POL".parse()?,
+                date: start
+            },
+            Rival {
+                country: "MOS".parse()?,
+                date: start
+            },
+        ]
+    );
 
     assert_eq!(
         query.save().meta.date.iso_8601().to_string(),
