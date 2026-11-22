@@ -1,9 +1,11 @@
 //! The formatter. It writes a tree again with normalized whitespace.
 
+use std::io;
+
 use super::cursor::Gap;
 use super::lexer::BOM;
 use super::parser::MAX_DEPTH;
-use super::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, SyntaxTree, parse};
+use super::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, SyntaxTree, TextSize, parse};
 
 /// Configuration for [`SyntaxTree::format`].
 ///
@@ -81,17 +83,54 @@ impl<'t, 'a> SyntaxTree<'t, 'a> {
     ///
     /// The formatter writes parameter, code, calc, and `Bogus` nodes with
     /// their source bytes, and each loose token on its own line.
+    ///
+    /// To write a large file, use [`format_to_writer`](Self::format_to_writer),
+    /// which does not keep the whole output in memory.
     pub fn format(&self, opts: &FormatOptions) -> Vec<u8> {
-        let mut f = Fmt {
-            out: Vec::with_capacity(self.source.len()),
-            opts,
-            comment_open: false,
-            quote_open: false,
-        };
+        let mut f = Fmt::new(opts, None);
+        f.out.reserve(self.source.len() + self.source.len() / 8);
         f.fmt_root(self.root());
         f.finish()
     }
+
+    /// Reformat the tree with the given [`FormatOptions`] and write the
+    /// output to `writer`. The output is the same as the output of
+    /// [`format`](Self::format).
+    ///
+    /// The formatter writes the output in chunks of about 64 KiB. Its memory
+    /// grows with the longest entry, not with the size of the output: it
+    /// buffers whole an inline block, a node that it writes with its source
+    /// bytes, and a block deeper than the nesting limit. It does not flush
+    /// `writer`.
+    ///
+    /// ```
+    /// use jomini::text::syntax::{parse, FormatOptions};
+    ///
+    /// let mut out = Vec::new();
+    /// parse(b"a={b=1}").format_to_writer(&FormatOptions::default(), &mut out)?;
+    /// assert_eq!(out, b"a = {\n\tb = 1\n}\n");
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error of `writer`. The formatter stops at the error,
+    /// so `writer` can have a part of the output.
+    pub fn format_to_writer<W: io::Write>(
+        &self,
+        opts: &FormatOptions,
+        mut writer: W,
+    ) -> io::Result<()> {
+        let mut f = Fmt::new(opts, Some(&mut writer));
+        f.out.reserve(CHUNK + CHUNK / 2);
+        f.fmt_root(self.root());
+        f.finish_writer()
+    }
 }
+
+/// The output size at which [`SyntaxTree::format_to_writer`] writes the
+/// output that it has.
+const CHUNK: usize = 64 * 1024;
 
 /// Count the line breaks in `bytes`. A line break is `\n`, `\r\n`, or a `\r`
 /// alone, the same as for the lexer.
@@ -162,7 +201,16 @@ fn collect_inline_comments<'t, 'a>(node: SyntaxNode<'t, 'a>, out: &mut Vec<Synta
 }
 
 struct Fmt<'o> {
+    /// The output. With a writer, the formatter writes all but the last two
+    /// bytes of each chunk and keeps those two bytes here, because it reads
+    /// them to find the end of a line.
     out: Vec<u8>,
+    /// The number of bytes that are written to the writer and removed from
+    /// `out`.
+    written: usize,
+    writer: Option<&'o mut dyn io::Write>,
+    /// The first error of the writer.
+    error: Option<io::Error>,
     opts: &'o FormatOptions,
     /// True when the current output line ends in a comment, so the next thing
     /// emitted must start on a new line (a comment runs to end of line).
@@ -172,14 +220,69 @@ struct Fmt<'o> {
     quote_open: bool,
 }
 
-impl Fmt<'_> {
+impl<'o> Fmt<'o> {
+    fn new(opts: &'o FormatOptions, writer: Option<&'o mut dyn io::Write>) -> Self {
+        Fmt {
+            out: Vec::new(),
+            written: 0,
+            writer,
+            error: None,
+            opts,
+            comment_open: false,
+            quote_open: false,
+        }
+    }
+
     fn finish(mut self) -> Vec<u8> {
-        // Exactly one trailing newline when there is content, unless the last
-        // token is a quoted string that continues to the end of the source.
-        if !self.out.is_empty() && self.out.last() != Some(&b'\n') && !self.quote_open {
+        self.end_document();
+        self.out
+    }
+
+    fn finish_writer(mut self) -> io::Result<()> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        self.end_document();
+        self.write_out(self.out.len());
+        self.error.map_or(Ok(()), Err)
+    }
+
+    /// Write exactly one trailing newline when there is content, unless the
+    /// last token is a quoted string that continues to the end of the source.
+    fn end_document(&mut self) {
+        let empty = self.written == 0 && self.out.is_empty();
+        if !empty && self.out.last() != Some(&b'\n') && !self.quote_open {
             self.out.push(b'\n');
         }
-        self.out
+    }
+
+    /// With a writer, write the output when it is at least [`CHUNK`] bytes.
+    /// Return `false` after an error of the writer, so that the caller stops
+    /// the walk of the tree.
+    #[inline]
+    fn write_chunk(&mut self) -> bool {
+        if self.error.is_some() {
+            return false;
+        }
+        if self.writer.is_some() && self.out.len() >= CHUNK {
+            self.write_out(self.out.len() - 2);
+        }
+        self.error.is_none()
+    }
+
+    /// Write the first `len` bytes of `out` to the writer and remove them.
+    #[cold]
+    fn write_out(&mut self, len: usize) {
+        let Some(writer) = self.writer.as_mut() else {
+            return;
+        };
+        match writer.write_all(&self.out[..len]) {
+            Ok(()) => {
+                self.out.drain(..len);
+                self.written += len;
+            }
+            Err(e) => self.error = Some(e),
+        }
     }
 
     /// Emit raw layout bytes (braces, spaces, indentation). These reset both
@@ -258,37 +361,79 @@ impl Fmt<'_> {
     }
 
     fn fmt_root(&mut self, root: SyntaxNode<'_, '_>) {
-        let children: Vec<SyntaxElement<'_, '_>> = root.children().collect();
         // A leading BOM is reproduced verbatim at the very top of the file.
-        let start = match children.first() {
-            Some(el) if el.kind() == SyntaxKind::Bom => {
-                self.push(el.text());
-                1
+        let source = root.tree.source;
+        if source.starts_with(BOM) {
+            self.push(BOM);
+        } else {
+            // The formatter removes leading whitespace. If the first token
+            // starts with the bytes of a BOM, the lexer would then read them
+            // as a BOM. Keep one space before the token.
+            let first = root.tree.significant_tokens().next();
+            if first.is_some_and(|t| t.text().starts_with(BOM)) {
+                self.push_byte(b' ');
             }
-            _ => {
-                // The formatter removes leading whitespace. If the first token
-                // starts with the bytes of a BOM, the lexer would then read
-                // them as a BOM. Keep one space before the token.
-                let first = root.tree.significant_tokens().next();
-                if first.is_some_and(|t| t.text().starts_with(BOM)) {
-                    self.push_byte(b' ');
-                }
-                0
-            }
-        };
-        self.fmt_items(&children[start..], 0, true);
+        }
+        self.fmt_items(root, 0, true);
     }
 
-    /// Format a run of container children (significant items interleaved with
-    /// trivia), one significant item per line at `indent`. `suppress_first`
-    /// omits the break before the first item — true for the document root
-    /// (no leading blank line), false for a block (the break follows its `{`).
-    fn fmt_items(&mut self, items: &[SyntaxElement<'_, '_>], indent: usize, suppress_first: bool) {
+    /// Format the items of the root or of a block, one significant item per
+    /// line at `indent`. `suppress_first` omits the break before the first
+    /// item — true for the document root (no leading blank line), false for a
+    /// block (the break follows its `{`). The `{` and the `}` of a block are
+    /// not items.
+    fn fmt_items(&mut self, container: SyntaxNode<'_, '_>, indent: usize, suppress_first: bool) {
+        let is_block = container.kind() == SyntaxKind::Block;
+        let is_item =
+            |el: &SyntaxElement<'_, '_>| !(is_block && el.kind() == SyntaxKind::CloseBrace);
+        if container.has_comment() {
+            let items = container
+                .children()
+                .skip(usize::from(is_block))
+                .filter(is_item);
+            return self.fmt_items_with_trivia(items, indent, suppress_first);
+        }
+
+        // Without comments, the gap between two items is whitespace, so the
+        // formatter reads the blank lines from the source and does not lex
+        // the gaps.
+        let source = container.tree.source;
+        let mut first = true;
+        let mut prev_end = None;
+        let items = container.significant_children().skip(usize::from(is_block));
+        for el in items.filter(is_item) {
+            if el.kind().is_synthetic() {
+                continue;
+            }
+            if !self.write_chunk() {
+                return;
+            }
+            let range = el.text_range();
+            let blank = prev_end.is_some_and(|end: TextSize| {
+                range.start() - end >= TextSize::from(2)
+                    && count_newlines(&source[end.to_usize()..range.start().to_usize()]) >= 2
+            });
+            self.fmt_entry(el, indent, first && suppress_first, blank);
+            first = false;
+            prev_end = Some(range.end());
+        }
+    }
+
+    /// Format items interleaved with whitespace and comments.
+    fn fmt_items_with_trivia<'t, 'a>(
+        &mut self,
+        items: impl Iterator<Item = SyntaxElement<'t, 'a>>,
+        indent: usize,
+        suppress_first: bool,
+    ) {
         let mut first = true;
         let mut pending_blank = false;
         let mut ws_had_newline = true; // a fresh container behaves like a new line
 
-        for &el in items {
+        for el in items {
+            if !self.write_chunk() {
+                return;
+            }
             match el.kind() {
                 kind if kind.is_synthetic() => {}
                 SyntaxKind::Whitespace => {
@@ -298,9 +443,9 @@ impl Fmt<'_> {
                         pending_blank = true;
                     }
                 }
-                // A stray BOM mid-stream cannot occur (the lexer only emits it
-                // first), but reproduce it verbatim if it ever does.
-                SyntaxKind::Bom => self.push(el.text()),
+                // The BOM is only at the start of the source, where
+                // `fmt_root` writes it.
+                SyntaxKind::Bom => {}
                 SyntaxKind::Comment => {
                     // Keep it trailing only if the previous item is on this very
                     // line and that line is not already closed by a comment.
@@ -319,20 +464,8 @@ impl Fmt<'_> {
                     ws_had_newline = true;
                     first = false;
                 }
-                _ if is_stray_operator(el) && !(first && suppress_first) && !self.comment_open => {
-                    self.push_byte(b' ');
-                    self.fmt_item(el, indent);
-                    pending_blank = false;
-                    ws_had_newline = false;
-                    first = false;
-                }
                 _ => {
-                    if !(first && suppress_first) {
-                        self.line_break(pending_blank);
-                    }
-                    self.write_indent(indent);
-                    self.hoist_inline_comments(el, indent);
-                    self.fmt_item(el, indent);
+                    self.fmt_entry(el, indent, first && suppress_first, pending_blank);
                     pending_blank = false;
                     ws_had_newline = false;
                     first = false;
@@ -341,13 +474,32 @@ impl Fmt<'_> {
         }
     }
 
+    /// Format one significant item of a container on its own line, after a
+    /// blank line when `blank` is true. A stray operator stays on the line
+    /// before it. `at_start` is true for the first item of the document,
+    /// which has no line break before it.
+    fn fmt_entry(&mut self, el: SyntaxElement<'_, '_>, indent: usize, at_start: bool, blank: bool) {
+        if !at_start && !self.comment_open && is_stray_operator(el) {
+            self.push_byte(b' ');
+            self.fmt_item(el, indent);
+            return;
+        }
+        if !at_start {
+            self.line_break(blank);
+        }
+        self.write_indent(indent);
+        self.hoist_inline_comments(el, indent);
+        self.fmt_item(el, indent);
+    }
+
     /// Emit any inline comments of a field/headered-block item as their own
     /// leading lines (see [`collect_inline_comments`]); a no-op otherwise. The
     /// caller has already written this line's indent.
     fn hoist_inline_comments(&mut self, el: SyntaxElement<'_, '_>, indent: usize) {
         let node = match el {
             SyntaxElement::Node(n)
-                if matches!(n.kind(), SyntaxKind::Field | SyntaxKind::HeaderedBlock) =>
+                if n.has_comment()
+                    && matches!(n.kind(), SyntaxKind::Field | SyntaxKind::HeaderedBlock) =>
             {
                 n
             }
@@ -384,18 +536,15 @@ impl Fmt<'_> {
     /// — so this only lays out significant tokens.
     fn fmt_spaced(&mut self, node: SyntaxNode<'_, '_>, indent: usize) {
         let mut first = true;
-        for el in node.children() {
-            match el.kind() {
-                kind if kind.is_synthetic() => {}
-                SyntaxKind::Whitespace | SyntaxKind::Bom | SyntaxKind::Comment => {}
-                _ => {
-                    if !first {
-                        self.push_byte(b' ');
-                    }
-                    first = false;
-                    self.fmt_item(el, indent);
-                }
+        for el in node.significant_children() {
+            if el.kind().is_synthetic() {
+                continue;
             }
+            if !first {
+                self.push_byte(b' ');
+            }
+            first = false;
+            self.fmt_item(el, indent);
         }
     }
 
@@ -412,43 +561,45 @@ impl Fmt<'_> {
         }
         self.push_byte(b'{');
 
-        let children: Vec<SyntaxElement<'_, '_>> = block.children().collect();
-        let has_close = matches!(children.last(), Some(el) if el.kind() == SyntaxKind::CloseBrace);
-        // children[0] is always the opening `{`; drop it and the closing `}`.
-        let inner_end = if has_close {
-            children.len() - 1
-        } else {
-            children.len()
-        };
-        let inner = &children[1..inner_end];
+        // The first child is the opening `{`. A `}` child is the closing `}`,
+        // which a block that ends at the end of the source does not have.
+        // The other children are the items.
+        let mut empty = true;
+        let mut inline = true;
+        let mut has_close = false;
+        for el in block.significant_children().skip(1) {
+            match el.kind() {
+                SyntaxKind::CloseBrace => has_close = true,
+                kind if kind.is_synthetic() => {}
+                _ => {
+                    empty = false;
+                    inline &= is_inline_scalar(el);
+                }
+            }
+        }
 
-        let has_comment = inner.iter().any(|el| el.kind() == SyntaxKind::Comment);
-        let sig: Vec<SyntaxElement<'_, '_>> = inner
-            .iter()
-            .copied()
-            .filter(|el| !el.kind().is_trivia() && !el.kind().is_synthetic())
-            .collect();
-
-        if sig.is_empty() && !has_comment {
+        // The block has only scalar tokens when it is empty or inline, so a
+        // comment in its subtree is one of its items.
+        let has_comment = block.has_comment();
+        if empty && !has_comment {
             if has_close {
                 self.push_byte(b'}');
             }
             return;
         }
 
-        if has_close && !has_comment && sig.iter().all(|el| is_inline_scalar(*el)) {
-            self.push_byte(b' ');
-            for (i, el) in sig.iter().enumerate() {
-                if i > 0 {
+        if has_close && inline && !has_comment {
+            for el in block.significant_children().skip(1) {
+                if el.kind() != SyntaxKind::CloseBrace && !el.kind().is_synthetic() {
                     self.push_byte(b' ');
+                    self.emit_text(el.text());
                 }
-                self.emit_text(el.text());
             }
             self.push(b" }");
             return;
         }
 
-        self.fmt_items(inner, indent + 1, false);
+        self.fmt_items(block, indent + 1, false);
         if has_close {
             self.line_break(false);
             self.write_indent(indent);

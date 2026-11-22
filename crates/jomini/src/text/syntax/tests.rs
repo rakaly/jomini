@@ -1808,6 +1808,71 @@ fn fmt_relocated_interior_comment_is_safe() {
 #[test]
 fn fmt_preserves_single_blank_line() {
     assert_eq!(fmt(b"a = 1\n\n\n\nb = 2"), "a = 1\n\nb = 2\n");
+    assert_eq!(
+        fmt(b"x={a=1\r\n\r\nb=2 \n c=3}"),
+        "x = {\n\ta = 1\n\n\tb = 2\n\tc = 3\n}\n"
+    );
+    assert_eq!(
+        fmt(b"x={a=1 # c\n\n\nb=2 \n c=3}"),
+        "x = {\n\ta = 1 # c\n\n\tb = 2\n\tc = 3\n}\n"
+    );
+}
+
+/// `format_to_writer` writes the output in chunks. The output is the output
+/// of `format`.
+#[test]
+fn format_to_writer_gives_the_output_of_format() {
+    let mut source = Vec::new();
+    for i in 0..20_000 {
+        source.extend_from_slice(format!("k{i}={{a=1 b={{1 2}}}} # c{i}\n\n").as_bytes());
+    }
+    source.extend_from_slice(b"last = \"open");
+    let parse = parse(&source);
+    let expected = parse.format(&FormatOptions::default());
+    assert!(expected.len() > 4 * 64 * 1024);
+    assert!(expected.starts_with(b"k0 = {\n\ta = 1\n\tb = { 1 2 }\n} # c0\n\nk1 = {"));
+    assert!(expected.ends_with(b"} # c19999\n\nlast = \"open"));
+
+    let mut out = Vec::new();
+    parse
+        .format_to_writer(&FormatOptions::default(), &mut out)
+        .unwrap();
+    assert_eq!(out, expected);
+
+    // The writer accepts one chunk and then fails. The formatter returns the
+    // error and stops, so it calls `write` twice.
+    struct Full {
+        accept: usize,
+        calls: usize,
+        written: Vec<u8>,
+    }
+    impl std::io::Write for Full {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            if self.accept == 0 {
+                return Err(std::io::ErrorKind::StorageFull.into());
+            }
+            self.accept -= 1;
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut full = Full {
+        accept: 1,
+        calls: 0,
+        written: Vec::new(),
+    };
+    let error = parse
+        .format_to_writer(&FormatOptions::default(), &mut full)
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::StorageFull);
+    assert_eq!(full.calls, 2);
+    // The first chunk is the output when it first reaches 64 KiB after an
+    // entry, less the two bytes that the formatter keeps.
+    assert_eq!(full.written, expected[..65541]);
 }
 
 #[test]

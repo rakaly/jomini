@@ -381,6 +381,20 @@ macro_rules! parse_methods {
         pub fn format(&self, opts: &FormatOptions) -> Vec<u8> {
             self.tree().format(opts)
         }
+
+        /// Write the output of [`format`](Self::format) to `writer` in
+        /// chunks. See [`SyntaxTree::format_to_writer`].
+        ///
+        /// # Errors
+        ///
+        /// Returns the first error of `writer`.
+        pub fn format_to_writer<W: std::io::Write>(
+            &self,
+            opts: &FormatOptions,
+            writer: W,
+        ) -> std::io::Result<()> {
+            self.tree().format_to_writer(opts, writer)
+        }
     };
 }
 
