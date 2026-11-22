@@ -630,6 +630,8 @@ pub struct Country {
     pub transfer_home_bonus: f32,
     #[jomini(duplicated, alias = "enemy")]
     pub enemies: Vec<String>,
+    #[jomini(duplicated, alias = "rival")]
+    pub rivals: Vec<Rival>,
     #[jomini(default)]
     pub current_power_projection: f32,
     #[jomini(default)]
@@ -712,6 +714,13 @@ pub struct Country {
     pub diplomats: EnvoyGroup,
     #[jomini(default)]
     pub missionaries: EnvoyGroup,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[cfg_attr(feature = "serialize", derive(Serialize))]
+pub struct Rival {
+    pub country: CountryTag,
+    pub date: Eu4Date,
 }
 
 #[derive(Debug, Clone, JominiDeserialize)]
