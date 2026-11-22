@@ -21,7 +21,8 @@
 //!   field is the first entry of a container, its key and its block are two
 //!   values of an array.
 //! - A header (`rgb { ... }`) is a [`TextToken::Header`] only in the value of
-//!   a field in an object that is not mixed.
+//!   a field in an object that is not mixed. A quoted header, as in
+//!   `blockoverride = "tab_glow" { ... }`, is a [`TextToken::QuotedHeader`].
 //! - An empty block is removed when it is not a value: when it is the first
 //!   entry of a container, when it is in an object, and when it follows a
 //!   header.
@@ -156,6 +157,9 @@ impl<'a> TapeParse<'a> {
 ///   some of these.
 /// - Tokens that have no place in the tape, such as a stray bracket, are
 ///   ignored.
+/// - A quoted scalar before a block in a field value, as in
+///   `blockoverride = "tab_glow" { visible = no }`, is a
+///   [`TextToken::QuotedHeader`]. `from_slice` rejects it.
 ///
 /// For HoI4 files, use [`parse_tape_with`] with [`Hoi4Flavor`](super::Hoi4Flavor).
 ///
@@ -246,6 +250,25 @@ impl<'a> Leaf<'a> {
             Leaf::Unquoted(s) | Leaf::Quoted(s) => s,
         }
     }
+
+    /// The token of the scalar as the header of a block.
+    #[inline]
+    fn header(self) -> TextToken<'a> {
+        match self {
+            Leaf::Unquoted(s) => TextToken::Header(s),
+            Leaf::Quoted(s) => TextToken::QuotedHeader(s),
+        }
+    }
+}
+
+/// The scalar of the header at `token`, for a header whose block is empty.
+#[inline]
+fn header_value<'a>(token: &TextToken<'a>) -> Option<TextToken<'a>> {
+    match *token {
+        TextToken::Header(s) => Some(TextToken::Unquoted(s)),
+        TextToken::QuotedHeader(s) => Some(TextToken::Quoted(s)),
+        _ => None,
+    }
 }
 
 /// The form of a container, which the first entry sets.
@@ -271,7 +294,7 @@ enum OnEmpty {
         mixed: bool,
         first: bool,
     },
-    /// Remove the block and change the header at `len` to a scalar.
+    /// Remove the block and change the header at `len` to its scalar.
     Header { len: usize },
 }
 
@@ -339,7 +362,7 @@ enum Frame<'a> {
     },
     /// A header and a block in the value of a field.
     Headered {
-        header: Option<Scalar<'a>>,
+        header: Option<Leaf<'a>>,
         header_ok: bool,
     },
     /// A node that becomes one scalar, or nothing for a bogus node.
@@ -491,7 +514,7 @@ impl<'a> TapeSink<'a> {
             }
             Some(Frame::Headered { header, .. }) => {
                 if header.is_none() {
-                    *header = Some(leaf.scalar());
+                    *header = Some(leaf);
                 }
             }
             Some(Frame::Opaque { .. }) | None => {}
@@ -554,13 +577,13 @@ impl<'a> TapeSink<'a> {
                 OnEmpty::Keep
             }
             Some(Frame::Headered { header, header_ok }) => {
-                let header = header.unwrap_or(Scalar::new(b""));
+                let header = header.unwrap_or(Leaf::Unquoted(Scalar::new(b"")));
                 if header_ok {
                     let len = self.tape.len();
-                    self.tape.push(TextToken::Header(header));
+                    self.tape.push(header.header());
                     OnEmpty::Header { len }
                 } else {
-                    self.tape.push(TextToken::Unquoted(header));
+                    self.tape.push(header.token());
                     OnEmpty::Keep
                 }
             }
@@ -645,9 +668,9 @@ impl<'a> TapeSink<'a> {
                     return;
                 }
                 OnEmpty::Header { len } => {
-                    if let Some(TextToken::Header(header)) = self.tape.get(len).cloned() {
+                    if let Some(value) = self.tape.get(len).and_then(header_value) {
                         self.tape.truncate(len);
-                        self.tape.push(TextToken::Unquoted(header));
+                        self.tape.push(value);
                     }
                     return;
                 }
@@ -1210,6 +1233,64 @@ mod tests {
         same(b"foo = LIST { \"a\" \"b\" }");
         same(b"a = $A$ { b }");
         same(b"a = @v { b }");
+    }
+
+    /// A quoted scalar before a block in a field value is a header, as an
+    /// unquoted one is, also before a block on the next line. With an empty
+    /// block, it is the quoted scalar. `TextTape::from_slice` rejects it.
+    #[test]
+    fn quoted_headers() {
+        fn tokens(data: &[u8]) -> Vec<TextToken<'_>> {
+            assert!(matches_grammar(data, LexFlavor::DEFAULT));
+            parse_tape(data).into_result().unwrap().tokens().to_vec()
+        }
+        fn header(data: &[u8]) -> [TextToken<'_>; 6] {
+            [
+                TextToken::Unquoted(Scalar::new(b"block")),
+                TextToken::QuotedHeader(Scalar::new(data)),
+                TextToken::Object {
+                    end: 5,
+                    mixed: false,
+                },
+                TextToken::Unquoted(Scalar::new(b"visible")),
+                TextToken::Unquoted(Scalar::new(b"no")),
+                TextToken::End(2),
+            ]
+        }
+        assert_eq!(
+            tokens(b"block = \"tab_glow\" { visible = no }"),
+            header(b"tab_glow")
+        );
+        assert_eq!(
+            tokens(b"block = \"tab_glow\"\n{ visible = no }"),
+            header(b"tab_glow")
+        );
+        assert_eq!(
+            tokens(b"block = \"a\\\"b\" { visible = no }"),
+            header(b"a\\\"b")
+        );
+        assert_eq!(
+            tokens(b"a = \"x\" { } b = c"),
+            [
+                TextToken::Unquoted(Scalar::new(b"a")),
+                TextToken::Quoted(Scalar::new(b"x")),
+                TextToken::Unquoted(Scalar::new(b"b")),
+                TextToken::Unquoted(Scalar::new(b"c")),
+            ]
+        );
+        assert!(matches_grammar(
+            b"foo = { 1 a = \"x\" { 1 2 } }",
+            LexFlavor::DEFAULT
+        ));
+        assert!(matches_grammar(
+            b"foo = { a = \"x\" { 1 } \"y\" { 2 } }",
+            LexFlavor::DEFAULT
+        ));
+        // `TextTape::from_slice` rejects a quoted header, except when the
+        // `jomini_syntax_tape` cfg builds it with the syntax parser.
+        if !cfg!(jomini_syntax_tape) {
+            assert!(TextTape::from_slice(b"block = \"tab_glow\" { visible = no }").is_err());
+        }
     }
 
     #[test]

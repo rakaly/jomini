@@ -142,7 +142,9 @@ and [`resolve`] for reading variables and calculations as values.
 //!
 //! In `color = rgb { 1 2 3 }`, the key is `color`. The parser groups `rgb`
 //! and the block into a single value, a [`HeaderedBlock`] with `rgb` as its
-//! header.
+//! header. A header can be quoted, as GUI files write
+//! `blockoverride = "tab_glow" { visible = no }`;
+//! [`ScalarToken::is_quoted`] tells.
 //!
 //! The inner part of `@[calc]` is an expression subtree: see [`Calc`] and
 //! [`Expr`].

@@ -80,6 +80,17 @@ pub enum TextToken<'a> {
     ///
     /// `rgb` would be a the header followed by a 3 element array
     Header(Scalar<'a>),
+
+    /// A quoted header, as `tab_glow` in
+    ///
+    /// ```ignore
+    /// blockoverride = "tab_glow" { visible = no }
+    /// ```
+    ///
+    /// Only `jomini::text::syntax::parse_tape` gives it.
+    /// [`TextTape::from_slice`] rejects a quoted header. The scalar has no
+    /// quotes and keeps its escapes, as a [`TextToken::Quoted`] does.
+    QuotedHeader(Scalar<'a>),
 }
 
 impl<'a> TextToken<'a> {
@@ -95,6 +106,7 @@ impl<'a> TextToken<'a> {
     pub fn as_scalar(&self) -> Option<Scalar<'a>> {
         match self {
             TextToken::Header(s)
+            | TextToken::QuotedHeader(s)
             | TextToken::Unquoted(s)
             | TextToken::Quoted(s)
             | TextToken::Parameter(s)

@@ -52,6 +52,7 @@ where
         TextToken::Unquoted(x)
         | TextToken::Quoted(x)
         | TextToken::Header(x)
+        | TextToken::QuotedHeader(x)
         | TextToken::Parameter(x)
         | TextToken::UndefinedParameter(x) => {
             let _ = x.to_f64();

@@ -427,6 +427,17 @@ pub(super) fn lex_simd<S: Simd>(
     (i, flags)
 }
 
+/// The kind of the unquoted scalar `run`, as the lexer classifies a run of
+/// those bytes, for the owned values of other engines. A run that starts
+/// with `@[` is a [`SyntaxKind::CalcOpen`], as the lexer reads it, though
+/// another engine may scan the whole calculation as one scalar.
+pub(super) fn scalar_kind(run: &[u8], flavor: LexFlavor) -> SyntaxKind {
+    match run {
+        [b'@', b'[', ..] if flavor.variables => SyntaxKind::CalcOpen,
+        _ => classify_run(run, run.contains(&b'$'), flavor),
+    }
+}
+
 /// Classify an unquoted run. `dollar` is `true` when the run contains a `$`.
 #[inline(always)]
 fn classify_run(run: &[u8], dollar: bool, flavor: LexFlavor) -> SyntaxKind {

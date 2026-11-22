@@ -2,7 +2,7 @@
 //! constructs and recovery cases. The full grammar then continues from the
 //! last checkpoint. Both paths use the same scalar and trivia scans.
 
-use super::{Leaf, LexFlavor, NO_OPEN, OnEmpty, Shape};
+use super::{Leaf, LexFlavor, NO_OPEN, OnEmpty, Shape, header_value};
 use crate::{Scalar, TextToken};
 use fearless_simd::Simd;
 
@@ -281,11 +281,9 @@ impl<'a, S: Simd> Parser<'a, S> {
                     return;
                 }
                 OnEmpty::Header { len } => {
-                    let TextToken::Header(header) = self.tape[len] else {
-                        unreachable!()
-                    };
+                    let value = header_value(&self.tape[len]).expect("a header at `len`");
                     self.tape.truncate(len);
-                    self.tape.push(TextToken::Unquoted(header));
+                    self.tape.push(value);
                     return;
                 }
             }
@@ -440,13 +438,11 @@ impl<'a, S: Simd> Parser<'a, S> {
                     {
                         return None;
                     }
-                    if next == Some(b'{') && matches!(value, Leaf::Unquoted(_)) {
-                        // The grammar reads an unquoted scalar, a macro
-                        // parameter, and a variable before `{` as a header.
-                        // After a quoted value, the block is the next item.
+                    if next == Some(b'{') {
+                        // The grammar reads a scalar before `{` as a header.
                         let len = self.tape.len();
                         self.tape.push(if header_ok {
-                            TextToken::Header(value.scalar())
+                            value.header()
                         } else {
                             value.token()
                         });

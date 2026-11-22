@@ -522,7 +522,10 @@ where
     fn owned(&self) -> crate::text::syntax::OwnedValue {
         use crate::text::{
             dom::raw,
-            syntax::{OwnedScalar, OwnedValue, value::tape},
+            syntax::{
+                OwnedValue,
+                value::{owned_scalar, tape},
+            },
         };
         match &self.kind {
             ValueKind::OperatorValue(OperatorValue { value: x, .. }) | ValueKind::Value(x) => {
@@ -530,11 +533,9 @@ where
                 tape::value(tokens, index, encoding)
             }
             ValueKind::Scalar(x) => {
-                let text = x.read_string();
-                OwnedValue::Scalar(match x.token() {
-                    TextToken::Quoted(_) => OwnedScalar::Quoted(text),
-                    _ => tape::unquoted(text),
-                })
+                let quoted = matches!(x.token(), TextToken::Quoted(_));
+                let encoding = raw::scalar_encoding(x);
+                OwnedValue::Scalar(owned_scalar(x.read_scalar().as_bytes(), quoted, encoding))
             }
             ValueKind::Array(x) => {
                 let (tokens, start, end, encoding) = raw::array(x);
@@ -547,12 +548,8 @@ where
     /// operator of the field, as in `a > rgb { 1 2 }`.
     fn headered(&self) -> Option<(Self, Self)> {
         let value = self.value_reader()?;
-        if !matches!(value.token(), TextToken::Header(_)) {
-            return None;
-        }
-        let mut parts = value.read_array().ok()?.values();
-        let header = parts.next()?;
-        let block = parts.next()?;
+        let header = value.header_scalar()?;
+        let block = value.read_array().ok()?.values().nth(1)?;
         let block = match &self.kind {
             ValueKind::OperatorValue(x) => ValueKind::OperatorValue(OperatorValue {
                 operator: x.operator,
@@ -564,7 +561,7 @@ where
             kind,
             config: self.config,
         };
-        Some((part(ValueKind::Value(header)), part(block)))
+        Some((part(ValueKind::Scalar(header)), part(block)))
     }
 }
 
@@ -574,7 +571,7 @@ macro_rules! deserialize_any_value {
             TextToken::Quoted(_) | TextToken::Unquoted(_) => {
                 visit_str!($x.read_str().map_err(Error::from)?, $visitor)
             }
-            TextToken::Header(_) => {
+            TextToken::Header(_) | TextToken::QuotedHeader(_) => {
                 // This is a bit of a hack to avoid overflows on flattened
                 // structs, which already have poor deserialization support,
                 // but this at least allows for forward progress in the
@@ -1477,24 +1474,85 @@ mod tests {
         assert_eq!(actual.other, 1);
     }
 
-    /// A quoted scalar is not a header, so the block after it is a block in
-    /// key position, which is skipped. The syntax parser reads the block as
-    /// a value without a key, which starts the remainder, a difference of
-    /// game files only.
+    /// A quoted scalar before a block is a header, which a header of
+    /// `MaybeQuoted` tells, and is unescaped. The headered block is not a
+    /// quoted scalar. A tape from `TextTape::from_slice` rejects it.
     #[test]
     fn test_headered_quoted() {
         #[derive(Deserialize, Debug, PartialEq)]
         struct MyStruct {
-            a: Headered<MaybeQuoted<String>>,
+            a: Headered<Vec<u8>, MaybeQuoted<String>>,
+            b: MaybeQuoted<Headered<Vec<u8>, MaybeQuoted<String>>>,
+            c: Headered<MaybeQuoted<String>, MaybeQuoted<String>>,
             other: u32,
         }
 
-        let data = b"a = \"rgb\" { 1 2 } other = 1";
-        let expected = Headered::new(None, MaybeQuoted::Quoted(String::from("rgb")));
-        let actual: MyStruct = super::from_windows1252_slice(&data[..]).unwrap();
-        assert_eq!((&actual.a, actual.other), (&expected, 1));
-        let actual: MyStruct = from_windows1252_reader(&data[..]).unwrap();
-        assert_eq!((&actual.a, actual.other), (&expected, 1));
+        let data = b"a = \"r\\\"b\" { 1 2 } b = rgb { 3 } c = \"x\" { } other = 1";
+        let expected = MyStruct {
+            a: Headered::new(Some(MaybeQuoted::Quoted(String::from("r\"b"))), vec![1, 2]),
+            b: MaybeQuoted::Unquoted(Headered::new(
+                Some(MaybeQuoted::Unquoted(String::from("rgb"))),
+                vec![3],
+            )),
+            c: Headered::new(None, MaybeQuoted::Quoted(String::from("x"))),
+            other: 1,
+        };
+        assert_eq!(from_text::<MyStruct>(&data[..]), expected);
+        // `TextTape::from_slice` rejects a quoted header, except when the
+        // `jomini_syntax_tape` cfg builds it with the syntax parser.
+        if !cfg!(all(jomini_syntax_tape, feature = "syntax")) {
+            assert!(from_tape::<MyStruct>(&data[..]).is_err());
+        }
+
+        // A tape of the syntax parser has the quoted header.
+        #[cfg(feature = "syntax")]
+        {
+            let tape = crate::text::syntax::parse_tape(&data[..])
+                .into_result()
+                .unwrap();
+            let actual: MyStruct = TextTapeDeserializer::from_windows1252_tape(&tape)
+                .deserialize()
+                .unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    /// A newtype struct is a header type, quoted or not, in each engine.
+    #[test]
+    fn test_headered_newtype_header() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct Name(String);
+
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct MyStruct {
+            a: Headered<Vec<u8>, Name>,
+            b: Headered<Vec<u8>, Name>,
+        }
+
+        let data = b"a = \"r\\\"b\" { 1 2 } b = rgb { 3 }";
+        let expected = MyStruct {
+            a: Headered::new(Some(Name(String::from("r\"b"))), vec![1, 2]),
+            b: Headered::new(Some(Name(String::from("rgb"))), vec![3]),
+        };
+        assert_eq!(from_text::<MyStruct>(&data[..]), expected);
+
+        #[cfg(feature = "syntax")]
+        {
+            let tape = crate::text::syntax::parse_tape(&data[..])
+                .into_result()
+                .unwrap();
+            let actual: MyStruct = TextTapeDeserializer::from_windows1252_tape(&tape)
+                .deserialize()
+                .unwrap();
+            assert_eq!(actual, expected);
+        }
+
+        let data = b"b = rgb { 3 } a = hsv { 1 2 }";
+        let expected = MyStruct {
+            a: Headered::new(Some(Name(String::from("hsv"))), vec![1, 2]),
+            b: Headered::new(Some(Name(String::from("rgb"))), vec![3]),
+        };
+        assert_eq!(from_owned::<MyStruct>(&data[..]), expected);
     }
 
     #[test]

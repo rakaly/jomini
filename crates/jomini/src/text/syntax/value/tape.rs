@@ -10,12 +10,9 @@
 
 use super::{
     Becomes, OwnedBlock, OwnedField, OwnedItem, OwnedParameter, OwnedScalar, OwnedValue,
-    block_value,
+    block_value, owned_scalar,
 };
-use crate::{
-    Encoding, TextToken,
-    text::{Operator, decode_quoted},
-};
+use crate::{Encoding, TextToken, text::Operator};
 
 /// The value at `index`.
 pub(crate) fn value<E: Encoding>(tokens: &[TextToken], index: usize, encoding: &E) -> OwnedValue {
@@ -47,27 +44,13 @@ pub(crate) fn block<E: Encoding>(
 
 /// The scalar of a key.
 pub(crate) fn key<E: Encoding>(token: &TextToken, encoding: &E) -> OwnedScalar {
-    match token {
-        TextToken::Quoted(s) => {
-            OwnedScalar::Quoted(decode_quoted(encoding, s.as_bytes()).into_owned())
-        }
-        token => match token.as_scalar() {
-            Some(s) => unquoted(encoding.decode(s.as_bytes()).into_owned()),
-            None => OwnedScalar::Unquoted(String::new()),
-        },
-    }
-}
-
-/// An unquoted text, or a variable when the text is `@name`.
-pub(crate) fn unquoted(text: String) -> OwnedScalar {
-    let variable = text
-        .as_bytes()
-        .get(1)
-        .is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_');
-    if text.starts_with('@') && variable {
-        OwnedScalar::Variable(text)
-    } else {
-        OwnedScalar::Unquoted(text)
+    match token.as_scalar() {
+        Some(s) => owned_scalar(
+            s.as_bytes(),
+            matches!(token, TextToken::Quoted(_)),
+            encoding,
+        ),
+        None => OwnedScalar::Unquoted(String::new()),
     }
 }
 
@@ -112,14 +95,14 @@ fn start<E: Encoding>(
     index: usize,
     encoding: &E,
 ) -> Result<OwnedValue, (Option<OwnedScalar>, Open)> {
-    let text = |s: &crate::Scalar| encoding.decode(s.as_bytes()).into_owned();
     let token = &tokens[index];
     if let Some(block) = Open::at(token, index) {
         return Err((None, block));
     }
     Ok(match token {
-        TextToken::Header(s) => {
-            let header = unquoted(text(s));
+        TextToken::Header(s) | TextToken::QuotedHeader(s) => {
+            let quoted = matches!(token, TextToken::QuotedHeader(_));
+            let header = owned_scalar(s.as_bytes(), quoted, encoding);
             let body = tokens
                 .get(index + 1)
                 .and_then(|next| Open::at(next, index + 1));
@@ -128,16 +111,12 @@ fn start<E: Encoding>(
                 None => OwnedValue::Scalar(header),
             }
         }
-        TextToken::Quoted(s) => {
-            let text = decode_quoted(encoding, s.as_bytes()).into_owned();
-            OwnedValue::Scalar(OwnedScalar::Quoted(text))
-        }
+        TextToken::Quoted(s) => OwnedValue::Scalar(owned_scalar(s.as_bytes(), true, encoding)),
         TextToken::Unquoted(s) | TextToken::Parameter(s) | TextToken::UndefinedParameter(s) => {
-            let text = text(s);
-            if text.starts_with("@[") {
-                OwnedValue::Calc(text)
+            if s.as_bytes().starts_with(b"@[") {
+                OwnedValue::Calc(encoding.decode(s.as_bytes()).into_owned())
             } else {
-                OwnedValue::Scalar(unquoted(text))
+                OwnedValue::Scalar(owned_scalar(s.as_bytes(), false, encoding))
             }
         }
         TextToken::Operator(op) => OwnedValue::unquoted(op.symbol()),
@@ -153,7 +132,9 @@ fn next(tokens: &[TextToken], mut index: usize) -> usize {
     loop {
         match tokens[index] {
             TextToken::Array { end, .. } | TextToken::Object { end, .. } => return end + 1,
-            TextToken::Header(_) if index + 1 < tokens.len() => index += 1,
+            TextToken::Header(_) | TextToken::QuotedHeader(_) if index + 1 < tokens.len() => {
+                index += 1
+            }
             _ => return index + 1,
         }
     }

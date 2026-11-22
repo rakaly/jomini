@@ -45,7 +45,7 @@ fn contract_known_differences() {
         (b"l = { a 1 { } }", Some(Difference::OperatorlessBlock)),
         (b"l = { a = 1 }", None),
         (b"o = { s = { 1 } { 2 } }", Some(Difference::BlockAsKey)),
-        (b"o = { s = \"q\" { 2 } }", Some(Difference::BlockAsKey)),
+        (b"o = { s = \"q\" { 2 } }", None),
         (b"o = { { s = 1 } }", Some(Difference::BlockAsKey)),
         (b"o = { {} 1 }", None),
         (b"a = { }\n= b", Some(Difference::OperatorAfterBlock)),

@@ -897,16 +897,15 @@ impl<'de, S: Source<'de>, E> TextDeserializer<S, E> {
     /// next. The variant was visited, so it is consumed with the bytes looked
     /// past, and only the open token is kept while looking past it. An empty
     /// block, which a `TextTape` drops, is not the variant's block, nor is an
-    /// open token that the end of the data closes, and a quoted variant has
-    /// no block. The error is at the variant.
+    /// open token that the end of the data closes. The error is at the
+    /// variant.
     #[cold]
     #[inline(never)]
     fn header_block(&mut self) -> Result<(), Error> {
         let offset = self.tok_offset();
         let no_block = || no_variant_block().or_offset(offset);
 
-        // A quoted scalar is not a header.
-        if self.peeked || self.tok.kind == Kind::Quoted {
+        if self.peeked {
             return Err(no_block());
         }
 
@@ -1208,7 +1207,7 @@ impl<'de, S: Source<'de>, E: Encoding> TextDeserializer<S, E> {
     #[cold]
     #[inline(never)]
     fn header_before_map(&mut self) -> Result<(), Error> {
-        if self.tok.kind == Kind::Unquoted
+        if self.tok.is_scalar()
             && !self.peeked
             && let Some((open, b'{')) = self.peek_byte(self.pending, self.pending)?
             && !matches!(self.peek_byte(open + 1, open + 1)?, Some((_, b'}')) | None)
@@ -1523,7 +1522,7 @@ impl<'de, S: Source<'de>, E: Encoding> de::Deserializer<'de> for ValueDeserializ
         let tok = self.de.tok;
         match tok.kind {
             Kind::Open => self.de.visit_block(visitor),
-            Kind::Unquoted if self.header => self.de.visit_value(tok, visitor),
+            Kind::Unquoted | Kind::Quoted if self.header => self.de.visit_value(tok, visitor),
             _ => self.de.visit_token(tok, visitor),
         }
     }
