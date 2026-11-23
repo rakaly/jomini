@@ -68,7 +68,49 @@ impl PdsDateFormatter {
     pub fn new(raw: RawDate, format: DateFormat) -> Self {
         Self { raw, format }
     }
+
+    /// Format a date in the [`DateFormat::DotShort`] format without the
+    /// machinery of [`std::fmt`].
+    pub(crate) fn format_short<'a>(&self, buf: &'a mut [u8; SHORT_DATE_LEN]) -> Option<&'a [u8]> {
+        if self.format != DateFormat::DotShort {
+            return None;
+        }
+
+        let mut i = SHORT_DATE_LEN;
+        let mut number = |mut x: u16, buf: &mut [u8; SHORT_DATE_LEN]| {
+            loop {
+                i -= 1;
+                buf[i] = b'0' + (x % 10) as u8;
+                x /= 10;
+                if x == 0 {
+                    break;
+                }
+            }
+            i -= 1;
+            i
+        };
+
+        if self.raw.has_hour() {
+            let dot = number(u16::from(self.raw.hour()), buf);
+            buf[dot] = b'.';
+        }
+        let dot = number(u16::from(self.raw.day()), buf);
+        buf[dot] = b'.';
+        let dot = number(u16::from(self.raw.month()), buf);
+        buf[dot] = b'.';
+        let sign = number(self.raw.year().unsigned_abs(), buf);
+        if self.raw.year() < 0 {
+            buf[sign] = b'-';
+            Some(&buf[sign..])
+        } else {
+            Some(&buf[sign + 1..])
+        }
+    }
 }
+
+/// Room for a date in the short game format, also when its fields are out of
+/// range. The longest in range is `-32768.12.31.24`.
+pub(crate) const SHORT_DATE_LEN: usize = 20;
 
 impl Display for PdsDateFormatter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
