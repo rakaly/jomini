@@ -1,5 +1,5 @@
 use criterion::criterion_main;
-use jomini_bench::benchmarks::{arena, binary, date, encoding, eu4, eu5, scalar, text};
+use jomini_bench::benchmarks::{arena, binary, date, encoding, eu4, eu5, melt, scalar, text};
 
 #[cfg(not(feature = "json"))]
 criterion_main!(
@@ -13,6 +13,7 @@ criterion_main!(
     eu4::country_tag_hashing::criterion_benches::country_tag_hashing_benches,
     arena::criterion_benches::arena_benches,
     eu5::criterion_benches::eu5_benches,
+    melt::criterion_benches::melt_benches,
 );
 
 #[cfg(feature = "json")]
@@ -27,5 +28,6 @@ criterion_main!(
     eu4::country_tag_hashing::criterion_benches::country_tag_hashing_benches,
     arena::criterion_benches::arena_benches,
     eu5::criterion_benches::eu5_benches,
+    melt::criterion_benches::melt_benches,
     jomini_bench::benchmarks::json::criterion_benches::json_benches,
 );

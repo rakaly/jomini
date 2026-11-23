@@ -16,8 +16,8 @@ pub struct TextWriter<W> {
     mode: DepthMode,
     depth: Vec<DepthMode>,
     state: WriteState,
-    indents: [u8; 16],
-    indent_char: u8,
+    /// A line feed and then the indents, so that a new line is one write.
+    newline_indents: [u8; 33],
     indent_factor: u8,
     needs_line_terminator: bool,
     mixed_mode: MixedMode,
@@ -218,8 +218,7 @@ where
         if old_state.no_data_encountered_yet() {
             self.writer.write_all(b" ")?;
         } else {
-            self.writer.write_all(b"\n")?;
-            self.write_indent()?;
+            self.write_newline_indent()?;
         }
 
         self.writer.write_all(b"}")?;
@@ -246,8 +245,8 @@ where
     #[inline]
     pub fn write_bool(&mut self, data: bool) -> Result<(), Error> {
         match data {
-            true => write!(self, "yes"),
-            false => write!(self, "no"),
+            true => self.write_unquoted(b"yes"),
+            false => self.write_unquoted(b"no"),
         }
     }
 
@@ -335,7 +334,7 @@ where
     #[inline]
     pub fn write_quoted(&mut self, data: &[u8]) -> Result<(), Error> {
         self.write_preamble()?;
-        let esc_buf = self.scratch.split_off(0);
+        let esc_buf = std::mem::take(&mut self.scratch);
         let esc = escape(data, esc_buf);
         self.writer.write_all(b"\"")?;
         self.writer.write_all(&esc)?;
@@ -520,6 +519,48 @@ where
         Ok(())
     }
 
+    /// Write a fixed point number, a value with `SCALE` implied decimal places.
+    ///
+    /// Trailing zeros of the fraction are not written. `SCALE` is at most 19, and
+    /// a larger one does not compile.
+    ///
+    /// ```
+    /// use jomini::TextWriterBuilder;
+    ///
+    /// let mut out = Vec::new();
+    /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+    /// writer.write_unquoted(b"a")?;
+    /// writer.write_fixed::<5>(-150_000)?;
+    /// writer.write_unquoted(b"b")?;
+    /// writer.write_fixed::<5>(200_000)?;
+    /// assert_eq!(&out, b"a=-1.5\nb=2");
+    /// # Ok::<(), jomini::Error>(())
+    /// ```
+    #[inline]
+    pub fn write_fixed<const SCALE: u32>(&mut self, value: i64) -> Result<(), Error> {
+        let mut buf = [0; FIXED_LEN];
+        self.write_unquoted(format_fixed::<SCALE>(&mut buf, value, true))
+    }
+
+    /// Write a fixed point number with all `SCALE` decimal places. `SCALE` is at
+    /// most 19, and a larger one does not compile.
+    ///
+    /// ```
+    /// use jomini::TextWriterBuilder;
+    ///
+    /// let mut out = Vec::new();
+    /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+    /// writer.write_unquoted(b"a")?;
+    /// writer.write_fixed_padded::<3>(-50)?;
+    /// assert_eq!(&out, b"a=-0.050");
+    /// # Ok::<(), jomini::Error>(())
+    /// ```
+    #[inline]
+    pub fn write_fixed_padded<const SCALE: u32>(&mut self, value: i64) -> Result<(), Error> {
+        let mut buf = [0; FIXED_LEN];
+        self.write_unquoted(format_fixed::<SCALE>(&mut buf, value, false))
+    }
+
     /// Write a date formatted in the game style
     ///
     /// ```
@@ -536,6 +577,11 @@ where
     /// ```
     #[inline]
     pub fn write_date(&mut self, data: PdsDateFormatter) -> Result<(), Error> {
+        let mut buf = [0; crate::common::SHORT_DATE_LEN];
+        if let Some(date) = data.format_short(&mut buf) {
+            return self.write_unquoted(date);
+        }
+
         write!(self, "{}", data)
     }
 
@@ -593,67 +639,72 @@ where
     }
 
     #[inline]
-    fn write_line_terminator(&mut self) -> Result<(), Error> {
-        if self.needs_line_terminator {
-            self.writer.write_all(b"\n")?;
-            self.needs_line_terminator = false;
-        }
-
-        Ok(())
-    }
-
-    #[inline]
     fn write_preamble(&mut self) -> Result<(), Error> {
-        let just_wrote_line_terminator = self.needs_line_terminator;
-        self.write_line_terminator()?;
+        let newline = std::mem::take(&mut self.needs_line_terminator);
         match self.state {
             WriteState::ArrayValue | WriteState::SecondUnknown => {
-                if just_wrote_line_terminator {
-                    self.write_indent()?;
+                if newline {
+                    self.write_newline_indent()?;
                 } else if self.mixed_mode == MixedMode::Keyed {
                     self.mixed_mode = MixedMode::Started;
                 } else {
                     self.writer.write_all(b" ")?;
                 }
             }
-            WriteState::Key => {
-                self.write_indent()?;
+            WriteState::Key
+            | WriteState::ArrayValueFirst
+            | WriteState::FirstKey
+            | WriteState::FirstUnknown => {
+                if newline {
+                    self.write_newline_indent()?;
+                } else {
+                    self.write_indent()?;
+                }
             }
+            state => {
+                if newline {
+                    self.writer.write_all(b"\n")?;
+                }
 
-            // Only inject equals in non-verbatim mode
-            WriteState::KeyValueSeparator if !self.verbatim => {
-                self.writer.write_all(b"=")?;
+                // Only inject equals in non-verbatim mode
+                if state == WriteState::KeyValueSeparator && !self.verbatim {
+                    self.writer.write_all(b"=")?;
+                }
             }
-            x if x.no_data_encountered_yet() => {
-                self.write_indent()?;
-            }
-            _ => {}
         };
 
         Ok(())
     }
 
-    /// advance the state
     fn write_epilogue(&mut self) -> Result<(), Error> {
         self.state = WRITE_STATE_NEXT[self.state as usize];
         self.needs_line_terminator = self.state == WriteState::Key;
         Ok(())
     }
 
-    /// Write the indent characters
+    /// Write a line feed and then the indent characters
     #[inline]
-    fn write_indent(&mut self) -> Result<(), Error> {
-        let indents = self.depth.len() * (self.indent_factor as usize);
-        match self.indents.get(..indents) {
+    fn write_newline_indent(&mut self) -> Result<(), Error> {
+        let indents = self.depth.len() * usize::from(self.indent_factor);
+        match self.newline_indents.get(..=indents) {
             Some(x) => Ok(self.writer.write_all(x)?),
             None => {
-                for _ in 0..self.depth.len() * usize::from(self.indent_factor) {
-                    self.writer.write_all(&[self.indent_char])?;
-                }
-
-                Ok(())
+                self.writer.write_all(b"\n")?;
+                self.write_indent()
             }
         }
+    }
+
+    #[inline]
+    fn write_indent(&mut self) -> Result<(), Error> {
+        let mut indents = self.depth.len() * usize::from(self.indent_factor);
+        let data = &self.newline_indents[1..];
+        while indents > 0 {
+            let len = indents.min(data.len());
+            self.writer.write_all(&data[..len])?;
+            indents -= len;
+        }
+        Ok(())
     }
 
     /// Enter mixed mode for writing a container that is a list and an object
@@ -830,6 +881,52 @@ where
     }
 }
 
+/// A sign, the nineteen digits of an `i64`, and a decimal point, with room for
+/// a scale that pads with zeros.
+const FIXED_LEN: usize = 40;
+
+#[inline]
+fn format_fixed<const SCALE: u32>(buf: &mut [u8; FIXED_LEN], value: i64, trim: bool) -> &[u8] {
+    const { assert!(SCALE <= 19, "SCALE must be at most 19") };
+    let mut rest = value.unsigned_abs();
+    let mut fraction = rest % 10u64.pow(SCALE);
+    rest /= 10u64.pow(SCALE);
+
+    let mut i = FIXED_LEN;
+    if SCALE != 0 && (!trim || fraction != 0) {
+        let mut places = SCALE;
+        if trim {
+            while fraction.is_multiple_of(10) {
+                fraction /= 10;
+                places -= 1;
+            }
+        }
+
+        for _ in 0..places {
+            i -= 1;
+            buf[i] = b'0' + (fraction % 10) as u8;
+            fraction /= 10;
+        }
+        i -= 1;
+        buf[i] = b'.';
+    }
+
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+
+    if value < 0 {
+        i -= 1;
+        buf[i] = b'-';
+    }
+    &buf[i..]
+}
+
 impl TextWriterBuilder {
     /// Construct a new TextWriterBuilder with default values
     pub fn new() -> TextWriterBuilder {
@@ -874,8 +971,11 @@ impl TextWriterBuilder {
             state: WriteState::Key,
             mode: DepthMode::Object,
             depth: Vec::with_capacity(16),
-            indents: [self.indent_char; 16],
-            indent_char: self.indent_char,
+            newline_indents: {
+                let mut data = [self.indent_char; 33];
+                data[0] = b'\n';
+                data
+            },
             indent_factor: self.indent_factor,
             needs_line_terminator: false,
             mixed_mode: MixedMode::Disabled,
@@ -1608,5 +1708,41 @@ mod tests {
         // Indentation preserved even in verbatim mode
         assert_eq!(std::str::from_utf8(&out).unwrap(), "data{\n  keyvalue\n}");
         Ok(())
+    }
+
+    /// A fixed point number must print the same as the double it decodes to.
+    #[test]
+    fn fixed_matches_float() {
+        let mut seed = 1u64;
+        let edges = [0, 1, -1, 99_999, 100_000, -100_000, 999_999_999_999_999];
+        let mut random = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let limit = 10i64.pow((seed % 15 + 1) as u32);
+            ((seed >> 8) as i64 % limit) * if seed & 64 == 0 { 1 } else { -1 }
+        };
+        for i in 0..if cfg!(miri) { 200 } else { 1_000_000 } {
+            let x = edges.get(i).copied().unwrap_or_else(&mut random);
+            let mut buf = [0; FIXED_LEN];
+            let actual = format_fixed::<5>(&mut buf, x, true);
+            let expected = format!("{}", x as f64 / 100_000.0);
+            assert_eq!(actual, expected.as_bytes());
+        }
+        let mut buf = [0; FIXED_LEN];
+        let min = format_fixed::<5>(&mut buf, i64::MIN, false);
+        assert_eq!(min, b"-92233720368547.75808");
+        let mut buf = [0; FIXED_LEN];
+        assert_eq!(
+            format_fixed::<19>(&mut buf, i64::MIN, false),
+            b"-0.9223372036854775808"
+        );
+        let mut buf = [0; FIXED_LEN];
+        assert_eq!(format_fixed::<0>(&mut buf, -7, false), b"-7");
+        let mut buf = [0; FIXED_LEN];
+        assert_eq!(
+            format_fixed::<18>(&mut buf, -1, false),
+            b"-0.000000000000000001"
+        );
     }
 }
