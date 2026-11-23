@@ -136,8 +136,7 @@ impl<'a> TapeParse<'a> {
 /// # Ok::<(), jomini::text::syntax::SyntaxError>(())
 /// ```
 ///
-/// A source that has no error is parsed once. A source that has an error
-/// is parsed a second time to collect the errors.
+/// The source is parsed once, even when it has an error.
 ///
 /// # Differences from `from_slice`
 ///
@@ -181,18 +180,6 @@ pub fn parse_tape_with<'a, F: TextFlavor + ?Sized>(source: &'a [u8], flavor: &F)
 }
 
 fn parse_tape_lex(source: &[u8], flavor: LexFlavor) -> TapeParse<'_> {
-    let (tape, has_error) = recover_tape(source, flavor);
-    let errors = if has_error {
-        collect_errors(source, flavor)
-    } else {
-        Vec::new()
-    };
-    TapeParse { tape, errors }
-}
-
-/// Parse `source` into a [`TextTape`] and recover from syntax errors. The
-/// flag tells if `source` has an error.
-fn recover_tape(source: &[u8], flavor: LexFlavor) -> (TextTape<'_>, bool) {
     assert!(
         u32::try_from(source.len()).is_ok(),
         "source is larger than 4 GiB"
@@ -202,30 +189,25 @@ fn recover_tape(source: &[u8], flavor: LexFlavor) -> (TextTape<'_>, bool) {
     let level = fearless_simd::Level::new();
     let fast = fearless_simd::dispatch!(level, simd => fast::parse(simd, source, flavor, tape));
     let (mut tape, at) = match fast {
-        Ok(tape) => return (TextTape::from_parts(tape, bom), false),
+        Ok(tape) => {
+            return TapeParse {
+                tape: TextTape::from_parts(tape, bom),
+                errors: Vec::new(),
+            };
+        }
         Err(stop) => stop,
     };
     // The fast path stopped. Keep the tape of the root items before the
-    // checkpoint, and continue with the full grammar from there.
+    // checkpoint, and continue with the full grammar from there. The fast
+    // path accepts only root items with no error, so the grammar finds all
+    // of them.
     tape.truncate(at.len);
     let sink = TapeSink::resume(source, tape, at);
     let p = run_items(source, flavor, at.pos, sink);
-    let has_error =
-        p.sink.has_error || p.lexer.unclosed_quote.is_some() || !p.lexer.hiding_quotes.is_empty();
-    (TextTape::from_parts(p.sink.tape, bom), has_error)
-}
-
-/// Parse `source` again with the full tree to get its syntax errors. The
-/// tape sink keeps no tokens, so it knows only that an error occurred.
-#[cold]
-#[inline(never)]
-fn collect_errors(source: &[u8], flavor: LexFlavor) -> Vec<SyntaxError> {
-    let errors = super::parse_lex(source, flavor).errors().to_vec();
-    debug_assert!(
-        !errors.is_empty(),
-        "the tape parse and the tree parse find the same errors"
-    );
-    errors
+    TapeParse {
+        tape: TextTape::from_parts(p.sink.tape, bom),
+        errors: p.errors,
+    }
 }
 
 /// A scalar for the tape.
@@ -381,8 +363,6 @@ struct TapeSink<'a> {
     frames: Vec<Frame<'a>>,
     /// The number of open nodes inside the top opaque frame.
     skip: u32,
-    /// The parser found a syntax error.
-    has_error: bool,
 }
 
 impl<'a> TapeSink<'a> {
@@ -392,7 +372,6 @@ impl<'a> TapeSink<'a> {
             tape,
             frames: Vec::with_capacity(16),
             skip: 0,
-            has_error: false,
         }
     }
 
@@ -880,10 +859,9 @@ impl Sink for TapeSink<'_> {
         }
     }
 
+    /// The tape has no place for a diagnostic. The parser keeps them.
     #[inline]
-    fn error(&mut self) {
-        self.has_error = true;
-    }
+    fn error(&mut self) {}
 
     #[inline]
     fn brace(&mut self, token: Token) {
@@ -1011,22 +989,29 @@ mod tests {
     use super::*;
     use quickcheck_macros::quickcheck;
 
+    /// The tape parse gives the tape of the full grammar and the errors of
+    /// the tree, with the same contents and in the same order.
     fn matches_grammar(source: &[u8], flavor: LexFlavor) -> bool {
+        let tree = super::super::parse_lex(source, flavor);
         let expected = run(source, flavor, TapeSink::new(source, Vec::new()));
-        let (tape, has_error) = recover_tape(source, flavor);
-        // The tape finds an error exactly when the tree finds one.
-        has_error == !super::super::parse_lex(source, flavor).errors().is_empty()
-            && parse_tape_lex(source, flavor).errors().is_empty() != has_error
+        let (tape, errors) = parse_tape_lex(source, flavor).into_parts();
+        errors == tree.errors()
+            && expected.errors == tree.errors()
             && tape.tokens() == expected.sink.tape
             && fast::parse(fearless_simd::Fallback::new(), source, flavor, Vec::new())
                 .ok()
                 .is_none_or(|tape| tape == expected.sink.tape)
-            && resumes_match_grammar(source, flavor, &expected.sink.tape)
+            && resumes_match_grammar(source, flavor, &expected.sink.tape, tree.errors())
     }
 
     /// Continue the full grammar from each checkpoint of the fast path. The
-    /// result must be the same as the `expected` tape of a full parse.
-    fn resumes_match_grammar(source: &[u8], flavor: LexFlavor, expected: &[TextToken]) -> bool {
+    /// result must be the `expected` tape and the `errors` of a full parse.
+    fn resumes_match_grammar(
+        source: &[u8],
+        flavor: LexFlavor,
+        expected: &[TextToken],
+        errors: &[SyntaxError],
+    ) -> bool {
         let (checkpoints, tape) = fast::checkpoints(source, flavor);
         checkpoints.into_iter().all(|at| {
             let prefix = &expected[..at.len.min(expected.len())];
@@ -1034,7 +1019,8 @@ mod tests {
                 return false;
             }
             let sink = TapeSink::resume(source, prefix.to_vec(), at);
-            run_items(source, flavor, at.pos, sink).sink.tape == expected
+            let p = run_items(source, flavor, at.pos, sink);
+            p.sink.tape == expected && p.errors == errors
         })
     }
 
@@ -1107,6 +1093,18 @@ mod tests {
         matches_grammar(&source, LexFlavor::DEFAULT) && matches_grammar(&source, LexFlavor::HOI4)
     }
 
+    /// Calculations and their parentheses, which the fast path gives to the
+    /// grammar.
+    #[quickcheck]
+    fn fused_matches_grammar_calc(source: Vec<u8>) -> bool {
+        const ALPHABET: &[u8] = b"a1@[]()+*{}= \n";
+        let source: Vec<u8> = source
+            .iter()
+            .map(|b| ALPHABET[*b as usize % ALPHABET.len()])
+            .collect();
+        matches_grammar(&source, LexFlavor::DEFAULT) && matches_grammar(&source, LexFlavor::HOI4)
+    }
+
     #[quickcheck]
     fn fused_matches_grammar_entries(entries: Vec<u8>) -> bool {
         const ENTRIES: &[&[u8]] = &[
@@ -1150,6 +1148,9 @@ mod tests {
             b"@@k=1",
             b"a<@@a{a}",
             b"x={1 @:insert m}",
+            b"a=\"b\" {c",
+            b"a=\"b\"\n{c=d}}",
+            b"x={a=\"b\" {=} c=\"d\" {}}",
         ];
         let mut source = Vec::new();
         for entry in entries {
@@ -1163,7 +1164,7 @@ mod tests {
     #[track_caller]
     fn same(data: &[u8]) {
         let expected = TextTape::from_slice(data).unwrap();
-        let (actual, _) = recover_tape(data, LexFlavor::DEFAULT);
+        let actual = parse_tape(data).into_tape();
         assert_eq!(
             actual.tokens(),
             expected.tokens(),
@@ -1389,6 +1390,54 @@ mod tests {
         assert_eq!(error.range.to_range(), 10..11);
     }
 
+    /// The token window of the tape parse no longer holds the token that
+    /// opens a long construct when the construct ends. The error still has
+    /// the range of that token.
+    #[test]
+    fn errors_of_long_constructs() {
+        let source = b"a = { b = c d = e f = g h = i j = k";
+        let errors = parse_tape(source).errors().to_vec();
+        assert_eq!(errors, super::super::parse(source).errors());
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, SyntaxErrorKind::UnclosedBlock);
+        assert_eq!(errors[0].range.to_range(), 35..35);
+        let missing = errors[0].missing_delimiter.as_ref().unwrap();
+        assert_eq!(missing.opening_range.to_range(), 4..5);
+
+        let source = b"x = { [[p] a = b c = d e = f } }";
+        let errors = parse_tape(source).errors().to_vec();
+        assert_eq!(errors, super::super::parse(source).errors());
+        let found: Vec<_> = errors
+            .iter()
+            .map(|e| (e.kind, e.range.to_range()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (SyntaxErrorKind::UnclosedParameter, 6..7),
+                (SyntaxErrorKind::UnmatchedCloseBrace, 31..32),
+            ]
+        );
+
+        let source = b"a = @[(1 + (2 * 3) + 4 + 5 + 6";
+        let errors = parse_tape(source).errors().to_vec();
+        assert_eq!(errors, super::super::parse(source).errors());
+        let found: Vec<_> = errors
+            .iter()
+            .map(|e| {
+                let missing = e.missing_delimiter.as_ref().unwrap();
+                (e.kind, missing.opening_range.to_range())
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (SyntaxErrorKind::UnclosedCalcParen, 6..7),
+                (SyntaxErrorKind::UnclosedCalc, 4..6),
+            ]
+        );
+    }
+
     #[test]
     fn recovery() {
         // `TextTape` closes one unclosed block at EOF as an object.
@@ -1397,7 +1446,7 @@ mod tests {
         same(b"a = b } c = d");
 
         // An operator as a value is a scalar.
-        let (tape, _) = recover_tape(b"OPERATOR = <=", LexFlavor::DEFAULT);
+        let tape = parse_tape(b"OPERATOR = <=").into_tape();
         assert_eq!(
             tape.tokens(),
             &[
@@ -1407,7 +1456,7 @@ mod tests {
         );
 
         // A field with no value is ignored.
-        let (tape, _) = recover_tape(b"a = } b = c", LexFlavor::DEFAULT);
+        let tape = parse_tape(b"a = } b = c").into_tape();
         assert_eq!(
             tape.tokens(),
             &[
@@ -1417,7 +1466,7 @@ mod tests {
         );
 
         // Each unclosed block closes at EOF.
-        let (tape, _) = recover_tape(b"a = { b = { c = d", LexFlavor::DEFAULT);
+        let tape = parse_tape(b"a = { b = { c = d").into_tape();
         assert_eq!(
             tape.tokens(),
             &[
@@ -1441,10 +1490,7 @@ mod tests {
 
     #[test]
     fn opaque_nodes() {
-        let (tape, _) = recover_tape(
-            b"a = [GetName] b = code [[ x = 1 ]] c = { 1 } } d",
-            LexFlavor::DEFAULT,
-        );
+        let tape = parse_tape(b"a = [GetName] b = code [[ x = 1 ]] c = { 1 } } d").into_tape();
         assert_eq!(
             tape.tokens(),
             &[

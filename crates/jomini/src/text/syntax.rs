@@ -258,6 +258,6 @@ use lexer::{
     quote_hides_fields, scan_quoted, scan_unquoted, skip_whitespace, starts_line,
 };
 use parser::Sink;
+use tree::run_items;
 #[cfg(test)]
-use tree::run;
-use tree::{parse_lex, run_items};
+use tree::{parse_lex, run};
