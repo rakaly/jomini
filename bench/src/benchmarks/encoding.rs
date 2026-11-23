@@ -73,6 +73,7 @@ pub mod criterion_benches {
     criterion::criterion_group!(encoding_benches, windows1252, utf8);
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub mod gungraun_benches {
     use super::*;
     use gungraun::{library_benchmark, library_benchmark_group};

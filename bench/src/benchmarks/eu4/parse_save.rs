@@ -19,7 +19,7 @@ pub mod criterion_benches {
         group.bench_function("text", |b| {
             b.iter(|| {
                 let file = eu4save::Eu4File::from_slice(&data).unwrap();
-                let _ = file.parse_save(segments.resolver());
+                let _ = file.parse_save(segments.resolver()).unwrap();
             })
         });
 
@@ -42,7 +42,7 @@ pub mod criterion_benches {
         group.bench_function("binary", |b| {
             b.iter(|| {
                 let file = eu4save::Eu4File::from_slice(&data).unwrap();
-                let _ = file.parse_save(segments.resolver());
+                let _ = file.parse_save(segments.resolver()).unwrap();
             })
         });
 

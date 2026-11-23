@@ -40,16 +40,7 @@ pub fn setup_twitter_data() -> Vec<u8> {
 
 fn fetch_twitter_data(path: &Path) -> Vec<u8> {
     eprintln!("fetching {TWITTER_URL} into {}", path.display());
-    let resp = attohttpc::get(TWITTER_URL)
-        .send()
-        .unwrap_or_else(|err| panic!("failed to fetch {TWITTER_URL}: {err}"));
-    if !resp.is_success() {
-        panic!("failed to fetch {TWITTER_URL}: HTTP {}", resp.status());
-    }
-    let data = resp
-        .bytes()
-        .unwrap_or_else(|err| panic!("failed to read {TWITTER_URL}: {err}"));
-
+    let data = pdx_fixtures::download(TWITTER_URL);
     let actual = HighwayHasher::default().hash64(&data);
     if actual != TWITTER_HASH {
         panic!("hash of {TWITTER_URL} is {actual:#018x}, expected {TWITTER_HASH:#018x}");
@@ -575,6 +566,7 @@ pub mod criterion_benches {
 /// The harness drops a return value outside of the measurement, so a benchmark
 /// that returns the model excludes the drop and one that returns the checksum
 /// includes it.
+#[cfg(not(target_family = "wasm"))]
 pub mod gungraun_benches {
     use super::{Corpus, arena_checksum, heap_checksum, model::heap};
     use arena_serde::Arena;

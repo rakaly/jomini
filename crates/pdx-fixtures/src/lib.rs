@@ -54,6 +54,25 @@ fn log_access(name: &str) {
     log.write_all(format!("{name}\n").as_bytes()).unwrap();
 }
 
+/// Download a file into memory.
+#[cfg(not(target_family = "wasm"))]
+pub fn download(url: &str) -> Vec<u8> {
+    let resp = attohttpc::get(url)
+        .send()
+        .unwrap_or_else(|e| panic!("failed to download {url}: {e}"));
+    if !resp.is_success() {
+        panic!("expected HTTP 200 from {url}, got {}", resp.status());
+    }
+    resp.bytes()
+        .unwrap_or_else(|e| panic!("failed to download {url}: {e}"))
+}
+
+/// Wasm has no network access, so a native run must fill the cache first.
+#[cfg(target_family = "wasm")]
+pub fn download(url: &str) -> Vec<u8> {
+    panic!("{url} is not cached and wasm cannot download it, run natively first");
+}
+
 static FETCH: Mutex<()> = Mutex::new(());
 
 /// Open a save fixture, fetching it into the cache on first use.
@@ -65,16 +84,9 @@ pub fn request_file(game: &str, name: &str) -> File {
         if !cache.exists() {
             println!("cache miss: {name}");
             let url = format!("https://cdn-dev.pdx.tools/{game}-saves/{name}");
-            let mut resp = attohttpc::get(&url)
-                .send()
-                .unwrap_or_else(|e| panic!("failed to download {url}: {e}"));
-            if !resp.is_success() {
-                panic!("expected HTTP 200 from {url}, got {}", resp.status());
-            }
-
+            let data = download(&url);
             std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
-            let mut f = File::create(&cache).unwrap();
-            std::io::copy(&mut resp, &mut f).unwrap();
+            std::fs::write(&cache, data).unwrap();
         }
     } else {
         println!("cache hit: {name}");

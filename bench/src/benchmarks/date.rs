@@ -93,6 +93,7 @@ fn date_pairs() -> [(Date, Date); 7] {
     ]
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub mod gungraun_benches {
     use super::*;
     use gungraun::{library_benchmark, library_benchmark_group};

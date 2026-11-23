@@ -361,6 +361,7 @@ pub mod criterion_benches {
     criterion::criterion_group!(text_benches, text, text_deserialize, text_compressed);
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub mod gungraun_benches {
     use super::*;
     use gungraun::{library_benchmark, library_benchmark_group};
