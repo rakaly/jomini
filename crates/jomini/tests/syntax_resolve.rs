@@ -1483,3 +1483,256 @@ fn errors_and_sets_describe_themselves() {
     assert!(!set.is_empty());
     assert_eq!(set.len(), 1);
 }
+
+/// Each scalar token of `parse` with what the resolution gives it: the
+/// text of [`Resolution::get`], and the index in [`Resolution::definitions`]
+/// of [`Resolution::definition`].
+fn token_reads(
+    parse: &syntax::Parse<'_>,
+    resolution: &Resolution,
+) -> Vec<(String, Option<String>, Option<usize>)> {
+    let definitions: Vec<_> = resolution.definitions().collect();
+    let text = |bytes: &[u8]| String::from_utf8(bytes.to_vec()).unwrap();
+    parse
+        .significant_tokens()
+        .filter_map(syntax::ScalarToken::cast)
+        .map(|token| {
+            let value = resolution.get(token).map(|value| text(value.as_bytes()));
+            let definition = resolution
+                .definition(token)
+                .map(|definition| definitions.iter().position(|d| *d == definition).unwrap());
+            (text(token.text()), value, definition)
+        })
+        .collect()
+}
+
+#[test]
+fn get_and_definition_read_a_token_or_a_value() {
+    let source = b"@a = k\nx = { y = { @@a = 1 } }\n@a = m\nh = @a { 1 }\narr = { @a 2 }\n\
+        @:register_variable c = @a\n@y = @nope\nv = @y\n\
+        code [[ z = @a ]]\n[[p] w = @a ]\n@:define m = { q = @a }\n@:insert m = { r = @a }";
+    let parsed = parse(source);
+    let resolution = resolve(parsed.tree());
+    let kinds: Vec<_> = resolution.errors().iter().map(|e| e.kind).collect();
+    assert_eq!(kinds, [ResolveErrorKind::UndefinedVariable]);
+    let names: Vec<_> = resolution.definitions().map(|d| d.name()).collect();
+    assert_eq!(names, [&b"a"[..], b"a", b"c", b"y"]);
+
+    let k = || Some(String::from("k"));
+    let m = || Some(String::from("m"));
+    let expected = [
+        // A definition key reads nothing.
+        ("@a", None, None),
+        ("k", None, None),
+        ("x", None, None),
+        ("y", None, None),
+        // A variable key in a nested block.
+        ("@@a", k(), Some(0)),
+        ("1", None, None),
+        ("@a", None, None),
+        ("m", None, None),
+        // A header and an array element after the redefinition read it.
+        ("h", None, None),
+        ("@a", m(), Some(1)),
+        ("1", None, None),
+        ("arr", None, None),
+        ("@a", m(), Some(1)),
+        ("2", None, None),
+        // The argument of `@:register_variable` is a name, its value a use.
+        ("c", None, None),
+        ("@a", m(), Some(1)),
+        // A failed definition, and a use of it, which has no value but
+        // gives the definition.
+        ("@y", None, None),
+        ("@nope", None, None),
+        ("v", None, None),
+        ("@y", None, Some(3)),
+        // Code payloads, parameter blocks, and `@:define` and `@:insert`
+        // bodies are not resolved.
+        ("code", None, None),
+        ("z", None, None),
+        ("@a", None, None),
+        ("p", None, None),
+        ("w", None, None),
+        ("@a", None, None),
+        ("m", None, None),
+        ("q", None, None),
+        ("@a", None, None),
+        ("m", None, None),
+        ("r", None, None),
+        ("@a", None, None),
+    ]
+    .map(|(text, value, definition)| (String::from(text), value, definition));
+    assert_eq!(token_reads(&parsed, &resolution), expected);
+
+    // A clone of the parse has the same tree.
+    assert_eq!(token_reads(&parsed.clone(), &resolution), expected);
+
+    // A second parse of the same source is a different parse.
+    let again = parse(source);
+    let reads = token_reads(&again, &resolution);
+    assert_eq!(reads.len(), expected.len());
+    assert!(
+        reads
+            .iter()
+            .all(|(_, value, definition)| value.is_none() && definition.is_none())
+    );
+
+    // A `Value` node gives the same as its token.
+    let definitions: Vec<_> = resolution.definitions().collect();
+    let value = |key: &[u8]| parsed.ast().get(key).unwrap().value().unwrap();
+    let element = value(b"arr").as_block().unwrap().values().next().unwrap();
+    assert_eq!(
+        resolution.get(element),
+        Some(&ResolvedScalar::unquoted("m"))
+    );
+    assert_eq!(resolution.definition(element), Some(definitions[1]));
+    assert_eq!(resolution.get(value(b"v")), None);
+    assert_eq!(resolution.definition(value(b"v")), Some(definitions[3]));
+
+    // A headered block is not a use, but its header is.
+    let h = value(b"h");
+    assert_eq!(resolution.get(h), None);
+    assert_eq!(resolution.definition(h), None);
+    let header = h.as_headered_block().unwrap().header();
+    assert_eq!(resolution.get(header), Some(&ResolvedScalar::unquoted("m")));
+    assert_eq!(resolution.definition(header), Some(definitions[1]));
+}
+
+#[test]
+fn get_and_definition_read_a_node_of_one_parse() {
+    let source = b"@a = 1\nn = @[a + 1]\nl = @:load_variable a";
+    let first = parse(source);
+    let again = parse(source);
+    let resolution = resolve(first.tree());
+    let a = resolution.definitions().next();
+    fn value<'t, 'a>(parse: &'t syntax::Parse<'a>, key: &[u8]) -> Option<Value<'t, 'a>> {
+        parse.ast().get(key)?.value()
+    }
+
+    let n = value(&first, b"n").unwrap();
+    assert_eq!(resolution.get(n), Some(&ResolvedScalar::unquoted("2")));
+    assert_eq!(resolution.definition(n), None);
+    let l = value(&first, b"l").unwrap();
+    assert_eq!(resolution.get(l), Some(&ResolvedScalar::unquoted("1")));
+    assert_eq!(resolution.definition(l), a);
+
+    for key in [&b"n"[..], b"l"] {
+        let other = value(&again, key).unwrap();
+        assert_eq!(resolution.get(other), None);
+        assert_eq!(resolution.definition(other), None);
+    }
+
+    // A `Calc` and a `ReaderDirective` go in directly, also from a clone.
+    let clone = first.clone();
+    for parse in [&first, &clone] {
+        let calc = parse.root().descendants().find_map(Calc::cast).unwrap();
+        assert_eq!(resolution.get(calc), Some(&ResolvedScalar::unquoted("2")));
+        assert_eq!(resolution.definition(calc), None);
+        let directive = parse
+            .root()
+            .descendants()
+            .find_map(syntax::ReaderDirective::cast)
+            .unwrap();
+        assert_eq!(
+            resolution.get(directive),
+            Some(&ResolvedScalar::unquoted("1"))
+        );
+        assert_eq!(resolution.definition(directive), a);
+
+        // The argument of `@:load_variable` is a name, not a use.
+        let argument = directive.argument().unwrap();
+        assert_eq!(argument.text(), b"a");
+        assert_eq!(resolution.get(argument), None);
+        assert_eq!(resolution.definition(argument), None);
+    }
+    let calc = again.root().descendants().find_map(Calc::cast).unwrap();
+    assert_eq!(resolution.get(calc), None);
+}
+
+#[test]
+fn a_variable_key_of_the_scope_has_a_value_and_no_definition() {
+    let scope: Variables = [("b", "k")].into_iter().collect();
+    let parse = parse(b"@@b = 1");
+    let resolution = resolve_with(parse.tree(), &scope);
+    assert_eq!(resolution.errors(), []);
+    let key = parse.ast().fields().next().unwrap().key();
+    assert_eq!(resolution.get(key), Some(&ResolvedScalar::unquoted("k")));
+    assert_eq!(resolution.definition(key), None);
+}
+
+#[test]
+fn a_load_variable_of_the_scope_has_a_value_and_no_definition() {
+    let scope: Variables = [("b", "k")].into_iter().collect();
+    let parse = parse(b"x = @:load_variable b");
+    let resolution = resolve_with(parse.tree(), &scope);
+    assert_eq!(resolution.errors(), []);
+    let value = parse.ast().get(b"x").unwrap().value().unwrap();
+    let Value::ReaderDirective(directive) = value else {
+        panic!("not a directive: {value:?}");
+    };
+    assert_eq!(resolution.get(value), Some(&ResolvedScalar::unquoted("k")));
+    assert_eq!(
+        resolution.get(directive),
+        Some(&ResolvedScalar::unquoted("k"))
+    );
+    assert_eq!(resolution.definition(value), None);
+    assert_eq!(resolution.definition(directive), None);
+}
+
+#[test]
+fn an_unsupported_definition_is_not_examined() {
+    let source = b"@a = 1\n@x = @a { 1 }\n@y = { q = @a r = @[a] }\n@z = { @a }";
+    let parse = parse(source);
+    let resolution = resolve(parse.tree());
+    let kinds: Vec<_> = resolution.errors().iter().map(|e| e.kind).collect();
+    assert_eq!(kinds, [ResolveErrorKind::UnsupportedDefinition; 3]);
+
+    let x = parse.ast().fields().nth(1).unwrap().value().unwrap();
+    let header = x.as_headered_block().unwrap().header();
+    assert_eq!(header.text(), b"@a");
+    assert_eq!(resolution.get(header), None);
+    assert_eq!(resolution.definition(header), None);
+
+    // Each `@a` after the first definition: the header, `q`, and the element
+    // of `@z`.
+    let uses: Vec<_> = parse
+        .significant_tokens()
+        .filter_map(syntax::ScalarToken::cast)
+        .filter(|token| token.text() == b"@a")
+        .skip(1)
+        .collect();
+    assert_eq!(uses.len(), 3);
+    for token in uses {
+        assert_eq!(resolution.get(token), None);
+        assert_eq!(resolution.definition(token), None);
+    }
+    let calc = parse.root().descendants().find_map(Calc::cast).unwrap();
+    assert_eq!(resolution.get(calc), None);
+}
+
+#[test]
+fn get_infers_its_argument_at_each_call() {
+    let parse = parse(b"@a = 1\nx = @a\n@@a = 2\ny = @a { 3 }");
+    let resolution = resolve(parse.tree());
+    let one = Some(&ResolvedScalar::unquoted("1"));
+
+    let values: Vec<_> = parse
+        .ast()
+        .fields()
+        .filter_map(|field| resolution.get(field.value()?))
+        .collect();
+    assert_eq!(values, [&ResolvedScalar::unquoted("1")]);
+    let keys: Vec<_> = parse
+        .ast()
+        .fields()
+        .map(|field| resolution.get(field.key()))
+        .collect();
+    assert_eq!(keys, [None, None, one, None]);
+    let y = parse.ast().get(b"y").unwrap().value().unwrap();
+    let header = y.as_headered_block().unwrap().header();
+    assert_eq!(resolution.get(header), one);
+
+    let get = |at| resolution.get(at);
+    assert_eq!(get(header), one);
+}

@@ -50,16 +50,20 @@
 //! pass the node to [`Resolution::get`]. It returns a [`ResolvedScalar`]: the
 //! text of the value, and whether the definition was quoted. Here,
 //! `ruler = @name` gives the quoted text `Jean II`, because the definition of
-//! `@name` has quotes. The calculation gives an unquoted number:
+//! `@name` has quotes. The calculation gives an unquoted number. For a
+//! variable that is not a `Value` node, such as the `@@name` key of
+//! `@@name = 1`, pass its [`ScalarToken`]:
 //!
 //! ```
 //! use jomini::text::syntax::{parse, resolve::{ResolvedScalar, resolve}};
 //!
-//! let parse = parse(b"@name = \"Jean II\"\n@size = 2\nruler = @name\nwidth = @[size * 3]");
+//! let parse = parse(b"@name = \"Jean II\"\n@size = 2\nruler = @name\nwidth = @[size * 3]\n@@name = 1");
 //! let resolution = resolve(parse.tree());
 //! let resolved = |key: &[u8]| resolution.get(parse.ast().get(key)?.value()?);
 //! assert_eq!(resolved(b"ruler"), Some(&ResolvedScalar::quoted("Jean II")));
 //! assert_eq!(resolved(b"width"), Some(&ResolvedScalar::unquoted("6")));
+//! let key = parse.ast().fields().last().unwrap().key();
+//! assert_eq!(resolution.get(key), Some(&ResolvedScalar::quoted("Jean II")));
 //! ```
 //!
 //! # Use variables from other files
@@ -532,7 +536,8 @@ pub enum ResolveErrorKind {
     /// `@[1 +]`.
     UnsupportedCalculation,
     /// The right side of a variable definition is not a scalar, a variable,
-    /// or a calculation. For example, it is a block, as in `@x = { 1 2 }`.
+    /// a `@:load_variable` directive, or a calculation. For example, it is a
+    /// block, as in `@x = { 1 2 }`.
     UnsupportedDefinition,
 }
 
@@ -679,32 +684,20 @@ impl Resolution {
     }
 
     /// The definition of the file that the variable or the
-    /// `@:load_variable` directive in the [`Value`] node `value` reads.
+    /// `@:load_variable` directive at `at` reads. See [`Resolvable`] for
+    /// what `at` can be.
     ///
-    /// Returns `None` when:
-    ///
-    /// - `value` is not a variable or a `@:load_variable` directive. A
-    ///   calculation can read several definitions, so it has no definition,
-    ///   and a name in a calculation, such as `x` in `@[x + 1]`, is not a
-    ///   [`Value`] node.
-    /// - `value` reads a variable of the scope, or an undefined variable.
-    /// - `value` is a `@name` in a code payload, a conditional parameter
-    ///   block, or the body of `@:define` or `@:insert`, which the resolver
-    ///   does not examine.
-    /// - `value` is from a different parse. See
-    ///   [`is_for`](Resolution::is_for).
-    ///
-    /// A `@@name` key is not a [`Value`] node, so this function cannot find
-    /// what it reads.
-    ///
-    /// A use of a definition that has an error gives the definition, whose
-    /// [`value`](Definition::value) is `None`.
+    /// Returns `None` in the cases of [`get`](Resolution::get), for a
+    /// calculation, which can read several definitions, and for a use that
+    /// reads the scope or an undefined variable. A use of a failed
+    /// definition gives the definition, whose [`value`](Definition::value)
+    /// is `None`.
     ///
     /// ```
-    /// use jomini::text::syntax::{parse, resolve::{ResolvedScalar, Variables, resolve_with}};
+    /// use jomini::text::syntax::{AstNode, ReaderDirective, parse, resolve::{ResolvedScalar, Variables, resolve_with}};
     ///
     /// let scope: Variables = [("w", "1")].into_iter().collect();
-    /// let parse = parse(b"a = @w\n@w = 2\nb = @w\n@w = 3\nc = @w");
+    /// let parse = parse(b"a = @w\n@w = 2\nb = @w\n@w = 3\nc = @w\n@@w = 4\nd = @:load_variable w");
     /// let resolution = resolve_with(parse.tree(), &scope);
     /// let read = |key: &[u8]| resolution.definition(parse.ast().get(key)?.value()?);
     /// assert_eq!(read(b"a"), None);
@@ -712,22 +705,35 @@ impl Resolution {
     /// let c = read(b"c").unwrap();
     /// assert_eq!(c.key_range().to_range(), 21..23);
     /// assert_eq!(c.value(), Some(&ResolvedScalar::unquoted("3")));
+    ///
+    /// // The `@@w` key and the directive read the same definition.
+    /// let key = parse.ast().fields().nth(5).unwrap().key();
+    /// assert_eq!(resolution.definition(key), Some(c));
+    /// let directive = parse.root().descendants().find_map(ReaderDirective::cast).unwrap();
+    /// assert_eq!(resolution.definition(directive), Some(c));
     /// ```
-    pub fn definition(&self, value: Value<'_, '_>) -> Option<Definition<'_>> {
-        if !self.is_for(tree_of(value)) {
-            return None;
-        }
-        let definition = match value {
-            Value::Scalar(token) => find(&self.tokens, token.id())?.definition,
-            Value::ReaderDirective(directive) => {
-                find(&self.nodes, directive.syntax().id())?.definition
-            }
-            _ => None,
-        }?;
+    pub fn definition(&self, at: impl Resolvable) -> Option<Definition<'_>> {
         Some(Definition {
             resolution: self,
-            index: definition.get(),
+            index: at.reads(self)?.definition?,
         })
+    }
+
+    /// What the resolver recorded for a variable token.
+    fn token_reads(&self, token: ScalarToken<'_, '_>) -> Option<Reads<'_>> {
+        if !self.is_for(token.syntax().tree) {
+            return None;
+        }
+        find(&self.tokens, token.id()).map(Recorded::reads)
+    }
+
+    /// What the resolver recorded for a calculation or a `@:load_variable`
+    /// node.
+    fn node_reads(&self, node: SyntaxNode<'_, '_>) -> Option<Reads<'_>> {
+        if !self.is_for(node.tree) {
+            return None;
+        }
+        find(&self.nodes, node.id()).map(Recorded::reads)
     }
 
     /// The value of a variable token.
@@ -759,49 +765,116 @@ impl Resolution {
         self.parse_id == tree.data.parse_id
     }
 
-    /// The value of a variable, a calculation, or a `@:load_variable`
-    /// directive in the [`Value`] node `value`.
+    /// The value of the variable, the calculation, or the `@:load_variable`
+    /// directive at `at`. See [`Resolvable`] for what `at` can be.
     ///
-    /// Returns `None` when:
-    ///
-    /// - `value` is a scalar that is not a variable, or a block.
-    /// - The resolver recorded an error for `value`. See
-    ///   [`errors`](Resolution::errors).
-    /// - `value` uses a variable whose definition has an error, which is at
-    ///   the definition.
-    /// - `value` is from a different parse. See
-    ///   [`is_for`](Resolution::is_for).
+    /// Returns `None` when `at` is not a use, such as a block or the key of
+    /// a definition; when it has no value, as an undefined variable (see
+    /// [`errors`](Resolution::errors)); when it is in a part that the
+    /// resolver skips: a code payload, a parameter block, a `@:define` or
+    /// `@:insert` body, or the right side of an unsupported definition; and
+    /// when it is from a different parse.
     ///
     /// ```
-    /// use jomini::text::syntax::{parse, resolve::{ResolvedScalar, resolve}};
+    /// use jomini::text::syntax::{AstNode, Calc, parse, resolve::{ResolvedScalar, resolve}};
     ///
-    /// let parse = parse(b"@size = 2\nx = @size\ny = @[size * 3]\nz = 4\nw = @missing");
+    /// let parse = parse(b"@size = 2\nx = @size\ny = @[size * 3]\nz = 4\nw = @missing\n@@size = 5");
     /// let resolution = resolve(parse.tree());
     /// let resolved = |key: &[u8]| resolution.get(parse.ast().get(key)?.value()?);
     /// assert_eq!(resolved(b"x"), Some(&ResolvedScalar::unquoted("2")));
     /// assert_eq!(resolved(b"y"), Some(&ResolvedScalar::unquoted("6")));
     /// assert_eq!(resolved(b"z"), None);
     /// assert_eq!(resolved(b"w"), None);
+    ///
+    /// // `@@size = 5` reads as `2 = 5`.
+    /// let key = parse.ast().fields().last().unwrap().key();
+    /// assert_eq!(resolution.get(key), Some(&ResolvedScalar::unquoted("2")));
+    ///
+    /// let calc = parse.root().descendants().find_map(Calc::cast).unwrap();
+    /// assert_eq!(resolution.get(calc), Some(&ResolvedScalar::unquoted("6")));
     /// ```
-    pub fn get(&self, value: Value<'_, '_>) -> Option<&ResolvedScalar> {
-        if !self.is_for(tree_of(value)) {
-            return None;
+    pub fn get(&self, at: impl Resolvable) -> Option<&ResolvedScalar> {
+        at.reads(self)?.value
+    }
+}
+
+/// A part of a tree that [`Resolution::get`] and [`Resolution::definition`]
+/// can look up: a [`Value`] node, a [`ScalarToken`], a [`Calc`], or a
+/// [`ReaderDirective`]. A token reaches the variables that are not a
+/// [`Value`] node, such as the `@@name` key of `@@name = 3` or the header
+/// of `x = @name { 1 }`. A [`Value::Scalar`] and its token give the same
+/// result.
+///
+/// The trait is sealed: other crates cannot implement it.
+///
+/// ```
+/// use jomini::text::syntax::{parse, resolve::{ResolvedScalar, resolve}};
+///
+/// let parse = parse(b"@a = 1\nx = @a { 2 }\ny = @a");
+/// let resolution = resolve(parse.tree());
+/// let one = Some(&ResolvedScalar::unquoted("1"));
+/// let x = parse.ast().get(b"x").and_then(|field| field.value()).unwrap();
+/// let header = x.as_headered_block().unwrap().header();
+/// assert_eq!(resolution.get(header), one);
+///
+/// let y = parse.ast().get(b"y").and_then(|field| field.value()).unwrap();
+/// assert_eq!(resolution.get(y), one);
+/// assert_eq!(resolution.get(y.as_scalar_token().unwrap()), one);
+/// ```
+pub trait Resolvable: Copy + sealed::Sealed {}
+
+use sealed::Reads;
+
+mod sealed {
+    use super::{AstNode, Calc, ReaderDirective, Resolution, ResolvedScalar, ScalarToken, Value};
+
+    /// What the resolver recorded for a use: the index of the definition
+    /// that it reads, and its value.
+    pub struct Reads<'r> {
+        pub(super) definition: Option<usize>,
+        pub(super) value: Option<&'r ResolvedScalar>,
+    }
+
+    pub trait Sealed {
+        /// What the resolver recorded for `self`, or `None` when `self` is
+        /// of a different parse or the resolver recorded nothing.
+        fn reads(self, resolution: &Resolution) -> Option<Reads<'_>>;
+    }
+
+    impl Sealed for Value<'_, '_> {
+        fn reads(self, resolution: &Resolution) -> Option<Reads<'_>> {
+            match self {
+                Value::Scalar(token) => token.reads(resolution),
+                Value::Calc(calc) => calc.reads(resolution),
+                Value::ReaderDirective(directive) => directive.reads(resolution),
+                _ => None,
+            }
         }
-        match value {
-            Value::Scalar(token) => self.token(token.id()),
-            Value::Calc(calc) => self.node(calc.syntax().id()),
-            Value::ReaderDirective(directive) => self.node(directive.syntax().id()),
-            _ => None,
+    }
+
+    impl Sealed for ScalarToken<'_, '_> {
+        fn reads(self, resolution: &Resolution) -> Option<Reads<'_>> {
+            resolution.token_reads(self)
+        }
+    }
+
+    impl Sealed for Calc<'_, '_> {
+        fn reads(self, resolution: &Resolution) -> Option<Reads<'_>> {
+            resolution.node_reads(self.syntax())
+        }
+    }
+
+    impl Sealed for ReaderDirective<'_, '_> {
+        fn reads(self, resolution: &Resolution) -> Option<Reads<'_>> {
+            resolution.node_reads(self.syntax())
         }
     }
 }
 
-fn tree_of<'t, 'a>(value: Value<'t, 'a>) -> SyntaxTree<'t, 'a> {
-    match value.syntax() {
-        SyntaxElement::Node(node) => node.tree,
-        SyntaxElement::Token(token) => token.tree,
-    }
-}
+impl Resolvable for Value<'_, '_> {}
+impl Resolvable for ScalarToken<'_, '_> {}
+impl Resolvable for Calc<'_, '_> {}
+impl Resolvable for ReaderDirective<'_, '_> {}
 
 fn find<I: Ord + Copy>(records: &[Recorded<I>], id: I) -> Option<&Recorded<I>> {
     let index = records.binary_search_by_key(&id, |record| record.id).ok()?;
@@ -817,6 +890,15 @@ struct Recorded<I> {
     definition: Option<DefinitionIndex>,
     /// `None` for a use of a definition that has an error.
     value: Option<ResolvedScalar>,
+}
+
+impl<I> Recorded<I> {
+    fn reads(&self) -> Reads<'_> {
+        Reads {
+            definition: self.definition.map(DefinitionIndex::get),
+            value: self.value.as_ref(),
+        }
+    }
 }
 
 impl Recorded<()> {

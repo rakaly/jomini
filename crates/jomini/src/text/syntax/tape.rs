@@ -140,25 +140,25 @@ impl<'a> TapeParse<'a> {
 ///
 /// # Differences from `from_slice`
 ///
-/// A few cases differ from `from_slice`:
+/// For a source with no syntax error, `parse_tape`:
 ///
-/// - `from_slice` accepts an extra `}` and an unclosed block with no error.
-///   `parse_tape` reports them, so [`into_result`](TapeParse::into_result)
-///   rejects them. Some game files contain an extra `}` or end before a
-///   block closes; to accept them, filter the errors as the [`TapeParse`]
-///   example shows.
-/// - In a block, `from_slice` accepts an operator that has no key, as in
-///   `x = { = }`, and a second operator in a field, as in `x = { a = 1 = 2 }`.
-///   `parse_tape` reports them.
-/// - Each `@[calc]`, `[interpolation]`, or `code [[ ... ]]` becomes one
-///   unquoted scalar that holds its source text. So does an operator used as
-///   a field value, as in `OPERATOR = <=`. `from_slice` rejects or splits
-///   some of these.
-/// - Tokens that have no place in the tape, such as a stray bracket, are
-///   ignored.
-/// - A quoted scalar before a block in a field value, as in
-///   `blockoverride = "tab_glow" { visible = no }`, is a
-///   [`TextToken::QuotedHeader`]. `from_slice` rejects it.
+/// - Reads each `@[calc]`, `[interpolation]`, and `code [[ ... ]]` as one
+///   unquoted scalar of its source text, and so an operator used as a value,
+///   as in `OPERATOR = <=`.
+/// - Reads a quoted name before a block in a field value, as in
+///   `blockoverride = "tab_glow" { visible = no }`, as the header of the
+///   block, a [`TextToken::QuotedHeader`].
+/// - Drops a reader directive, such as `@:define m = { x = 1 }`, except as a
+///   field value, where it is one unquoted scalar.
+/// - Accepts a bare value at the root, as in `a = 1 c`.
+///
+/// For a source with a syntax error, `parse_tape` still gives a tape and
+/// reports each error. An extra `}`, or a file that ends one `}` short of
+/// closing a block of fields, keeps its data. To accept such game files,
+/// filter out
+/// [`UnmatchedCloseBrace`](super::SyntaxErrorKind::UnmatchedCloseBrace) and
+/// [`UnclosedBlock`](super::SyntaxErrorKind::UnclosedBlock), as the
+/// [`TapeParse`] example shows for `UnmatchedCloseBrace`.
 ///
 /// For HoI4 files, use [`parse_tape_with`] with [`Hoi4Flavor`](super::Hoi4Flavor).
 ///
