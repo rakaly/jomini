@@ -29,5 +29,5 @@ cd bench
 cargo bench --target wasm32-wasip1 --bench jomini-bench-criterion -- 'parse_save|eu5'
 ```
 
-Results are written to `bench/target/criterion-wasm`. They depend on the Node.js
-version, so compare only runs from the same version. `wasm-opt` is not run.
+Results are written to `bench/target/criterion-wasm`, in a directory for each
+Node.js version. `wasm-opt` is not run.

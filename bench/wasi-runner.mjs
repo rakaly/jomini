@@ -9,9 +9,9 @@ const [wasm, ...args] = process.argv.slice(2);
 // same path, which can have symlinks that import.meta.dirname does not have.
 const root = path.dirname(process.env.CARGO_MANIFEST_DIR);
 
-// Keep the results apart from the native ones, so that a wasm run is not
-// compared with a native baseline.
-const criterion = path.join(root, "bench", "target", "criterion-wasm");
+// Keep the results of each engine apart, so that a wasm run is not compared
+// with a native run or with another V8 version.
+const criterion = path.join(root, "bench", "target", "criterion-wasm", process.version);
 fs.mkdirSync(criterion, { recursive: true });
 
 const preopens = { [root]: root, "/criterion": criterion };
@@ -20,12 +20,21 @@ if (process.env.RUST_BACKTRACE) {
   env.RUST_BACKTRACE = process.env.RUST_BACKTRACE;
 }
 
-// The sandbox does not follow a symlink out of the repository, so the tokens
-// get a mount of their own. Without tokens nothing is mounted, and the
-// benchmarks that need them are skipped.
-const tokens = process.env.PDX_TOKENS_DIR ?? path.join(root, "assets", "tokens");
-if (fs.existsSync(tokens)) {
-  preopens["/tokens"] = fs.realpathSync(tokens);
+// The sandbox does not follow a symlink out of the repository, so directories
+// that can be symlinks get a mount of their own. Without tokens nothing is
+// mounted, and the benchmarks that need them are skipped.
+function mount(guest, host) {
+  if (fs.existsSync(host)) {
+    preopens[guest] = fs.realpathSync(host);
+  }
+}
+
+const assets = path.join(root, "assets");
+mount(path.join(assets, "saves"), path.join(assets, "saves"));
+mount("/tokens", process.env.PDX_TOKENS_DIR ?? path.join(assets, "tokens"));
+if (process.env.JOMINI_GAME_DIR) {
+  mount("/game", process.env.JOMINI_GAME_DIR);
+  env.JOMINI_GAME_DIR = "/game";
 }
 
 const wasi = new WASI({
