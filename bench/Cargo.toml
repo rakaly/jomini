@@ -30,13 +30,11 @@ json = ["jomini/json"]
 
 [dependencies]
 arena-serde = { path = "../crates/arena-serde" }
-attohttpc = { version = "0.29", features = ["tls-vendored"] }
-criterion = { version = "0.8", features = ["csv_output"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support", "csv_output"] }
 erased-serde = "0.4.5"
 eu4save = { path = "../crates/eu4save" }
 eu5save = { path = "../crates/eu5save" }
 flate2 = { version = "1.1.5", default-features = false, features = ["zlib-rs"] }
-gungraun = "0.19.0"
 highway = "1.3"
 jomini = { path = "../crates/jomini", default-features = false, features = ["serde", "derive", "syntax", "envelope"] }
 pdx-fixtures = { path = "../crates/pdx-fixtures" }
@@ -44,6 +42,12 @@ rawzip = "0.5.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_path_to_error = "0.1.16"
+
+# Neither Gungraun nor the default features of Criterion (rayon and plotters)
+# support wasm.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+criterion = { version = "0.8", features = ["csv_output"] }
+gungraun = "0.19.0"
 
 [profile.bench]
 debug = true

@@ -1,3 +1,4 @@
+#[cfg(not(target_family = "wasm"))]
 use jomini_bench::benchmarks::{
     arena::gungraun_benches::arena_benches, binary::gungraun_benches::binary_benches,
     date::gungraun_benches::date_benches, encoding::gungraun_benches::encoding_benches,
@@ -5,7 +6,7 @@ use jomini_bench::benchmarks::{
     scalar::gungraun_benches::scalar_benches, text::gungraun_benches::text_benches,
 };
 
-#[cfg(not(feature = "json"))]
+#[cfg(all(not(target_family = "wasm"), not(feature = "json")))]
 gungraun::main!(
     library_benchmark_groups = encoding_benches,
     binary_benches,
@@ -17,10 +18,10 @@ gungraun::main!(
     eu5_benches
 );
 
-#[cfg(feature = "json")]
+#[cfg(all(not(target_family = "wasm"), feature = "json"))]
 use jomini_bench::benchmarks::json::gungraun_benches::json_benches;
 
-#[cfg(feature = "json")]
+#[cfg(all(not(target_family = "wasm"), feature = "json"))]
 gungraun::main!(
     library_benchmark_groups = encoding_benches,
     binary_benches,
@@ -32,3 +33,7 @@ gungraun::main!(
     eu5_benches,
     json_benches
 );
+
+// Gungraun needs Valgrind, which does not run wasm.
+#[cfg(target_family = "wasm")]
+fn main() {}

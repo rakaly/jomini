@@ -51,6 +51,7 @@ pub mod criterion_benches {
     criterion::criterion_group!(scalar_benches, to_u64_benchmark, to_f64_benchmark);
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub mod gungraun_benches {
     use super::*;
     use gungraun::{library_benchmark, library_benchmark_group};

@@ -15,3 +15,20 @@ Run instruction-count benchmarks:
 ```bash
 cargo bench --manifest-path bench/Cargo.toml --bench jomini-bench-gungraun
 ```
+
+## Wasm
+
+The Criterion benchmarks also run on `wasm32-wasip1` with Node.js 24 or later,
+which has the same wasm engine (V8) as Chrome. Run the native benchmarks once
+before, as wasm cannot download the fixtures. Run from this directory, where
+cargo finds the runner:
+
+```bash
+rustup target add wasm32-wasip1
+cd bench
+cargo bench --target wasm32-wasip1 --bench jomini-bench-criterion -- 'parse_save|eu5'
+```
+
+Results are written to `bench/target/criterion-wasm`, in a directory for each
+Node.js version. `wasm-opt` is not run. The runner is
+untested on Windows.

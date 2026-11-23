@@ -198,19 +198,10 @@ fn fetch_and_validate(corpus: Corpus) -> CorpusArchive {
         let relative_path = corpus.relative_path();
         println!("cache miss: {relative_path}");
         let url = format!("https://cdn-dev.pdx.tools/{relative_path}");
-        let mut resp = attohttpc::get(&url)
-            .send()
-            .unwrap_or_else(|e| panic!("failed to download {url}: {e}"));
-
-        if !resp.is_success() {
-            panic!("expected HTTP 200 from {url}, got {}", resp.status());
-        }
-
+        let data = pdx_fixtures::download(&url);
         std::fs::create_dir_all(path.parent().expect("corpus path should have parent"))
             .unwrap_or_else(|e| panic!("failed to create {}: {e}", path.display()));
-        let mut file = std::fs::File::create(&path)
-            .unwrap_or_else(|e| panic!("failed to create {}: {e}", path.display()));
-        std::io::copy(&mut resp, &mut file)
+        std::fs::write(&path, data)
             .unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
     } else {
         println!("cache hit: {}", corpus.relative_path());
