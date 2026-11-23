@@ -1,7 +1,10 @@
 use crate::{Eu5Date, Eu5Error, Eu5ErrorKind, Eu5Flavor};
 use jomini::{
     TextWriterBuilder,
-    binary::{self, BinaryFlavor, FailedResolveStrategy, Token, TokenReader, TokenResolver},
+    binary::{
+        self, BinaryFlavor, BinarySourceExt, FailedResolveStrategy, LexemeId, ReaderError, Token,
+        TokenReader, TokenResolver,
+    },
     common::PdsDate,
     envelope::{SaveHeader, SaveHeaderKind},
 };
@@ -215,6 +218,15 @@ impl HintCache {
     }
 }
 
+/// Consumes the next token if it is an equal sign, and returns whether it was.
+#[inline]
+fn take_equal(reader: &mut TokenReader<'_>) -> Result<bool, ReaderError> {
+    let source = reader.source_mut();
+    source
+        .next_lexeme_if(LexemeId::EQUAL)
+        .map_err(|e| e.at(source.position()))
+}
+
 fn inner_melt<Writer, Resolver>(
     reader: &mut TokenReader<'_>,
     wtr: &mut jomini::TextWriter<Writer>,
@@ -234,31 +246,11 @@ where
     let mut known_date = false;
     let mut known_int = false;
 
-    // At the start of a container the writer cannot tell an object from an
-    // array, so a string there can be a key or the first array value. Hold it
-    // until the next token says which one it is.
-    let mut pending_lookup: Option<(u32, &str)> = None;
     let mut cache = HintCache::default();
 
     let mut has_read = false;
     while let Some(token) = reader.next()? {
         has_read = true;
-        if let Some((index, pending)) = pending_lookup.take() {
-            if matches!(token, Token::Equal) {
-                let hints = cache.lookup(index, pending);
-                known_date = hints.date;
-                known_number = hints.number;
-                known_int = hints.int;
-                known_unquote = hints.unquote;
-                known_quote = hints.quote;
-                wtr.write_unquoted(pending.as_bytes())?;
-            } else if known_quote {
-                wtr.write_quoted(pending.as_bytes())?;
-            } else {
-                wtr.write_unquoted(pending.as_bytes())?;
-            }
-        }
-
         match token {
             Token::Id(x) => match resolver.resolve(x) {
                 Some(id) => {
@@ -283,6 +275,9 @@ where
                     known_unquote = hints.unquote;
                     known_quote = hints.quote;
                     wtr.write_unquoted(id.as_bytes())?;
+                    if take_equal(reader)? {
+                        wtr.write_operator(jomini::text::Operator::Equal)?;
+                    }
                 }
                 None => {
                     known_date = false;
@@ -377,16 +372,24 @@ where
                     // Most keys in the body of a save come from the string
                     // lookup table and not from the token table, so a lookup in
                     // key position must set the same hints as a resolved token.
-                    if wtr.at_unknown_start() {
-                        pending_lookup = Some((x, s));
-                    } else if wtr.expecting_key() {
+                    //
+                    // At the start of a container the writer cannot tell an
+                    // object from an array, so the next token says if this is
+                    // a key or the first array value.
+                    let start = wtr.at_unknown_start();
+                    let key = wtr.expecting_key();
+                    let equal = (start || key) && take_equal(reader)?;
+                    if equal || key {
                         let hints = cache.lookup(x, s);
                         known_date = hints.date;
                         known_number = hints.number;
                         known_int = hints.int;
                         known_unquote = hints.unquote;
                         known_quote = hints.quote;
-                        wtr.write_unquoted(s.as_bytes())?
+                        wtr.write_unquoted(s.as_bytes())?;
+                        if equal {
+                            wtr.write_operator(jomini::text::Operator::Equal)?;
+                        }
                     } else if known_quote {
                         wtr.write_quoted(s.as_bytes())?
                     } else {
