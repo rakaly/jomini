@@ -343,7 +343,7 @@ impl<'de, S: Source<'de>, E> TextDeserializer<S, E> {
                 Err(processed) => {
                     out.extend_from_slice(&self.source.window()[..processed]);
                     self.source.consume(processed);
-                    if !self.source.refill()? {
+                    if !self.refill()? {
                         if state.in_quote() {
                             return Err(self.eof());
                         }
@@ -367,7 +367,7 @@ impl<'de, S: Source<'de>, E> TextDeserializer<S, E> {
             out.extend_from_slice(window);
             let len = window.len();
             self.source.consume(len);
-            if !self.source.refill()? {
+            if !self.refill()? {
                 self.end_tok();
                 return Ok(());
             }

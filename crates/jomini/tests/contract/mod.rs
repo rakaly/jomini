@@ -691,6 +691,8 @@ pub const PROBES: &[&[u8]] = &[
     b"a = { x { a = 1 } s = 2 }",
     b"a = { }\n= b",
     b"income_taxes={ 80 0=278.75 1=433.88 }",
+    // `d` swallows the error of a 16 byte buffer.
+    b"\xef\xbb\xbfa = { a = 1 { } } a0 = 1 a0 =\n\t{ } a  = { 80 } d  = { { } # c\n1444.11.11 # c\n}",
 ];
 
 /// Any value, read with `deserialize_any`.

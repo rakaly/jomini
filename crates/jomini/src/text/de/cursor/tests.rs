@@ -2283,3 +2283,95 @@ fn test_rejected_block_before_equal() {
         "invalid type: sequence, expected u8; TextDeserializer doesn't read an object as a sequence, as the scalars that trail its fields or an object used as a key, which jomini::text::syntax::parse reads (offset: 10)"
     );
 }
+
+/// A string, or `None` when the value isn't one, whatever the error is.
+#[derive(Debug, PartialEq)]
+struct Swallow(Option<String>);
+
+impl<'de> Deserialize<'de> for Swallow {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl de::Visitor<'_> for V {
+            type Value = String;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a string")
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<String, E> {
+                Ok(v.to_string())
+            }
+        }
+        Ok(Swallow(d.deserialize_any(V).ok()))
+    }
+}
+
+/// The fields of a map in order.
+#[derive(Debug, PartialEq)]
+struct SwallowFields(Vec<(String, Swallow)>);
+
+impl<'de> Deserialize<'de> for SwallowFields {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> de::Visitor<'de> for V {
+            type Value = SwallowFields;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a map")
+            }
+            fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut out = Vec::new();
+                while let Some(key) = map.next_key()? {
+                    out.push((key, map.next_value()?));
+                }
+                Ok(SwallowFields(out))
+            }
+        }
+        d.deserialize_map(V)
+    }
+}
+
+/// A string whose error is replaced.
+#[derive(Debug, PartialEq)]
+struct Replace;
+
+impl<'de> Deserialize<'de> for Replace {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match String::deserialize(d) {
+            Ok(_) => Ok(Replace),
+            Err(_) => Err(de::Error::custom("replaced")),
+        }
+    }
+}
+
+/// The value from a slice and a reader with any buffer size is the same,
+/// but for a buffer that is too small, which some sizes are.
+#[track_caller]
+fn check_too_small<T: DeserializeOwned + PartialEq + fmt::Debug>(data: &[u8]) {
+    let expected = from_windows1252_slice::<T>(data).unwrap();
+    let mut failed = 0;
+    for size in buffer_sizes(0..=48) {
+        for actual in [reader_with_buf::<T>(data, size), trickle(data, size)] {
+            match actual {
+                Ok(actual) => assert_eq!(actual, expected, "buffer size {size}"),
+                Err(e) => {
+                    assert!(matches!(e.kind(), ErrorKind::BufferTooSmall), "{size}: {e}");
+                    failed += 1;
+                }
+            }
+        }
+    }
+    assert!(failed > 0);
+}
+
+/// A visitor that swallows the error of a buffer that is too small and reads
+/// on from the middle of the value doesn't hide it.
+#[rstest]
+#[case::block(b"d={ { }\n       1444.11.11 # c\n}")]
+#[case::last(b"d = \"a long scalar\"")]
+fn test_swallowed_buffer_too_small(#[case] data: &[u8]) {
+    check_too_small::<SwallowFields>(data);
+}
+
+/// A visitor that gives its own error for it doesn't hide it either.
+#[test]
+fn test_replaced_buffer_too_small() {
+    check_too_small::<HashMap<String, Replace>>(b"a=a_long_scalar b=c");
+}

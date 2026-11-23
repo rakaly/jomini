@@ -46,6 +46,12 @@ pub trait Source<'de> {
     /// that were removed since they were consumed.
     fn offset(&self, at: usize) -> usize;
 
+    /// Keep the error of `refill` for a buffer that is too small.
+    fn too_small(&mut self, err: &Error);
+
+    /// The first error that was kept.
+    fn error(&self) -> Option<Error>;
+
     /// The bytes of `window[start..end]`.
     fn resolve(&self, start: usize, end: usize) -> Reference<'de, '_>;
 }
@@ -107,6 +113,14 @@ impl<'de> Source<'de> for SliceSource<'de> {
     }
 
     #[inline(always)]
+    fn too_small(&mut self, _err: &Error) {}
+
+    #[inline(always)]
+    fn error(&self) -> Option<Error> {
+        None
+    }
+
+    #[inline(always)]
     fn resolve(&self, start: usize, end: usize) -> Reference<'de, '_> {
         Reference::Borrowed(&self.rest[start..end])
     }
@@ -136,6 +150,9 @@ pub struct ReaderSource<R> {
     /// were moved forward over it, so their offsets are lower than their
     /// place in the window gives by the bytes removed after them.
     holes: Vec<(usize, usize)>,
+
+    /// The offset of the first error of a buffer that is too small.
+    too_small: Option<usize>,
 }
 
 impl<R: Read> ReaderSource<R> {
@@ -154,6 +171,7 @@ impl<R: Read> ReaderSource<R> {
             shifted: 0,
             eof: false,
             holes: Vec::new(),
+            too_small: None,
         }
     }
 }
@@ -273,6 +291,17 @@ impl<'de, R: Read> Source<'de> for ReaderSource<R> {
             after -= len;
         }
         place
+    }
+
+    #[cold]
+    fn too_small(&mut self, err: &Error) {
+        self.too_small = self.too_small.or(err.offset());
+    }
+
+    #[inline]
+    fn error(&self) -> Option<Error> {
+        let offset = self.too_small?;
+        Some(Error::new(ErrorKind::BufferTooSmall).or_offset(offset))
     }
 
     #[inline(always)]
