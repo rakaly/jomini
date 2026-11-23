@@ -20,9 +20,9 @@ use super::{
 /// Receives the parser's events in source order. The grammar knows only this
 /// interface, so a different storage can reuse the same grammar.
 pub(super) trait Sink {
-    /// The sink needs every token and every diagnostic after the parse. When
-    /// this is `false`, the parser keeps only a small window of tokens and
-    /// does not record diagnostics.
+    /// The sink needs every token after the parse. When this is `false`, the
+    /// parser keeps only a small window of tokens. It records the diagnostics
+    /// in both cases.
     const KEEP_TOKENS: bool;
 
     /// Open a node. Its first token is the next token.
@@ -31,8 +31,7 @@ pub(super) trait Sink {
     fn token(&mut self, token: Token);
     /// Close the most recently opened node.
     fn finish_node(&mut self);
-    /// Record that the open node contains a diagnostic. The parser also calls
-    /// it when [`Sink::KEEP_TOKENS`] is `false`.
+    /// Record that the open node contains a diagnostic.
     fn error(&mut self);
 
     /// Add a field node whose key, operator, and value are single tokens. A
@@ -239,17 +238,39 @@ impl Sink for Builder {
 /// levels deep, as in a chain of `from={from={...}}`.
 pub(super) const MAX_DEPTH: u32 = 256;
 
+/// A token that a later diagnostic starts at. When the sink keeps no tokens,
+/// the token window may no longer hold the token at that time, so the mark
+/// also holds its range.
+#[derive(Debug, Clone, Copy)]
+struct Mark {
+    index: u32,
+    range: TextRange,
+}
+
 /// A block that the item loop opened. The loop closes it at its `}`, or where
 /// the block ends without one.
 struct OpenBlock {
     /// The index of the `{`.
-    open: usize,
+    open: u32,
+    /// The offset of the `{`. When the sink keeps no tokens, the token window
+    /// may no longer hold the `{` when the block closes.
+    start: u32,
     /// The recovery barrier when the block opened.
     barrier: u32,
     /// The number of open nodes around the block node that end with the
     /// block: 1 for the field of `key = { ... }`, 2 for the field and the
     /// headered block of `key = rgb { ... }`, 0 for a block with no field.
     enclosing: u32,
+}
+
+impl OpenBlock {
+    /// The mark of the `{`, which is one byte.
+    fn brace(&self) -> Mark {
+        Mark {
+            index: self.open,
+            range: TextRange::span(self.start, self.start + 1),
+        }
+    }
 }
 
 /// The number of tokens that the parser can always read after its position
@@ -380,24 +401,21 @@ impl<'t, S: Sink> Parser<'t, S> {
     /// Insert a zero-width `missing` token at EOF and record its error.
     fn missing(
         &mut self,
-        open: usize,
+        open: Mark,
         missing: SyntaxKind,
         construct: UnclosedConstruct,
         kind: SyntaxErrorKind,
     ) {
         self.push_missing(missing);
-        if !S::KEEP_TOKENS {
-            self.sink.error();
-            return;
-        }
         self.record_missing(open, missing, construct, kind);
     }
 
     /// Record the error of a construct that the end of the source leaves
-    /// open. `open` is the index of the token that opens the construct.
+    /// open. `open` is the token that opens the construct.
+    #[cold]
     fn record_missing(
         &mut self,
-        open: usize,
+        open: Mark,
         missing: SyntaxKind,
         construct: UnclosedConstruct,
         kind: SyntaxErrorKind,
@@ -429,7 +447,7 @@ impl<'t, S: Sink> Parser<'t, S> {
             range: TextRange::empty(TextSize(at)),
             missing_delimiter: Some(MissingDelimiter {
                 construct,
-                opening_range: self.tok(open).range(),
+                opening_range: open.range,
                 missing,
                 order,
                 text: closing_text(missing, line_break),
@@ -458,21 +476,56 @@ impl<'t, S: Sink> Parser<'t, S> {
         self.sink.token(token);
     }
 
-    /// Record a diagnostic that starts at the emitted token `index`. Call it
-    /// while the nodes that hold the token are still open.
-    fn error_at(&mut self, index: usize, kind: SyntaxErrorKind) {
-        // A sink that keeps no tokens still learns that the input has an
-        // error, so that it can report the error after the parse.
-        self.sink.error();
-        if !S::KEEP_TOKENS {
-            return;
+    /// A mark at the token `index`, which must be in the window.
+    #[inline]
+    fn mark(&self, index: usize) -> Mark {
+        Mark {
+            index: index as u32,
+            range: self.tok(index).range(),
         }
-        self.tok_mut(index).flags |= TOKEN_ERROR;
+    }
+
+    /// Record a diagnostic that starts at the emitted token `index`, which
+    /// must be in the window. Call it while the nodes that hold the token
+    /// are still open.
+    fn error_at(&mut self, index: usize, kind: SyntaxErrorKind) {
+        debug_assert!(index >= self.base, "diagnostic before the token window");
+        self.error_at_mark(self.mark(index), kind);
+    }
+
+    /// Record a diagnostic that starts at the marked token, like
+    /// [`Parser::error_at`].
+    #[cold]
+    fn error_at_mark(&mut self, at: Mark, kind: SyntaxErrorKind) {
+        self.sink.error();
+        if S::KEEP_TOKENS {
+            self.tok_mut(at.index as usize).flags |= TOKEN_ERROR;
+        }
         self.errors.push(SyntaxError {
             kind,
-            range: self.tok(index).range(),
+            range: at.range,
             missing_delimiter: None,
         });
+    }
+
+    /// Record the diagnostics of the lexer. Call it after the items, when
+    /// the lexer is done.
+    pub(super) fn lexer_errors(&mut self) {
+        debug_assert!(self.lexer.done, "the lexer is not done");
+        for &start in &self.lexer.hiding_quotes {
+            self.errors.push(SyntaxError {
+                kind: SyntaxErrorKind::ProbablyUnclosedQuote,
+                range: TextRange::span(start, start + 1),
+                missing_delimiter: None,
+            });
+        }
+        if let Some(range) = self.lexer.unclosed_quote {
+            self.errors.push(SyntaxError {
+                kind: SyntaxErrorKind::UnclosedQuote,
+                range,
+                missing_delimiter: None,
+            });
+        }
     }
 
     #[inline]
@@ -976,7 +1029,7 @@ impl<'t, S: Sink> Parser<'t, S> {
     }
 
     fn parse_interpolation(&mut self) {
-        let open = self.pos;
+        let open = self.mark(self.pos);
         self.sink.start_node(SyntaxKind::Interpolation);
         self.bump(); // `[`
 
@@ -1014,7 +1067,7 @@ impl<'t, S: Sink> Parser<'t, S> {
                     SyntaxErrorKind::UnclosedInterpolation,
                 );
             } else {
-                self.error_at(open, SyntaxErrorKind::UnclosedInterpolation);
+                self.error_at_mark(open, SyntaxErrorKind::UnclosedInterpolation);
             }
         }
         self.sink.finish_node();
@@ -1034,7 +1087,7 @@ impl<'t, S: Sink> Parser<'t, S> {
     }
 
     fn parse_code_payload_body(&mut self) {
-        let open = self.pos;
+        let open = self.mark(self.pos);
         let barrier = self.recovery_barrier;
         self.bump(); // first `[`
         self.bump(); // second `[`
@@ -1042,7 +1095,7 @@ impl<'t, S: Sink> Parser<'t, S> {
         self.code_depth += 1;
         if self.code_depth > MAX_DEPTH {
             self.recovery_barrier += 1;
-            self.error_at(open, SyntaxErrorKind::CodeDepthExceeded);
+            self.error_at_mark(open, SyntaxErrorKind::CodeDepthExceeded);
             self.flatten_to_code_close();
             self.code_depth -= 1;
             // The depth diagnostic owns this flattened region.
@@ -1107,7 +1160,7 @@ impl<'t, S: Sink> Parser<'t, S> {
                     );
                 }
             } else {
-                self.error_at(open, SyntaxErrorKind::UnclosedCode);
+                self.error_at_mark(open, SyntaxErrorKind::UnclosedCode);
             }
         }
     }
@@ -1140,7 +1193,7 @@ impl<'t, S: Sink> Parser<'t, S> {
 
     /// Parse an EU4 conditional parameter and its complete body.
     fn parse_parameter(&mut self, kind: SyntaxKind) {
-        let open = self.pos;
+        let open = self.mark(self.pos);
         let barrier = self.recovery_barrier;
         self.sink.start_node(kind);
         self.bump(); // first `[`
@@ -1199,7 +1252,7 @@ impl<'t, S: Sink> Parser<'t, S> {
                     SyntaxErrorKind::UnclosedParameter,
                 );
             } else {
-                self.error_at(open, SyntaxErrorKind::UnclosedParameter);
+                self.error_at_mark(open, SyntaxErrorKind::UnclosedParameter);
             }
         }
         self.sink.finish_node();
@@ -1208,27 +1261,28 @@ impl<'t, S: Sink> Parser<'t, S> {
     /// Open the block at the current `{`. The item loop reads its items and
     /// closes it with [`Parser::close_block`]. `enclosing` is the number of
     /// open nodes that end with the block.
-    #[inline]
+    // Without `always`, the compiler does not inline it into
+    // `Parser::parse_value`, and the `text/syntax_tree` benchmark is 1% slower
+    // on EU4 and 2% slower on CK3.
+    #[inline(always)]
     fn open_block(&mut self, enclosing: u32) {
+        let brace = self.tok(self.pos);
         self.blocks.push(OpenBlock {
-            open: self.pos,
+            open: self.pos as u32,
+            start: brace.start,
             barrier: self.recovery_barrier,
             enclosing,
         });
         self.sink.start_node(SyntaxKind::Block);
-        self.bump_brace(); // `{`
+        self.sink.brace(brace);
+        self.advance(1);
     }
 
     /// Close the innermost open block at the token that ends its items, and
     /// end the nodes that enclose it.
     #[inline]
     fn close_block(&mut self) {
-        let Some(OpenBlock {
-            open,
-            barrier,
-            enclosing,
-        }) = self.blocks.pop()
-        else {
+        let Some(block) = self.blocks.pop() else {
             return;
         };
         if self.peek() == Some(SyntaxKind::CloseBrace) {
@@ -1241,19 +1295,19 @@ impl<'t, S: Sink> Parser<'t, S> {
             // parameter block continues that block body.
         } else if self.peek() == Some(SyntaxKind::CloseBracket) {
             self.recovery_barrier += 1;
-            self.error_at(open, SyntaxErrorKind::UnclosedBlock);
-        } else if self.peek().is_none() && self.recovery_barrier == barrier {
+            self.error_at_mark(block.brace(), SyntaxErrorKind::UnclosedBlock);
+        } else if self.peek().is_none() && self.recovery_barrier == block.barrier {
             self.missing(
-                open,
+                block.brace(),
                 SyntaxKind::MissingCloseBrace,
                 UnclosedConstruct::Block,
                 SyntaxErrorKind::UnclosedBlock,
             );
         } else {
-            self.error_at(open, SyntaxErrorKind::UnclosedBlock);
+            self.error_at_mark(block.brace(), SyntaxErrorKind::UnclosedBlock);
         }
         self.sink.finish_node();
-        for _ in 0..enclosing {
+        for _ in 0..block.enclosing {
             self.sink.finish_node();
         }
     }
@@ -1265,7 +1319,7 @@ impl<'t, S: Sink> Parser<'t, S> {
     /// interior is parsed (precedence-climbing) into a temporary element tree by
     /// [`parse_calc_interior`], then emitted to the sink in source order.
     fn parse_calc(&mut self) {
-        let open = self.pos;
+        let open = self.mark(self.pos);
         self.sink.start_node(SyntaxKind::Calc);
         self.bump(); // `@[`
 
@@ -1300,15 +1354,12 @@ impl<'t, S: Sink> Parser<'t, S> {
         if !missing_at_open.is_empty() || !interior.unclosed_parens.is_empty() {
             self.recovery_barrier += 1;
         }
-        if at_eof && !interior.overflowed && !interior.missing_parens.is_empty() && !S::KEEP_TOKENS
-        {
-            self.sink.error();
-        }
-        if at_eof && !interior.overflowed && S::KEEP_TOKENS {
+        if at_eof && !interior.overflowed {
             for paren_open in interior.missing_parens {
                 // The zero-width leaf was emitted inside its ParenExpr above.
+                // The window holds the `(`, because it pins the interior.
                 self.record_missing(
-                    paren_open as usize,
+                    self.mark(paren_open as usize),
                     SyntaxKind::MissingCloseParen,
                     UnclosedConstruct::CalcParen,
                     SyntaxErrorKind::UnclosedCalcParen,
@@ -1317,7 +1368,7 @@ impl<'t, S: Sink> Parser<'t, S> {
         }
         if interior.overflowed {
             self.recovery_barrier += 1;
-            self.error_at(open, SyntaxErrorKind::CalcDepthExceeded);
+            self.error_at_mark(open, SyntaxErrorKind::CalcDepthExceeded);
         }
 
         if self.peek() == Some(SyntaxKind::CalcClose) {
@@ -1331,7 +1382,7 @@ impl<'t, S: Sink> Parser<'t, S> {
             );
         } else if !at_eof {
             self.recovery_barrier += 1;
-            self.error_at(open, SyntaxErrorKind::UnclosedCalc);
+            self.error_at_mark(open, SyntaxErrorKind::UnclosedCalc);
         }
         self.pin = usize::MAX;
         self.sink.finish_node();

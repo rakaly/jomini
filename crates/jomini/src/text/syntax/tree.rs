@@ -18,8 +18,8 @@ use super::lexer::{Lexer, Token};
 use super::parser::{Builder, Parser, Sink};
 use super::{
     FormatOptions, LexFlavor, MissingDelimiter, NodeId, Root, SyntaxElement, SyntaxError,
-    SyntaxErrorKind, SyntaxKind, SyntaxNode, SyntaxToken, TextEdit, TextRange, TextSize,
-    TokenAtOffset, TokenId, Tokens,
+    SyntaxKind, SyntaxNode, SyntaxToken, TextEdit, TextRange, TextSize, TokenAtOffset, TokenId,
+    Tokens,
 };
 use crate::text::TextFlavor;
 use std::fmt;
@@ -467,24 +467,7 @@ pub(super) fn run<S: Sink>(source: &[u8], flavor: LexFlavor, sink: S) -> Parser<
     let mut p = Parser::new(source, Lexer::new(source, flavor), sink);
     p.sink.start_node(SyntaxKind::Root);
     p.parse_items(false);
-    if S::KEEP_TOKENS {
-        for &start in &p.lexer.hiding_quotes {
-            p.errors.push(SyntaxError {
-                kind: SyntaxErrorKind::ProbablyUnclosedQuote,
-                range: TextRange::span(start, start + 1),
-                missing_delimiter: None,
-            });
-        }
-    }
-    if S::KEEP_TOKENS
-        && let Some(range) = p.lexer.unclosed_quote
-    {
-        p.errors.push(SyntaxError {
-            kind: SyntaxErrorKind::UnclosedQuote,
-            range,
-            missing_delimiter: None,
-        });
-    }
+    p.lexer_errors();
     p.sink.finish_node();
     p
 }
@@ -493,8 +476,8 @@ pub(super) fn run<S: Sink>(source: &[u8], flavor: LexFlavor, sink: S) -> Parser<
 /// `offset` to `sink`. The sink must have an open root node, with the state
 /// that it has at `offset` in a full parse. The parser does not have the
 /// tokens before `offset`, thus the grammar must not look back at them. This
-/// is true after a `}` token that no operator follows. The diagnostics are not
-/// complete.
+/// is true after a `}` token that no operator follows. The parser records the
+/// diagnostics of the source at and after `offset`.
 pub(super) fn run_items<S: Sink>(
     source: &[u8],
     flavor: LexFlavor,
@@ -503,6 +486,7 @@ pub(super) fn run_items<S: Sink>(
 ) -> Parser<'_, S> {
     let mut p = Parser::new(source, Lexer::at(source, flavor, offset), sink);
     p.parse_items(false);
+    p.lexer_errors();
     p.sink.finish_node();
     p
 }
