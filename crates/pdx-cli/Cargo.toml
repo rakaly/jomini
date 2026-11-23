@@ -19,6 +19,6 @@ eu4save = { path = "../eu4save" }
 eu5save = { path = "../eu5save", features = ["zstd_c"] }
 hoi4save = { path = "../hoi4save" }
 imperator-save = { path = "../imperator-save", features = ["zstd_c"] }
-jomini = { workspace = true, features = ["envelope", "json", "zstd_c"] }
+jomini = { workspace = true, features = ["envelope", "json", "syntax", "zstd_c"] }
 pdx-fixtures = { workspace = true }
 vic3save = { path = "../vic3save", features = ["zstd_c"] }
