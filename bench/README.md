@@ -30,4 +30,5 @@ cargo bench --target wasm32-wasip1 --bench jomini-bench-criterion -- 'parse_save
 ```
 
 Results are written to `bench/target/criterion-wasm`, in a directory for each
-Node.js version. `wasm-opt` is not run.
+Node.js version. `wasm-opt` is not run. The runner is
+untested on Windows.
