@@ -8,8 +8,12 @@
 //! abstractions ontop of.
 //!  - [TokenReader]: An incremental binary lexer designed for handling large
 //!    saves in a memory efficient manner.
-//!  - [Lexer]: The lowest level, a zero cost binary data scanner over a byte
-//!    slice.
+//!  - [Lexer]: A zero cost binary data scanner over a byte slice, whose tokens
+//!    borrow from the slice.
+//!  - [ParserSource] with [BinarySourceExt]: The lowest level, which reads or
+//!    skips an id and its payload on its own.
+//!
+//! `next` gives `None` at the end of the data, where `read` gives an error.
 //!
 //! ## Direct identifier deserialization with `token` attribute
 //!
@@ -84,7 +88,7 @@ mod rgb;
 pub use self::flavor::BinaryFlavor;
 #[cfg(feature = "serde")]
 pub use self::format::{BinaryFormat, PdxVisitor};
-pub use self::lexer::{LexError, LexemeId, Lexer, LexerError, Token, TokenKind};
+pub use self::lexer::{LexError, LexemeId, Lexer, LexerError, Token};
 pub use self::reader::TokenReader;
 pub use self::resolver::{BasicTokenResolver, FailedResolveStrategy, TokenResolver};
 pub use self::rgb::*;

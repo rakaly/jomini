@@ -160,17 +160,90 @@ impl LexemeId {
         LexemeId(x)
     }
 
-    /// Identifies if the given ID does not match of the predefined [LexemeId]
-    /// constants, and thus can be considered an ID token.
+    /// Whether the id is none of the [`LexemeId`] constants, and thus a token id
+    /// that a [`TokenResolver`](crate::binary::TokenResolver) resolves.
     ///
     /// ```rust
     /// use jomini::binary::LexemeId;
-    /// let lid = LexemeId::new(0x1000);
-    /// assert!(lid.is_id());
+    /// assert!(LexemeId::new(0x1000).is_id());
+    /// assert!(!LexemeId::OPEN.is_id());
     /// ```
     #[inline]
-    pub const fn is_id(&self) -> bool {
-        matches!(self.into_kind(), TokenKind::Id)
+    pub const fn is_id(self) -> bool {
+        !matches!(
+            self,
+            LexemeId::OPEN
+                | LexemeId::CLOSE
+                | LexemeId::EQUAL
+                | LexemeId::U32
+                | LexemeId::U64
+                | LexemeId::I32
+                | LexemeId::I64
+                | LexemeId::F32
+                | LexemeId::F64
+                | LexemeId::BOOL
+                | LexemeId::RGB
+        ) && !self.is_string()
+            && !self.is_lookup()
+            && !self.is_fixed5()
+    }
+
+    /// Whether the lexeme is a string. All but
+    /// [`EMPTY_STRING`](Self::EMPTY_STRING) have a length and bytes as payload.
+    ///
+    /// ```rust
+    /// use jomini::binary::LexemeId;
+    /// assert!(LexemeId::QUOTED.is_string());
+    /// assert!(LexemeId::EMPTY_STRING.is_string());
+    /// assert!(!LexemeId::LOOKUP_U8.is_string());
+    /// ```
+    #[inline]
+    pub const fn is_string(self) -> bool {
+        matches!(
+            self,
+            LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::EMPTY_STRING | LexemeId::STR_SAV03
+        )
+    }
+
+    /// Whether the payload is an index of a string that
+    /// [`TokenResolver::lookup`](crate::binary::TokenResolver::lookup) resolves.
+    ///
+    /// ```rust
+    /// use jomini::binary::LexemeId;
+    /// assert!(LexemeId::LOOKUP_U16.is_lookup());
+    /// assert!(!LexemeId::U32.is_lookup());
+    /// ```
+    #[inline]
+    pub const fn is_lookup(self) -> bool {
+        matches!(
+            self,
+            LexemeId::LOOKUP_U8
+                | LexemeId::LOOKUP_U8_ALT
+                | LexemeId::LOOKUP_U8_SAV03
+                | LexemeId::LOOKUP_U16
+                | LexemeId::LOOKUP_U16_ALT
+                | LexemeId::LOOKUP_U16_SAV03
+                | LexemeId::LOOKUP_U24
+                | LexemeId::LOOKUP_U24_ALT
+                | LexemeId::LOOKUP_U24_SAV03
+                | LexemeId::LOOKUP_U32
+                | LexemeId::LOOKUP_U32_ALT
+                | LexemeId::LOOKUP_U32_SAV03
+        )
+    }
+
+    /// Whether the lexeme is a fixed-point number, whose id has the sign and the
+    /// width of its payload. It is the same value as an [`F64`](Self::F64).
+    ///
+    /// ```rust
+    /// use jomini::binary::LexemeId;
+    /// assert!(LexemeId::FIXED5_ZERO.is_fixed5());
+    /// assert!(LexemeId::FIXED5_I56.is_fixed5());
+    /// assert!(!LexemeId::F64.is_fixed5());
+    /// ```
+    #[inline]
+    pub const fn is_fixed5(self) -> bool {
+        self.0 >= LexemeId::FIXED5_ZERO.0 && self.0 <= LexemeId::FIXED5_I56.0
     }
 
     /// The payload size of a lexeme whose payload has a constant size, and
@@ -178,57 +251,6 @@ impl LexemeId {
     #[inline]
     pub(crate) fn payload_len(self) -> usize {
         usize::from(PAYLOAD_SIZES.get(usize::from(self.0)).copied().unwrap_or(0))
-    }
-
-    /// Convert the `LexemeId` into a `TokenKind`
-    #[inline]
-    pub const fn into_kind(self) -> TokenKind {
-        match self {
-            LexemeId::OPEN => TokenKind::Open,
-            LexemeId::CLOSE => TokenKind::Close,
-            LexemeId::EQUAL => TokenKind::Equal,
-            LexemeId::U32 => TokenKind::U32,
-            LexemeId::U64 => TokenKind::U64,
-            LexemeId::I32 => TokenKind::I32,
-            LexemeId::BOOL => TokenKind::Bool,
-            LexemeId::QUOTED => TokenKind::Quoted,
-            LexemeId::EMPTY_STRING => TokenKind::Quoted,
-            LexemeId::UNQUOTED => TokenKind::Unquoted,
-            LexemeId::F32 => TokenKind::F32,
-            LexemeId::F64 => TokenKind::F64,
-            LexemeId::RGB => TokenKind::Rgb,
-            LexemeId::I64 => TokenKind::I64,
-            LexemeId::LOOKUP_U8
-            | LexemeId::LOOKUP_U8_ALT
-            | LexemeId::LOOKUP_U16
-            | LexemeId::LOOKUP_U16_ALT
-            | LexemeId::LOOKUP_U24
-            | LexemeId::LOOKUP_U24_ALT
-            | LexemeId::LOOKUP_U32
-            | LexemeId::LOOKUP_U32_ALT
-            | LexemeId::LOOKUP_U8_SAV03
-            | LexemeId::LOOKUP_U16_SAV03
-            | LexemeId::LOOKUP_U24_SAV03
-            | LexemeId::LOOKUP_U32_SAV03 => TokenKind::Lookup,
-            // Fixed5 lexemes are converted to F64 tokens
-            LexemeId::FIXED5_ZERO
-            | LexemeId::FIXED5_U8
-            | LexemeId::FIXED5_U16
-            | LexemeId::FIXED5_U24
-            | LexemeId::FIXED5_U32
-            | LexemeId::FIXED5_U40
-            | LexemeId::FIXED5_U48
-            | LexemeId::FIXED5_U56
-            | LexemeId::FIXED5_I8
-            | LexemeId::FIXED5_I16
-            | LexemeId::FIXED5_I24
-            | LexemeId::FIXED5_I32
-            | LexemeId::FIXED5_I40
-            | LexemeId::FIXED5_I48
-            | LexemeId::FIXED5_I56 => TokenKind::F64,
-            LexemeId::STR_SAV03 => TokenKind::Unquoted,
-            _ => TokenKind::Id,
-        }
     }
 }
 
@@ -271,62 +293,6 @@ static PAYLOAD_SIZES: [u8; (LexemeId::STR_SAV03.0 as usize) + 1] = {
     t[LexemeId::FIXED5_I56.0 as usize] = 7;
     t
 };
-
-/// Kind of token represented by a [LexemeId]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum TokenKind {
-    /// '{' token
-    Open,
-
-    /// '}' token
-    Close,
-
-    /// '=' token
-    Equal,
-
-    /// 32bit unsigned integer
-    U32,
-
-    /// 64bit unsigned integer
-    U64,
-
-    /// 32bit signed integer
-    I32,
-
-    /// boolean
-    Bool,
-
-    /// quoted string
-    Quoted,
-
-    /// unquoted string
-    Unquoted,
-
-    /// 32bits of floating point data
-    F32,
-
-    /// 64bits of floating point data
-    F64,
-
-    /// RGB value
-    Rgb,
-
-    /// 64bit signed integer
-    I64,
-
-    /// lookup index
-    Lookup,
-
-    /// Identifier token
-    Id,
-}
-
-impl From<LexemeId> for TokenKind {
-    #[inline]
-    fn from(id: LexemeId) -> Self {
-        id.into_kind()
-    }
-}
 
 #[inline]
 pub(crate) fn read_id(data: &[u8]) -> Result<(LexemeId, &[u8]), LexError> {
@@ -621,7 +587,7 @@ pub(crate) fn read_token(data: &[u8]) -> Result<(Token<'_>, &[u8]), LexError> {
         LexemeId::LOOKUP_U32 | LexemeId::LOOKUP_U32_ALT | LexemeId::LOOKUP_U32_SAV03 => {
             read_lookup_u32(data).map(|(x, d)| (Token::Lookup(x), d))
         }
-        lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
+        lexeme if lexeme.is_fixed5() => {
             read_compact_f64(lexeme, data).map(|(x, d)| (Token::F64(x), d))
         }
         LexemeId(id) => Ok((Token::Id(id), data)),
@@ -714,7 +680,7 @@ impl std::fmt::Display for LexerError {
 /// let mut lexer = Lexer::new(&[0x2d, 0x28, 0x01, 0x00, 0x03, 0x00, 0x03, 0x00, 0x04, 0x00, 0x04, 0x00]);
 /// let mut max_depth = 0;
 /// let mut current_depth = 0;
-/// while let Some(token) = lexer.next_token()? {
+/// while let Some(token) = lexer.next()? {
 ///   match token {
 ///     Token::Open => {
 ///       current_depth += 1;
@@ -728,7 +694,7 @@ impl std::fmt::Display for LexerError {
 /// # Ok::<(), jomini::binary::LexerError>(())
 /// ```
 ///
-/// The [Lexer::next_token] is an ergonomic way to scan through binary tokens.
+/// The [Lexer::next] is an ergonomic way to scan through binary tokens.
 /// The functions prefixed with `read_`denote more data is expected, while
 /// `next_` allows for the data to finish.
 ///
@@ -747,14 +713,7 @@ impl std::fmt::Display for LexerError {
 ///       max_depth = max_depth.max(current_depth);
 ///     }
 ///     LexemeId::CLOSE => current_depth -= 1,
-///     LexemeId::U32 => { lexer.read_u32()?; }
-///     LexemeId::I32 => { lexer.read_i32()?; }
-///     LexemeId::BOOL => { lexer.read_bool()?; }
-///     LexemeId::QUOTED | LexemeId::UNQUOTED => { lexer.read_string()?; }
-///     LexemeId::F32 => { lexer.read_f32()?; }
-///     LexemeId::F64 => { lexer.read_f64()?; }
-///     LexemeId::I64 => { lexer.read_i64()?; }
-///     _ => {}
+///     id => lexer.skip_value(id)?,
 ///   }
 /// }
 /// assert_eq!(max_depth, 2);
@@ -857,11 +816,11 @@ impl<'a> Lexer<'a> {
     /// ```rust
     /// use jomini::binary::{Lexer, LexError, Token};
     /// let mut lexer = Lexer::new(&[0x2d, 0x28]);
-    /// assert_eq!(lexer.read_token(), Ok(Token::Id(0x282d)));
-    /// assert_eq!(lexer.read_token().unwrap_err().kind(), &LexError::Eof);
+    /// assert_eq!(lexer.read(), Ok(Token::Id(0x282d)));
+    /// assert_eq!(lexer.read().unwrap_err().kind(), &LexError::Eof);
     /// ```
     #[inline]
-    pub fn read_token(&mut self) -> Result<Token<'a>, LexerError> {
+    pub fn read(&mut self) -> Result<Token<'a>, LexerError> {
         let (result, rest) = read_token(self.data).map_err(|e| self.err_position(e))?;
         self.data = rest;
         Ok(result)
@@ -875,14 +834,15 @@ impl<'a> Lexer<'a> {
     /// ```rust
     /// use jomini::binary::{Lexer, Token, LexError};
     /// let mut lexer = Lexer::new(&[0x2d, 0x28]);
-    /// assert_eq!(lexer.next_token(), Ok(Some(Token::Id(0x282d))));
-    /// assert_eq!(lexer.next_token(), Ok(None));
+    /// assert_eq!(lexer.next(), Ok(Some(Token::Id(0x282d))));
+    /// assert_eq!(lexer.next(), Ok(None));
     ///
     /// let mut lexer = Lexer::new(&[0x2d]);
-    /// assert_eq!(lexer.next_token().unwrap_err().kind(), &LexError::Eof);
+    /// assert_eq!(lexer.next().unwrap_err().kind(), &LexError::Eof);
     /// ```
     #[inline]
-    pub fn next_token(&mut self) -> Result<Option<Token<'a>>, LexerError> {
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<Option<Token<'a>>, LexerError> {
         match read_token(self.data) {
             Ok((result, rest)) => {
                 self.data = rest;
@@ -909,18 +869,40 @@ impl<'a> Lexer<'a> {
             .map(|head| LexemeId::new(u16::from_le_bytes([head[0], head[1]])))
     }
 
-    /// Peek at the next [Token] without advancing the lexer
+    /// Peek at the next [Token] without advancing the lexer. Returns `None` when
+    /// there is no data, and also when the next token can't be read.
     ///
     /// ```rust
     /// use jomini::binary::{Lexer, LexError, Token};
     /// let mut lexer = Lexer::new(&[0x01, 0x00][..]);
-    /// assert_eq!(lexer.peek_token(), Some(Token::Equal));
-    /// assert_eq!(lexer.read_token(), Ok(Token::Equal));
-    /// assert_eq!(lexer.peek_token(), None);
+    /// assert_eq!(lexer.peek(), Some(Token::Equal));
+    /// assert_eq!(lexer.read(), Ok(Token::Equal));
+    /// assert_eq!(lexer.peek(), None);
     /// ```
     #[inline]
-    pub fn peek_token(&self) -> Option<Token<'a>> {
+    pub fn peek(&self) -> Option<Token<'a>> {
         read_token(self.data).ok().map(|(t, _)| t)
+    }
+
+    /// Renamed to [`Lexer::next`].
+    #[deprecated(since = "0.39.0", note = "renamed to `next`")]
+    #[inline]
+    pub fn next_token(&mut self) -> Result<Option<Token<'a>>, LexerError> {
+        self.next()
+    }
+
+    /// Renamed to [`Lexer::read`].
+    #[deprecated(since = "0.39.0", note = "renamed to `read`")]
+    #[inline]
+    pub fn read_token(&mut self) -> Result<Token<'a>, LexerError> {
+        self.read()
+    }
+
+    /// Renamed to [`Lexer::peek`].
+    #[deprecated(since = "0.39.0", note = "renamed to `peek`")]
+    #[inline]
+    pub fn peek_token(&self) -> Option<Token<'a>> {
+        self.peek()
     }
 
     /// Advance the lexer through a length prefixed string
@@ -1181,7 +1163,7 @@ impl<'a> Lexer<'a> {
                 self.read_lookup_u32()?;
                 Ok(())
             }
-            lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
+            lexeme if lexeme.is_fixed5() => {
                 self.read_compact_f64(lexeme)?;
                 Ok(())
             }
@@ -1236,12 +1218,49 @@ impl<'a> Lexer<'a> {
                         return Ok(());
                     }
                 }
-                lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
+                lexeme if lexeme.is_fixed5() => {
                     self.read_compact_f64(lexeme)?;
                 }
                 LexemeId::OPEN => depth += 1,
                 _ => {}
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The predicates of an id agree with the token that is read for it.
+    #[test]
+    fn lexeme_ids_match_their_tokens() {
+        for id in 0..=u16::MAX {
+            let id = LexemeId::new(id);
+            let mut data = id.0.to_le_bytes().to_vec();
+            if id == LexemeId::RGB {
+                data.extend([0x03, 0]);
+                for _ in 0..3 {
+                    data.extend([0x14, 0, 1, 0, 0, 0]);
+                }
+                data.extend([0x04, 0]);
+            } else {
+                data.extend([0; 8]);
+            }
+
+            let token = Lexer::new(&data).read().unwrap();
+            assert_eq!(id.is_id(), matches!(token, Token::Id(_)), "{id:?}");
+            assert_eq!(id.is_lookup(), matches!(token, Token::Lookup(_)), "{id:?}");
+            assert_eq!(
+                id.is_string(),
+                matches!(token, Token::Quoted(_) | Token::Unquoted(_)),
+                "{id:?}"
+            );
+            assert_eq!(
+                id.is_fixed5() || id == LexemeId::F64,
+                matches!(token, Token::F64(_)),
+                "{id:?}"
+            );
         }
     }
 }

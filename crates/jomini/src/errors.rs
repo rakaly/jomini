@@ -225,7 +225,7 @@ pub enum ReaderErrorKind {
 /// text and binary [TokenReader](crate::text::TokenReader)s.
 pub struct ReaderError {
     // MaybeUninit strips all inhabited niches from ReaderErrorKind, preventing
-    // niche-optimization on Result<Option<TokenKind>, ReaderError>. Without it,
+    // niche-optimization on a Result of a small type, like a token kind. Without it,
     // the compiler produces a niche-encoded 8-byte Result that requires extra
     // bit manipulation in hot loops (~2x instruction count regression).
     kind: MaybeUninit<ReaderErrorKind>,

@@ -29,22 +29,13 @@ pub enum Token<'a> {
     Quoted(Scalar<'a>),
 }
 
-/// Kind of text token represented by a [TokenReader].
+/// The kind of a token, whose bytes are in the reader if it is a scalar.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum TokenKind {
-    /// '{' or '['
+enum TokenKind {
     Open,
-
-    /// '{' or ']'
     Close,
-
-    /// An operator (eg: `foo=bar`)
     Operator(Operator),
-
-    /// value that is not surrounded by quotes
     Unquoted,
-
-    /// value that is quoted
     Quoted,
 }
 
@@ -845,11 +836,9 @@ impl<'a> TokenReader<'a> {
     /// ```
     #[inline]
     pub fn read(&mut self) -> Result<Token<'_>, ReaderError> {
-        let s = std::ptr::addr_of!(self);
-        match self.next_token() {
-            Ok(Some(x)) => Ok(unsafe { (*s).token_from_kind(x) }),
-            Ok(None) => Err(unsafe { (*s).eof_error() }),
-            Err(e) => Err(e),
+        match self.next_kind()? {
+            Some(kind) => Ok(self.token_from_kind(kind)),
+            None => Err(self.eof_error()),
         }
     }
 
@@ -866,14 +855,12 @@ impl<'a> TokenReader<'a> {
     #[inline]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Token<'_>>, ReaderError> {
-        let s = std::ptr::addr_of!(self);
-        self.next_token()
-            .map(|x| x.map(|kind| unsafe { (*s).token_from_kind(kind) }))
+        let kind = self.next_kind()?;
+        Ok(kind.map(|kind| self.token_from_kind(kind)))
     }
 
-    /// Read a token kind, returning none when all the data has been consumed.
     #[inline]
-    pub fn next_token(&mut self) -> Result<Option<TokenKind>, ReaderError> {
+    fn next_kind(&mut self) -> Result<Option<TokenKind>, ReaderError> {
         unsafe { self.next_kind_opt() }
     }
 
@@ -1120,34 +1107,6 @@ mod test {
 
         reader.read().unwrap_err();
         assert_eq!(reader.position(), input.len());
-    }
-
-    #[rstest]
-    #[case(b"foo={ bar = \"baz\" @[1-qux] } # comment\nx?=1 y==2 z<=3")]
-    #[case(b"\xef\xbb\xbf@var = value:job|head| \"escaped \\\" quote\"")]
-    fn test_token_kind_matches_token(#[case] input: &[u8]) {
-        fn kind(token: Token<'_>) -> TokenKind {
-            match token {
-                Token::Open => TokenKind::Open,
-                Token::Close => TokenKind::Close,
-                Token::Operator(op) => TokenKind::Operator(op),
-                Token::Unquoted(_) => TokenKind::Unquoted,
-                Token::Quoted(_) => TokenKind::Quoted,
-            }
-        }
-
-        let mut token_reader = TokenReader::from_slice(input);
-        let mut kind_reader = TokenReader::from_slice(input);
-
-        loop {
-            let token = token_reader.next().unwrap().map(kind);
-            let token_kind = kind_reader.next_token().unwrap();
-            assert_eq!(token, token_kind);
-
-            if token.is_none() {
-                break;
-            }
-        }
     }
 
     #[rstest]

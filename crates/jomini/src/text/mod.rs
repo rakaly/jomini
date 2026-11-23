@@ -85,4 +85,4 @@ pub use self::tape::{TextTape, TextTapeParser, TextToken};
 pub use self::wrappers::{Headered, MaybeQuoted};
 pub use self::writer::*;
 pub use crate::{ReaderError, ReaderErrorKind};
-pub use reader::{Token, TokenKind, TokenReader};
+pub use reader::{Token, TokenReader};
