@@ -1,3 +1,20 @@
+## v0.38.1 - 2026-11-22
+
+### Game and Mod Files (experimental `syntax` feature)
+
+- Parse quoted headers like `blockoverride = "tab_glow" { visible = no }` as headered blocks. [#320](https://github.com/rakaly/jomini/pull/320)
+- A variable definition now applies until the next one, so redefining a shared variable is no longer an error. `Resolution::definitions` and `Resolution::definition` report where each use comes from. [#318](https://github.com/rakaly/jomini/pull/318)
+- `Resolution::get` and `Resolution::definition` accept any `Resolvable`, including `@@name` keys and block headers. [#319](https://github.com/rakaly/jomini/pull/319)
+- `parse_tape` no longer parses twice on error: a 497 MB save with a stray `}` dropped from **2.32 s / 3.12 GB to 0.98 s / 1.80 GB**. [#325](https://github.com/rakaly/jomini/pull/325)
+- Formatting is about 2x faster on large files, and `format_to_writer` streams its output. [#322](https://github.com/rakaly/jomini/pull/322)
+- Fix a leading BOM changing how a first-line operator parses. [#323](https://github.com/rakaly/jomini/pull/323)
+
+### Breaking Changes
+
+- `syntax`: removed `ResolveErrorKind::DefinedInScope` and `Redefined`. `Resolution::variables` now includes scope variables that the file redefines. [#318](https://github.com/rakaly/jomini/pull/318)
+- `syntax`: `Resolution::get` takes `impl Resolvable` instead of `Value`. [#319](https://github.com/rakaly/jomini/pull/319)
+- `TextToken` gains a `QuotedHeader` variant, and `TextDeserializer::deserialize_any` reads `key = "x" { … }` as a headered block. [#320](https://github.com/rakaly/jomini/pull/320)
+
 ## v0.38.0 - 2026-11-20
 
 So this is a big release. Probably the biggest release since the initial release of jomini. It finally realizes the proper split when it comes to parsing Paradox text files. Save files can be 500 MB or larger, so the parser prioritizes memory efficiency and performance by exploiting the subset of text syntax seen in saves.
