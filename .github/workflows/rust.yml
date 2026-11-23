@@ -119,9 +119,8 @@ jobs:
       run: cargo bench --manifest-path bench/Cargo.toml --bench jomini-bench-criterion -- --test
     # After the native run, which downloads the fixtures.
     - name: Build benchmark (criterion, wasm)
-      run: cargo bench --manifest-path bench/Cargo.toml --target wasm32-wasip1 --profile wasm --bench jomini-bench-criterion -- --test
-      env:
-        CARGO_TARGET_WASM32_WASIP1_RUNNER: node --no-warnings ${{ github.workspace }}/bench/wasi-runner.mjs
+      working-directory: bench
+      run: cargo bench --target wasm32-wasip1 --bench jomini-bench-criterion -- --test
     - name: Build benchmark (gungraun)
       run: cargo bench --manifest-path bench/Cargo.toml --bench jomini-bench-gungraun --no-run
     - name: Run clippy (json benchmark)

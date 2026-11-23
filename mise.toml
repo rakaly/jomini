@@ -1,6 +1,0 @@
-[tasks."bench:wasm"]
-description = "Run the Criterion benchmarks on wasm, with an optional filter"
-# Pinned, as results from different V8 versions are not comparable.
-tools = { node = "24.22.3" }
-env = { CARGO_TARGET_WASM32_WASIP1_RUNNER = "node --no-warnings {{config_root}}/bench/wasi-runner.mjs" }
-run = "cargo bench --manifest-path bench/Cargo.toml --target wasm32-wasip1 --profile wasm --bench jomini-bench-criterion --"

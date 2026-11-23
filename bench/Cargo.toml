@@ -52,11 +52,5 @@ gungraun = "0.19.0"
 [profile.bench]
 debug = true
 
-# The settings of the pdx-tools release build.
-[profile.wasm]
-inherits = "bench"
-lto = "thin"
-codegen-units = 1
-
 [patch.crates-io]
 jomini = { path = "../crates/jomini" }

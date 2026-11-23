@@ -1,4 +1,5 @@
-// Runs a wasm32-wasip1 benchmark on V8. Set as the cargo runner, see README.md.
+// Runs a wasm32-wasip1 benchmark on V8. Set as the cargo runner in
+// .cargo/config.toml.
 import fs from "node:fs";
 import path from "node:path";
 import { WASI } from "node:wasi";

@@ -1,0 +1,3 @@
+# Cargo runs benchmarks from this directory.
+[target.wasm32-wasip1]
+runner = "node --no-warnings wasi-runner.mjs"
