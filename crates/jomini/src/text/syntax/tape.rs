@@ -153,9 +153,10 @@ impl<'a> TapeParse<'a> {
 /// - Accepts a bare value at the root, as in `a = 1 c`.
 ///
 /// For a source with a syntax error, `parse_tape` still gives a tape and
-/// reports each error. An extra `}`, or a file that ends one `}` short of
-/// closing a block of fields, keeps its data. To accept such game files,
-/// filter out
+/// reports each error. The tape can differ from the one `from_slice` gives.
+/// To accept game files that have an extra `}`, as in
+/// `a = { b = 1 } } c = 2`, or that end before a block closes, as in
+/// `a = { b = 1`, filter out
 /// [`UnmatchedCloseBrace`](super::SyntaxErrorKind::UnmatchedCloseBrace) and
 /// [`UnclosedBlock`](super::SyntaxErrorKind::UnclosedBlock), as the
 /// [`TapeParse`] example shows for `UnmatchedCloseBrace`.
