@@ -21,7 +21,6 @@ impl Error {
 
     /// Set the offset of an error that has none, so that the most specific
     /// offset, set closest to where the error was raised, is kept.
-    #[cfg(feature = "serde")]
     #[cold]
     pub(crate) fn or_offset(mut self, offset: usize) -> Error {
         if self.offset().is_none() {
@@ -318,9 +317,11 @@ impl From<ReaderError> for Error {
     fn from(value: ReaderError) -> Self {
         let pos = value.position();
         match value.into_kind() {
-            ReaderErrorKind::Read(kind) => Error::new(ErrorKind::Io(std::io::Error::from(kind))),
-            ReaderErrorKind::BufferTooSmall => Error::new(ErrorKind::BufferTooSmall),
-            ReaderErrorKind::Eof => Error::eof(),
+            ReaderErrorKind::Read(kind) => {
+                Error::new(ErrorKind::Io(std::io::Error::from(kind))).or_offset(pos)
+            }
+            ReaderErrorKind::BufferTooSmall => Error::new(ErrorKind::BufferTooSmall).or_offset(pos),
+            ReaderErrorKind::Eof => Error::eof().or_offset(pos),
             ReaderErrorKind::InvalidRgb => Error::invalid_syntax("invalid rgb", pos),
         }
     }

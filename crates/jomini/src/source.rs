@@ -3,11 +3,13 @@ use std::marker::PhantomData;
 use std::ptr;
 
 use crate::{
-    Error,
+    ReaderError, ReaderErrorKind,
     binary::{LexemeId, Rgb},
 };
 
-const DEFAULT_CAPACITY: usize = 32 * 1024;
+// Room for the longest binary string, which is 65,535 bytes, and fewer calls to
+// inflate than with a smaller buffer.
+const DEFAULT_CAPACITY: usize = 128 * 1024;
 
 /// Error returned by [`ParserSource`] operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +27,36 @@ impl ParserError {
     #[inline]
     pub fn eof() -> Self {
         ParserError::Io(io::ErrorKind::UnexpectedEof)
+    }
+
+    /// Locates the error at a byte position of the data.
+    ///
+    /// A [`ReaderError`] holds positions up to `u32::MAX`, and that for larger
+    /// ones.
+    ///
+    /// ```
+    /// use jomini::binary::{BinarySourceExt, ParserSource, ReaderError, TokenReader};
+    ///
+    /// fn at_equal(reader: &mut TokenReader<'_>) -> Result<bool, ReaderError> {
+    ///     let source = reader.source_mut();
+    ///     source
+    ///         .next_lexeme_if(jomini::binary::LexemeId::EQUAL)
+    ///         .map_err(|e| e.at(source.position()))
+    /// }
+    ///
+    /// let mut reader = TokenReader::from_slice(&[0x01, 0x00, 0x01]);
+    /// assert!(at_equal(&mut reader).unwrap());
+    /// assert_eq!(at_equal(&mut reader).unwrap_err().position(), 2);
+    /// ```
+    #[cold]
+    #[inline(never)]
+    pub fn at(self, position: usize) -> ReaderError {
+        let kind = match self {
+            ParserError::Io(io::ErrorKind::UnexpectedEof) => ReaderErrorKind::Eof,
+            ParserError::BufferTooSmall => ReaderErrorKind::BufferTooSmall,
+            ParserError::Io(kind) => ReaderErrorKind::Read(kind),
+        };
+        ReaderError::new(position, kind)
     }
 
     /// Returns true if this error indicates unexpected end-of-stream.
@@ -59,9 +91,12 @@ enum Backing<'a> {
     Stream {
         buffer: Vec<u8>,
         source: Box<dyn Read + 'a>,
+
+        /// An error of the reader after it gave bytes that were enough, to
+        /// return once more bytes are needed.
+        error: Option<io::ErrorKind>,
     },
     Owned {
-        #[expect(dead_code)] // must keep it alive
         owner: Box<dyn AsRef<[u8]> + 'a>,
     },
 }
@@ -146,16 +181,23 @@ impl<'a> ParserSource<'a> {
     /// assert_eq!(parser.take::<4>().unwrap(), &[1u8, 2, 3, 4]);
     /// ```
     pub fn from_owned<T: AsRef<[u8]> + 'a>(owner: T) -> Self {
-        let boxed: Box<dyn AsRef<[u8]> + 'a> = Box::new(owner);
-        let slice = (*boxed).as_ref();
-        let start = slice.as_ptr();
-        let len = slice.len();
+        // The bytes may be inside of the owner, so they are borrowed once the
+        // owner is where it stays.
+        let backing = Box::new(Backing::Owned {
+            owner: Box::new(owner),
+        });
+        let data = match backing.as_ref() {
+            Backing::Owned { owner } => (**owner).as_ref(),
+            Backing::Stream { .. } => unreachable!("the backing is owned"),
+        };
+        let start = data.as_ptr();
+        let end = data.as_ptr_range().end;
         Self {
             ptr: start,
-            end: unsafe { start.add(len) },
+            end,
             base_ptr: start,
             total_bytes_parsed: 0,
-            streaming: Some(Box::new(Backing::Owned { owner: boxed })),
+            streaming: Some(backing),
             _marker: PhantomData,
         }
     }
@@ -196,6 +238,7 @@ impl<'a> ParserSource<'a> {
             streaming: Some(Box::new(Backing::Stream {
                 buffer: vec,
                 source: Box::new(source),
+                error: None,
             })),
             _marker: PhantomData,
         }
@@ -208,7 +251,30 @@ impl<'a> ParserSource<'a> {
         if available >= required {
             return Ok(());
         }
-        self.refill_slow(required)
+        self.ensure_bytes_slow(required)
+    }
+
+    #[inline(never)]
+    fn ensure_bytes_slow(&mut self, required: usize) -> Result<(), ParserError> {
+        if self.refill_slow(required)? {
+            Ok(())
+        } else {
+            Err(ParserError::eof())
+        }
+    }
+
+    /// Whether `required` bytes are in the window after refilling it, or an
+    /// error when the data ends in the middle of them. An error of the reader
+    /// is never a clean end, also when its kind is
+    /// [`io::ErrorKind::UnexpectedEof`], as of a truncated deflate stream.
+    fn fill_item(&mut self, required: usize) -> Result<bool, ParserError> {
+        if self.refill_slow(required)? {
+            Ok(true)
+        } else if self.window_len() == 0 {
+            Ok(false)
+        } else {
+            Err(ParserError::eof())
+        }
     }
 
     /// Returns how many total bytes have been read.
@@ -270,20 +336,31 @@ impl<'a> ParserSource<'a> {
 
     /// Refills the current window from the underlying reader.
     ///
+    /// An error of the reader is returned once, when the bytes before it are not
+    /// enough.
+    ///
     /// Any unread bytes in the current window are preserved and moved to the
     /// front of the internal buffer before reading. Returns the number of new
     /// bytes read from the underlying reader. Slice and owned sources cannot be
     /// refilled, so they return `Ok(0)`.
     #[inline]
     pub fn refill(&mut self) -> Result<usize, ParserError> {
-        let (buffer, source) = match self.streaming.as_deref_mut() {
+        let (buffer, source, error) = match self.streaming.as_deref_mut() {
             Some(Backing::Owned { .. }) | None => return Ok(0),
-            Some(Backing::Stream { buffer, source }) => (buffer, source),
+            Some(Backing::Stream {
+                buffer,
+                source,
+                error,
+            }) => (buffer, source, error),
         };
 
         let unparsed_len = unsafe { self.end.offset_from_unsigned(self.ptr) };
         if unparsed_len >= buffer.len() {
             return Err(ParserError::BufferTooSmall);
+        }
+
+        if let Some(kind) = error.take() {
+            return Err(ParserError::Io(kind));
         }
 
         let consumed_in_window = unsafe { self.ptr.offset_from_unsigned(self.base_ptr) };
@@ -299,7 +376,9 @@ impl<'a> ParserSource<'a> {
         self.ptr = internal_buffer_start;
         self.end = unsafe { internal_buffer_start.add(unparsed_len) };
 
-        let bytes_written = source.read(&mut buffer[unparsed_len..])?;
+        let bytes_written = read_into(source, &mut buffer[unparsed_len..])?;
+        // SAFETY: `read_into` returns at most the length of the slice, which
+        // starts at `end` and stops at the end of the buffer.
         self.end = unsafe { self.end.add(bytes_written) };
         Ok(bytes_written)
     }
@@ -319,13 +398,10 @@ impl<'a> ParserSource<'a> {
 
     #[inline(never)]
     fn peek_slow<const N: usize>(&mut self) -> Result<Option<&[u8; N]>, ParserError> {
-        match self.ensure_bytes(N) {
-            Ok(()) => unsafe { Ok(Some(&*self.ptr.cast::<[u8; N]>())) },
-            Err(ParserError::Io(io::ErrorKind::UnexpectedEof)) if self.window_len() == 0 => {
-                Ok(None)
-            }
-            Err(e) => Err(e),
+        if !self.fill_item(N)? {
+            return Ok(None);
         }
+        unsafe { Ok(Some(&*self.ptr.cast::<[u8; N]>())) }
     }
 
     /// Reads the next `N` bytes as a fixed-size array, advancing the cursor.
@@ -361,16 +437,13 @@ impl<'a> ParserSource<'a> {
 
     #[inline(never)]
     fn try_take_slow<const N: usize>(&mut self) -> Result<Option<&[u8; N]>, ParserError> {
-        match self.ensure_bytes(N) {
-            Ok(()) => unsafe {
-                let array_ref = &*self.ptr.cast::<[u8; N]>();
-                self.advance_unchecked(N);
-                Ok(Some(array_ref))
-            },
-            Err(ParserError::Io(io::ErrorKind::UnexpectedEof)) if self.window_len() == 0 => {
-                Ok(None)
-            }
-            Err(e) => Err(e),
+        if !self.fill_item(N)? {
+            return Ok(None);
+        }
+        unsafe {
+            let array_ref = &*self.ptr.cast::<[u8; N]>();
+            self.advance_unchecked(N);
+            Ok(Some(array_ref))
         }
     }
 
@@ -407,32 +480,40 @@ impl<'a> ParserSource<'a> {
 
     #[inline(never)]
     fn try_take_bytes_slow(&mut self, n: usize) -> Result<Option<&[u8]>, ParserError> {
-        match self.ensure_bytes(n) {
-            Ok(()) => unsafe {
-                let slice = std::slice::from_raw_parts(self.ptr, n);
-                self.advance_unchecked(n);
-                Ok(Some(slice))
-            },
-            Err(ParserError::Io(io::ErrorKind::UnexpectedEof)) if self.window_len() == 0 => {
-                Ok(None)
-            }
-            Err(e) => Err(e),
+        if !self.fill_item(n)? {
+            return Ok(None);
+        }
+        unsafe {
+            let slice = std::slice::from_raw_parts(self.ptr, n);
+            self.advance_unchecked(n);
+            Ok(Some(slice))
         }
     }
 
-    #[inline(never)]
-    fn refill_slow(&mut self, required: usize) -> Result<(), ParserError> {
+    /// Refills the window until the buffer is full or the reader ends, and
+    /// returns whether it holds `required` bytes.
+    fn refill_slow(&mut self, required: usize) -> Result<bool, ParserError> {
         // Owned buffers expose the entire payload up front; if we got here the
         // request is bigger than what remains, so the answer is EOF — do *not*
         // slide, because the data lives in the caller's allocation, not in a
         // mutable refill buffer.
-        let (buffer, source) = match self.streaming.as_deref_mut() {
-            Some(Backing::Owned { .. }) | None => return Err(ParserError::eof()),
-            Some(Backing::Stream { buffer, source }) => (buffer, source),
+        let (buffer, source, error) = match self.streaming.as_deref_mut() {
+            Some(Backing::Owned { .. }) | None => {
+                return Ok(self.window_len() >= required);
+            }
+            Some(Backing::Stream {
+                buffer,
+                source,
+                error,
+            }) => (buffer, source, error),
         };
 
         if required > buffer.len() {
             return Err(ParserError::BufferTooSmall);
+        }
+
+        if let Some(kind) = error.take() {
+            return Err(ParserError::Io(kind));
         }
 
         // 1. Commit metrics before transforming pointer arrays
@@ -455,32 +536,175 @@ impl<'a> ParserSource<'a> {
         self.end = unsafe { internal_buffer_start.add(unparsed_len) };
 
         // 4. Top up the buffer until it is completely full, or the stream
-        //    dries up. Only fail with EOF if we couldn't satisfy `required`.
+        //    dries up.
         loop {
             let current_buffer_len =
                 unsafe { self.end.offset_from_unsigned(internal_buffer_start) };
             if current_buffer_len >= buffer.len() {
-                return Ok(());
+                return Ok(true);
             }
 
             let target_slice = &mut buffer[current_buffer_len..];
-            let bytes_written = source.read(target_slice)?;
+            let bytes_written = match read_into(source, target_slice) {
+                Ok(read) => read,
+                // The bytes before the error are still good.
+                Err(e) if current_buffer_len >= required => {
+                    *error = Some(e.kind());
+                    return Ok(true);
+                }
+                Err(e) => return Err(e.into()),
+            };
 
             if bytes_written == 0 {
                 let available = unsafe { self.end.offset_from_unsigned(self.ptr) };
-                if available >= required {
-                    return Ok(());
-                }
-                return Err(ParserError::eof());
+                return Ok(available >= required);
             }
 
+            // SAFETY: `read_into` returns at most the length of the slice,
+            // which starts at `end` and stops at the end of the buffer.
             self.end = unsafe { self.end.add(bytes_written) };
         }
     }
+
+    /// Skips the rest of a container whose open is already read.
+    fn skip_container(&mut self) -> Result<(), ReaderError> {
+        // Save games contain large subtrees we don't care about (even in
+        // pdx.tools EU4, skipping subtrees account for 30% of all IR), so this
+        // path has been optimized.
+        //
+        // The fast loop walks the current window with a *local* cursor so that
+        // skipping a token is pure register arithmetic. Round-tripping the
+        // source pointer through memory on every token (load `ptr`/`end`, store
+        // the advanced `ptr`) dominated this loop's instruction count.
+        let mut depth = 1usize;
+        loop {
+            // Raw window pointer; the borrow ends with this statement so the
+            // `self` can be mutated again below. We never mutate `self`
+            // while reading through `base`, so the pointer stays valid.
+            let base = self.window().as_ptr();
+            let len = self.window_len();
+            let mut i = 0usize;
+
+            // A 10-byte tail margin guarantees that reading a lexeme id (2
+            // bytes) plus its largest fixed payload (8 bytes) stays in bounds,
+            // so the inner loop needs no per-token bounds checks.
+            while i + 10 <= len {
+                // SAFETY: `i + 2 <= len` from the loop condition.
+                let id = LexemeId::new(u16::from_le_bytes(unsafe {
+                    [*base.add(i), *base.add(i + 1)]
+                }));
+                match id {
+                    LexemeId::OPEN => {
+                        i += 2;
+                        depth += 1;
+                    }
+                    LexemeId::CLOSE => {
+                        i += 2;
+                        depth -= 1;
+                        if depth == 0 {
+                            unsafe { self.advance_unchecked(i) };
+                            return Ok(());
+                        }
+                    }
+                    LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
+                        // Layout: [id:2][len:2][bytes:len]. The length is in
+                        // bounds via the margin; the bytes may not be, in which
+                        // case we defer to the slow path. Skipping strings
+                        // inline (rather than breaking) is what keeps this loop
+                        // out of a pathological refill: breaking mid-window
+                        // forces `refill` to memmove the entire remaining
+                        // window for every string in string-heavy subtrees.
+                        let str_len =
+                            u16::from_le_bytes(unsafe { [*base.add(i + 2), *base.add(i + 3)] })
+                                as usize;
+                        let total = 4 + str_len;
+                        if i + total > len {
+                            break;
+                        }
+                        i += total;
+                    }
+                    // Rare and variable-width; let the slow path handle it.
+                    LexemeId::RGB => break,
+                    _ => {
+                        let payload = id.payload_len();
+                        i += 2 + payload;
+                    }
+                }
+            }
+
+            // Commit the bytes consumed by the fast loop, then take one careful
+            // step, which refills when the window does not hold a lexeme.
+            unsafe { self.advance_unchecked(i) };
+            self.skip_step(&mut depth)?;
+            if depth == 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    #[cold]
+    fn skip_step(&mut self, depth: &mut usize) -> Result<(), ReaderError> {
+        let id = match self.read_lexeme_id() {
+            Ok(id) => id,
+            Err(e) => return Err(e.at(self.position())),
+        };
+        match id {
+            LexemeId::OPEN => *depth += 1,
+            LexemeId::CLOSE => *depth -= 1,
+            id => self.skip_payload(id)?,
+        }
+        Ok(())
+    }
+
+    /// Skips bytes, which can be more than the buffer holds.
+    #[inline]
+    fn skip_bytes(&mut self, mut len: usize) -> Result<(), ParserError> {
+        while !self.advance(len) {
+            let available = self.window_len();
+            self.advance(available);
+            len -= available;
+            self.ensure_bytes(1)?;
+        }
+        Ok(())
+    }
 }
 
-/// Jomini binary-format helpers for [`ParserSource`].
-pub trait BinarySourceExt {
+/// Read into `buf`, returning how many bytes were written.
+///
+/// [`Read`] is a safe trait, so the count of an implementation can be larger
+/// than the buffer. The window of a [`ParserSource`] relies on it.
+///
+/// # Panics
+///
+/// Panics when the reader claims to have read more than `buf` holds.
+fn read_into<R: Read + ?Sized>(source: &mut R, buf: &mut [u8]) -> io::Result<usize> {
+    let read = loop {
+        match source.read(buf) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            read => break read?,
+        }
+    };
+    assert!(
+        read <= buf.len(),
+        "reader returned more bytes than requested"
+    );
+    Ok(read)
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::ParserSource<'_> {}
+}
+
+/// Reads the lexemes of the binary format from a [`ParserSource`].
+///
+/// A lexeme is an id and the payload that the id says. These methods read one
+/// part at a time, below the [`Token`](crate::binary::Token) of a
+/// [`TokenReader`](crate::binary::TokenReader), so a payload has to be read or
+/// skipped before the next id.
+///
+/// The trait extends `ParserSource` and can't be implemented for other types.
+pub trait BinarySourceExt: sealed::Sealed {
     /// Reads a Jomini binary byte string.
     ///
     /// Binary strings are encoded as a little-endian `u16` byte length followed by
@@ -497,8 +721,66 @@ pub trait BinarySourceExt {
     /// Reads an [`Rgb`] value following an `RGB` lexeme.
     ///
     /// Expects `{ u32 u32 u32 [u32] }`, where the optional fourth channel is the
-    /// alpha.
-    fn read_rgb(&mut self) -> Result<Rgb, Error>;
+    /// alpha. The position of an invalid value is its start, after the id of the
+    /// `RGB`. The source stops at the first lexeme that is not as expected.
+    fn read_rgb(&mut self) -> Result<Rgb, ReaderError>;
+
+    /// Reads the next lexeme id, or returns `None` at a clean end of the data.
+    ///
+    /// ```
+    /// use jomini::binary::{BinarySourceExt, LexemeId, ParserSource};
+    ///
+    /// let data = [0x2d, 0x28, 0x01, 0x00, 0x14, 0x00, 0x59, 0x00, 0x00, 0x00];
+    /// let mut source = ParserSource::from_slice(&data);
+    /// let mut ids = Vec::new();
+    /// while let Some(id) = source.next_lexeme_id()? {
+    ///     source.skip_payload(id)?;
+    ///     ids.push(id);
+    /// }
+    /// assert_eq!(ids, [LexemeId::new(0x282d), LexemeId::EQUAL, LexemeId::U32]);
+    /// # Ok::<(), jomini::Error>(())
+    /// ```
+    fn next_lexeme_id(&mut self) -> Result<Option<LexemeId>, ParserError>;
+
+    /// Consumes the next lexeme id if it is `id`, and returns whether it was.
+    ///
+    /// ```
+    /// use jomini::binary::{BinarySourceExt, LexemeId, ParserSource};
+    ///
+    /// let mut source = ParserSource::from_slice(&[0x01, 0x00, 0x03, 0x00]);
+    /// assert!(source.next_lexeme_if(LexemeId::EQUAL)?);
+    /// assert!(!source.next_lexeme_if(LexemeId::EQUAL)?);
+    /// assert_eq!(source.read_lexeme_id()?, LexemeId::OPEN);
+    /// # Ok::<(), jomini::ParserError>(())
+    /// ```
+    fn next_lexeme_if(&mut self, id: LexemeId) -> Result<bool, ParserError>;
+
+    /// Skips the payload of the lexeme whose id was just read.
+    ///
+    /// Nothing is skipped for a lexeme without a payload, like a token id. An
+    /// open has no payload either, so this goes into a container. To skip all
+    /// of it, use [`skip_value`](Self::skip_value).
+    ///
+    /// A payload does not have to fit in the buffer, but the two bytes of an id
+    /// and the four of a channel of an rgb do. After an error, the source is
+    /// somewhere in the payload.
+    fn skip_payload(&mut self, id: LexemeId) -> Result<(), ReaderError>;
+
+    /// Skips the rest of the value that starts with the lexeme whose id was
+    /// just read: a payload, or a container up to its close.
+    ///
+    /// ```
+    /// use jomini::binary::{BinarySourceExt, LexemeId, ParserSource};
+    ///
+    /// let data = [0x03, 0x00, 0x2d, 0x28, 0x04, 0x00, 0x2e, 0x28];
+    /// let mut source = ParserSource::from_slice(&data);
+    /// let id = source.read_lexeme_id()?;
+    /// assert_eq!(id, LexemeId::OPEN);
+    /// source.skip_value(id)?;
+    /// assert_eq!(source.read_lexeme_id()?, LexemeId::new(0x282e));
+    /// # Ok::<(), jomini::Error>(())
+    /// ```
+    fn skip_value(&mut self, id: LexemeId) -> Result<(), ReaderError>;
 }
 
 impl BinarySourceExt for ParserSource<'_> {
@@ -527,37 +809,79 @@ impl BinarySourceExt for ParserSource<'_> {
             .map(|x| LexemeId::new(u16::from_le_bytes(*x))))
     }
 
-    fn read_rgb(&mut self) -> Result<Rgb, Error> {
-        fn channel(source: &mut ParserSource<'_>) -> Result<u32, Error> {
-            if source.read_lexeme_id()? != LexemeId::U32 {
-                return Err(Error::invalid_syntax("invalid rgb", source.position()));
+    fn read_rgb(&mut self) -> Result<Rgb, ReaderError> {
+        let start = self.position();
+        let invalid = || ReaderError::new(start, ReaderErrorKind::InvalidRgb);
+        let id = |source: &mut Self| source.read_lexeme_id().map_err(|e| e.at(source.position()));
+        let channel = |source: &mut Self| match source.take::<4>() {
+            Ok(x) => Ok(u32::from_le_bytes(*x)),
+            Err(e) => Err(e.at(source.position())),
+        };
+
+        if id(self)? != LexemeId::OPEN {
+            return Err(invalid());
+        }
+
+        let mut rgb = [0; 3];
+        for x in &mut rgb {
+            if id(self)? != LexemeId::U32 {
+                return Err(invalid());
             }
-            Ok(u32::from_le_bytes(*source.take::<4>()?))
+            *x = channel(self)?;
         }
 
-        if self.read_lexeme_id()? != LexemeId::OPEN {
-            return Err(Error::invalid_syntax("invalid rgb", self.position()));
-        }
-        let r = channel(self)?;
-        let g = channel(self)?;
-        let b = channel(self)?;
-
-        match self.read_lexeme_id()? {
-            LexemeId::CLOSE => Ok(Rgb { r, g, b, a: None }),
+        let a = match id(self)? {
+            LexemeId::CLOSE => None,
             LexemeId::U32 => {
-                let a = u32::from_le_bytes(*self.take::<4>()?);
-                if self.read_lexeme_id()? == LexemeId::CLOSE {
-                    Ok(Rgb {
-                        r,
-                        g,
-                        b,
-                        a: Some(a),
-                    })
-                } else {
-                    Err(Error::invalid_syntax("invalid rgb", self.position()))
+                let a = channel(self)?;
+                if id(self)? != LexemeId::CLOSE {
+                    return Err(invalid());
+                }
+                Some(a)
+            }
+            _ => return Err(invalid()),
+        };
+        let [r, g, b] = rgb;
+        Ok(Rgb { r, g, b, a })
+    }
+
+    #[inline]
+    fn next_lexeme_id(&mut self) -> Result<Option<LexemeId>, ParserError> {
+        Ok(self
+            .try_take::<2>()?
+            .map(|x| LexemeId::new(u16::from_le_bytes(*x))))
+    }
+
+    #[inline]
+    fn next_lexeme_if(&mut self, id: LexemeId) -> Result<bool, ParserError> {
+        let found = self.peek_lexeme_id()? == Some(id);
+        if found {
+            self.take::<2>()?;
+        }
+        Ok(found)
+    }
+
+    #[inline]
+    fn skip_payload(&mut self, id: LexemeId) -> Result<(), ReaderError> {
+        let skipped = match id {
+            LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
+                match self.take::<2>().copied() {
+                    Ok(len) => self.skip_bytes(usize::from(u16::from_le_bytes(len))),
+                    Err(e) => Err(e),
                 }
             }
-            _ => Err(Error::invalid_syntax("invalid rgb", self.position())),
+            LexemeId::RGB => return self.read_rgb().map(|_| ()),
+            id => self.skip_bytes(id.payload_len()),
+        };
+        skipped.map_err(|e| e.at(self.position()))
+    }
+
+    #[inline]
+    fn skip_value(&mut self, id: LexemeId) -> Result<(), ReaderError> {
+        if id == LexemeId::OPEN {
+            self.skip_container()
+        } else {
+            self.skip_payload(id)
         }
     }
 }
@@ -596,6 +920,166 @@ mod tests {
             self.pos += n;
             Ok(n)
         }
+    }
+
+    /// Gives `left` bytes, then fails the way a truncated deflate stream does.
+    struct TruncatedReader {
+        left: usize,
+    }
+
+    impl Read for TruncatedReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.left == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            let n = self.left.min(buf.len());
+            buf[..n].fill(b'A');
+            self.left -= n;
+            Ok(n)
+        }
+    }
+
+    /// The data of the reader ends where the window is empty, so nothing but
+    /// the error of the reader tells that the data is cut off.
+    #[test]
+    fn reader_eof_error_is_not_a_clean_end() {
+        for left in [0, 8, 16] {
+            let reader = || {
+                let mut source =
+                    ParserSource::from_reader_with_buf(TruncatedReader { left }, vec![0; 8]);
+                for _ in 0..left / 8 {
+                    source.take::<8>().unwrap();
+                }
+                source
+            };
+            assert_eq!(reader().peek::<2>(), Err(ParserError::eof()));
+            assert_eq!(reader().try_take::<2>(), Err(ParserError::eof()));
+            assert_eq!(reader().try_take_bytes(2), Err(ParserError::eof()));
+            assert_eq!(reader().next_lexeme_id(), Err(ParserError::eof()));
+        }
+    }
+
+    #[test]
+    fn bytes_before_a_reader_error_are_read() {
+        let mut source =
+            ParserSource::from_reader_with_buf(TruncatedReader { left: 6 }, vec![0; 16]);
+        assert_eq!(source.take::<2>().unwrap(), b"AA");
+        assert_eq!(source.take::<4>().unwrap(), b"AAAA");
+        assert_eq!(source.try_take::<2>(), Err(ParserError::eof()));
+
+        let mut source =
+            ParserSource::from_reader_with_buf(TruncatedReader { left: 6 }, vec![0; 16]);
+        source.ensure_bytes(1).unwrap();
+        assert_eq!(source.refill(), Err(ParserError::eof()));
+        assert_eq!(source.window(), b"AAAAAA");
+    }
+
+    #[test]
+    fn interrupted_reads_are_retried() {
+        struct Interrupted(bool);
+        impl Read for Interrupted {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.0 = !self.0;
+                if self.0 {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                buf[0] = 7;
+                Ok(1)
+            }
+        }
+        let mut source = ParserSource::from_reader_with_buf(Interrupted(false), vec![0; 8]);
+        assert_eq!(source.take::<8>().unwrap(), &[7; 8]);
+    }
+
+    #[test]
+    fn skip_value_skips_nested_containers_and_long_strings() {
+        // { id={ "aaaa..." rgb { 1 2 3 } } } 0x1234
+        let mut data = vec![0x03, 0, 0x2d, 0x28, 0x01, 0, 0x03, 0, 0x0f, 0, 100, 0];
+        data.extend([b'a'; 100]);
+        data.extend([0x43, 0x02, 0x03, 0]);
+        for _ in 0..3 {
+            data.extend([0x14, 0, 1, 0, 0, 0]);
+        }
+        data.extend([0x04, 0, 0x04, 0, 0x04, 0]);
+        let end = data.len();
+        data.extend([0x34, 0x12]);
+
+        for chunk in [1, 7, 1000] {
+            for capacity in [16, 17, 40, 200] {
+                let (slice, stream) = parsers(&data, chunk, capacity);
+                for mut source in [slice, stream] {
+                    let id = source.read_lexeme_id().unwrap();
+                    source.skip_value(id).unwrap();
+                    assert_eq!(source.position(), end);
+                    assert_eq!(source.read_lexeme_id().unwrap(), LexemeId::new(0x1234));
+                }
+            }
+        }
+
+        for cut in 2..end {
+            let (slice, stream) = parsers(&data[..cut], 3, 16);
+            for mut source in [slice, stream] {
+                let id = source.read_lexeme_id().unwrap();
+                let err = source.skip_value(id).unwrap_err();
+                assert_eq!(err.kind(), ReaderErrorKind::Eof);
+            }
+        }
+    }
+
+    #[test]
+    fn skip_payload_needs_no_room_for_the_payload() {
+        for id in [
+            LexemeId::U64,
+            LexemeId::U32,
+            LexemeId::BOOL,
+            LexemeId::FIXED5_I56,
+        ] {
+            let mut data = id.0.to_le_bytes().to_vec();
+            data.extend(vec![0xff; id.payload_len()]);
+            data.extend([0x34, 0x12]);
+            let (slice, stream) = parsers(&data, 1, 2);
+            for mut source in [slice, stream] {
+                let id = source.read_lexeme_id().unwrap();
+                source.skip_payload(id).unwrap();
+                assert_eq!(source.read_lexeme_id().unwrap(), LexemeId::new(0x1234));
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_rgb_is_located_at_its_start() {
+        let mut data = vec![0x43, 0x02, 0x03, 0, 0x14, 0, 1, 0, 0, 0];
+        data.extend([0; 20]);
+        let mut source = ParserSource::from_slice(&data);
+        assert_eq!(source.read_lexeme_id().unwrap(), LexemeId::RGB);
+        let err = source.read_rgb().unwrap_err();
+        assert_eq!(err.kind(), ReaderErrorKind::InvalidRgb);
+        assert_eq!(err.position(), 2);
+        assert_eq!(crate::Error::from(err).offset(), Some(2));
+    }
+
+    /// Fills the buffer it is given, and claims to have read more.
+    struct OverreportingReader;
+
+    impl Read for OverreportingReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            buf.fill(b'A');
+            Ok(buf.len() + 64)
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "reader returned more bytes than requested")]
+    fn refill_rejects_a_read_past_the_buffer() {
+        let mut source = ParserSource::from_reader_with_buf(OverreportingReader, vec![0; 16]);
+        let _ = source.refill();
+    }
+
+    #[test]
+    #[should_panic(expected = "reader returned more bytes than requested")]
+    fn ensure_bytes_rejects_a_read_past_the_buffer() {
+        let mut source = ParserSource::from_reader_with_buf(OverreportingReader, vec![0; 16]);
+        let _ = source.ensure_bytes(1);
     }
 
     struct FailingReader;
