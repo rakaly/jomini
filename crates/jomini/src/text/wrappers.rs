@@ -290,6 +290,28 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for MaybeQuoted<T> {
 /// assert_eq!(*country.color.value(), [10, 20, 30]);
 /// assert_eq!(country.revolutionary_colors.header(), None);
 /// ```
+///
+/// A header can be quoted, as the GUI files of CK3 write
+/// `blockoverride = "tab_glow" { visible = no }`. The header is unescaped
+/// like any quoted scalar, and a header type of [`MaybeQuoted`] tells
+/// whether it is quoted:
+///
+/// ```
+/// use jomini::text::{Headered, MaybeQuoted, de::from_utf8_slice};
+/// use serde::Deserialize;
+/// use std::collections::HashMap;
+///
+/// #[derive(Deserialize)]
+/// struct Override {
+///     blockoverride: Headered<HashMap<String, bool>, MaybeQuoted<String>>,
+/// }
+///
+/// let source = b"blockoverride = \"tab_glow\" { visible = no }";
+/// let gui: Override = from_utf8_slice(source).unwrap();
+/// let header = gui.blockoverride.header().unwrap();
+/// assert_eq!(header, &MaybeQuoted::Quoted(String::from("tab_glow")));
+/// assert_eq!(gui.blockoverride.value()["visible"], false);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Headered<T, H = String> {
     header: Option<H>,

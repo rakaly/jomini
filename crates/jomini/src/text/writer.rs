@@ -754,6 +754,16 @@ where
         Ok(())
     }
 
+    // For a quoted header whose data is already escaped
+    fn write_escaped_header(&mut self, x: &[u8]) -> Result<(), Error> {
+        self.write_preamble()?;
+        self.writer.write_all(b"\"")?;
+        self.writer.write_all(x)?;
+        self.writer.write_all(b"\" ")?;
+        self.state = WriteState::ObjectValue;
+        Ok(())
+    }
+
     fn write_value<R>(&mut self, value: ValueReader<R>) -> Result<(), Error>
     where
         R: Encoding + Clone,
@@ -779,10 +789,14 @@ where
                 self.writer.write_all(op.symbol().as_bytes())?;
             }
             TextToken::End(_) => unreachable!(),
-            TextToken::Header(x) => {
+            TextToken::Header(x) | TextToken::QuotedHeader(x) => {
                 let arr = value.read_array().unwrap();
                 let mut values = arr.values();
-                self.write_header(x.as_bytes())?;
+                if matches!(value.token(), TextToken::QuotedHeader(_)) {
+                    self.write_escaped_header(x.as_bytes())?;
+                } else {
+                    self.write_header(x.as_bytes())?;
+                }
                 values.next().unwrap();
                 let elem = values.next().unwrap();
                 self.write_value(elem)?;
@@ -1290,6 +1304,22 @@ mod tests {
         assert_eq!(
             std::str::from_utf8(&out).unwrap(),
             "army={\n  name=abc\n}\narmy={\n  name=def\n}"
+        );
+        Ok(())
+    }
+
+    /// A quoted header keeps its quotes and its escapes.
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn write_quoted_header_tape() -> Result<(), Box<dyn Error>> {
+        let data = b"a = \"tab_glow\" { visible = no } b = \"x\\\"y\" { 1 } c = rgb { 2 }";
+        let tape = crate::text::syntax::parse_tape(data).into_result()?;
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+        writer.write_tape(&tape)?;
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "a=\"tab_glow\" {\n  visible=no\n}\nb=\"x\\\"y\" {\n  1\n}\nc=rgb {\n  2\n}"
         );
         Ok(())
     }

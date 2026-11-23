@@ -12,6 +12,8 @@ use super::Remainder;
 use super::scan::{Kind, Tok};
 #[cfg(feature = "syntax")]
 use super::scan::{Skip, skip_block};
+#[cfg(feature = "syntax")]
+use super::source::Reference;
 use super::source::Source;
 use super::{AnySeq, EmptyBlock, TextDeserializer, ValueDeserializer};
 use crate::text::Operator;
@@ -39,15 +41,21 @@ impl<'de, S: Source<'de>, E: Encoding> ValueDeserializer<'_, S, E> {
         }
     }
 
-    /// Visit a [`MaybeQuoted`](crate::text::MaybeQuoted): whether the next
-    /// token is a quoted scalar, and the value, which is read as it would be
+    /// Visit a [`MaybeQuoted`](crate::text::MaybeQuoted): whether the value
+    /// is a quoted scalar, and the value, which is read as it would be
     /// without the wrapper, so a scalar of a field value is still a header
-    /// when a block follows it.
+    /// when a block follows it. A headered block is not a scalar, so it is
+    /// unquoted, even with a quoted header.
     fn visit_quoted<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
     {
-        let quoted = matches!(self.de.peek()?, Some(tok) if tok.kind == Kind::Quoted);
+        let quoted = match self.de.peek()? {
+            Some(tok) if tok.kind == Kind::Quoted => {
+                !self.header || self.de.header_open(tok)?.is_none()
+            }
+            _ => false,
+        };
         visitor.visit_map(WrapperMap::new(
             KEY_QUOTED,
             quoted.into_deserializer(),
@@ -55,8 +63,8 @@ impl<'de, S: Source<'de>, E: Encoding> ValueDeserializer<'_, S, E> {
         ))
     }
 
-    /// Visit a [`Headered`](crate::text::Headered): the unquoted scalar of a
-    /// field value that a block that is not empty follows is the header of
+    /// Visit a [`Headered`](crate::text::Headered): the scalar of a field
+    /// value that a block that is not empty follows is the header of
     /// the block, which keeps the operator of the field. Anything else is
     /// the value without a header, as a scalar that an empty block follows,
     /// and so is any value that is not the value of a field.
@@ -65,7 +73,7 @@ impl<'de, S: Source<'de>, E: Encoding> ValueDeserializer<'_, S, E> {
         V: Visitor<'de>,
     {
         let header = match self.de.peek()? {
-            Some(tok) if self.header && tok.kind == Kind::Unquoted && !tok.is_no_value() => {
+            Some(tok) if self.header && tok.is_scalar() => {
                 self.de.header_open(tok)?.map(|open| (tok, open))
             }
             _ => None,
@@ -171,7 +179,9 @@ impl<'de, S: Source<'de>, E: Encoding> de::MapAccess<'de> for HeaderedMap<'_, S,
     }
 }
 
-/// The scalar of a header, visited as text.
+/// The scalar of a header, visited as text, as a
+/// [`MaybeQuoted`](crate::text::MaybeQuoted) that tells if it is quoted, or
+/// as the owned value that the syntax parser reads from its bytes.
 struct HeaderScalar<'a, S, E> {
     de: &'a TextDeserializer<S, E>,
     tok: Tok,
@@ -187,9 +197,44 @@ impl<'de, S: Source<'de>, E: Encoding> de::Deserializer<'de> for HeaderScalar<'_
         self.de.visit_scalar(self.tok, visitor)
     }
 
+    fn deserialize_newtype_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match name {
+            QUOTED => {
+                let quoted = (self.tok.kind == Kind::Quoted).into_deserializer();
+                visitor.visit_map(WrapperMap::new(KEY_QUOTED, quoted, self))
+            }
+            #[cfg(feature = "syntax")]
+            crate::text::syntax::de::VALUE => {
+                use crate::text::syntax::{OwnedValue, value};
+                // `header_open` looked past the header to its `{` with the
+                // byte after the header, after the closing quote of a quoted
+                // one, as the `keep` of `peek_byte`, which removes
+                // from the window only bytes after `keep`, and nothing
+                // consumes the window until the block is scanned after this
+                // part. So the bytes of the header are still in the window,
+                // as for `deserialize_any`.
+                let quoted = self.tok.kind == Kind::Quoted;
+                let bytes = match self.de.source.resolve(self.tok.start(), self.tok.end()) {
+                    Reference::Borrowed(x) => x,
+                    Reference::Copied(x) => x,
+                };
+                let scalar = value::owned_scalar(bytes, quoted, &self.de.encoding);
+                value::visit_owned(|| OwnedValue::Scalar(scalar), visitor)
+            }
+            _ => visitor.visit_newtype_struct(self),
+        }
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        bytes byte_buf option unit unit_struct seq tuple
         tuple_struct map struct enum identifier ignored_any
     }
 }
@@ -216,8 +261,8 @@ impl<'de, S: Source<'de>, E> TextDeserializer<S, E> {
 impl<'de, S: Source<'de>, E> TextDeserializer<S, E> {
     /// Read the value whose first token, `tok`, is peeked, and append its
     /// bytes to `out`: a scalar, with its quotes, a block, or, in a field
-    /// value, an unquoted scalar and the block after it, which the syntax
-    /// parser reads as a header and its block.
+    /// value, a scalar and the block after it, which the syntax parser reads
+    /// as a header and its block.
     fn capture_value(&mut self, tok: Tok, header: bool, out: &mut Vec<u8>) -> Result<(), Error> {
         let quote = usize::from(tok.kind == Kind::Quoted);
         if tok.kind == Kind::Open {
@@ -228,7 +273,7 @@ impl<'de, S: Source<'de>, E> TextDeserializer<S, E> {
 
         out.extend_from_slice(&self.source.window()[tok.start() - quote..tok.next()]);
         let open = match tok.kind {
-            Kind::Unquoted if header => self.peek_byte(tok.next(), tok.next())?,
+            Kind::Unquoted | Kind::Quoted if header => self.peek_byte(tok.next(), tok.next())?,
             _ => None,
         };
         self.take(tok);

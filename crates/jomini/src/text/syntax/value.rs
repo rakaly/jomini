@@ -5,9 +5,12 @@ pub(crate) mod tape;
 
 pub(crate) use self::de::visit_owned;
 
-use super::SyntaxTree;
 use super::de::{Doc, Item as DocItem, Rest, View};
-use crate::{Encoding, Scalar, text::Operator};
+use super::{LexFlavor, SyntaxKind, SyntaxTree, lexer};
+use crate::{
+    Encoding, Scalar,
+    text::{Operator, decode_quoted},
+};
 
 /// An owned value of a document.
 ///
@@ -96,8 +99,9 @@ pub enum OwnedValue {
     /// read a block as the root of a document, deserialize the
     /// [`OwnedBlock`].
     Block(OwnedBlock),
-    /// A header and its block, such as `rgb { 1 2 3 }`. The header is an
-    /// unquoted scalar or a variable, as in `@space { 1 2 3 }`.
+    /// A header and its block, such as `rgb { 1 2 3 }`. The header is a
+    /// scalar, quoted or unquoted, or a variable, as in `@space { 1 2 3 }`
+    /// or `blockoverride = "tab_glow" { ... }`.
     HeaderedBlock(OwnedScalar, OwnedBlock),
 }
 
@@ -158,6 +162,26 @@ impl OwnedScalar {
     /// Return `true` for a `@name` variable.
     pub fn is_variable(&self) -> bool {
         matches!(self, OwnedScalar::Variable(_))
+    }
+}
+
+/// The owned scalar of one scalar token whose bytes are `bytes`, without
+/// the quotes of a quoted token: what the syntax parser makes of the token.
+/// A quoted scalar is unescaped. An unquoted one is a variable when the
+/// lexer of the default flavor classifies its bytes as one, and else
+/// unquoted, as a calculation `@[x+1]` that another engine scanned as one
+/// scalar is.
+///
+/// The flavor is always the default, so for a tape of `parse_tape_with`
+/// with a flavor that has no variables, `@x` is still a variable.
+pub(crate) fn owned_scalar<E: Encoding>(bytes: &[u8], quoted: bool, encoding: &E) -> OwnedScalar {
+    if quoted {
+        return OwnedScalar::Quoted(decode_quoted(encoding, bytes).into_owned());
+    }
+    let text = encoding.decode(bytes).into_owned();
+    match lexer::scalar_kind(bytes, LexFlavor::DEFAULT) {
+        SyntaxKind::Variable => OwnedScalar::Variable(text),
+        _ => OwnedScalar::Unquoted(text),
     }
 }
 

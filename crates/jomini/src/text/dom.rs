@@ -33,7 +33,7 @@ fn next_idx(tokens: &[TextToken], idx: usize) -> usize {
     match tokens[idx] {
         TextToken::Array { end, .. } | TextToken::Object { end, .. } => end + 1,
         TextToken::Operator(_) => next_idx(tokens, idx + 1),
-        TextToken::Header(_) => next_idx_header(tokens, idx + 1),
+        TextToken::Header(_) | TextToken::QuotedHeader(_) => next_idx_header(tokens, idx + 1),
         _ => idx + 1,
     }
 }
@@ -707,7 +707,9 @@ where
 {
     fn raw_str(&self) -> Option<Cow<'data, str>> {
         match self.tokens[self.value_ind] {
-            TextToken::Quoted(s) => Some(decode_quoted(&self.encoding, s.as_bytes())),
+            TextToken::Quoted(s) | TextToken::QuotedHeader(s) => {
+                Some(decode_quoted(&self.encoding, s.as_bytes()))
+            }
             TextToken::Header(s)
             | TextToken::Unquoted(s)
             | TextToken::Parameter(s)
@@ -715,6 +717,22 @@ where
             TextToken::Operator(s) => Some(Cow::Borrowed(s.symbol())),
             _ => None,
         }
+    }
+
+    /// The header of a headered value, as `rgb` in `rgb { 1 2 3 }`, as a
+    /// quoted or unquoted scalar.
+    #[cfg(feature = "serde")]
+    pub(crate) fn header_scalar(&self) -> Option<ScalarReader<'data, E>> {
+        let token = match self.tokens[self.value_ind] {
+            TextToken::Header(s) => TextToken::Unquoted(s),
+            TextToken::QuotedHeader(s) => TextToken::Quoted(s),
+            _ => return None,
+        };
+        Some(ScalarReader {
+            scalar: token.as_scalar()?,
+            token,
+            encoding: self.encoding.clone(),
+        })
     }
 
     /// Interpret the current value as string
@@ -802,7 +820,7 @@ where
             }),
 
             // A header can be seen as a two element array
-            TextToken::Header(_) => Ok(ArrayReader {
+            TextToken::Header(_) | TextToken::QuotedHeader(_) => Ok(ArrayReader {
                 tokens: self.tokens,
                 start_ind: self.value_ind,
                 end_ind: next_idx(self.tokens, self.value_ind + 1),
@@ -988,6 +1006,7 @@ mod tests {
             TextToken::Unquoted(_)
             | TextToken::Quoted(_)
             | TextToken::Header(_)
+            | TextToken::QuotedHeader(_)
             | TextToken::Parameter(_)
             | TextToken::UndefinedParameter(_) => {
                 let _ = value.read_str().unwrap();
@@ -1791,7 +1810,12 @@ mod tests {
 /// the owned value of the lossless module.
 #[cfg(all(feature = "serde", feature = "syntax"))]
 pub(crate) mod raw {
-    use super::{ArrayReader, ObjectReader, TextToken, ValueReader};
+    use super::{ArrayReader, ObjectReader, ScalarReader, TextToken, ValueReader};
+
+    /// The encoding of a scalar.
+    pub(crate) fn scalar_encoding<'r, E>(reader: &'r ScalarReader<'_, E>) -> &'r E {
+        &reader.encoding
+    }
 
     /// The tokens and the index of the value.
     pub(crate) fn value<'r, 'data, 'tokens, E>(

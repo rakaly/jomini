@@ -38,8 +38,8 @@ pub enum Difference {
     /// `TextDeserializer` reads it as a field of an object, and, in a
     /// sequence, as a header and its block, as a `TextTape` does.
     OperatorlessBlock,
-    /// A block where a key is expected: after a block or a quoted scalar,
-    /// as in `a = { } { b }`, or first in a block, as in `a = { { b } }`
+    /// A block where a key is expected: after a block, as in
+    /// `a = { } { b }`, or first in a block, as in `a = { { b } }`
     /// read as a map. `TextDeserializer` skips it, as a `TextTape` does, and
     /// the syntax parser reads it as a value without a key.
     BlockAsKey,
@@ -347,13 +347,10 @@ pub fn known_difference(data: &[u8]) -> Option<Difference> {
                     return Some(Difference::OperatorlessBlock);
                 }
 
-                if at(i + 1) != Some(Lexeme::Close) {
-                    let after_value = prev == Some(Lexeme::Close)
-                        || (prev == Some(Lexeme::Quoted)
-                            && matches!(before, Some(Lexeme::Operator | Lexeme::Exists)));
-                    if after_value || (prev == Some(Lexeme::Open) && i >= 2) {
-                        return Some(Difference::BlockAsKey);
-                    }
+                if at(i + 1) != Some(Lexeme::Close)
+                    && (prev == Some(Lexeme::Close) || (prev == Some(Lexeme::Open) && i >= 2))
+                {
+                    return Some(Difference::BlockAsKey);
                 }
                 open.push(i);
             }
@@ -517,7 +514,16 @@ fn value(choices: &mut Choices, depth: usize, header: bool, out: &mut String) {
     if depth > MAX_DEPTH || x < 102 {
         out.push_str(choices.pick(SCALARS));
     } else if x < 128 && header {
-        out.push_str(choices.pick(&["rgb", "hsv", "pt", "none", "x"]));
+        out.push_str(choices.pick(&[
+            "rgb",
+            "hsv",
+            "pt",
+            "none",
+            "x",
+            "\"rgb\"",
+            "\"tab_glow\"",
+            "\"a \\\" b\"",
+        ]));
         out.push_str(choices.pick(SPACES));
         block(choices, depth + 1, out);
     } else if x < 140 {
@@ -669,6 +675,9 @@ pub const PROBES: &[&[u8]] = &[
     b"o = { x { 1 } s = 2 }",
     b"a = { 1 } b = { 2 } }",
     b"a = \"x\" { 1 }",
+    b"a = \"x\" { }",
+    b"e = \"rgb\" { 1 2 3 }",
+    b"o = { s = \"q \\\" r\" { a = 1 } t = 2 }",
     b"e = rgb { {} 1 2 3 }",
     b"a = { a = b } = 3",
     b"a == b",

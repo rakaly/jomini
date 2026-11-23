@@ -585,10 +585,13 @@ impl<D: Doc> ValueDe<D> {
         }
     }
 
+    /// Whether the value is a quoted scalar. A header with an empty block is
+    /// the scalar, as in `a = "x" { }`.
     fn quoted(&self) -> bool {
         match &self.val {
             Val::Node(node) => match self.doc.view(*node) {
                 View::Scalar(s) => self.doc.quoted(s),
+                View::Headered(h, c) if self.doc.is_empty(c) => self.doc.quoted(h),
                 _ => false,
             },
             Val::Scalar(s) => self.doc.quoted(*s),

@@ -1782,6 +1782,75 @@ fn owned_value_keeps_a_variable_header() {
     assert_eq!(later.color.header(), Some(&OwnedValue::unquoted("@space")));
 }
 
+/// A quoted header is a quoted scalar in the owned value of each engine:
+/// the tree, the tape of `parse_tape`, and `TextDeserializer`. It is
+/// unescaped.
+#[test]
+fn owned_value_keeps_a_quoted_header() {
+    #[derive(Deserialize, Debug)]
+    struct File {
+        block: OwnedValue,
+        other: Headered<Vec<u8>, OwnedValue>,
+    }
+
+    let source = b"block = \"tab_glow\" { visible = no } other = \"a\\\"b\" { 1 }";
+    let glow = OwnedScalar::Quoted("tab_glow".into());
+    let escaped = OwnedValue::Scalar(OwnedScalar::Quoted("a\"b".into()));
+
+    let tree = syntax::parse(source);
+    let owned = OwnedBlock::from_tree(tree.tree(), Utf8Encoding::new());
+    let (header, body) = owned.get("block").unwrap().as_headered_block().unwrap();
+    assert_eq!(header, &glow);
+    assert_eq!(body.get("visible"), Some(&OwnedValue::unquoted("no")));
+    assert_eq!(
+        owned.get("other").unwrap().header(),
+        Some(&OwnedScalar::Quoted("a\"b".into()))
+    );
+
+    let tape = syntax::parse_tape(source).into_result().unwrap();
+    let from_tape: OwnedBlock = TextTapeDeserializer::from_utf8_tape(&tape)
+        .deserialize()
+        .unwrap();
+    assert_eq!(from_tape, owned);
+
+    let direct: File = tree.deserialize(Utf8Encoding::new()).unwrap();
+    let streaming: File = TextDeserializer::from_slice(source, Utf8Encoding::new())
+        .deserialize()
+        .unwrap();
+    for file in [direct, streaming] {
+        assert_eq!(file.block.header(), Some(&glow));
+        assert_eq!(file.other.header(), Some(&escaped));
+        assert_eq!(file.other.value(), &[1]);
+    }
+}
+
+/// A tape classifies `@` and a byte that is not a letter as a variable, as
+/// the lexer of the tree does, in a key and in a header.
+#[test]
+fn tape_owned_values_classify_variables_as_the_tree() {
+    let source = b"@-x = 1 a = @.x { 1 }";
+    let tree = syntax::parse(source);
+    let expected = OwnedBlock::from_tree(tree.tree(), Utf8Encoding::new());
+    let OwnedItem::Field(field) = &expected.items()[0] else {
+        panic!("expected a field");
+    };
+    assert_eq!(field.key, OwnedScalar::Variable("@-x".into()));
+    let header = expected.get("a").unwrap().header().unwrap();
+    assert_eq!(header, &OwnedScalar::Variable("@.x".into()));
+
+    let tape = syntax::parse_tape(source).into_result().unwrap();
+    let from_tape: OwnedBlock = TextTapeDeserializer::from_utf8_tape(&tape)
+        .deserialize()
+        .unwrap();
+    assert_eq!(from_tape, expected);
+
+    let tape = TextTape::from_slice(source).unwrap();
+    let from_legacy: OwnedBlock = TextTapeDeserializer::from_utf8_tape(&tape)
+        .deserialize()
+        .unwrap();
+    assert_eq!(from_legacy, expected);
+}
+
 #[test]
 fn seeds_read_a_field_with_its_operator_and_borrow_the_source() {
     use serde::de::DeserializeSeed;

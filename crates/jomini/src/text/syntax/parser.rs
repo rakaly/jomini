@@ -747,11 +747,16 @@ impl<'t, S: Sink> Parser<'t, S> {
             Some(SyntaxKind::Directive) => return self.parse_directive(enclosing),
             Some(SyntaxKind::OpenBracket) => self.parse_open_bracket(),
             Some(SyntaxKind::Unquoted) if self.is_code_statement() => self.parse_code_statement(),
-            Some(SyntaxKind::Unquoted | SyntaxKind::MacroParam | SyntaxKind::Variable)
-                if self.kind_at(self.pos + 1) == Some(SyntaxKind::OpenBrace) =>
-            {
+            Some(
+                SyntaxKind::Unquoted
+                | SyntaxKind::Quoted
+                | SyntaxKind::MacroParam
+                | SyntaxKind::Variable,
+            ) if self.kind_at(self.pos + 1) == Some(SyntaxKind::OpenBrace) => {
                 // headered block: `rgb { ... }`, `hsv { ... }`, tag { ... }.
                 // TextTape also accepts `$NAME$ { ... }` and `@name { ... }`.
+                // GUI files quote the header of a template override, as in
+                // `blockoverride = "tab_glow" { ... }`.
                 self.sink.start_node(SyntaxKind::HeaderedBlock);
                 self.bump(); // header scalar
                 self.open_block(enclosing + 1);

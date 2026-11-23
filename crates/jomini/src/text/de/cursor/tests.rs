@@ -1791,17 +1791,113 @@ fn test_header_map_and_object_seq_errors() {
     );
 }
 
-/// A quoted scalar is not a header: the block after it is a value without
-/// a key, and not the data of an enum variant.
+/// A quoted scalar of a field value is a header, as in the GUI files of
+/// CK3, which write `blockoverride = "tab_glow" { visible = no }`. The
+/// block may be on the next line, as for an unquoted header, and a header
+/// with an empty block is the scalar.
 #[test]
-fn test_quoted_scalar_is_not_header() {
+fn test_quoted_header() {
     let actual: AnyValue = all_paths(b"a = \"x\" { 1 } b = 2", 8..=24);
-    assert_eq!(actual.to_string(), "{a=x remainder=[[1] b = 2]}");
+    assert_eq!(actual.to_string(), "{a=[1] b=2}");
+    let actual: AnyValue = all_paths(b"a = \"x\"\n{ 1 } b = 2", 8..=24);
+    assert_eq!(actual.to_string(), "{a=[1] b=2}");
+    let actual: AnyValue = all_paths(b"a = \"x\" { } b = 2", 8..=24);
+    assert_eq!(actual.to_string(), "{a=x b=2}");
 
-    let err = all_paths_err::<RequiredColor>(b"color = \"rgb\" { 1 2 3 }", 8..=24);
+    let actual: RequiredColor = all_paths(b"color = \"rgb\" { 1 2 3 }", 8..=24);
+    assert_eq!(actual.color, Color::Rgb(1, 2, 3));
+}
+
+/// The quoted header of a `Headered` tells it is quoted, and is unescaped,
+/// for each buffer size, as the source refills between the header and its
+/// block.
+#[test]
+fn test_quoted_header_wrappers() {
+    use crate::text::{Headered, MaybeQuoted};
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Quoted {
+        a: Headered<Vec<u8>, MaybeQuoted<String>>,
+        b: u8,
+    }
+
+    let data = b"a = \"r\\\"b\" { 1 2 } b = 3";
+    let actual: Quoted = all_paths(data, 12..=24);
+    let header = MaybeQuoted::Quoted(String::from("r\"b"));
     assert_eq!(
-        err,
-        "TextDeserializer reads an enum variant with data only from a field value followed by a block that is not empty, as in `color = rgb { 1 2 3 }`; jomini::text::syntax::parse reads the others (offset: 8)"
+        actual,
+        Quoted {
+            a: Headered::new(Some(header), vec![1, 2]),
+            b: 3,
+        }
+    );
+
+    #[cfg(feature = "syntax")]
+    {
+        use crate::text::syntax::{OwnedScalar, OwnedValue};
+
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Owned {
+            a: Headered<Vec<u8>, OwnedValue>,
+            b: u8,
+        }
+
+        let actual: Owned = all_paths(data, 12..=24);
+        let header = OwnedValue::Scalar(OwnedScalar::Quoted(String::from("r\"b")));
+        assert_eq!(
+            actual,
+            Owned {
+                a: Headered::new(Some(header), vec![1, 2]),
+                b: 3,
+            }
+        );
+
+        // A variable header is a variable, as the syntax parser reads it.
+        let actual: Owned = all_paths(b"a = @space { 1 2 } b = 3", 12..=24);
+        let header = OwnedValue::Scalar(OwnedScalar::Variable(String::from("@space")));
+        assert_eq!(
+            actual,
+            Owned {
+                a: Headered::new(Some(header), vec![1, 2]),
+                b: 3,
+            }
+        );
+
+        // A calculation that the scanner reads as one scalar is unquoted.
+        let actual: Owned = all_paths(b"a = @[x+1] { 1 } b = 3", 12..=24);
+        let header = OwnedValue::Scalar(OwnedScalar::Unquoted(String::from("@[x+1]")));
+        assert_eq!(
+            actual,
+            Owned {
+                a: Headered::new(Some(header), vec![1]),
+                b: 3,
+            }
+        );
+    }
+}
+
+/// A newtype struct can be the header of a `Headered`. It gets the text of
+/// the header, quoted or not.
+#[test]
+fn test_header_newtype() {
+    use crate::text::Headered;
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Name(String);
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Named {
+        a: Headered<Vec<u8>, Name>,
+        b: Headered<Vec<u8>, Name>,
+    }
+
+    let actual: Named = all_paths(b"a = \"r\\\"b\" { 1 2 } b = rgb { 3 }", 12..=24);
+    assert_eq!(
+        actual,
+        Named {
+            a: Headered::new(Some(Name(String::from("r\"b"))), vec![1, 2]),
+            b: Headered::new(Some(Name(String::from("rgb"))), vec![3]),
+        }
     );
 }
 

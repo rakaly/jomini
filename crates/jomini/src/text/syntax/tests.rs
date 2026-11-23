@@ -1189,6 +1189,50 @@ fn ast_headered_block_is_generic() {
     assert_eq!(custom.block().fields().count(), 1);
 }
 
+/// GUI files quote the header of a template override. The header is a
+/// quoted scalar token, which decodes with its escapes, and the block can
+/// be on the next line, as for an unquoted header. Only a field value has
+/// a header.
+#[test]
+fn ast_headered_block_with_quoted_header() {
+    let source =
+        b"blockoverride = \"tab_glow\" { visible = no }\nb = \"a\\\"b\"\n{ 1 }\nc = \"x\" { }";
+    let tree = parse(source);
+    assert!(tree.errors().is_empty());
+    let headers: Vec<_> = tree
+        .ast()
+        .fields()
+        .map(|field| field.value().unwrap().as_headered_block().unwrap())
+        .collect();
+    assert_eq!(headers.len(), 3);
+
+    let glow = headers[0].header();
+    assert_eq!(glow.kind(), SyntaxKind::Quoted);
+    assert!(glow.is_quoted());
+    assert_eq!(glow.text(), b"\"tab_glow\"");
+    assert_eq!(glow.as_bytes(), b"tab_glow");
+    let field = headers[0].block().fields().next().unwrap();
+    assert_eq!(field.key().text(), b"visible");
+
+    let escaped = headers[1].header();
+    assert_eq!(escaped.as_bytes(), b"a\\\"b");
+    assert_eq!(escaped.decode(crate::Windows1252Encoding::new()), "a\"b");
+    let values: Vec<_> = headers[1].block().values().map(|v| v.to_f64()).collect();
+    assert_eq!(values, [Some(1.0)]);
+
+    assert_eq!(headers[2].header().as_bytes(), b"x");
+    assert!(headers[2].block().is_empty());
+
+    // An item is not a field value, so the quoted scalar is the key of a
+    // field without an operator, as an unquoted one is.
+    let tree = parse(b"l = { \"x\" { 1 } }");
+    let block = tree.ast().fields().next().unwrap().value().unwrap();
+    let field = block.as_block().unwrap().fields().next().unwrap();
+    assert_eq!(field.key().text(), b"\"x\"");
+    assert_eq!(field.op(), None);
+    assert!(field.value().unwrap().as_block().is_some());
+}
+
 #[test]
 fn ast_reader_variable_definition_with_calc_value() {
     let tree = parse(b"@half = @[1 / 2]");

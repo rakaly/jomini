@@ -623,7 +623,7 @@ where
                     .with_options(self.options)
                     .serialize(serializer)
             }
-            TextToken::Header(_) => {
+            TextToken::Header(_) | TextToken::QuotedHeader(_) => {
                 let arr = self.reader.read_array().unwrap();
                 let mut values = arr.values();
                 let key_reader = values.next().unwrap();
@@ -1036,6 +1036,23 @@ mod tests {
         let json = serialize(b"color = rgb { 100 200 150 }");
         let expected = r#"{"color":{"rgb":[100,200,150]}}"#;
         assert_eq!(&json, expected);
+    }
+
+    /// The quoted header of a GUI template override is a key, unescaped.
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn test_quoted_header() {
+        let json = |data: &[u8]| {
+            let tape = crate::text::syntax::parse_tape(data).into_result().unwrap();
+            tape.windows1252_reader().json().to_string()
+        };
+        let expected = r#"{"block":{"tab_glow":{"visible":false}}}"#;
+        assert_eq!(json(b"block = tab_glow { visible = no }"), expected);
+        assert_eq!(json(b"block = \"tab_glow\" { visible = no }"), expected);
+        assert_eq!(
+            json(b"block = \"a\\\"b\" { 1 }"),
+            r#"{"block":{"a\"b":[1]}}"#
+        );
     }
 
     #[test]
