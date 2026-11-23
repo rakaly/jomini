@@ -1,6 +1,6 @@
 [package]
 name = "jomini"
-version = "0.38.0"
+version = "0.38.1"
 authors.workspace = true
 license.workspace = true
 readme = "../../README.md"
