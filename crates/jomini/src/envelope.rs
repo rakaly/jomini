@@ -39,8 +39,8 @@
 //! ```text
 //! JominiFile
 //! ├── Handles both compressed (ZIP) and uncompressed saves
-//! ├── Provides gamestate() → SaveContentKind
-//! └── Provides meta() → SaveMetadataKind
+//! ├── Provides gamestate() → SaveContentKind<SaveReader<&R>>
+//! └── Provides meta() → SaveMetadataKind<SaveReader<&R>>
 //!
 //! SaveContentKind (dynamic encoding dispatch)
 //! ├── Text(SaveContent<TextEncoding, R>)
@@ -50,6 +50,11 @@
 //! ├── Text(SaveMetadata<TextEncoding, R>)
 //! └── Binary(SaveMetadata<BinaryEncoding, R>)
 //! ```
+//!
+//! The readers are [`Send`] when the `R` they read from is [`Sync`], so a caller
+//! can decompress a save on one thread and parse it on another. Use the `map`
+//! method of [`SaveContentKind`] to replace the reader and keep the encoding.
+//! The module does not create threads.
 
 mod errors;
 mod file;
