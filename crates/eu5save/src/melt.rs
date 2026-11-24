@@ -2,7 +2,7 @@ use crate::{Eu5Date, Eu5Error, Eu5ErrorKind, Eu5Flavor};
 use jomini::{
     TextWriterBuilder,
     binary::{self, BinaryFlavor, FailedResolveStrategy, Token, TokenReader, TokenResolver},
-    common::PdsDate,
+    common::{Decimal, PdsDate},
     envelope::{SaveHeader, SaveHeaderKind},
 };
 use std::{
@@ -165,6 +165,61 @@ impl KeyHints {
     }
 }
 
+/// Decodes a number that has at most as many digits as every `f64` keeps. They are
+/// the shortest digits that identify the `f64`, so they are what it prints as.
+/// Returns `None` for other numbers, which are printed as the `f64`.
+#[inline]
+fn exact_f64(data: [u8; 8]) -> Option<Decimal<5>> {
+    let raw = i64::from_le_bytes(data);
+    (raw.unsigned_abs() < 10u64.pow(f64::DIGITS)).then(|| Decimal::from_raw(raw))
+}
+
+/// The hints of each key that was already written, by its token or lookup.
+///
+/// A save repeats a few thousand keys millions of times, and reading a hint
+/// replaces several string comparisons.
+#[derive(Debug, Default)]
+struct HintCache {
+    tokens: Vec<Option<KeyHints>>,
+    lookups: Vec<Option<KeyHints>>,
+}
+
+impl HintCache {
+    /// Larger indices are not cached, as the resolver is free to choose them.
+    const MAX_LEN: usize = 1 << 20;
+
+    #[inline]
+    fn token(&mut self, token: u16, key: &str) -> KeyHints {
+        Self::get(&mut self.tokens, usize::from(token), key)
+    }
+
+    #[inline]
+    fn lookup(&mut self, index: u32, key: &str) -> KeyHints {
+        Self::get(&mut self.lookups, index as usize, key)
+    }
+
+    #[inline]
+    fn get(hints: &mut Vec<Option<KeyHints>>, index: usize, key: &str) -> KeyHints {
+        match hints.get(index) {
+            Some(Some(hints)) => *hints,
+            _ => Self::insert(hints, index, key),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn insert(hints: &mut Vec<Option<KeyHints>>, index: usize, key: &str) -> KeyHints {
+        let result = KeyHints::for_key(key);
+        if index < Self::MAX_LEN {
+            if index >= hints.len() {
+                hints.resize((index + 1).next_power_of_two(), None);
+            }
+            hints[index] = Some(result);
+        }
+        result
+    }
+}
+
 fn inner_melt<Writer, Resolver>(
     reader: &mut TokenReader<'_>,
     wtr: &mut jomini::TextWriter<Writer>,
@@ -187,14 +242,15 @@ where
     // At the start of a container the writer cannot tell an object from an
     // array, so a string there can be a key or the first array value. Hold it
     // until the next token says which one it is.
-    let mut pending_lookup: Option<&str> = None;
+    let mut pending_lookup: Option<(u32, &str)> = None;
+    let mut cache = HintCache::default();
 
     let mut has_read = false;
     while let Some(token) = reader.next()? {
         has_read = true;
-        if let Some(pending) = pending_lookup.take() {
+        if let Some((index, pending)) = pending_lookup.take() {
             if matches!(token, Token::Equal) {
-                let hints = KeyHints::for_key(pending);
+                let hints = cache.lookup(index, pending);
                 known_date = hints.date;
                 known_number = hints.number;
                 known_int = hints.int;
@@ -225,7 +281,7 @@ where
                         continue;
                     }
 
-                    let hints = KeyHints::for_key(id);
+                    let hints = cache.token(x, id);
                     known_date = hints.date;
                     known_number = hints.number;
                     known_int = hints.int;
@@ -309,12 +365,13 @@ where
                 wtr.write_f32(converted)?;
             }
             Token::F64(value) => {
-                let mut converted = flavor.visit_f64(value);
                 if known_int {
-                    converted = (converted * 100_000.0).round();
-                    wtr.write_i64(converted as i64)?;
+                    let value = flavor.visit_f64(value);
+                    wtr.write_i64((value * 100_000.0).round() as i64)?;
+                } else if let Some(value) = exact_f64(value) {
+                    wtr.write_decimal(value)?;
                 } else {
-                    wtr.write_f64(converted)?;
+                    wtr.write_f64(flavor.visit_f64(value))?;
                 }
             }
             Token::Rgb(rgb) => wtr.write_rgb(&rgb)?,
@@ -325,9 +382,9 @@ where
                     // lookup table and not from the token table, so a lookup in
                     // key position must set the same hints as a resolved token.
                     if wtr.at_unknown_start() {
-                        pending_lookup = Some(s);
+                        pending_lookup = Some((x, s));
                     } else if wtr.expecting_key() {
-                        let hints = KeyHints::for_key(s);
+                        let hints = cache.lookup(x, s);
                         known_date = hints.date;
                         known_number = hints.number;
                         known_int = hints.int;
@@ -460,5 +517,28 @@ mod tests {
 
         let out = melt_body(&data, &resolver);
         assert_eq!(out, "tag=\"SWE\"\nlast_stat_year=1341\n");
+    }
+
+    /// A number is written with the digits of its integer, up to the most digits
+    /// that each double keeps. A larger one is written as the double.
+    #[test]
+    fn test_decimals() {
+        let resolver = LookupResolver(&["power", "percent"]);
+        let melt = |key: u16, raw: i64| {
+            let mut data = Vec::new();
+            data.extend_from_slice(&lookup(key));
+            data.extend_from_slice(&LexemeId::EQUAL.0.to_le_bytes());
+            data.extend_from_slice(&LexemeId::F64.0.to_le_bytes());
+            data.extend_from_slice(&raw.to_le_bytes());
+            melt_body(&data, &resolver)
+        };
+
+        assert_eq!(melt(0, -150_000), "power=-1.5\n");
+        assert_eq!(melt(0, 0), "power=0\n");
+        assert_eq!(melt(0, 999_999_999_999_999), "power=9999999999.99999\n");
+        assert_eq!(melt(0, -999_999_999_999_999), "power=-9999999999.99999\n");
+        assert_eq!(melt(0, 1_000_000_000_000_000), "power=10000000000\n");
+        assert_eq!(melt(0, i64::MIN), "power=-92233720368547.77\n");
+        assert_eq!(melt(1, -150_000), "percent=-150000\n");
     }
 }

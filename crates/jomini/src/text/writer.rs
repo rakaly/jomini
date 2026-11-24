@@ -1,7 +1,7 @@
 use crate::{
     Encoding, Error, ErrorKind, TextTape, TextToken,
     binary::Rgb,
-    common::PdsDateFormatter,
+    common::{DECIMAL_LEN, Decimal, PdsDateFormatter},
     text::{ArrayReader, ObjectReader, Operator, ValueReader},
 };
 use std::{fmt::Arguments, io::Write, ops::Deref};
@@ -16,8 +16,8 @@ pub struct TextWriter<W> {
     mode: DepthMode,
     depth: Vec<DepthMode>,
     state: WriteState,
-    indents: [u8; 16],
-    indent_char: u8,
+    /// A line feed and then the indents, so that a new line is one write.
+    newline_indents: [u8; 33],
     indent_factor: u8,
     needs_line_terminator: bool,
     mixed_mode: MixedMode,
@@ -218,8 +218,7 @@ where
         if old_state.no_data_encountered_yet() {
             self.writer.write_all(b" ")?;
         } else {
-            self.writer.write_all(b"\n")?;
-            self.write_indent()?;
+            self.write_newline_indent()?;
         }
 
         self.writer.write_all(b"}")?;
@@ -246,8 +245,8 @@ where
     #[inline]
     pub fn write_bool(&mut self, data: bool) -> Result<(), Error> {
         match data {
-            true => write!(self, "yes"),
-            false => write!(self, "no"),
+            true => self.write_unquoted(b"yes"),
+            false => self.write_unquoted(b"no"),
         }
     }
 
@@ -335,7 +334,7 @@ where
     #[inline]
     pub fn write_quoted(&mut self, data: &[u8]) -> Result<(), Error> {
         self.write_preamble()?;
-        let esc_buf = self.scratch.split_off(0);
+        let esc_buf = std::mem::take(&mut self.scratch);
         let esc = escape(data, esc_buf);
         self.writer.write_all(b"\"")?;
         self.writer.write_all(&esc)?;
@@ -520,6 +519,45 @@ where
         Ok(())
     }
 
+    /// Write a decimal number without the trailing zeros of its fraction.
+    ///
+    /// ```
+    /// use jomini::{TextWriterBuilder, common::Decimal};
+    ///
+    /// let mut out = Vec::new();
+    /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+    /// writer.write_unquoted(b"a")?;
+    /// writer.write_decimal(Decimal::<5>::from_raw(-150_000))?;
+    /// writer.write_unquoted(b"b")?;
+    /// writer.write_decimal(Decimal::<5>::from_raw(200_000))?;
+    /// assert_eq!(&out, b"a=-1.5\nb=2");
+    /// # Ok::<(), jomini::Error>(())
+    /// ```
+    #[inline]
+    pub fn write_decimal<const SCALE: u32>(&mut self, data: Decimal<SCALE>) -> Result<(), Error> {
+        self.write_unquoted(data.format_trimmed(&mut [0; DECIMAL_LEN]))
+    }
+
+    /// Write a decimal number with all of its decimal places.
+    ///
+    /// ```
+    /// use jomini::{TextWriterBuilder, common::Decimal};
+    ///
+    /// let mut out = Vec::new();
+    /// let mut writer = TextWriterBuilder::new().from_writer(&mut out);
+    /// writer.write_unquoted(b"a")?;
+    /// writer.write_decimal_padded(Decimal::<3>::from_raw(-50))?;
+    /// assert_eq!(&out, b"a=-0.050");
+    /// # Ok::<(), jomini::Error>(())
+    /// ```
+    #[inline]
+    pub fn write_decimal_padded<const SCALE: u32>(
+        &mut self,
+        data: Decimal<SCALE>,
+    ) -> Result<(), Error> {
+        self.write_unquoted(data.format_padded(&mut [0; DECIMAL_LEN]))
+    }
+
     /// Write a date formatted in the game style
     ///
     /// ```
@@ -536,6 +574,11 @@ where
     /// ```
     #[inline]
     pub fn write_date(&mut self, data: PdsDateFormatter) -> Result<(), Error> {
+        let mut buf = [0; crate::common::SHORT_DATE_LEN];
+        if let Some(date) = data.format_short(&mut buf) {
+            return self.write_unquoted(date);
+        }
+
         write!(self, "{}", data)
     }
 
@@ -593,67 +636,72 @@ where
     }
 
     #[inline]
-    fn write_line_terminator(&mut self) -> Result<(), Error> {
-        if self.needs_line_terminator {
-            self.writer.write_all(b"\n")?;
-            self.needs_line_terminator = false;
-        }
-
-        Ok(())
-    }
-
-    #[inline]
     fn write_preamble(&mut self) -> Result<(), Error> {
-        let just_wrote_line_terminator = self.needs_line_terminator;
-        self.write_line_terminator()?;
+        let newline = std::mem::take(&mut self.needs_line_terminator);
         match self.state {
             WriteState::ArrayValue | WriteState::SecondUnknown => {
-                if just_wrote_line_terminator {
-                    self.write_indent()?;
+                if newline {
+                    self.write_newline_indent()?;
                 } else if self.mixed_mode == MixedMode::Keyed {
                     self.mixed_mode = MixedMode::Started;
                 } else {
                     self.writer.write_all(b" ")?;
                 }
             }
-            WriteState::Key => {
-                self.write_indent()?;
+            WriteState::Key
+            | WriteState::ArrayValueFirst
+            | WriteState::FirstKey
+            | WriteState::FirstUnknown => {
+                if newline {
+                    self.write_newline_indent()?;
+                } else {
+                    self.write_indent()?;
+                }
             }
+            state => {
+                if newline {
+                    self.writer.write_all(b"\n")?;
+                }
 
-            // Only inject equals in non-verbatim mode
-            WriteState::KeyValueSeparator if !self.verbatim => {
-                self.writer.write_all(b"=")?;
+                // Only inject equals in non-verbatim mode
+                if state == WriteState::KeyValueSeparator && !self.verbatim {
+                    self.writer.write_all(b"=")?;
+                }
             }
-            x if x.no_data_encountered_yet() => {
-                self.write_indent()?;
-            }
-            _ => {}
         };
 
         Ok(())
     }
 
-    /// advance the state
     fn write_epilogue(&mut self) -> Result<(), Error> {
         self.state = WRITE_STATE_NEXT[self.state as usize];
         self.needs_line_terminator = self.state == WriteState::Key;
         Ok(())
     }
 
-    /// Write the indent characters
+    /// Write a line feed and then the indent characters
     #[inline]
-    fn write_indent(&mut self) -> Result<(), Error> {
-        let indents = self.depth.len() * (self.indent_factor as usize);
-        match self.indents.get(..indents) {
+    fn write_newline_indent(&mut self) -> Result<(), Error> {
+        let indents = self.depth.len() * usize::from(self.indent_factor);
+        match self.newline_indents.get(..=indents) {
             Some(x) => Ok(self.writer.write_all(x)?),
             None => {
-                for _ in 0..self.depth.len() * usize::from(self.indent_factor) {
-                    self.writer.write_all(&[self.indent_char])?;
-                }
-
-                Ok(())
+                self.writer.write_all(b"\n")?;
+                self.write_indent()
             }
         }
+    }
+
+    #[inline]
+    fn write_indent(&mut self) -> Result<(), Error> {
+        let mut indents = self.depth.len() * usize::from(self.indent_factor);
+        let data = &self.newline_indents[1..];
+        while indents > 0 {
+            let len = indents.min(data.len());
+            self.writer.write_all(&data[..len])?;
+            indents -= len;
+        }
+        Ok(())
     }
 
     /// Enter mixed mode for writing a container that is a list and an object
@@ -874,8 +922,11 @@ impl TextWriterBuilder {
             state: WriteState::Key,
             mode: DepthMode::Object,
             depth: Vec::with_capacity(16),
-            indents: [self.indent_char; 16],
-            indent_char: self.indent_char,
+            newline_indents: {
+                let mut data = [self.indent_char; 33];
+                data[0] = b'\n';
+                data
+            },
             indent_factor: self.indent_factor,
             needs_line_terminator: false,
             mixed_mode: MixedMode::Disabled,

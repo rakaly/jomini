@@ -6,5 +6,6 @@ pub mod eu4;
 pub mod eu5;
 #[cfg(feature = "json")]
 pub mod json;
+pub mod melt;
 pub mod scalar;
 pub mod text;

@@ -29,6 +29,9 @@ use crate::Error;
 /// ```
 pub trait TokenResolver {
     /// Return the string field name of the 16bit token if found
+    ///
+    /// A token, like a lookup index, must always give the same string, as callers
+    /// cache what they derive from it.
     fn resolve(&self, token: u16) -> Option<&str>;
 
     /// Return the string value for the lookup index if found.
