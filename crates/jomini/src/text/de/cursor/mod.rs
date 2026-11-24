@@ -301,9 +301,33 @@ impl<'de, S: Source<'de>, E> TextDeserializer<S, E> {
         }
     }
 
+    /// Append more data to the window, as [`Source::refill`] does, and keep
+    /// the error of a buffer that is too small for `finish`.
+    #[inline(always)]
+    fn refill(&mut self) -> Result<bool, Error> {
+        let result = self.source.refill();
+        if let Err(err) = &result
+            && matches!(err.kind(), ErrorKind::BufferTooSmall)
+        {
+            self.source.too_small(err);
+        }
+        result
+    }
+
+    /// The result of the root. A visitor that swallows the error of a buffer
+    /// that is too small reads on from the middle of a value, so that error
+    /// is the result, whatever was read after it.
+    #[inline]
+    fn finish<T>(&self, result: Result<T, Error>) -> Result<T, Error> {
+        match self.source.error() {
+            Some(err) => Err(err),
+            None => result.map_err(|e| self.locate(e)),
+        }
+    }
+
     /// Skip a utf8 byte order mark at the start of the data.
     fn skip_bom(&mut self) -> Result<(), Error> {
-        while self.source.window().len() < 3 && self.source.refill()? {}
+        while self.source.window().len() < 3 && self.refill()? {}
         if self.source.window().starts_with(b"\xef\xbb\xbf") {
             self.pending = 3;
         }
@@ -419,7 +443,7 @@ impl<'de, S: Source<'de>, E> TextDeserializer<S, E> {
                     // to leave room for the token in the buffer.
                     self.source.consume(self.tok.start());
                     self.tok = Tok::empty(0);
-                    if let Err(err) = self.source.refill() {
+                    if let Err(err) = self.refill() {
                         return Err(self.scan_failed(err));
                     }
                 }
@@ -430,7 +454,7 @@ impl<'de, S: Source<'de>, E> TextDeserializer<S, E> {
                     self.source.remove(self.tok.start() + 1, len);
                     self.source.consume(self.tok.start());
                     self.tok = Tok::empty(0);
-                    if let Err(err) = self.source.refill() {
+                    if let Err(err) = self.refill() {
                         return Err(self.scan_failed(err));
                     }
                 }
@@ -522,7 +546,7 @@ impl<'de, S: Source<'de>, E> TextDeserializer<S, E> {
                         None => self.source.remove(keep, len),
                     }
                     at = keep;
-                    self.source.refill()?;
+                    self.refill()?;
                 }
             }
         }
@@ -628,7 +652,7 @@ impl<'de, S: Source<'de>, E> TextDeserializer<S, E> {
     fn skip_block_refill(&mut self, mut state: Skip, mut processed: usize) -> Result<(), Error> {
         loop {
             self.source.consume(processed);
-            if !self.source.refill()? {
+            if !self.refill()? {
                 if state.in_quote() {
                     return Err(self.eof());
                 }
@@ -669,7 +693,7 @@ impl<'de, S: Source<'de>, E> TextDeserializer<S, E> {
         self.empty_key_op = Some(op);
         self.source.consume(self.pending);
         self.pending = 0;
-        while self.source.window().is_empty() && self.source.refill()? {}
+        while self.source.window().is_empty() && self.refill()? {}
         self.tok = if self.source.window().first() == Some(&b'=') {
             Tok::operator(Operator::Equal, 0, 1)
         } else {
@@ -1359,9 +1383,8 @@ impl<'de, S: Source<'de>, E: Encoding> de::Deserializer<'de> for &'_ mut TextDes
         V: Visitor<'de>,
     {
         self.skip_bom()?;
-        visitor
-            .visit_map(AnyMap::new(&mut *self, true, false))
-            .map_err(|e| self.locate(e))
+        let result = visitor.visit_map(AnyMap::new(&mut *self, true, false));
+        self.finish(result)
     }
 
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -1371,7 +1394,8 @@ impl<'de, S: Source<'de>, E: Encoding> de::Deserializer<'de> for &'_ mut TextDes
         self.skip_bom()?;
         self.block_at_root()?;
         let map = Map::<_, _, true, false> { de: &mut *self };
-        visitor.visit_map(map).map_err(|e| self.locate(e))
+        let result = visitor.visit_map(map);
+        self.finish(result)
     }
 
     fn deserialize_struct<V>(
@@ -1386,7 +1410,8 @@ impl<'de, S: Source<'de>, E: Encoding> de::Deserializer<'de> for &'_ mut TextDes
         self.skip_bom()?;
         self.block_at_root()?;
         let map = Map::<_, _, true, true> { de: &mut *self };
-        visitor.visit_map(map).map_err(|e| self.locate(e))
+        let result = visitor.visit_map(map);
+        self.finish(result)
     }
 
     /// An owned value of the root is the block of the whole data. Any other
