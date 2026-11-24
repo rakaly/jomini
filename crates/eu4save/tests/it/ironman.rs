@@ -1106,7 +1106,24 @@ ironman_test!(
         patch: "1.35.6.0",
         date: Eu4Date::parse("1565.8.1").unwrap()
     },
-    |query: Query, _melted_data: &[u8]| {
+    |query: Query, melted_data: &[u8]| {
         assert_eq!(query.save().game.random_world, Some(381160688));
+
+        // The meta entry ends in a scalar, so the gamestate must start on a new line
+        let boundary =
+            b"\t\tkey=\"disasters\"\n\t}\n}\nis_random_new_world=yes\nplayers_countries={\n";
+        memchr::memmem::find(melted_data, boundary).unwrap();
+
+        let body = melted_data.strip_prefix(b"EU4txt\n").unwrap();
+        let tape = jomini::TextTape::from_slice(body).unwrap();
+        let reader = tape.windows1252_reader();
+        let mut fields = reader
+            .fields()
+            .skip_while(|(key, _, _)| key.read_str() != "is_random_new_world");
+        let (_, _, value) = fields.next().unwrap();
+        assert_eq!(value.read_str().unwrap(), "yes");
+        let (key, _, value) = fields.next().unwrap();
+        assert_eq!(key.read_str(), "players_countries");
+        value.read_array().unwrap();
     }
 );
