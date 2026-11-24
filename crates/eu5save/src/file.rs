@@ -103,6 +103,7 @@ impl<R: ReaderAt> Eu5Melt for &'_ Eu5File<R> {
 pub struct SaveResolver<R> {
     inner: R,
     string_lookup: Vec<&'static str>,
+    /// Holds the bytes of `string_lookup`.
     #[expect(dead_code)]
     lookup_data: Vec<u8>,
 }
@@ -126,8 +127,15 @@ impl<R> SaveResolver<R> {
                 .map_err(Eu5ErrorKind::from)?
                 .read_to_end(&mut lookup_data)?;
 
-            // extend lifetime on lookup data
+            // Safe alternatives take longer to open and read a save: an allocation
+            // per string about 0.5%, and ranges into one string at least 3%.
             let data = lookup_data.as_slice();
+            // SAFETY: The strings point into the heap buffer of `lookup_data`,
+            // which does not move when the vector moves into the resolver. No
+            // code changes, grows, or takes the vector after this point, so the
+            // buffer lives as long as the resolver. The field of the strings is
+            // private and `lookup` shortens their lifetime to a borrow of the
+            // resolver, so no string outlives the buffer.
             let lookup_data: &'static [u8] = unsafe { std::mem::transmute(data) };
             string_lookup_parse(lookup_data)
         } else {
