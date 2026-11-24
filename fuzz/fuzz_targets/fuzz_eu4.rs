@@ -1,5 +1,5 @@
 #![no_main]
-use eu4save::{SegmentedResolver, SegmentedResolverBuilder, file::Eu4ParsedText};
+use eu4save::{SegmentedResolver, SegmentedResolverBuilder};
 use libfuzzer_sys::fuzz_target;
 use std::sync::LazyLock;
 
@@ -16,16 +16,6 @@ fn run(data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let _ = file.parse_save(&TOKENS.resolver());
     let _ = file.size();
     let _ = file.encoding();
-
-    match file.kind() {
-        eu4save::file::Eu4SliceFileKind::Text(x) => {
-            Eu4ParsedText::from_raw(x.get_ref())?
-                .reader()
-                .json()
-                .to_writer(std::io::sink())?;
-        }
-        _ => {}
-    }
 
     Ok(())
 }

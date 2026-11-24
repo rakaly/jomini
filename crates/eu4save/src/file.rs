@@ -6,7 +6,7 @@ use crate::{
     resolver::SegmentedResolver,
     Encoding, Eu4Error, Eu4ErrorKind, MeltOptions, MeltedDocument,
 };
-use jomini::{binary::TokenResolver, text::ObjectReader, TextDeserializer, TextTape};
+use jomini::{binary::TokenResolver, TextDeserializer};
 use rawzip::{CompressionMethod, FileReader, ReaderAt};
 use serde::de::DeserializeOwned;
 use std::{
@@ -800,32 +800,6 @@ impl Display for Eu4FileEntryName {
             Eu4FileEntryName::Gamestate => write!(f, "gamestate"),
             Eu4FileEntryName::Ai => write!(f, "ai"),
         }
-    }
-}
-
-/// A parsed EU4 text document
-pub struct Eu4ParsedText<'a> {
-    tape: TextTape<'a>,
-}
-
-impl<'a> Eu4ParsedText<'a> {
-    /// Parse EU4 text data that has the "EU4txt" header
-    pub fn from_slice(data: &'a [u8]) -> Result<Self, Eu4Error> {
-        file_header(data)
-            .filter(|(header, _)| matches!(header, FileHeader::Text))
-            .map(|(_, data)| data)
-            .ok_or_else(|| Eu4ErrorKind::UnknownHeader.into())
-            .and_then(Self::from_raw)
-    }
-
-    /// Parse headerless EU4 text data
-    pub fn from_raw(data: &'a [u8]) -> Result<Self, Eu4Error> {
-        let tape = TextTape::from_slice(data).map_err(Eu4ErrorKind::Parse)?;
-        Ok(Eu4ParsedText { tape })
-    }
-
-    pub fn reader(&self) -> ObjectReader<'_, '_, Eu4Flavor> {
-        ObjectReader::new(&self.tape, Eu4Flavor::new())
     }
 }
 
