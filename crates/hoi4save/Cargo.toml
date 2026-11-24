@@ -12,7 +12,7 @@ keywords = ["hoi4", "ironman"]
 categories = ["parsing"]
 
 [dependencies]
-jomini = { workspace = true, features = ["json"] }
+jomini = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 

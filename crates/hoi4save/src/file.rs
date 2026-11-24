@@ -10,8 +10,7 @@ use crate::{
 };
 use jomini::{
     binary::{BinaryFormatDeserializer, TokenResolver},
-    text::ObjectReader,
-    TextDeserializer, TextTape, Utf8Encoding,
+    TextDeserializer, Utf8Encoding,
 };
 use serde::de::DeserializeOwned;
 
@@ -292,30 +291,6 @@ where
         Writer: Write,
     {
         melt::melt(&mut self.0, &mut output, resolver, options)
-    }
-}
-
-/// A parsed Hoi4 text document
-pub struct Hoi4ParsedText<'a> {
-    tape: TextTape<'a>,
-}
-
-impl<'a> Hoi4ParsedText<'a> {
-    pub fn from_slice(data: &'a [u8]) -> Result<Self, Hoi4Error> {
-        file_header(data)
-            .filter(|(header, _)| matches!(header, FileHeader::Text))
-            .map(|(_, data)| data)
-            .ok_or_else(|| Hoi4ErrorKind::UnknownHeader.into())
-            .and_then(Self::from_raw)
-    }
-
-    pub fn from_raw(data: &'a [u8]) -> Result<Self, Hoi4Error> {
-        let tape = TextTape::from_slice(data).map_err(Hoi4ErrorKind::Parse)?;
-        Ok(Hoi4ParsedText { tape })
-    }
-
-    pub fn reader(&self) -> ObjectReader<'_, '_, Utf8Encoding> {
-        self.tape.utf8_reader()
     }
 }
 

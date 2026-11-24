@@ -22,7 +22,7 @@ tsify = ["dep:tsify", "dep:wasm-bindgen"]
 specta = ["dep:specta"]
 
 [dependencies]
-jomini = { workspace = true, features = ["json"] }
+jomini = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 zstd = { version = "0.14", default-features = false, optional = true }
