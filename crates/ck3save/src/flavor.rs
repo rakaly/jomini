@@ -46,7 +46,7 @@ where
 
     // metadata = { version = <version> }
     let mut lexer = jomini::binary::Lexer::new(&buf[10..]);
-    let Ok(Some(Token::I32(version))) = lexer.next_token() else {
+    let Ok(Some(Token::I32(version))) = lexer.next() else {
         return Err(Ck3Error::from(Ck3ErrorKind::InvalidHeader));
     };
 

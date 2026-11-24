@@ -312,7 +312,7 @@ impl<'a> TokenReader<'a> {
                 Token::Lookup(u32::from_le_bytes([x[0], x[1], x[2], x[3]]))
             }
             LexemeId::RGB => return self.take_rgb().map(|rgb| Some(Token::Rgb(rgb))),
-            id if id >= LexemeId::FIXED5_ZERO && id <= LexemeId::FIXED5_I56 => {
+            id if id.is_fixed5() => {
                 let offset = id.0 - LexemeId::FIXED5_ZERO.0;
                 let is_negative = offset > 7;
                 let len = usize::from(offset - u16::from(is_negative) * 7);
@@ -610,7 +610,7 @@ mod tests {
                 loop {
                     let position = lexer.position();
                     assert_eq!(reader.position(), position);
-                    match (lexer.next_token(), reader.next()) {
+                    match (lexer.next(), reader.next()) {
                         (Ok(Some(a)), Ok(Some(b))) => assert_eq!(a, b),
                         (Ok(None), Ok(None)) => break,
                         (Err(_), Err(b)) => {

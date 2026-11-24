@@ -118,7 +118,7 @@ pub(crate) struct Gamestate {
 pub(crate) fn lex_count_ids(data: &[u8]) -> u64 {
     let mut lexer = jomini::binary::Lexer::new(data);
     let mut counter: u64 = 0;
-    while let Ok(Some(token)) = lexer.next_token() {
+    while let Ok(Some(token)) = lexer.next() {
         if let jomini::binary::Token::Id(x) = token {
             counter = counter.wrapping_add(u64::from(x));
         }
@@ -127,16 +127,14 @@ pub(crate) fn lex_count_ids(data: &[u8]) -> u64 {
 }
 
 #[inline(never)]
-pub(crate) fn lex_token_kind_count_ids(data: &[u8]) -> u64 {
+pub(crate) fn lex_id_count_ids(data: &[u8]) -> u64 {
     let mut lexer = jomini::binary::Lexer::new(data);
     let mut counter: u64 = 0;
     while let Ok(Some(token)) = lexer.next_id() {
-        match token.into_kind() {
-            jomini::binary::TokenKind::Id => {
-                counter = counter.wrapping_add(u64::from(token.0));
-            }
-            jomini::binary::TokenKind::Open => {}
-            _ => lexer.skip_value(token).unwrap(),
+        if token.is_id() {
+            counter = counter.wrapping_add(u64::from(token.0));
+        } else if token != jomini::binary::LexemeId::OPEN {
+            lexer.skip_value(token).unwrap();
         }
     }
     black_box(counter)
@@ -240,8 +238,8 @@ pub mod criterion_benches {
             group.bench_function(BenchmarkId::new("lex", game), |b| {
                 b.iter(|| lex_count_ids(data))
             });
-            group.bench_function(BenchmarkId::new("lex-token-kind", game), |b| {
-                b.iter(|| lex_token_kind_count_ids(data))
+            group.bench_function(BenchmarkId::new("lex-id", game), |b| {
+                b.iter(|| lex_id_count_ids(data))
             });
             group.bench_function(BenchmarkId::new("source-lexeme", game), |b| {
                 b.iter(|| source_lexeme_count_ids(data))
@@ -338,8 +336,8 @@ pub mod gungraun_benches {
     #[bench::eu4(setup = setup_eu4)]
     #[bench::v3(setup = setup_vic3)]
     #[bench::ck3(setup = setup_ck3)]
-    fn lex_token_kind(data: &[u8]) -> u64 {
-        lex_token_kind_count_ids(data)
+    fn lex_id(data: &[u8]) -> u64 {
+        lex_id_count_ids(data)
     }
 
     #[library_benchmark]
@@ -382,7 +380,7 @@ pub mod gungraun_benches {
         name = binary_benches,
         benchmarks = [
             lex,
-            lex_token_kind,
+            lex_id,
             source_lexeme,
             reader,
             deserialize_slice_bench,

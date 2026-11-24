@@ -51,10 +51,10 @@ pub(crate) fn syntax_walk(tree: &jomini::text::syntax::Parse<'_>) -> usize {
 pub(crate) fn reader_count_equals(data: &[u8]) -> i32 {
     let mut reader = jomini::text::TokenReader::from_slice(data);
     let mut count = 0i32;
-    while let Some(token) = reader.next_token().unwrap() {
+    while let Some(token) = reader.next().unwrap() {
         if matches!(
             token,
-            jomini::text::TokenKind::Operator(jomini::text::Operator::Equal)
+            jomini::text::Token::Operator(jomini::text::Operator::Equal)
         ) {
             count += 1;
         }
@@ -228,10 +228,10 @@ pub(crate) fn reader_count_compressed_archive(archive: &CorpusArchive) -> i32 {
     corpus::with_archive_reader(archive, |reader| {
         let mut reader = jomini::text::TokenReader::new(reader);
         let mut count = 0i32;
-        while let Some(token) = reader.next_token().unwrap() {
+        while let Some(token) = reader.next().unwrap() {
             if matches!(
                 token,
-                jomini::text::TokenKind::Operator(jomini::text::Operator::Equal)
+                jomini::text::Token::Operator(jomini::text::Operator::Equal)
             ) {
                 count += 1;
             }

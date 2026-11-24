@@ -175,7 +175,7 @@ fn format_lexeme(
             write!(buf, "lookup_u32_sav03:0x{:08x}", value)?;
         }
         // Handle Fixed5 lexemes with special formatting
-        lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => {
+        lexeme if lexeme.is_fixed5() => {
             let offset = lexeme.0 - LexemeId::FIXED5_ZERO.0;
             let is_negative = offset > 7;
             let byte_count = offset - (is_negative as u16 * 7);

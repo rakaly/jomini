@@ -220,13 +220,12 @@ impl<'a, 'de: 'a, 'res: 'de, RES: TokenResolver, F: BinaryFlavor>
             LexemeId::F64 => {
                 visitor.visit_f64(self.de.config.flavor.visit_f64(self.de.parser.read_f64()?))
             }
-            lexeme if lexeme >= LexemeId::FIXED5_ZERO && lexeme <= LexemeId::FIXED5_I56 => visitor
-                .visit_f64(
-                    self.de
-                        .config
-                        .flavor
-                        .visit_f64(self.de.parser.read_compact_f64(lexeme)?),
-                ),
+            lexeme if lexeme.is_fixed5() => visitor.visit_f64(
+                self.de
+                    .config
+                    .flavor
+                    .visit_f64(self.de.parser.read_compact_f64(lexeme)?),
+            ),
             LexemeId::OPEN => visitor.visit_seq(OndemandSeq::new(self.de)),
             LexemeId::RGB => {
                 let rgb = self.de.parser.read_rgb()?;

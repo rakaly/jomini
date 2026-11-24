@@ -69,7 +69,7 @@ fuzz_target!(|data: &[u8]| {
         jomini::binary::TokenReader::from_reader_with_buf(data, vec![0; usize::from(u16::MAX) + 4]);
 
     loop {
-        match (lexer.next_token(), reader.next()) {
+        match (lexer.next(), reader.next()) {
             (Ok(None), Ok(None)) => {
                 break;
             }
@@ -95,7 +95,7 @@ fuzz_target!(|data: &[u8]| {
         jomini::binary::TokenReader::from_reader_with_buf(data, vec![0; buffer_len + 4]);
 
     loop {
-        match (lexer.read_token(), reader.read()) {
+        match (lexer.read(), reader.read()) {
             (Ok(t1), Ok(t2)) => assert_eq!(t1, t2),
             (Ok(jomini::binary::Token::Quoted(t) | jomini::binary::Token::Unquoted(t)), _)
                 if t.as_bytes().len() >= buffer_len =>

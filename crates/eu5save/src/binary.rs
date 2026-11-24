@@ -261,12 +261,6 @@ const fn is_str_id(id: LexemeId) -> bool {
     )
 }
 
-/// Whether the lexeme holds a fixed point number.
-#[inline]
-const fn is_fixed5_id(id: LexemeId) -> bool {
-    id.0 >= LexemeId::FIXED5_ZERO.0 && id.0 <= LexemeId::FIXED5_I56.0
-}
-
 #[cold]
 fn unexpected_structural(source: &ParserSource<'_>) -> Error {
     Error::custom(format_args!(
@@ -567,7 +561,7 @@ where
                 return visitor.visit_f64(value);
             }
 
-            if is_fixed5_id(id) {
+            if id.is_fixed5() {
                 let (width, negative) = fixed5(id);
                 let value = format
                     .flavor
@@ -935,7 +929,7 @@ mod tests {
                 "0x{raw:04x}"
             );
             assert_eq!(
-                is_fixed5_id(lexeme),
+                lexeme.is_fixed5(),
                 class(lexeme) == Class::Fixed5,
                 "0x{raw:04x}"
             );

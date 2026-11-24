@@ -371,7 +371,7 @@ where
                 let index = format.read_lookup(source, id)?;
                 format.resolve_lookup(index, visitor)
             }
-            lexeme if (LexemeId::FIXED5_ZERO..=LexemeId::FIXED5_I56).contains(&lexeme) => {
+            lexeme if lexeme.is_fixed5() => {
                 let (format, source) = cx.parts();
                 visitor.visit_f64(format.flavor.visit_f64(read_compact_f64(source, lexeme)?))
             }
