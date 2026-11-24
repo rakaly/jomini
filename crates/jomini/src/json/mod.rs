@@ -41,6 +41,16 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! For game and mod files, use the `syntax` feature and call `json` on a
+//! `text::syntax::de::Document`, or on an `OwnedBlock` or an `OwnedValue` of
+//! `text::syntax`. The `JsonBuilder` type documents the rules.
+
+#[cfg(feature = "syntax")]
+pub(crate) mod syntax;
+
+#[cfg(feature = "syntax")]
+pub use self::syntax::JsonBuilder;
 
 use crate::{
     Encoding, TextToken,
@@ -283,6 +293,9 @@ pub enum DuplicateKeyMode {
     /// keys. Preserving positioning is important when interpretting an object
     /// is dependant on the order of the keys and duplicate keys may affect
     /// subsequent fields.
+    ///
+    /// This is the output for a `TextTape`. `JsonBuilder`, the output for the
+    /// `syntax` feature, has more types and documents them.
     KeyValuePairs,
 }
 

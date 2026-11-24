@@ -61,14 +61,27 @@ impl<'c, 'a, E> TreeCtx<'c, 'a, E> {
     pub(crate) fn encoding(&self) -> &E {
         &self.encoding
     }
+
+    /// The same context for code that is compiled one time for all encodings.
+    #[cfg(feature = "json")]
+    pub(super) fn erased(&self) -> TreeCtx<'c, 'a, &dyn Encoding>
+    where
+        E: Encoding,
+    {
+        TreeCtx {
+            tree: self.tree,
+            encoding: &self.encoding,
+            resolution: self.resolution.clone(),
+        }
+    }
 }
 
 /// The model of the tree. It is one pointer, so the deserializer can copy
 /// it at no cost.
 ///
 /// When `RESOLVED` is `true`, the model gives the values of the resolution of the
-/// context. A model without a resolution has no cost for it, because each
-/// test of `RESOLVED` is a constant.
+/// context, if it has one. When `RESOLVED` is `false`, a resolution has no cost,
+/// because each test of `RESOLVED` is a constant.
 pub(crate) struct TreeDoc<'c, 'a, E, const RESOLVED: bool = false> {
     ctx: &'c TreeCtx<'c, 'a, E>,
 }
@@ -130,10 +143,9 @@ impl<'c, 'a, E: Encoding> TreeDoc<'c, 'a, E> {
 }
 
 impl<'c, 'a, E: Encoding, const RESOLVED: bool> TreeDoc<'c, 'a, E, RESOLVED> {
-    /// A model of the tree of `ctx`. When `RESOLVED` is `true`, the context must
-    /// have a resolution.
+    /// A model of the tree of `ctx`. When `RESOLVED` is `false`, it ignores a
+    /// resolution of the context.
     pub(crate) fn of(ctx: &'c TreeCtx<'c, 'a, E>) -> Self {
-        debug_assert!(!RESOLVED || ctx.resolution.is_some());
         TreeDoc { ctx }
     }
 
@@ -311,7 +323,7 @@ impl<'c, 'a, E: Encoding, const RESOLVED: bool> TreeDoc<'c, 'a, E, RESOLVED> {
     #[inline]
     fn field(self, field: Field<'c, 'a>) -> Option<Item<Self>> {
         // A variable definition is not data.
-        if RESOLVED && field.is_variable_definition() {
+        if RESOLVED && self.ctx.has_resolution() && field.is_variable_definition() {
             return None;
         }
         let value = value_handle(field.value()?)?;
@@ -412,7 +424,7 @@ fn resolved_f64(value: &ResolvedScalar) -> Result<f64, ScalarError> {
 
 /// Return `true` for a decimal number: an optional sign, digits, and an
 /// optional `.` and more digits. An exponent, `inf`, and `NaN` are not.
-fn is_decimal(text: &[u8]) -> bool {
+pub(crate) fn is_decimal(text: &[u8]) -> bool {
     let text = text
         .strip_prefix(b"-")
         .or_else(|| text.strip_prefix(b"+"))
@@ -510,6 +522,7 @@ where
                     // `@name` is. Each other directive is not an entry.
                     SyntaxKind::ReaderDirective
                         if RESOLVED
+                            && self.doc.ctx.has_resolution()
                             && ReaderDirective::cast(node)
                                 .is_some_and(|d| d.kind() == DirectiveKind::LoadVariable) =>
                     {
@@ -641,6 +654,14 @@ where
         match self.resolved(scalar) {
             Some(value) => value.decode(&self.ctx.encoding).into_owned(),
             None => self.decode(scalar).into_owned(),
+        }
+    }
+
+    #[cfg(feature = "json")]
+    fn with_str<R>(self, scalar: Self::Scalar, f: impl FnOnce(&str) -> R) -> R {
+        match self.resolved(scalar) {
+            Some(value) => f(&value.decode(&self.ctx.encoding)),
+            None => f(&self.decode(scalar)),
         }
     }
 

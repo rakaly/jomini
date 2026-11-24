@@ -3,6 +3,11 @@
 use super::engine::{Doc, ValueDe, View};
 use super::error::Error;
 use super::tree::{ArrayIndex, TreeCtx, TreeDoc, TreeNode, value_handle};
+#[cfg(feature = "json")]
+use crate::json::{
+    JsonBuilder, JsonOptions,
+    syntax::{Out, Start, write_json},
+};
 use crate::{
     Encoding,
     text::syntax::{
@@ -443,6 +448,67 @@ impl<'t, 'a, E: Encoding> Document<'t, 'a, E> {
         Ok(ValueBuilder::new(self.doc()).value(node))
     }
 
+    /// Convert the whole document to JSON. With a
+    /// [resolution](Document::with_resolution), the JSON has the resolved
+    /// values and no variable definitions.
+    ///
+    /// This does not examine the syntax errors of the tree. Call
+    /// [`check`](Document::check) first to reject them. A variable or a
+    /// calculation that has no value is a string of its source text.
+    ///
+    /// ```
+    /// use jomini::{Utf8Encoding, text::syntax::{parse, resolve::resolve}};
+    ///
+    /// let parse = parse(b"@size = 2 width = @size height = @[size * 1.5]");
+    /// let doc = parse.document(Utf8Encoding::new());
+    /// assert_eq!(
+    ///     doc.json().to_string(),
+    ///     r#"{"@size":2,"width":"@size","height":"@[size * 1.5]"}"#
+    /// );
+    ///
+    /// let doc = doc.with_resolution(resolve(parse.tree()))?;
+    /// doc.check()?;
+    /// assert_eq!(doc.json().to_string(), r#"{"width":2,"height":3}"#);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[cfg(feature = "json")]
+    pub fn json(&self) -> JsonBuilder<'_, E> {
+        JsonBuilder::document(self, None)
+    }
+
+    /// Convert `value` to JSON, with the rules of [`json`](Document::json).
+    ///
+    /// ```
+    /// use jomini::{Utf8Encoding, text::syntax::parse};
+    ///
+    /// let parse = parse(b"a = 1 color = rgb { 10 20 30 }");
+    /// let doc = parse.document(Utf8Encoding::new());
+    /// let color = doc.require(doc.root(), b"color")?;
+    /// assert_eq!(doc.value_json(color)?.to_string(), r#"{"rgb":[10,20,30]}"#);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value is from a different tree, or is a
+    /// [`Value::Operator`] of a token that is not an operator.
+    #[cfg(feature = "json")]
+    pub fn value_json(&self, value: Value<'t, 'a>) -> Result<JsonBuilder<'_, E>, Error> {
+        let node = self.handle(value)?;
+        Ok(JsonBuilder::document(self, Some(node)))
+    }
+
+    /// Write a value as JSON, or the root when `node` is `None`.
+    #[cfg(feature = "json")]
+    pub(crate) fn write_json(
+        &self,
+        node: Option<TreeNode>,
+        options: JsonOptions,
+        out: &mut Out<'_>,
+    ) -> std::io::Result<()> {
+        self.ctx.erased().write_json(node, options, out)
+    }
+
     fn doc(&self) -> TreeDoc<'_, 'a, E> {
         TreeDoc::new(&self.ctx)
     }
@@ -506,6 +572,25 @@ impl<'t, 'a, E: Encoding> Document<'t, 'a, E> {
     fn finish(&self, error: Error) -> Error {
         let error = error.locate_with(|offset| self.line_col(offset));
         super::with_file(error, self.file.as_deref())
+    }
+}
+
+#[cfg(feature = "json")]
+impl TreeCtx<'_, '_, &dyn Encoding> {
+    /// Write a value as JSON, or the root when `node` is `None`. The writer
+    /// is compiled one time, for all encodings, with and without a resolution.
+    fn write_json(
+        &self,
+        node: Option<TreeNode>,
+        options: JsonOptions,
+        out: &mut Out<'_>,
+    ) -> std::io::Result<()> {
+        let doc = TreeDoc::<_, true>::of(self);
+        let start = match node {
+            Some(node) => Start::Node(node),
+            None => Start::Container(doc.root()),
+        };
+        write_json(doc, start, options, out)
     }
 }
 
