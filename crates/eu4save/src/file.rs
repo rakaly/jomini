@@ -499,6 +499,10 @@ where
             let meta = self.get(Eu4FileEntryName::Meta)?;
             let meta_result = melt(meta, &mut output, &resolver, options.skip_checksum(true))?;
 
+            // A closing brace already separates the key that follows it.
+            if meta_result.ends_in_scalar {
+                output.write_all(b"\n")?;
+            }
             let gamestate = self.get(Eu4FileEntryName::Gamestate)?;
             let gamestate_result = melt(
                 gamestate,
@@ -507,6 +511,9 @@ where
                 options.skip_checksum(true),
             )?;
 
+            if gamestate_result.ends_in_scalar {
+                output.write_all(b"\n")?;
+            }
             let ai = self.get(Eu4FileEntryName::Ai)?;
             let ai_result = melt(ai, &mut output, &resolver, options.skip_checksum(false))?;
 
@@ -520,6 +527,7 @@ where
 
             Ok(MeltedDocument {
                 unknown_tokens: union,
+                ends_in_scalar: ai_result.ends_in_scalar,
             })
         }
     }
@@ -818,5 +826,161 @@ impl<'a> Eu4ParsedText<'a> {
 
     pub fn reader(&self) -> ObjectReader<'_, '_, Eu4Flavor> {
         ObjectReader::new(&self.tape, Eu4Flavor::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jomini::{binary::FailedResolveStrategy, TextTape};
+    use std::collections::HashMap;
+
+    fn zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive = rawzip::ZipArchiveWriter::new(Vec::new());
+        for (name, data) in entries {
+            let (mut entry, config) = archive
+                .new_file(*name)
+                .compression_method(CompressionMethod::DEFLATE)
+                .start()
+                .unwrap();
+            let encoder =
+                flate2::write::DeflateEncoder::new(&mut entry, flate2::Compression::default());
+            let mut writer = config.wrap(encoder);
+            writer.write_all(data).unwrap();
+            let (encoder, descriptor) = writer.finish().unwrap();
+            encoder.finish().unwrap();
+            entry.finish(descriptor).unwrap();
+        }
+        archive.finish().unwrap()
+    }
+
+    const YES: &[u8] = &[0x0e, 0x00, 0x01];
+    const QUOTED: &[u8] = &[0x0f, 0x00, 0x01, 0x00, b'a'];
+    const EMPTY: &[u8] = &[0x03, 0x00, 0x04, 0x00];
+
+    /// A binary entry of `key = value` followed by a `checksum = "a"`
+    fn entry(key: u16, value: &[u8]) -> Vec<u8> {
+        let mut data = BIN_HEADER.to_vec();
+        for (key, value) in [(key, value), (0x3003, QUOTED)] {
+            data.extend_from_slice(&key.to_le_bytes());
+            data.extend_from_slice(&[0x01, 0x00]);
+            data.extend_from_slice(value);
+        }
+        data
+    }
+
+    fn melt_entries(meta: &[u8], gamestate: &[u8], ai: &[u8]) -> String {
+        let resolver = HashMap::from([
+            (0x3000, "is_random_new_world"),
+            (0x3001, "players_countries"),
+            (0x3002, "ai"),
+            (0x3003, "checksum"),
+        ]);
+        let data = zip(&[("gamestate", gamestate), ("meta", meta), ("ai", ai)]);
+        let file = Eu4File::from_slice(&data).unwrap();
+        assert_eq!(file.encoding(), Encoding::BinaryZip);
+
+        let mut output = Vec::new();
+        let options = MeltOptions::new().on_failed_resolve(FailedResolveStrategy::Ignore);
+        file.melt(options, &resolver, &mut output).unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn melt_separates_entries_ending_in_scalar() {
+        let melted = melt_entries(
+            &entry(0x3000, YES),
+            &entry(0x3001, QUOTED),
+            &entry(0x3002, EMPTY),
+        );
+        assert_eq!(
+            melted,
+            "EU4txt\nis_random_new_world=yes\nplayers_countries=\"a\"\nai={ }\nchecksum=\"a\""
+        );
+
+        let body = melted.strip_prefix("EU4txt\n").unwrap();
+        let tape = TextTape::from_slice(body.as_bytes()).unwrap();
+        let fields: Vec<_> = tape
+            .windows1252_reader()
+            .fields()
+            .map(|(key, op, value)| (key.read_string(), op, value.read_string().ok()))
+            .collect();
+        assert_eq!(
+            fields,
+            vec![
+                ("is_random_new_world".into(), None, Some("yes".into())),
+                ("players_countries".into(), None, Some("a".into())),
+                ("ai".into(), None, None),
+                ("checksum".into(), None, Some("a".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn melt_keeps_entries_ending_in_container_adjacent() {
+        let melted = melt_entries(
+            &entry(0x3000, EMPTY),
+            &entry(0x3001, EMPTY),
+            &entry(0x3002, YES),
+        );
+        assert_eq!(
+            melted,
+            "EU4txt\nis_random_new_world={ }players_countries={ }ai=yes\nchecksum=\"a\""
+        );
+    }
+
+    #[test]
+    fn melt_separates_scalar_without_equal() {
+        let meta = [BIN_HEADER, &[0x00, 0x30], YES].concat();
+        let melted = melt_entries(&meta, &entry(0x3001, EMPTY), &entry(0x3002, YES));
+        assert_eq!(
+            melted,
+            "EU4txt\nis_random_new_world=yes\nplayers_countries={ }ai=yes\nchecksum=\"a\""
+        );
+    }
+
+    #[test]
+    fn melt_keeps_entry_ending_in_rgb_adjacent() {
+        let mut rgb = vec![0x43, 0x02, 0x03, 0x00];
+        for channel in 1..=3 {
+            rgb.extend_from_slice(&[0x14, 0x00, channel, 0x00, 0x00, 0x00]);
+        }
+        rgb.extend_from_slice(&[0x04, 0x00]);
+
+        let melted = melt_entries(
+            &entry(0x3000, &rgb),
+            &entry(0x3001, EMPTY),
+            &entry(0x3002, YES),
+        );
+        let start = melted.find("is_random_new_world").unwrap();
+        let end = melted.find("players_countries").unwrap();
+        assert!(melted[start..end].ends_with('}'), "{melted}");
+    }
+
+    #[test]
+    fn melt_ignores_skipped_keys_at_the_end_of_an_entry() {
+        for (value, separator) in [(YES, "yes\n"), (EMPTY, "{ }")] {
+            let mut meta = entry(0x3000, value);
+            for skipped in [EMPTY, YES] {
+                meta.extend_from_slice(&[0xff, 0x3f, 0x01, 0x00]);
+                meta.extend_from_slice(skipped);
+            }
+            let melted = melt_entries(&meta, &entry(0x3001, EMPTY), &entry(0x3002, YES));
+            assert_eq!(
+                melted,
+                format!(
+                    "EU4txt\nis_random_new_world={separator}players_countries={{ }}ai=yes\nchecksum=\"a\""
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn melt_writes_single_separator_around_empty_entry() {
+        let melted = melt_entries(&entry(0x3000, YES), BIN_HEADER, &entry(0x3002, YES));
+        assert_eq!(
+            melted,
+            "EU4txt\nis_random_new_world=yes\nai=yes\nchecksum=\"a\""
+        );
     }
 }

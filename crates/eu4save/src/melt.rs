@@ -121,6 +121,10 @@ impl MeltOptions {
 #[derive(Debug, Default)]
 pub struct MeltedDocument {
     pub(crate) unknown_tokens: HashSet<u16>,
+
+    /// The text melted from a binary entry ends in a scalar, and not in the end
+    /// of a block
+    pub(crate) ends_in_scalar: bool,
 }
 
 impl MeltedDocument {
@@ -164,7 +168,13 @@ where
     let mut known_number = false;
     let mut known_date = false;
     let mut long_format = false;
+    let mut ends_in_scalar = false;
     while let Some(token) = reader.next()? {
+        let ends_block = matches!(
+            token,
+            jomini::binary::Token::Close | jomini::binary::Token::Rgb(_)
+        );
+
         match token {
             jomini::binary::Token::Open => {
                 quoter.push();
@@ -319,6 +329,7 @@ where
                         if matches!(next, binary::Token::Open) {
                             reader.skip_container()?;
                         }
+                        continue;
                     }
                     _ => {
                         unknown_tokens.insert(x);
@@ -332,9 +343,14 @@ where
                 )))
             }
         }
+
+        ends_in_scalar = !ends_block;
     }
 
-    Ok(MeltedDocument { unknown_tokens })
+    Ok(MeltedDocument {
+        unknown_tokens,
+        ends_in_scalar,
+    })
 }
 
 #[cfg(test)]
