@@ -173,6 +173,13 @@ impl LexemeId {
         matches!(self.into_kind(), TokenKind::Id)
     }
 
+    /// The payload size of a lexeme whose payload has a constant size, and
+    /// zero for other lexemes.
+    #[inline]
+    pub(crate) fn payload_len(self) -> usize {
+        usize::from(PAYLOAD_SIZES.get(usize::from(self.0)).copied().unwrap_or(0))
+    }
+
     /// Convert the `LexemeId` into a `TokenKind`
     #[inline]
     pub const fn into_kind(self) -> TokenKind {
@@ -224,6 +231,46 @@ impl LexemeId {
         }
     }
 }
+
+/// The payload size of each lexeme with a constant size, by id.
+static PAYLOAD_SIZES: [u8; (LexemeId::STR_SAV03.0 as usize) + 1] = {
+    let mut t = [0u8; (LexemeId::STR_SAV03.0 as usize) + 1];
+    t[LexemeId::U32.0 as usize] = 4;
+    t[LexemeId::I32.0 as usize] = 4;
+    t[LexemeId::F32.0 as usize] = 4;
+    t[LexemeId::BOOL.0 as usize] = 1;
+    t[LexemeId::U64.0 as usize] = 8;
+    t[LexemeId::I64.0 as usize] = 8;
+    t[LexemeId::F64.0 as usize] = 8;
+    t[LexemeId::LOOKUP_U8.0 as usize] = 1;
+    t[LexemeId::LOOKUP_U8_ALT.0 as usize] = 1;
+    t[LexemeId::LOOKUP_U16.0 as usize] = 2;
+    t[LexemeId::LOOKUP_U16_ALT.0 as usize] = 2;
+    t[LexemeId::LOOKUP_U24.0 as usize] = 3;
+    t[LexemeId::LOOKUP_U24_ALT.0 as usize] = 3;
+    t[LexemeId::LOOKUP_U32.0 as usize] = 4;
+    t[LexemeId::LOOKUP_U32_ALT.0 as usize] = 4;
+    t[LexemeId::LOOKUP_U8_SAV03.0 as usize] = 1;
+    t[LexemeId::LOOKUP_U16_SAV03.0 as usize] = 2;
+    t[LexemeId::LOOKUP_U24_SAV03.0 as usize] = 3;
+    t[LexemeId::LOOKUP_U32_SAV03.0 as usize] = 4;
+    t[LexemeId::FIXED5_ZERO.0 as usize] = 0;
+    t[LexemeId::FIXED5_U8.0 as usize] = 1;
+    t[LexemeId::FIXED5_U16.0 as usize] = 2;
+    t[LexemeId::FIXED5_U24.0 as usize] = 3;
+    t[LexemeId::FIXED5_U32.0 as usize] = 4;
+    t[LexemeId::FIXED5_U40.0 as usize] = 5;
+    t[LexemeId::FIXED5_U48.0 as usize] = 6;
+    t[LexemeId::FIXED5_U56.0 as usize] = 7;
+    t[LexemeId::FIXED5_I8.0 as usize] = 1;
+    t[LexemeId::FIXED5_I16.0 as usize] = 2;
+    t[LexemeId::FIXED5_I24.0 as usize] = 3;
+    t[LexemeId::FIXED5_I32.0 as usize] = 4;
+    t[LexemeId::FIXED5_I40.0 as usize] = 5;
+    t[LexemeId::FIXED5_I48.0 as usize] = 6;
+    t[LexemeId::FIXED5_I56.0 as usize] = 7;
+    t
+};
 
 /// Kind of token represented by a [LexemeId]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

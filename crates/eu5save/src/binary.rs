@@ -741,7 +741,7 @@ fn skip(source: &mut ParserSource<'_>, rgb_index: u32) -> Result<(), Error> {
         return Ok(());
     }
 
-    skip_payload(source, id)
+    Ok(source.skip_payload(id)?)
 }
 
 /// Skip the rest of a container whose opening delimiter is already read.
@@ -750,7 +750,7 @@ fn skip_container(source: &mut ParserSource<'_>) -> Result<(), Error> {
     // skipping a lexeme is register arithmetic. Sending the source pointer
     // through memory for every lexeme dominated the instruction count of this
     // loop.
-    let mut depth = 1u32;
+    let mut depth = 1usize;
     loop {
         // The borrow of the window ends with this statement, so the source can
         // be advanced below. The source never changes while `base` is read, so
@@ -818,10 +818,10 @@ fn skip_container(source: &mut ParserSource<'_>) -> Result<(), Error> {
         }
 
         // Commit what the fast loop consumed, then take one careful step over
-        // the window boundary.
+        // the window boundary, which refills when the window does not hold a
+        // lexeme.
         // SAFETY: `i <= len`.
         unsafe { source.advance_unchecked(i) };
-        source.refill()?;
         skip_step(source, &mut depth)?;
         if depth == 0 {
             return Ok(());
@@ -830,7 +830,7 @@ fn skip_container(source: &mut ParserSource<'_>) -> Result<(), Error> {
 }
 
 #[cold]
-fn skip_step(source: &mut ParserSource<'_>, depth: &mut u32) -> Result<(), Error> {
+fn skip_step(source: &mut ParserSource<'_>, depth: &mut usize) -> Result<(), Error> {
     let id = source.read_lexeme_id()?;
     match id {
         LexemeId::OPEN => {
@@ -841,31 +841,7 @@ fn skip_step(source: &mut ParserSource<'_>, depth: &mut u32) -> Result<(), Error
             *depth -= 1;
             Ok(())
         }
-        _ => skip_payload(source, id),
-    }
-}
-
-/// Skip the payload of one lexeme that does not open or close a container.
-fn skip_payload(source: &mut ParserSource<'_>, id: LexemeId) -> Result<(), Error> {
-    match id {
-        LexemeId::QUOTED | LexemeId::UNQUOTED | LexemeId::STR_SAV03 => {
-            source.read_bstr()?;
-            Ok(())
-        }
-        LexemeId::RGB => source.read_rgb().map(|_| ()),
-        // A const size take for each width keeps this off the variable length
-        // path, because a save skips millions of scalars.
-        _ => match payload_size(id) {
-            0 => Ok(()),
-            1 => source.take::<1>().map(|_| ()).map_err(Error::from),
-            2 => source.take::<2>().map(|_| ()).map_err(Error::from),
-            3 => source.take::<3>().map(|_| ()).map_err(Error::from),
-            4 => source.take::<4>().map(|_| ()).map_err(Error::from),
-            5 => source.take::<5>().map(|_| ()).map_err(Error::from),
-            6 => source.take::<6>().map(|_| ()).map_err(Error::from),
-            7 => source.take::<7>().map(|_| ()).map_err(Error::from),
-            _ => source.take::<8>().map(|_| ()).map_err(Error::from),
-        },
+        _ => Ok(source.skip_payload(id)?),
     }
 }
 

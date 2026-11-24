@@ -1,7 +1,7 @@
 use crate::corpus::{self, Corpus, CorpusArchive, CorpusBytes, Game};
 use jomini::{
     Encoding, Windows1252Encoding,
-    binary::{BasicTokenResolver, BinaryFlavor, TokenResolver},
+    binary::{BasicTokenResolver, BinaryFlavor, BinarySourceExt, TokenResolver},
 };
 use std::{
     borrow::Cow,
@@ -143,12 +143,14 @@ pub(crate) fn lex_token_kind_count_ids(data: &[u8]) -> u64 {
 }
 
 #[inline(never)]
-pub(crate) fn reader_token_kind_count_ids(data: &[u8]) -> u64 {
-    let mut reader = jomini::binary::TokenReader::new(data);
+pub(crate) fn source_lexeme_count_ids(data: &[u8]) -> u64 {
+    let mut source = jomini::ParserSource::from_reader(data);
     let mut counter: u64 = 0;
-    while let Ok(Some(token)) = reader.next_token() {
-        if matches!(token, jomini::binary::TokenKind::Id) {
-            counter = counter.wrapping_add(u64::from(reader.token_id()));
+    while let Ok(Some(id)) = source.next_lexeme_id() {
+        if id.is_id() {
+            counter = counter.wrapping_add(u64::from(id.0));
+        } else {
+            source.skip_payload(id).unwrap();
         }
     }
     black_box(counter)
@@ -241,8 +243,8 @@ pub mod criterion_benches {
             group.bench_function(BenchmarkId::new("lex-token-kind", game), |b| {
                 b.iter(|| lex_token_kind_count_ids(data))
             });
-            group.bench_function(BenchmarkId::new("reader-token-kind", game), |b| {
-                b.iter(|| reader_token_kind_count_ids(data))
+            group.bench_function(BenchmarkId::new("source-lexeme", game), |b| {
+                b.iter(|| source_lexeme_count_ids(data))
             });
             group.bench_function(BenchmarkId::new("reader", game), |b| {
                 b.iter(|| reader_count_ids(data))
@@ -344,8 +346,8 @@ pub mod gungraun_benches {
     #[bench::eu4(setup = setup_eu4)]
     #[bench::v3(setup = setup_vic3)]
     #[bench::ck3(setup = setup_ck3)]
-    fn reader_token_kind(data: &[u8]) -> u64 {
-        reader_token_kind_count_ids(data)
+    fn source_lexeme(data: &[u8]) -> u64 {
+        source_lexeme_count_ids(data)
     }
 
     #[library_benchmark]
@@ -381,7 +383,7 @@ pub mod gungraun_benches {
         benchmarks = [
             lex,
             lex_token_kind,
-            reader_token_kind,
+            source_lexeme,
             reader,
             deserialize_slice_bench,
             deserialize_reader_bench,
