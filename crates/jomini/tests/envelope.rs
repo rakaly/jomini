@@ -7,11 +7,16 @@ use jomini::{
     envelope::{
         BinaryEncoding, EnvelopeErrorKind, JominiFile, JominiFileKind, JominiTextFile, SaveContent,
         SaveContentKind, SaveData, SaveDataKind, SaveHeaderKind, SaveMetadata, SaveMetadataKind,
+        SaveReader, VerifyingReader, ZipEntry,
     },
 };
-use rawzip::ReaderAt;
+use rawzip::{FileReader, ReaderAt};
 use serde::Deserialize;
-use std::{collections::HashMap, io::Read};
+use std::{
+    collections::HashMap,
+    io::{Cursor, Read},
+    rc::Rc,
+};
 
 struct ForwardOnlyChunks<R> {
     inner: R,
@@ -1036,4 +1041,107 @@ fn body_slice_via_offset_excludes_header() {
         "Body slice should not include header, but got: {:?}",
         std::str::from_utf8(&body_slice[..3.min(body_slice.len())])
     );
+}
+
+fn is_send<T: Send>() {}
+
+#[test]
+fn readers_are_send() {
+    fn readers_of<R: Sync>() {
+        is_send::<SaveReader<&R>>();
+        is_send::<SaveContentKind<SaveReader<&R>>>();
+        is_send::<SaveMetadataKind<SaveReader<&R>>>();
+        is_send::<SaveContentKind<ZipEntry<&R>>>();
+        is_send::<SaveContentKind<VerifyingReader<ZipEntry<&R>>>>();
+    }
+
+    readers_of::<&[u8]>();
+    readers_of::<Cursor<&[u8]>>();
+    readers_of::<Cursor<Vec<u8>>>();
+    readers_of::<FileReader>();
+}
+
+// There are no threads on WASI.
+#[cfg(not(target_os = "wasi"))]
+#[rstest::rstest]
+#[case("text.zip")]
+#[case("text.txt")]
+#[cfg_attr(any(feature = "zstd_c", feature = "zstd_rust"), case("text_zstd.zip"))]
+fn read_on_another_thread(#[case] name: &str) {
+    let file = std::fs::File::open(format!("tests/fixtures/envelopes/{name}")).unwrap();
+    let file = JominiFile::from_file(file).unwrap();
+    let (meta, gamestate) = std::thread::scope(|scope| {
+        let mut meta = file.meta().unwrap();
+        let mut gamestate = file.gamestate().unwrap();
+        let meta = scope.spawn(move || {
+            let mut data = String::new();
+            meta.read_to_string(&mut data).map(|_| data)
+        });
+        let gamestate = scope.spawn(move || {
+            let mut data = String::new();
+            gamestate.read_to_string(&mut data).map(|_| data)
+        });
+        (meta.join().unwrap(), gamestate.join().unwrap())
+    });
+    assert_eq!(meta.unwrap(), EXPECTED_TEXT_META);
+    assert_eq!(gamestate.unwrap(), EXPECTED_TEXT_GAMESTATE);
+}
+
+#[test]
+fn reader_at_need_not_be_send() {
+    let data = std::fs::read("tests/fixtures/envelopes/text.zip").unwrap();
+    let size = data.len() as u64;
+    let file = JominiFile::from_reader_at(Rc::new(data), size).unwrap();
+    zip_text_assertions(file);
+
+    let data = std::fs::read("tests/fixtures/envelopes/text.txt").unwrap();
+    let size = data.len() as u64;
+    let file = JominiFile::from_reader_at(Rc::new(data), size).unwrap();
+    plaintext_uncompressed_assertions(file);
+}
+
+#[test]
+fn map_keeps_the_encoding() {
+    let data = std::fs::read("tests/fixtures/envelopes/lookup.zip").unwrap();
+    let file = JominiFile::from_slice(&data).unwrap();
+    fn limited<R>(inner: R) -> ForwardOnlyChunks<R> {
+        ForwardOnlyChunks {
+            inner,
+            chunk_size: 1,
+        }
+    }
+
+    let SaveMetadataKind::Binary(mut meta) = file.meta().unwrap().map(limited) else {
+        panic!("expected binary metadata");
+    };
+    assert_eq!(meta.header(), file.header());
+    let mut data = Vec::new();
+    meta.read_to_end(&mut data).unwrap();
+    let mut expected = Vec::new();
+    let SaveMetadataKind::Binary(reader) = file.meta().unwrap() else {
+        panic!("expected binary metadata");
+    };
+    reader.into_inner().read_to_end(&mut expected).unwrap();
+    assert!(!data.is_empty());
+    assert_eq!(data, expected);
+
+    // This metadata is compressed.
+    let data = std::fs::read("tests/fixtures/envelopes/split.zip").unwrap();
+    let file = JominiFile::from_slice(&data).unwrap();
+    let mut expected = Vec::new();
+    file.meta().unwrap().read_to_end(&mut expected).unwrap();
+    let mut data = Vec::new();
+    let mut meta = file.meta().unwrap().map(limited);
+    meta.read_to_end(&mut data).unwrap();
+    assert!(!data.is_empty());
+    assert_eq!(data, expected);
+
+    let data = std::fs::read("tests/fixtures/envelopes/text.txt").unwrap();
+    let file = JominiFile::from_slice(&data).unwrap();
+    let SaveContentKind::Text(mut gamestate) = file.gamestate().unwrap().map(limited) else {
+        panic!("expected text gamestate");
+    };
+    let mut data = String::new();
+    gamestate.read_to_string(&mut data).unwrap();
+    assert_eq!(data, EXPECTED_TEXT_GAMESTATE);
 }

@@ -203,30 +203,14 @@ impl<R: ReaderAt> JominiFile<R> {
     /// Returns the gamestate reader
     ///
     /// If the gamestate is compressed, the reader will return decompressed data
-    pub fn gamestate(&self) -> Result<SaveContentKind<Box<dyn Read + '_>>, EnvelopeError> {
+    pub fn gamestate(&self) -> Result<SaveContentKind<SaveReader<&R>>, EnvelopeError> {
         match self.kind() {
-            JominiFileKind::Zip(archive) => {
-                let gamestate = archive.gamestate()?;
-                match gamestate {
-                    SaveContentKind::Text(body) => {
-                        let reader = body.into_inner();
-                        Ok(SaveContentKind::Text(SaveContent::new(
-                            Box::new(reader) as Box<dyn Read>
-                        )))
-                    }
-                    SaveContentKind::Binary(x) => {
-                        let reader = x.into_inner();
-                        Ok(SaveContentKind::Binary(SaveContent::new(
-                            Box::new(reader) as Box<dyn Read>
-                        )))
-                    }
-                }
-            }
+            JominiFileKind::Zip(archive) => Ok(archive.gamestate()?.map(SaveReader::from_zip)),
             JominiFileKind::Uncompressed(SaveDataKind::Text(x)) => Ok(SaveContentKind::Text(
-                SaveContent::new(Box::new(x.body().cursor()) as Box<dyn Read>),
+                SaveContent::new(SaveReader::from_body(x.body())),
             )),
             JominiFileKind::Uncompressed(SaveDataKind::Binary(x)) => Ok(SaveContentKind::Binary(
-                SaveContent::new(Box::new(x.body().cursor()) as Box<dyn Read>),
+                SaveContent::new(SaveReader::from_body(x.body())),
             )),
         }
     }
@@ -234,19 +218,10 @@ impl<R: ReaderAt> JominiFile<R> {
     /// Returns the metadata reader
     ///
     /// If the metadata is compressed, the reader will return decompressed data
-    pub fn meta(&self) -> Result<SaveMetadataKind<Box<dyn Read + '_>>, EnvelopeError> {
+    pub fn meta(&self) -> Result<SaveMetadataKind<SaveReader<&R>>, EnvelopeError> {
         match self.kind() {
             JominiFileKind::Zip(archive) => archive.meta(),
-            JominiFileKind::Uncompressed(x) => match x.meta() {
-                SaveMetadataKind::Text(m) => Ok(SaveMetadataKind::Text(SaveMetadata::new(
-                    Box::new(m.reader) as Box<dyn Read>,
-                    m.header,
-                ))),
-                SaveMetadataKind::Binary(m) => Ok(SaveMetadataKind::Binary(SaveMetadata::new(
-                    Box::new(m.reader) as Box<dyn Read>,
-                    m.header,
-                ))),
-            },
+            JominiFileKind::Uncompressed(x) => Ok(x.meta().map(SaveReader::from_range)),
         }
     }
 }
@@ -315,21 +290,15 @@ where
     }
 
     /// Return the metadata reader based on whether it's inlined or in the zip
-    pub fn meta(&self) -> Result<SaveMetadataKind<Box<dyn Read + '_>>, EnvelopeError> {
+    pub fn meta(&self) -> Result<SaveMetadataKind<SaveReader<&R>>, EnvelopeError> {
         let reader = match &self.metadata {
-            MetaFormatKind::Inlined(range) => {
-                let meta_reader =
-                    RangeReader::new(self.archive.get_ref(), range.start as u64..range.end as u64);
-                Box::new(meta_reader) as Box<dyn Read>
-            }
+            MetaFormatKind::Inlined(range) => SaveReader::from_range(RangeReader::new(
+                self.archive.get_ref(),
+                range.start as u64..range.end as u64,
+            )),
             MetaFormatKind::Zip((compression, wayfinder)) => {
-                let zip_entry = self
-                    .archive
-                    .get_entry(*wayfinder)
-                    .map_err(EnvelopeErrorKind::Zip)?;
-
-                let reader = CompressedReader::from_zip(*compression, zip_entry)?;
-                Box::new(reader) as Box<dyn Read>
+                let (entry, _) = self.open_entry(*compression, *wayfinder)?;
+                SaveReader::from_zip(entry)
             }
         };
 
@@ -346,17 +315,41 @@ where
         }
     }
 
-    /// Opens the gamestate entry, returning the decompressing reader alongside
-    /// the expected verification recorded in the archive.
-    fn gamestate_entry(&self) -> Result<(ZipEntry<&R>, SaveVerification), EnvelopeError> {
-        let (compression, wayfinder) = &self.gamestate;
+    /// Opens an entry, returning the decompressing reader alongside the expected
+    /// verification recorded in the archive.
+    fn open_entry(
+        &self,
+        compression: CompressionMethod,
+        wayfinder: ZipArchiveEntryWayfinder,
+    ) -> Result<(ZipEntry<&R>, SaveVerification), EnvelopeError> {
         let zip_entry = self
             .archive
-            .get_entry(*wayfinder)
+            .get_entry(wayfinder)
             .map_err(EnvelopeErrorKind::Zip)?;
         let expected = SaveVerification::from_zip(zip_entry.reader().claim_verifier());
-        let reader = CompressedReader::from_zip(*compression, zip_entry)?;
+        let reader = CompressedReader::from_zip(compression, zip_entry)?;
         Ok((ZipEntry { reader }, expected))
+    }
+
+    /// Opens the gamestate entry.
+    fn gamestate_entry(&self) -> Result<(ZipEntry<&R>, SaveVerification), EnvelopeError> {
+        let (compression, wayfinder) = self.gamestate;
+        self.open_entry(compression, wayfinder)
+    }
+
+    /// Opens the entry with the given path.
+    fn find_entry(&self, path: &str) -> Result<(ZipEntry<&R>, SaveVerification), EnvelopeError> {
+        let path_bytes = path.as_bytes();
+        let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
+
+        let mut entries = self.archive.entries(&mut buf);
+        while let Some(entry) = entries.next_entry().map_err(EnvelopeErrorKind::Zip)? {
+            if entry.file_path().as_ref() == path_bytes {
+                return self.open_entry(entry.compression_method(), entry.wayfinder());
+            }
+        }
+
+        Err(EnvelopeErrorKind::ZipMissingEntry(path.to_string()).into())
     }
 
     /// Wraps a reader in the text/binary content kind dictated by the header.
@@ -393,23 +386,9 @@ where
     ///
     /// Will return a `EnvelopeErrorKind::ZipMissingEntry` if the requested path
     /// is not found.
-    pub fn read_entry(&self, path: &str) -> Result<impl Read + '_, EnvelopeError> {
-        let path_bytes = path.as_bytes();
-        let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
-
-        let mut entries = self.archive.entries(&mut buf);
-        while let Some(entry) = entries.next_entry().map_err(EnvelopeErrorKind::Zip)? {
-            if entry.file_path().as_ref() == path_bytes {
-                let zip_entry = self
-                    .archive
-                    .get_entry(entry.wayfinder())
-                    .map_err(EnvelopeErrorKind::Zip)?;
-
-                return CompressedReader::from_zip(entry.compression_method(), zip_entry);
-            }
-        }
-
-        Err(EnvelopeErrorKind::ZipMissingEntry(path.to_string()).into())
+    pub fn read_entry(&self, path: &str) -> Result<ZipEntry<&R>, EnvelopeError> {
+        let (entry, _) = self.find_entry(path)?;
+        Ok(entry)
     }
 
     /// Returns a reader for a file in the ZIP archive by path that verifies the
@@ -421,24 +400,8 @@ where
         &self,
         path: &str,
     ) -> Result<VerifyingReader<ZipEntry<&R>>, EnvelopeError> {
-        let path_bytes = path.as_bytes();
-        let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
-
-        let mut entries = self.archive.entries(&mut buf);
-        while let Some(entry) = entries.next_entry().map_err(EnvelopeErrorKind::Zip)? {
-            if entry.file_path().as_ref() == path_bytes {
-                let zip_entry = self
-                    .archive
-                    .get_entry(entry.wayfinder())
-                    .map_err(EnvelopeErrorKind::Zip)?;
-
-                let expected = SaveVerification::from_zip(zip_entry.reader().claim_verifier());
-                let reader = CompressedReader::from_zip(entry.compression_method(), zip_entry)?;
-                return Ok(VerifyingReader::new(ZipEntry { reader }, expected));
-            }
-        }
-
-        Err(EnvelopeErrorKind::ZipMissingEntry(path.to_string()).into())
+        let (entry, expected) = self.find_entry(path)?;
+        Ok(VerifyingReader::new(entry, expected))
     }
 }
 
@@ -602,11 +565,22 @@ pub enum MetaFormatKind {
 ///
 /// Allows working with metadata without knowing the encoding type at compile
 /// time.
+#[derive(Debug, Clone)]
 pub enum SaveMetadataKind<R> {
     /// Text-encoded metadata
     Text(SaveMetadata<TextEncoding, R>),
     /// Binary-encoded metadata (requires token resolver for deserialization)
     Binary(SaveMetadata<BinaryEncoding, R>),
+}
+
+impl<R> SaveMetadataKind<R> {
+    /// Replaces the reader and keeps the encoding. See [`SaveMetadata::map`].
+    pub fn map<T>(self, f: impl FnOnce(R) -> T) -> SaveMetadataKind<T> {
+        match self {
+            SaveMetadataKind::Text(x) => SaveMetadataKind::Text(x.map(f)),
+            SaveMetadataKind::Binary(x) => SaveMetadataKind::Binary(x.map(f)),
+        }
+    }
 }
 
 impl<R: Read> Read for SaveMetadataKind<R> {
@@ -673,6 +647,19 @@ impl<E, R> SaveMetadata<E, R> {
     pub fn header(&self) -> &SaveHeader {
         &self.header
     }
+
+    /// Replaces the reader and keeps the header and the encoding.
+    ///
+    /// The new reader must return the same metadata, as
+    /// [`SaveContent::map`] describes.
+    pub fn map<T>(self, f: impl FnOnce(R) -> T) -> SaveMetadata<E, T> {
+        SaveMetadata::new(f(self.reader), self.header)
+    }
+
+    /// Consumes this metadata and returns the inner reader.
+    pub fn into_inner(self) -> R {
+        self.reader
+    }
 }
 
 impl<R: Read> Read for SaveMetadata<TextEncoding, R> {
@@ -702,6 +689,16 @@ pub enum SaveContentKind<R> {
     Text(SaveContent<TextEncoding, R>),
     /// Binary-encoded content
     Binary(SaveContent<BinaryEncoding, R>),
+}
+
+impl<R> SaveContentKind<R> {
+    /// Replaces the reader and keeps the encoding. See [`SaveContent::map`].
+    pub fn map<T>(self, f: impl FnOnce(R) -> T) -> SaveContentKind<T> {
+        match self {
+            SaveContentKind::Text(x) => SaveContentKind::Text(x.map(f)),
+            SaveContentKind::Binary(x) => SaveContentKind::Binary(x.map(f)),
+        }
+    }
 }
 
 impl<R: Read> Read for SaveContentKind<R> {
@@ -778,6 +775,35 @@ impl<R, E> SaveContent<E, R> {
         self.reader
     }
 
+    /// Replaces the reader and keeps the encoding and the content offset.
+    ///
+    /// The new reader must return the same content, and a [`ReaderAt`] must also
+    /// return it at the same offsets, as [`cursor`](Self::cursor) starts at the
+    /// content offset. Use this method to put an adapter around the reader, or to
+    /// move the reader to another thread and read its content from a channel
+    /// instead.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use jomini::envelope::{JominiFile, SaveContentKind};
+    /// use std::io::{BufReader, Read};
+    ///
+    /// let data = std::fs::read("tests/fixtures/envelopes/text.zip").unwrap();
+    /// let file = JominiFile::from_slice(&data).unwrap();
+    /// let gamestate = file.gamestate().unwrap().map(BufReader::new);
+    /// let SaveContentKind::Text(mut text) = gamestate else {
+    ///     panic!("expected text gamestate");
+    /// };
+    ///
+    /// let mut content = String::new();
+    /// text.read_to_string(&mut content).unwrap();
+    /// assert_eq!(content, "meta=yes\ngamestate=\"hi\"\n");
+    /// ```
+    pub fn map<T>(self, f: impl FnOnce(R) -> T) -> SaveContent<E, T> {
+        SaveContent::with_offset(f(self.reader), self.content_offset)
+    }
+
     /// Returns a borrowed reference to this content
     pub fn as_ref(&self) -> SaveContent<E, &R> {
         SaveContent::with_offset(&self.reader, self.content_offset)
@@ -815,7 +841,86 @@ impl<R: Read> SaveContent<TextEncoding, R> {
     }
 }
 
-/// Wrapper around decompressed zip gamestate that implements Read and provides deserializer
+/// Reads the gamestate or the metadata of a [`JominiFile`].
+///
+/// The content is decompressed when it is in a ZIP entry. Otherwise, it is read
+/// as is.
+///
+/// The methods of [`JominiFile`] return a `SaveReader<&R>`. It is [`Send`] when
+/// `R` is [`Sync`], so another thread can decompress the content.
+///
+/// # Example
+///
+/// ```rust
+/// # // Wasm has no threads.
+/// # #[cfg(not(target_family = "wasm"))] {
+/// use jomini::envelope::JominiFile;
+/// use std::io::Read;
+///
+/// let data = std::fs::read("tests/fixtures/envelopes/text.zip").unwrap();
+/// let file = JominiFile::from_slice(&data).unwrap();
+/// let mut reader = file.gamestate().unwrap();
+/// let content = std::thread::scope(|scope| {
+///     let thread = scope.spawn(move || {
+///         let mut content = String::new();
+///         reader.read_to_string(&mut content).map(|_| content)
+///     });
+///     thread.join().unwrap().unwrap()
+/// });
+/// assert_eq!(content, "meta=yes\ngamestate=\"hi\"\n");
+/// # }
+/// ```
+#[derive(Debug)]
+pub struct SaveReader<R> {
+    kind: SaveReaderKind<R>,
+}
+
+// A parser can put the reader on the heap, so a box here would be a second
+// allocation.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+enum SaveReaderKind<R> {
+    Uncompressed(RangeReader<R>),
+    Zip(ZipEntry<R>),
+}
+
+impl<R> SaveReader<R> {
+    fn from_range(reader: RangeReader<R>) -> Self {
+        SaveReader {
+            kind: SaveReaderKind::Uncompressed(reader),
+        }
+    }
+
+    fn from_zip(entry: ZipEntry<R>) -> Self {
+        SaveReader {
+            kind: SaveReaderKind::Zip(entry),
+        }
+    }
+}
+
+impl<'a, R> SaveReader<&'a R> {
+    /// Reads from the content offset to the end of the data.
+    fn from_body<E>(body: &'a SaveContent<E, R>) -> Self {
+        SaveReader::from_range(RangeReader::new(
+            body.get_ref(),
+            body.content_offset()..u64::MAX,
+        ))
+    }
+}
+
+impl<R: ReaderAt> Read for SaveReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match &mut self.kind {
+            SaveReaderKind::Uncompressed(reader) => reader.read(buf),
+            SaveReaderKind::Zip(entry) => entry.read(buf),
+        }
+    }
+}
+
+/// Reads the decompressed content of an entry in a [`JominiZip`].
+///
+/// The methods of [`JominiZip`] return a `ZipEntry<&R>`, which is [`Send`] when
+/// `R` is [`Sync`].
 #[derive(Debug)]
 pub struct ZipEntry<R> {
     reader: CompressedReader<rawzip::ZipReader<R>>,
@@ -850,7 +955,7 @@ impl<'a, R: ReaderAt> Read for ReaderAtCursor<'a, R> {
 }
 
 /// Wrapper that decompresses data from a ZIP entry.
-pub struct CompressedReader<R> {
+struct CompressedReader<R> {
     reader: CompressedReaderKind<R>,
 }
 
