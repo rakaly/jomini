@@ -4,18 +4,18 @@ use super::{Chain, Track};
 pub struct Wrap<'a, 'b, 'buf, X> {
     pub(crate) delegate: X,
     pub(crate) chain: &'a Chain<'a>,
-    pub(crate) track: &'b Track<'buf>,
+    pub(crate) track: &'b mut Track<'buf>,
 }
 
 // Wrapper that attaches context to a `VariantAccess`.
 pub struct WrapVariant<'a, 'b, 'buf, X> {
     pub(crate) delegate: X,
     pub(crate) chain: Chain<'a>,
-    pub(crate) track: &'b Track<'buf>,
+    pub(crate) track: &'b mut Track<'buf>,
 }
 
 impl<'a, 'b, 'buf, X> Wrap<'a, 'b, 'buf, X> {
-    pub(crate) fn new(delegate: X, chain: &'a Chain<'a>, track: &'b Track<'buf>) -> Self {
+    pub(crate) fn new(delegate: X, chain: &'a Chain<'a>, track: &'b mut Track<'buf>) -> Self {
         Wrap {
             delegate,
             chain,
@@ -25,7 +25,7 @@ impl<'a, 'b, 'buf, X> Wrap<'a, 'b, 'buf, X> {
 }
 
 impl<'a, 'b, 'buf, X> WrapVariant<'a, 'b, 'buf, X> {
-    pub(crate) fn new(delegate: X, chain: Chain<'a>, track: &'b Track<'buf>) -> Self {
+    pub(crate) fn new(delegate: X, chain: Chain<'a>, track: &'b mut Track<'buf>) -> Self {
         WrapVariant {
             delegate,
             chain,

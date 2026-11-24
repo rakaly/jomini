@@ -9,8 +9,8 @@ where
     D: de::Deserializer<'de>,
     T: Deserialize<'de>,
 {
-    let track = Track::new_with(path_buf);
-    match T::deserialize(Deserializer::new(deserializer, &track)) {
+    let mut track = Track::new_with(path_buf);
+    match T::deserialize(Deserializer::new(deserializer, &mut track)) {
         Ok(t) => Ok(t),
         Err(err) => Err(Error {
             path: track.path(),
@@ -48,11 +48,11 @@ where
 pub struct Deserializer<'a, 'b, 'buf, D> {
     de: D,
     chain: Chain<'a>,
-    track: &'b Track<'buf>,
+    track: &'b mut Track<'buf>,
 }
 
 impl<'a, 'b, 'buf, D> Deserializer<'a, 'b, 'buf, D> {
-    pub fn new(de: D, track: &'b Track<'buf>) -> Self {
+    pub fn new(de: D, track: &'b mut Track<'buf>) -> Self {
         Deserializer {
             de,
             chain: Chain::Root,
@@ -845,21 +845,16 @@ where
 struct CaptureKey<'a, 'b, 'buf, X> {
     delegate: X,
     key: &'a mut Option<(usize, u8)>,
-    track: &'b Track<'buf>,
+    track: &'b mut Track<'buf>,
 }
 
 impl<'a, 'b, 'buf, X> CaptureKey<'a, 'b, 'buf, X> {
-    fn new(delegate: X, key: &'a mut Option<(usize, u8)>, track: &'b Track<'buf>) -> Self {
+    fn new(delegate: X, key: &'a mut Option<(usize, u8)>, track: &'b mut Track<'buf>) -> Self {
         CaptureKey {
             delegate,
             key,
             track,
         }
-    }
-
-    // Helper to push a string to the path buffer and return (start, len)
-    fn push_str(&self, s: &str) -> (usize, u8) {
-        self.track.push_bytes(s.as_bytes())
     }
 }
 
@@ -1187,7 +1182,7 @@ where
         E: de::Error,
     {
         let string = if v { "true" } else { "false" };
-        *self.key = Some(self.push_str(string));
+        *self.key = Some(self.track.push_bytes(string.as_bytes()));
         self.delegate.visit_bool(v)
     }
 
@@ -1286,7 +1281,7 @@ where
     where
         E: de::Error,
     {
-        *self.key = Some(self.push_str(v));
+        *self.key = Some(self.track.push_bytes(v.as_bytes()));
         self.delegate.visit_str(v)
     }
 
@@ -1294,7 +1289,7 @@ where
     where
         E: de::Error,
     {
-        *self.key = Some(self.push_str(v));
+        *self.key = Some(self.track.push_bytes(v.as_bytes()));
         self.delegate.visit_borrowed_str(v)
     }
 
@@ -1302,7 +1297,7 @@ where
     where
         E: de::Error,
     {
-        *self.key = Some(self.push_str(&v));
+        *self.key = Some(self.track.push_bytes(v.as_bytes()));
         self.delegate.visit_string(v)
     }
 
@@ -1382,11 +1377,11 @@ where
 struct TrackedSeed<'a, 'b, 'buf, X> {
     seed: X,
     chain: Chain<'a>,
-    track: &'b Track<'buf>,
+    track: &'b mut Track<'buf>,
 }
 
 impl<'a, 'b, 'buf, X> TrackedSeed<'a, 'b, 'buf, X> {
-    fn new(seed: X, chain: Chain<'a>, track: &'b Track<'buf>) -> Self {
+    fn new(seed: X, chain: Chain<'a>, track: &'b mut Track<'buf>) -> Self {
         TrackedSeed { seed, chain, track }
     }
 }
@@ -1418,11 +1413,11 @@ struct SeqAccess<'a, 'b, 'buf, X> {
     delegate: X,
     chain: &'a Chain<'a>,
     index: usize,
-    track: &'b Track<'buf>,
+    track: &'b mut Track<'buf>,
 }
 
 impl<'a, 'b, 'buf, X> SeqAccess<'a, 'b, 'buf, X> {
-    fn new(delegate: X, chain: &'a Chain<'a>, track: &'b Track<'buf>) -> Self {
+    fn new(delegate: X, chain: &'a Chain<'a>, track: &'b mut Track<'buf>) -> Self {
         SeqAccess {
             delegate,
             chain,
@@ -1448,7 +1443,7 @@ where
             parent,
             index: self.index,
         };
-        let track = self.track;
+        let track = &mut *self.track;
         self.index += 1;
         self.delegate
             .next_element_seed(TrackedSeed::new(seed, chain, track))
@@ -1466,11 +1461,11 @@ struct MapAccess<'a, 'b, 'buf, X> {
     delegate: X,
     chain: &'a Chain<'a>,
     key: Option<(usize, u8)>,
-    track: &'b Track<'buf>,
+    track: &'b mut Track<'buf>,
 }
 
 impl<'a, 'b, 'buf, X> MapAccess<'a, 'b, 'buf, X> {
-    fn new(delegate: X, chain: &'a Chain<'a>, track: &'b Track<'buf>) -> Self {
+    fn new(delegate: X, chain: &'a Chain<'a>, track: &'b mut Track<'buf>) -> Self {
         MapAccess {
             delegate,
             chain,
@@ -1491,7 +1486,7 @@ where
         K: DeserializeSeed<'de>,
     {
         let chain = self.chain;
-        let track = self.track;
+        let track = &mut *self.track;
         let key = &mut self.key;
         self.delegate
             .next_key_seed(CaptureKey::new(seed, key, track))
@@ -1517,7 +1512,7 @@ where
             Some((start, len)) => (Chain::Map { parent, start, len }, Some(len)),
             None => (Chain::NonStringKey { parent }, None),
         };
-        let track = self.track;
+        let track = &mut *self.track;
         let result = self
             .delegate
             .next_value_seed(TrackedSeed::new(seed, chain, track))
