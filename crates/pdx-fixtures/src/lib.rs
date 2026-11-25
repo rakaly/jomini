@@ -55,7 +55,7 @@ fn log_access(name: &str) {
 }
 
 /// Download a file into memory.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(any(miri, target_family = "wasm")))]
 pub fn download(url: &str) -> Vec<u8> {
     let resp = attohttpc::get(url)
         .send()
@@ -67,10 +67,10 @@ pub fn download(url: &str) -> Vec<u8> {
         .unwrap_or_else(|e| panic!("failed to download {url}: {e}"))
 }
 
-/// Wasm has no network access, so a native run must fill the cache first.
-#[cfg(target_family = "wasm")]
+/// Wasm and miri have no network access, so a native run must fill the cache first.
+#[cfg(any(miri, target_family = "wasm"))]
 pub fn download(url: &str) -> Vec<u8> {
-    panic!("{url} is not cached and wasm cannot download it, run natively first");
+    panic!("{url} is not cached and cannot be downloaded here, run natively first");
 }
 
 static FETCH: Mutex<()> = Mutex::new(());

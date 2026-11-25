@@ -1234,6 +1234,7 @@ mod tests {
 
     /// The predicates of an id agree with the token that is read for it.
     #[test]
+    #[cfg_attr(miri, ignore)] // too slow
     fn lexeme_ids_match_their_tokens() {
         for id in 0..=u16::MAX {
             let id = LexemeId::new(id);

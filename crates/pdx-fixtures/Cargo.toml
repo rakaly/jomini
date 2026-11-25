@@ -8,5 +8,5 @@ edition = "2024"
 publish = false
 description = "Test support for the game crates: token files and save fixtures"
 
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
+[target.'cfg(not(any(miri, target_family = "wasm")))'.dependencies]
 attohttpc = { workspace = true }

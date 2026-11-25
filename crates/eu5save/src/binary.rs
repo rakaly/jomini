@@ -1187,6 +1187,27 @@ mod tests {
         assert_eq!(actual, Data { after: 3 });
     }
 
+    /// A skip of a container that is cut short is an error, wherever the cut
+    /// is. Miri sees a read past the end.
+    #[test]
+    fn skip_a_cut_container() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&id(LexemeId::OPEN));
+        for _ in 0..2 {
+            data.extend_from_slice(&id(LexemeId::I64));
+            data.extend_from_slice(&[0; 8]);
+            data.extend_from_slice(&id(LexemeId::QUOTED));
+            data.extend_from_slice(&[8, 0]);
+            data.extend_from_slice(b"a string");
+        }
+
+        for cut in 2..=data.len() {
+            let data: Box<[u8]> = data[..cut].into();
+            let err = skip(&mut ParserSource::from_slice(&data), 0).unwrap_err();
+            assert!(matches!(err.kind(), jomini::ErrorKind::Eof), "{err:?}");
+        }
+    }
+
     /// An unresolved lookup must be an error when the caller asks for one.
     #[test]
     fn unresolved_lookup() {

@@ -993,14 +993,16 @@ mod tests {
 
     #[test]
     fn skip_value_skips_nested_containers_and_long_strings() {
-        // { id={ "aaaa..." rgb { 1 2 3 } } } 0x1234
+        // { id={ "aaaa..." rgb { 1 2 3 } f64 } } 0x1234
         let mut data = vec![0x03, 0, 0x2d, 0x28, 0x01, 0, 0x03, 0, 0x0f, 0, 100, 0];
         data.extend([b'a'; 100]);
         data.extend([0x43, 0x02, 0x03, 0]);
         for _ in 0..3 {
             data.extend([0x14, 0, 1, 0, 0, 0]);
         }
-        data.extend([0x04, 0, 0x04, 0, 0x04, 0]);
+        data.extend([0x04, 0, 0x67, 0x01]);
+        data.extend([0; 8]);
+        data.extend([0x04, 0, 0x04, 0]);
         let end = data.len();
         data.extend([0x34, 0x12]);
 
@@ -1017,13 +1019,31 @@ mod tests {
         }
 
         for cut in 2..end {
-            let (slice, stream) = parsers(&data[..cut], 3, 16);
+            // An allocation of its own lets miri see a read past the end.
+            let data: Box<[u8]> = data[..cut].into();
+            let (slice, stream) = parsers(&data, 3, 16);
             for mut source in [slice, stream] {
                 let id = source.read_lexeme_id().unwrap();
                 let err = source.skip_value(id).unwrap_err();
                 assert_eq!(err.kind(), ReaderErrorKind::Eof);
             }
         }
+    }
+
+    #[test]
+    fn read_bstr_of_a_cut_string_is_eof() {
+        let data = [5, 0, b'h', b'e', b'l', b'l', b'o'];
+        for cut in 0..data.len() {
+            let data: Box<[u8]> = data[..cut].into();
+            let (slice, stream) = parsers(&data, 1, 7);
+            for mut source in [slice, stream] {
+                assert_eq!(source.read_bstr().unwrap_err(), ParserError::eof());
+            }
+        }
+        assert_eq!(
+            ParserSource::from_slice(&data).read_bstr().unwrap(),
+            b"hello"
+        );
     }
 
     #[test]
