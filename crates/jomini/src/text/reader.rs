@@ -254,8 +254,11 @@ impl<'a> TokenReader<'a> {
 
                         while ptr < end {
                             if *ptr == b'\\' {
-                                let advance = end.offset_from(ptr).min(2);
-                                ptr = ptr.offset(advance);
+                                // resume at an escape whose byte isn't read yet
+                                if end.offset_from(ptr) < 2 {
+                                    break;
+                                }
+                                ptr = ptr.add(2);
                             } else if *ptr != b'"' {
                                 ptr = ptr.add(1);
                             } else {
@@ -267,7 +270,8 @@ impl<'a> TokenReader<'a> {
 
                         // buffer or prior read too small
                         let len = self.source.window_len();
-                        self.next_kind_refill(ParseState::Quote, len, len)
+                        let offset = ptr.offset_from(window_start) as usize;
+                        self.next_kind_refill(ParseState::Quote, len, offset)
                     }
                     ParseState::Unquoted => {
                         let (window_start, end) = self.window_ptrs();
@@ -345,7 +349,7 @@ impl<'a> TokenReader<'a> {
                                     return self.next_kind_refill(
                                         ParseState::Quote,
                                         carry_over,
-                                        carry_over.max(2) - 2,
+                                        carry_over - (2 - advance as usize),
                                     );
                                 }
                             } else if *ptr != b'"' {
@@ -1144,6 +1148,73 @@ mod test {
             }
 
             assert!(reader.read().is_err());
+        }
+    }
+
+    /// Reads at most `max` bytes at a time.
+    struct ShortReads<'a> {
+        data: &'a [u8],
+        max: usize,
+    }
+
+    impl Read for ShortReads<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let len = buf.len().min(self.max);
+            self.data.read(&mut buf[..len])
+        }
+    }
+
+    #[test]
+    fn test_escape_split_between_reads() {
+        let data = br#""a\"b" = c"#;
+        let input = ShortReads { data, max: 1 };
+        let mut reader = TokenReader::from_reader_with_buf(input, vec![0; 16]);
+        for expected in [
+            Token::Quoted(Scalar::new(br#"a\"b"#)),
+            Token::Operator(Operator::Equal),
+            Token::Unquoted(Scalar::new(b"c")),
+        ] {
+            assert_eq!(reader.read().unwrap(), expected);
+        }
+        assert_eq!(reader.next().unwrap(), None);
+    }
+
+    /// Where the reads and the buffer split the data doesn't change the tokens.
+    #[rstest]
+    #[case::escapes(br#""a\"b" = "\"\"" "\\\"" = "\\\\" "\"\\" x\"y" "\a\\\\\\\"b" "" end"#)]
+    #[case::comments(b"# \"\\\" {\na=\"# \\\\\" # b\n{\"#\\\"\"}#\r\n;c # \"")]
+    #[case::operators(b"a=b c==d e<f<=g>h>=i!=j!k?=l?m = \"=\\\"=\" <= \"\\\\\">=n == o")]
+    #[case::others(b"\xef\xbb\xbfa={@b @[1 + \"c] d\xe8e\t[f]};g=-1.5\r\n")]
+    #[case::unterminated(br#"a="b\"c\\\" d"#)]
+    fn test_reader_tokens_match_slice(#[case] data: &[u8]) {
+        fn assert_same(mut reader: TokenReader, data: &[u8], at: &str) {
+            let mut slice = TokenReader::from_slice(data);
+            loop {
+                let expected = slice.next().map_err(|e| e.into_kind());
+                let actual = reader.next().map_err(|e| e.into_kind());
+                assert_eq!(actual, expected, "{at}");
+                if matches!(expected, Ok(None) | Err(_)) {
+                    break;
+                }
+            }
+        }
+
+        // The smallest buffer holds the longest token of each case.
+        let (reads, sizes) = if cfg!(miri) {
+            (1..=2, 24..=24)
+        } else {
+            (1..=data.len(), 24..=data.len() + 1)
+        };
+        for max in reads {
+            for size in sizes.clone() {
+                let input = ShortReads { data, max };
+                let reader = TokenReader::from_reader_with_buf(input, vec![0; size]);
+                assert_same(
+                    reader,
+                    data,
+                    &format!("read size {max}, buffer size {size}"),
+                );
+            }
         }
     }
 
