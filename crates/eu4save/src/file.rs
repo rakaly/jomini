@@ -19,9 +19,6 @@ use std::{
 #[cfg(feature = "zstd_c")]
 use std::io::BufReader;
 
-#[cfg(feature = "zstd_rust")]
-use ruzstd::decoding::{FrameDecoder, StreamingDecoder};
-
 const TXT_HEADER: &[u8] = b"EU4txt";
 const BIN_HEADER: &[u8] = b"EU4bin";
 
@@ -724,7 +721,7 @@ enum CompressedReaderKind<R: Read> {
     #[cfg(feature = "zstd_c")]
     ZstdC(zstd::stream::Decoder<'static, BufReader<R>>),
     #[cfg(feature = "zstd_rust")]
-    ZstdRust(StreamingDecoder<R, FrameDecoder>),
+    ZstdRust(Box<zrip::FrameDecoder<R>>),
 }
 
 struct CompressedFileReader<R: Read> {
@@ -754,12 +751,7 @@ impl<R: Read> CompressedFileReader<R> {
                 }
                 #[cfg(all(feature = "zstd_rust", not(feature = "zstd_c")))]
                 {
-                    let inflater = StreamingDecoder::new(reader).map_err(|e| {
-                        Eu4ErrorKind::InvalidSyntax(format!(
-                            "Failed to create ruzstd decoder: {}",
-                            e
-                        ))
-                    })?;
+                    let inflater = Box::new(zrip::FrameDecoder::new(reader));
                     Ok(CompressedFileReader {
                         reader: CompressedReaderKind::ZstdRust(inflater),
                     })

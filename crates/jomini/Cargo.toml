@@ -25,7 +25,7 @@ rawzip = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { version = "1.0.114", optional = true }
 zstd = { version = "0.14", default-features = false, optional = true }
-ruzstd = { version = "0.9", optional = true }
+zrip = { version = "0.8.27", default-features = false, features = ["std", "simd"], optional = true }
 fearless_simd = { version = "1.0", optional = true }
 
 [features]
@@ -37,7 +37,7 @@ json = ["serde", "serde_json"]
 serde = ["dep:serde", "serde/derive"]
 syntax = ["dep:fearless_simd"]
 zstd_c = ["envelope", "dep:zstd"]
-zstd_rust = ["envelope", "dep:ruzstd"]
+zstd_rust = ["envelope", "dep:zrip"]
 
 [dev-dependencies]
 encoding_rs = "0.8"

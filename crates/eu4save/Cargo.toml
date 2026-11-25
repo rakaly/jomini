@@ -16,7 +16,7 @@ default = []
 zstd_c = [
   "dep:zstd",
 ] # faster but can't be compiled for wasm on windows (preferred)
-zstd_rust = ["dep:ruzstd"] # slower but more compatible
+zstd_rust = ["dep:zrip"] # pure Rust, more compatible
 serialize = []
 tsify = ["dep:tsify", "dep:wasm-bindgen"]
 specta = ["dep:specta"]
@@ -26,7 +26,7 @@ jomini = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 zstd = { version = "0.14", default-features = false, optional = true }
-ruzstd = { version = "0.9", optional = true }
+zrip = { version = "0.8.27", default-features = false, features = ["std", "simd"], optional = true }
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 specta = { version = "1.0.4", optional = true }

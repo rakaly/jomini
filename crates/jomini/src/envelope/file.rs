@@ -19,9 +19,6 @@ use std::{
 #[cfg(feature = "zstd_c")]
 use std::io::BufReader;
 
-#[cfg(all(feature = "zstd_rust", not(feature = "zstd_c")))]
-use ruzstd::decoding::{FrameDecoder, StreamingDecoder};
-
 /// Read modern Paradox save files from memory or from the file system
 #[derive(Debug, Clone)]
 pub struct JominiFile<R> {
@@ -964,7 +961,7 @@ enum CompressedReaderKind<R> {
     #[cfg(feature = "zstd_c")]
     ZstdC(zstd::stream::Decoder<'static, BufReader<R>>),
     #[cfg(all(feature = "zstd_rust", not(feature = "zstd_c")))]
-    ZstdRust(Box<StreamingDecoder<ReadAdapter<R>, FrameDecoder>>),
+    ZstdRust(Box<zrip::FrameDecoder<ReadAdapter<R>>>),
 }
 
 impl<R> std::fmt::Debug for CompressedReader<R> {
@@ -994,10 +991,7 @@ impl CompressedReader<()> {
                 }
                 #[cfg(all(feature = "zstd_rust", not(feature = "zstd_c")))]
                 {
-                    let reader = StreamingDecoder::new(ReadAdapter::new(zip_entry.reader()))
-                        .map_err(|error| {
-                            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-                        })?;
+                    let reader = zrip::FrameDecoder::new(ReadAdapter::new(zip_entry.reader()));
                     CompressedReaderKind::ZstdRust(Box::new(reader))
                 }
             }
