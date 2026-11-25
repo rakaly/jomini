@@ -307,17 +307,14 @@ fn test_tuple_struct() {
 }
 
 #[test]
-fn test_buffer_push_pop_symmetry() {
-    // This test exercises the stack discipline of push_bytes and pop_bytes
-    // by deserializing multiple sequential map entries
-    let json = r#"{
-        "first": 1,
-        "second": 2,
-        "third": "wrong"
-    }"#;
+fn test_keys_are_removed_from_buffer() {
+    type Map<T> = std::collections::HashMap<String, T>;
 
-    let err = deserialize_tracked::<std::collections::HashMap<String, i32>>(json).unwrap_err();
-    assert_eq!(err, "third");
+    let mut path_buf = Vec::new();
+    let mut deserializer = serde_json::Deserializer::from_str(r#"{"a": {"b": 1, "c": 2}}"#);
+    arena_serde::tracked::deserialize::<_, Map<Map<i32>>>(&mut deserializer, &mut path_buf)
+        .unwrap();
+    assert_eq!(path_buf, b"");
 }
 
 #[test]
@@ -348,6 +345,32 @@ fn test_interleaved_maps_and_arrays() {
     let err =
         deserialize_tracked::<std::collections::HashMap<String, Vec<Item>>>(json).unwrap_err();
     assert_eq!(err, "items[2].id");
+}
+
+#[test]
+fn test_rejected_key_is_in_path() {
+    #[derive(Deserialize, Debug)]
+    #[serde(deny_unknown_fields)]
+    struct Inner {
+        a: i32,
+    }
+
+    let json = r#"{"outer": {"a": 1, "extra": 2}}"#;
+    let err = deserialize_tracked::<std::collections::HashMap<String, Inner>>(json).unwrap_err();
+    assert_eq!(err, "outer.extra");
+}
+
+#[test]
+fn test_enum_struct_variant() {
+    #[derive(Deserialize, Debug)]
+    enum Kind {
+        Struct { value: i32 },
+    }
+
+    let json = r#"[{"c": {"Struct": {"value": "x"}}}]"#;
+    let err =
+        deserialize_tracked::<Vec<std::collections::HashMap<String, Kind>>>(json).unwrap_err();
+    assert_eq!(err, "[0].c.Struct.value");
 }
 
 #[test]

@@ -9,6 +9,7 @@
 //! implement the trait by forwarding to `Deserialize`, so they can appear as
 //! fields next to arena-allocated ones.
 #![doc = include_str!("../README.md")]
+#![forbid(unsafe_code)]
 
 pub use arena_serde_derive::ArenaDeserialize;
 pub use bumpalo::collections::{String as ArenaString, Vec as ArenaVec};

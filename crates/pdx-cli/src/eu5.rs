@@ -37,19 +37,19 @@ impl Game for Eu5 {
         let resolver = BasicTokenResolver::from_text_lines(self.tokens.as_slice())?;
         let arena = Arena::new();
         let mut path_buf = Vec::new();
-        let track = tracked::Track::new_with(&mut path_buf);
+        let mut track = tracked::Track::new_with(&mut path_buf);
 
         let save = match file.gamestate()? {
             SaveContentKind::Text(mut txt) => {
                 let mut deser = txt.deserializer();
-                let deser = tracked::Deserializer::new(&mut deser, &track);
+                let deser = tracked::Deserializer::new(&mut deser, &mut track);
                 Gamestate::deserialize_in_arena(deser, &arena)
                     .map_err(|e| format!("{}: {e}", track.path()))?
             }
             SaveContentKind::Binary(mut bin) => {
                 let resolver = SaveResolver::from_file(&file, &resolver)?;
                 let mut deser = bin.deserializer(&resolver);
-                let deser = tracked::Deserializer::new(&mut deser, &track);
+                let deser = tracked::Deserializer::new(&mut deser, &mut track);
                 Gamestate::deserialize_in_arena(deser, &arena)
                     .map_err(|e| format!("{}: {e}", track.path()))?
             }
