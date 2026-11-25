@@ -65,7 +65,9 @@ fn run() -> Result<ExitCode> {
         "json" => {
             let mut text = Vec::new();
             game(path)?.melt(&mut text)?;
-            json(&text, &mut out)?;
+            if !json(&text, &mut out)? {
+                status = ExitCode::FAILURE;
+            }
         }
         "debug" => {
             let start = Instant::now();
@@ -120,11 +122,24 @@ fn game(path: &Path) -> Result<Box<dyn Game>> {
 
 /// Write a plain text document as JSON, skipping a `<GAME>txt` header line
 /// when there is one.
-fn json(text: &[u8], out: &mut dyn Write) -> Result<()> {
+///
+/// The parser recovers from syntax errors, so the JSON is written even when
+/// there are errors. Then the first one goes to stderr and the return value is
+/// `false`. An extra closing brace is not an error.
+fn json(text: &[u8], out: &mut dyn Write) -> Result<bool> {
     let body = strip_header(text).unwrap_or(text);
-    let tape = jomini::TextTape::from_slice(body)?;
-    tape.utf8_reader().json().to_writer(out)?;
-    Ok(())
+    if u32::try_from(body.len()).is_err() {
+        return Err("the text is larger than 4 GiB".into());
+    }
+    let parse = syntax::parse(body);
+    let doc = parse.document(jomini::Utf8Encoding::new());
+    doc.json().to_writer(&mut *out)?;
+    out.flush()?;
+    let check = doc.check();
+    if let Err(error) = &check {
+        eprintln!("the document has a syntax error: {error}");
+    }
+    Ok(check.is_ok())
 }
 
 /// Reformat a plain text file, keeping a `<GAME>txt` or `SAV...` header
