@@ -144,6 +144,10 @@ pub use self::error::{Error, ErrorKind, PathSegment};
 pub use self::wrappers::Spanned;
 
 pub(crate) use self::engine::{Doc, DocDe, Item, Rest, VALUE, ValueDe, View};
+#[cfg(feature = "json")]
+pub(crate) use self::engine::{classify, is_empty_block};
+#[cfg(feature = "json")]
+pub(crate) use self::tree::{TreeNode, is_decimal};
 
 use self::tree::{TreeCtx, TreeDoc};
 use super::{OwnedParse, Parse, SyntaxErrorKind, SyntaxTree};

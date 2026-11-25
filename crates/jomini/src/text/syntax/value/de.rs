@@ -335,6 +335,22 @@ impl<B> ValueDoc<'_, B> {
     }
 }
 
+/// The model of a value, for the JSON serializer.
+#[cfg(feature = "json")]
+pub(crate) fn json_doc<'v>() -> ValueDoc<'v, Borrowed> {
+    ValueDoc::new()
+}
+
+/// A block as the root of a document, for the JSON serializer.
+#[cfg(feature = "json")]
+pub(crate) fn json_root(block: &OwnedBlock) -> ValueContainer<'_> {
+    ValueContainer {
+        items: &block.items,
+        root: true,
+        top: true,
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ValueScalar<'v> {
     text: &'v str,
@@ -459,6 +475,11 @@ impl<'v, B> Doc for ValueDoc<'v, B> {
 
     fn string(self, scalar: Self::Scalar) -> String {
         scalar.text.to_string()
+    }
+
+    #[cfg(feature = "json")]
+    fn with_str<R>(self, scalar: Self::Scalar, f: impl FnOnce(&str) -> R) -> R {
+        f(scalar.text)
     }
 
     fn node_range(self, _node: Self::Node) -> Option<TextRange> {

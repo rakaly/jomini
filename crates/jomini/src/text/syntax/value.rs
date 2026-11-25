@@ -4,6 +4,8 @@ mod de;
 pub(crate) mod tape;
 
 pub(crate) use self::de::visit_owned;
+#[cfg(feature = "json")]
+pub(crate) use self::de::{Borrowed, ValueDoc, json_doc, json_root};
 
 use super::de::{Doc, Item as DocItem, Rest, View};
 use super::{LexFlavor, SyntaxKind, SyntaxTree, lexer};

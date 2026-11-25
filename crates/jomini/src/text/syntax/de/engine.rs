@@ -77,6 +77,10 @@ pub(crate) trait Doc: Copy {
     }
     /// The decoded text of a scalar.
     fn string(self, scalar: Self::Scalar) -> String;
+    /// Give the decoded text of a scalar to `f`, without a copy when the
+    /// model has the text.
+    #[cfg(feature = "json")]
+    fn with_str<R>(self, scalar: Self::Scalar, f: impl FnOnce(&str) -> R) -> R;
     fn node_range(self, node: Self::Node) -> Option<TextRange>;
     fn scalar_range(self, scalar: Self::Scalar) -> Option<TextRange>;
     fn container_range(self, container: Self::Container) -> Option<TextRange>;
@@ -171,6 +175,13 @@ impl<D: Doc> Rest<D> {
         Rest { head: None, items }
     }
 
+    /// Put back the entry that the iterator gave last.
+    #[cfg(feature = "json")]
+    pub(crate) fn put_back(&mut self, item: Item<D>) {
+        debug_assert!(self.head.is_none());
+        self.head = Some(item);
+    }
+
     /// The first entry, and the entries after it.
     pub(crate) fn into_parts(self) -> (Option<Item<D>>, D::Items) {
         (self.head, self.items)
@@ -237,7 +248,7 @@ impl<D: Doc> Text<D> {
     }
 }
 
-fn is_empty_block<D: Doc>(doc: D, item: &Item<D>) -> bool {
+pub(crate) fn is_empty_block<D: Doc>(doc: D, item: &Item<D>) -> bool {
     match item {
         Item::Value(node) => matches!(doc.view(*node), View::Block(c) if doc.is_empty(c)),
         _ => false,
