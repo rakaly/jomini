@@ -16,7 +16,7 @@ default = []
 zstd_c = [
   "dep:zstd",
 ] # faster but can't be compiled for wasm on windows (preferred)
-zstd_rust = ["dep:zrip"] # slower but more compatible
+zstd_rust = ["dep:zrip"] # pure Rust, more compatible
 serialize = []
 tsify = ["dep:tsify", "dep:wasm-bindgen"]
 specta = ["dep:specta"]
