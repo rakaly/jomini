@@ -601,9 +601,9 @@ impl Date {
                 Self::fast_parse(r).unwrap_or_else(|| Self::fallback(s))
             }
             _ => {
-                if s.len() == 8 {
+                if let Ok(chunk) = <&[u8; 8]>::try_from(s) {
                     // YYYY.M.D
-                    let d = le_u64(s);
+                    let d = le_u64(chunk);
                     let one_digit_month = d & 0x00FF_00FF_0000_0000 == 0x002E_002E_0000_0000;
                     let e = (d & 0xFF30_FF30_FFFF_FFFF) | 0x0030_0030_0000_0000;
                     if one_digit_month && let Some(x) = Self::fast_parse_u64(e) {

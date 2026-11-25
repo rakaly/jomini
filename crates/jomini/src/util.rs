@@ -1,10 +1,3 @@
-/// A simplified and const generic version of arrayref
-#[inline]
-fn take<const N: usize>(data: &[u8]) -> [u8; N] {
-    debug_assert!(data.len() >= N);
-    unsafe { *(data.as_ptr() as *const [u8; N]) }
-}
-
 #[inline]
 pub(crate) fn get_split<const N: usize>(data: &[u8]) -> Option<(&[u8; N], &[u8])> {
     data.split_first_chunk::<N>()
@@ -28,8 +21,8 @@ pub(crate) const fn fast_digit_parse(val: u64) -> Option<u64> {
 }
 
 #[inline]
-pub(crate) fn le_u64(data: &[u8]) -> u64 {
-    u64::from_le_bytes(take::<8>(data))
+pub(crate) fn le_u64(data: &[u8; 8]) -> u64 {
+    u64::from_le_bytes(*data)
 }
 
 #[inline(always)]

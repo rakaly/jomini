@@ -155,6 +155,15 @@ static PAYLOAD_SIZES: [u8; MAX_LEXEME + 1] = {
     t
 };
 
+// The unsafe reads of `skip_container` rely on this limit.
+const _: () = {
+    let mut i = 0;
+    while i < PAYLOAD_SIZES.len() {
+        assert!(PAYLOAD_SIZES[i] <= 8);
+        i += 1;
+    }
+};
+
 #[inline]
 fn class(id: LexemeId) -> Class {
     match CLASSES.get(id.0 as usize) {
@@ -754,7 +763,8 @@ fn skip_container(source: &mut ParserSource<'_>) -> Result<(), Error> {
         let mut i = 0usize;
 
         // A ten byte tail margin means a lexeme id and its largest fixed
-        // payload are always in bounds, so the loop needs no bounds check.
+        // payload (eight bytes, asserted next to the table of payload sizes)
+        // are always in bounds, so the loop needs no bounds check.
         while i + 10 <= len {
             // SAFETY: `i + 10 <= len` from the loop condition.
             let id = LexemeId::new(u16::from_le_bytes(unsafe {

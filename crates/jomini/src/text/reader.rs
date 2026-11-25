@@ -109,7 +109,10 @@ enum ParseState {
 pub struct TokenReader<'a> {
     source: ParserSource<'a>,
     utf8: Utf8Bom,
-    scalar_start: usize,
+
+    // The bytes of the last scalar. They are valid until the source refills, so
+    // they are only read for the token that was just scanned.
+    scalar_start: *const u8,
     scalar_len: usize,
 }
 
@@ -144,7 +147,7 @@ impl<'a> TokenReader<'a> {
         TokenReader {
             source,
             utf8: Utf8Bom::Unknown,
-            scalar_start: 0,
+            scalar_start: std::ptr::dangling(),
             scalar_len: 0,
         }
     }
@@ -168,8 +171,13 @@ impl<'a> TokenReader<'a> {
         debug_assert!(advanced);
     }
 
+    /// # Safety
+    ///
+    /// `window_start` must be the start of the current window, and `ptr` must
+    /// be in the window or at its end.
     #[inline]
     unsafe fn advance_to(&mut self, window_start: *const u8, ptr: *const u8) {
+        // SAFETY: the caller passes pointers into one window.
         let amt = unsafe { ptr.offset_from(window_start) as usize };
         self.advance(amt);
     }
@@ -178,21 +186,32 @@ impl<'a> TokenReader<'a> {
     fn window_ptrs(&self) -> (*const u8, *const u8) {
         let window = self.source.window();
         let start = window.as_ptr();
+        // SAFETY: the end of the window is one past its last byte.
         (start, unsafe { start.add(window.len()) })
     }
 
+    /// Record the bytes of the scalar that [`scalar_data`](Self::scalar_data)
+    /// returns.
+    ///
+    /// # Safety
+    ///
+    /// `start <= end`, and both must be within, or one past, the bytes that the
+    /// buffer of the source holds since the last refill. The bytes can already
+    /// be consumed.
     #[inline]
-    fn set_scalar(&mut self, start: *const u8, end: *const u8) {
+    unsafe fn set_scalar(&mut self, start: *const u8, end: *const u8) {
         debug_assert!(start <= end);
-        self.scalar_start = start as usize;
+        self.scalar_start = start;
+        // SAFETY: both pointers are in one buffer.
         self.scalar_len = unsafe { end.offset_from(start) as usize };
     }
 
     #[inline]
     fn scalar_data(&self) -> Scalar<'_> {
-        Scalar::new(unsafe {
-            std::slice::from_raw_parts(self.scalar_start as *const u8, self.scalar_len)
-        })
+        // SAFETY: this is called right after the scan that set the scalar, so
+        // the source has not been refilled since. The scalar borrows the reader,
+        // and a refill needs it mutably.
+        Scalar::new(unsafe { std::slice::from_raw_parts(self.scalar_start, self.scalar_len) })
     }
 
     #[inline]
@@ -217,6 +236,10 @@ impl<'a> TokenReader<'a> {
         ReaderError::new(self.position(), kind)
     }
 
+    /// # Safety
+    ///
+    /// `carry_over` must not exceed the length of the window, nor `offset` the
+    /// carry over.
     unsafe fn next_kind_refill(
         &mut self,
         state: ParseState,
@@ -296,7 +319,7 @@ impl<'a> TokenReader<'a> {
         }
     }
 
-    unsafe fn next_kind_fallback(&mut self) -> Result<Option<TokenKind>, ReaderError> {
+    fn next_kind_fallback(&mut self) -> Result<Option<TokenKind>, ReaderError> {
         unsafe {
             let (window_start, end) = self.window_ptrs();
             let mut ptr = window_start;
@@ -506,7 +529,7 @@ impl<'a> TokenReader<'a> {
     }
 
     #[inline]
-    unsafe fn next_kind_opt(&mut self) -> Result<Option<TokenKind>, ReaderError> {
+    fn next_kind_opt(&mut self) -> Result<Option<TokenKind>, ReaderError> {
         unsafe {
             let (window_start, end) = self.window_ptrs();
             let mut ptr = window_start;
@@ -865,7 +888,7 @@ impl<'a> TokenReader<'a> {
 
     #[inline]
     fn next_kind(&mut self) -> Result<Option<TokenKind>, ReaderError> {
-        unsafe { self.next_kind_opt() }
+        self.next_kind_opt()
     }
 
     #[cold]

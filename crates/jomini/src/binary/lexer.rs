@@ -294,6 +294,15 @@ static PAYLOAD_SIZES: [u8; (LexemeId::STR_SAV03.0 as usize) + 1] = {
     t
 };
 
+// The unsafe reads of `ParserSource::skip_container` rely on this limit.
+const _: () = {
+    let mut i = 0;
+    while i < PAYLOAD_SIZES.len() {
+        assert!(PAYLOAD_SIZES[i] <= 8);
+        i += 1;
+    }
+};
+
 #[inline]
 pub(crate) fn read_id(data: &[u8]) -> Result<(LexemeId, &[u8]), LexError> {
     let (head, rest) = get_split::<2>(data).ok_or(LexError::Eof)?;

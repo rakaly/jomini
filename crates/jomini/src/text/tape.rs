@@ -465,11 +465,12 @@ impl<'a> TextTape<'a> {
 
     /// Return a mutable reference to the tokens for in-place modification
     ///
-    /// # Safety and Correctness Caveats
+    /// # Correctness Caveats
     ///
-    /// When modifying tokens in-place, the caller is **fully responsible** for ensuring
-    /// that the resulting token stream maintains structural validity. Improper modifications
-    /// can lead to undefined behavior, panics, or incorrect parsing results.
+    /// The readers and deserializers trust the structure of the tape, so the
+    /// caller must keep it valid. A tape with an invalid structure never causes
+    /// undefined behavior, but it can give incorrect results or errors, and a
+    /// read of it can panic, never return, or run out of stack or memory.
     ///
     /// ## Critical Requirements:
     ///
@@ -479,18 +480,18 @@ impl<'a> TextTape<'a> {
     /// - Modifying container tokens requires updating **both** the opening and closing indices
     /// - Object keys must be scalar tokens
     ///
-    /// ## Safe Modifications
-    /// The following modifications are generally safe:
+    /// ## Valid Modifications
+    /// The following modifications keep the structure valid:
     /// - Changing scalar values (`Unquoted` ↔ `Quoted`)
     /// - Modifying operator types (`Operator::Exists` → `Operator::Equal`)
     /// - Updating scalar content (with same lifetime constraints)
     ///
-    /// ## Example: Safe Operator Modification
+    /// ## Example: Operator Modification
     /// ```rust
     /// # use jomini::{TextTape, text::{TextToken, Operator}};
     /// let mut tape = TextTape::from_slice(b"foo ?= 10").unwrap();
     ///
-    /// // Safe: Replace exists operator with equals operator
+    /// // Replace exists operator with equals operator
     /// for token in tape.tokens_mut() {
     ///     if let TextToken::Operator(Operator::Exists) = token {
     ///         *token = TextToken::Operator(Operator::Equal);

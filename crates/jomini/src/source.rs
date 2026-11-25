@@ -586,10 +586,11 @@ impl<'a> ParserSource<'a> {
             let mut i = 0usize;
 
             // A 10-byte tail margin guarantees that reading a lexeme id (2
-            // bytes) plus its largest fixed payload (8 bytes) stays in bounds,
-            // so the inner loop needs no per-token bounds checks.
+            // bytes) plus its largest fixed payload (8 bytes, asserted next to
+            // the table of payload sizes) stays in bounds, so the inner loop
+            // needs no per-token bounds checks.
             while i + 10 <= len {
-                // SAFETY: `i + 2 <= len` from the loop condition.
+                // SAFETY: `i + 10 <= len` from the loop condition.
                 let id = LexemeId::new(u16::from_le_bytes(unsafe {
                     [*base.add(i), *base.add(i + 1)]
                 }));
@@ -602,6 +603,7 @@ impl<'a> ParserSource<'a> {
                         i += 2;
                         depth -= 1;
                         if depth == 0 {
+                            // SAFETY: `i <= len`.
                             unsafe { self.advance_unchecked(i) };
                             return Ok(());
                         }
@@ -614,6 +616,7 @@ impl<'a> ParserSource<'a> {
                         // out of a pathological refill: breaking mid-window
                         // forces `refill` to memmove the entire remaining
                         // window for every string in string-heavy subtrees.
+                        // SAFETY: `i + 4 <= len` from the margin.
                         let str_len =
                             u16::from_le_bytes(unsafe { [*base.add(i + 2), *base.add(i + 3)] })
                                 as usize;
@@ -634,6 +637,7 @@ impl<'a> ParserSource<'a> {
 
             // Commit the bytes consumed by the fast loop, then take one careful
             // step, which refills when the window does not hold a lexeme.
+            // SAFETY: `i <= len`.
             unsafe { self.advance_unchecked(i) };
             self.skip_step(&mut depth)?;
             if depth == 0 {
