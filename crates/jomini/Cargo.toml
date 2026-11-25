@@ -25,7 +25,7 @@ rawzip = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { version = "1.0.114", optional = true }
 zstd = { version = "0.14", default-features = false, optional = true }
-zrip = { version = "0.8.26", default-features = false, features = ["std", "simd"], optional = true }
+zrip = { version = "0.8.27", default-features = false, features = ["std", "simd"], optional = true }
 fearless_simd = { version = "1.0", optional = true }
 
 [features]
