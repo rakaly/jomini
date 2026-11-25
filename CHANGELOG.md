@@ -1,3 +1,20 @@
+## v0.39.0 - 2026-11-25
+
+- Convert parsed files and edited values to JSON, optionally with variables resolved. [#338](https://github.com/rakaly/jomini/pull/338)
+
+- Melting is much faster: the EU5 1.4 melt went from **2.17 s to 1.04 s**, and EU4 from **268 ms to 146 ms**. [#333](https://github.com/rakaly/jomini/pull/333) [#335](https://github.com/rakaly/jomini/pull/335)
+- Added APIs to decouple inflation from parsing. An EU5 1.4 save deserialized in **264 ms instead of 458 ms**. [#336](https://github.com/rakaly/jomini/pull/336)
+- Pure Rust Zstd decoding is over 3x faster, now with `zrip` instead of `ruzstd`. [#343](https://github.com/rakaly/jomini/pull/343)
+- Write fixed-point numbers exactly with the new `Decimal` type. [#335](https://github.com/rakaly/jomini/pull/335)
+- Fix safe code being able to read out-of-bounds memory through the binary reader or a misbehaving `Read`. [#333](https://github.com/rakaly/jomini/pull/333)
+- Fix some truncated binary saves being read as complete. [#333](https://github.com/rakaly/jomini/pull/333)
+- Fix the text `TokenReader` sometimes ending a string early at an escaped quote. [#346](https://github.com/rakaly/jomini/pull/346)
+- Fix text being misread after a custom deserializer ignores a "buffer too small" error. The error is now returned. [#331](https://github.com/rakaly/jomini/pull/331)
+- Binary and text readers now share the same two methods: `next`, and `read` for when a token is required. `TokenKind` and the methods that used it are gone. [#333](https://github.com/rakaly/jomini/pull/333) [#334](https://github.com/rakaly/jomini/pull/334)
+- `BinarySourceExt` can no longer be implemented outside of jomini. [#333](https://github.com/rakaly/jomini/pull/333)
+- Envelope methods return concrete readers instead of `Box<dyn Read>`. [#336](https://github.com/rakaly/jomini/pull/336)
+- A `TokenResolver` must always give the same answer for the same token. [#335](https://github.com/rakaly/jomini/pull/335)
+
 ## v0.38.1 - 2026-11-22
 
 ### Game and Mod Files (experimental `syntax` feature)
