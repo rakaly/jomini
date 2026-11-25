@@ -135,6 +135,8 @@ jobs:
   miri:
     name: miri
     runs-on: ubuntu-latest
+    env:
+      MIRIFLAGS: -Zmiri-tree-borrows
     steps:
     - uses: actions/checkout@v7
     - name: Install Rust
@@ -143,9 +145,11 @@ jobs:
         toolchain: nightly
         components: miri
     - name: Run miri
-      run: cargo miri test -p jomini -p jomini_derive -p arena-serde
-      env:
-        MIRIFLAGS: -Zmiri-tree-borrows
+      # `text::de` is skipped as it takes most of the time, and its only unsafe
+      # code is an index with a debug assertion, which the test jobs check.
+      run: "cargo miri test -p jomini -- --skip text::de::"
+    - name: Run miri (eu5save)
+      run: cargo miri test -p eu5save --lib binary::tests::skip
 
   games:
     name: games (${{ matrix.crate }})

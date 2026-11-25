@@ -1165,6 +1165,42 @@ mod test {
         }
     }
 
+    /// Wherever the data is cut, a stream gives the tokens and skips of a
+    /// slice. Miri sees a read past the end of either.
+    #[test]
+    fn test_cut_data() {
+        let data =
+            b"a={ b=\"cccccccccccccccc\" #d\n==e }\n\t\t\t\t\t\t\t={ffffffffffffffff \"g\\\"h\\\\\" } ";
+        for cut in 0..=data.len() {
+            let data: Box<[u8]> = data[..cut].into();
+            let readers = || {
+                let stream = TokenReader::from_reader_with_buf(&data[..], vec![0; 24]);
+                (TokenReader::from_slice(&data), stream)
+            };
+
+            let (mut slice, mut stream) = readers();
+            loop {
+                let token = slice.next().map_err(|e| e.kind());
+                assert_eq!(token, stream.next().map_err(|e| e.kind()), "{cut}");
+                if !matches!(token, Ok(Some(_))) {
+                    break;
+                }
+            }
+
+            let (mut slice, mut stream) = readers();
+            while let Ok(Some(Token::Unquoted(_) | Token::Operator(_))) = slice.next() {
+                stream.next().unwrap();
+                let skipped = slice.skip_unquoted_value().map_err(|e| e.kind());
+                assert_eq!(
+                    skipped,
+                    stream.skip_unquoted_value().map_err(|e| e.kind()),
+                    "{cut}"
+                );
+                assert_eq!(slice.position(), stream.position(), "{cut}");
+            }
+        }
+    }
+
     #[rstest]
     #[case(b"\"\\")]
     fn test_crash_regression(#[case] input: &[u8]) {
