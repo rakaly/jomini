@@ -29,13 +29,9 @@ impl Error {
         self
     }
 
-    /// Swap in `full`, the error of the reader that this error stands for,
-    /// and locate it at the position the reader error was returned at if it
-    /// has no offset. An I/O error stands for a reader error of the same kind,
-    /// and an end of the data for a reader error of
-    /// [`std::io::ErrorKind::UnexpectedEof`], as a reader error is never a
-    /// clean end. Any other error is kept, as the reader error was then
-    /// handled before it.
+    /// Replaces this error with the reader's full error if the reader caused
+    /// it: an I/O error of the same kind, or an end of data when the reader
+    /// reported `UnexpectedEof`. Adds the reader error's position as the offset.
     #[cfg(feature = "serde")]
     #[cold]
     #[inline(never)]
@@ -466,13 +462,13 @@ mod tests {
         use super::ErrorKind;
         use std::io;
 
-        // A reader error of another kind was handled before this error.
+        // Different kinds: the reader error isn't the cause.
         let kind_only = Error::new(ErrorKind::Io(io::ErrorKind::Other.into()));
         let full = io::Error::new(io::ErrorKind::InvalidData, "stale");
         let err = kind_only.restore_io(Some((full, 7)));
         assert_eq!(err.to_string(), "io error: other error");
 
-        // Only a reader that ends early stands for an end of the data.
+        // An end of data is only caused by a reader reporting `UnexpectedEof`.
         let err = Error::eof().restore_io(Some((io::Error::other("stale"), 7)));
         assert!(matches!(err.kind(), ErrorKind::Eof));
         assert_eq!(err.offset(), None);

@@ -1026,11 +1026,8 @@ where
         ))
     }
 
-    /// Every map or struct deserialization of the root comes through here,
-    /// so an error that stands for a reader error, but has only its kind,
-    /// gets the full reader error back here. An error that a visitor turned
-    /// into a message on the way up, as with `de::Error::custom`, keeps the
-    /// message.
+    /// Every root map or struct passes through here, so this is where an I/O
+    /// error gets back the reader's full message.
     #[inline]
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Error>
     where
@@ -3518,8 +3515,8 @@ mod tests {
 
     #[test]
     fn reader_error_keeps_its_message_when_the_buffer_refills() {
-        // A buffer of 4 bytes refills in the middle of `field1`, and so the
-        // position the error is kept at is past bytes of earlier windows.
+        // A 4-byte buffer refills several times, so the stored position must
+        // count the earlier windows.
         let reader = FailsAfter::new(ONE_FIELD, "inflate failed");
         let err = deserialize_two_fields(reader, 4);
         let other = std::io::ErrorKind::Other;
@@ -3548,7 +3545,8 @@ mod tests {
 
     #[test]
     fn reader_error_keeps_its_message_through_a_direct_deserialize() {
-        // As an arena deserialization calls it, without `deserialize()`.
+        // Arena deserialization calls `T::deserialize` directly, skipping
+        // `deserialize()`.
         let reader = FailsAfter::new(ONE_FIELD, "the blob changed");
         let map = HashMap::from([
             (0x2d82, String::from("field1")),

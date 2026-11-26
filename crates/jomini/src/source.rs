@@ -96,10 +96,8 @@ enum Backing<'a> {
         /// return once more bytes are needed.
         error: Option<io::Error>,
 
-        /// The last error of the reader that was returned, and the position
-        /// it was returned at. A [`ParserError`] keeps only its kind, so that
-        /// it stays small in hot loops, and this keeps the rest for
-        /// `ParserSource::take_io_error`.
+        /// The last reader error returned, and its position. A [`ParserError`]
+        /// keeps only the kind, to stay small in hot loops.
         returned: Option<(io::Error, usize)>,
     },
     Owned {
@@ -284,10 +282,8 @@ impl<'a> ParserSource<'a> {
         }
     }
 
-    /// Takes the last error of the reader that was returned as a
-    /// [`ParserError::Io`], which keeps only its kind, and the position it was
-    /// returned at. It is only given when nothing was read after it, as an
-    /// error raised later can't stand for it.
+    /// Takes the last reader error and its position, unless bytes were read
+    /// since, which means it was handled.
     #[cfg(feature = "serde")]
     #[cold]
     pub(crate) fn take_io_error(&mut self) -> Option<(io::Error, usize)> {
@@ -704,8 +700,7 @@ impl<'a> ParserSource<'a> {
     }
 }
 
-/// Keeps `err` as the last error of the reader, returned at `position`, and
-/// returns its kind.
+/// Stores `err` and its position, and returns its kind.
 #[cold]
 #[inline(never)]
 fn keep_io_error(
@@ -1299,8 +1294,7 @@ mod tests {
         assert_eq!(parser.take::<1>().unwrap(), &[1]);
         parser.ensure_bytes(4).unwrap_err();
 
-        // The caller handles the error and reads on in the window, so a later
-        // error can't stand for it.
+        // The caller handles the error and keeps reading, so it's dropped.
         assert_eq!(parser.take::<1>().unwrap(), &[2]);
         assert!(parser.take_io_error().is_none());
     }
