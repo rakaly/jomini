@@ -1026,12 +1026,19 @@ where
         ))
     }
 
+    /// Every map or struct deserialization of the root comes through here,
+    /// so an error that stands for a reader error, but has only its kind,
+    /// gets the full reader error back here. An error that a visitor turned
+    /// into a message on the way up, as with `de::Error::custom`, keeps the
+    /// message.
     #[inline]
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_map(BinaryMapAccess::new(self, true))
+        visitor
+            .visit_map(BinaryMapAccess::new(&mut *self, true))
+            .map_err(|e| e.restore_io(self.source.take_io_error()))
     }
 
     #[inline]
@@ -3430,5 +3437,126 @@ mod tests {
         }
 
         Ok(result)
+    }
+
+    /// Gives `data`, then fails with an error of `kind` and `msg` on every
+    /// read after it.
+    struct FailsAfter {
+        data: &'static [u8],
+        kind: std::io::ErrorKind,
+        msg: &'static str,
+    }
+
+    impl FailsAfter {
+        fn new(data: &'static [u8], msg: &'static str) -> Self {
+            let kind = std::io::ErrorKind::Other;
+            FailsAfter { data, kind, msg }
+        }
+    }
+
+    impl std::io::Read for FailsAfter {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.data.is_empty() {
+                return Err(std::io::Error::new(self.kind, self.msg));
+            }
+            let n = buf.len().min(self.data.len());
+            buf[..n].copy_from_slice(&self.data[..n]);
+            self.data = &self.data[n..];
+            Ok(n)
+        }
+    }
+
+    #[derive(Deserialize, Debug)]
+    #[allow(dead_code)]
+    struct TwoFields {
+        field1: u32,
+        field2: u32,
+    }
+
+    /// `field1=1`, and the data stops before `field2`.
+    const ONE_FIELD: &[u8] = &[0x82, 0x2d, 0x01, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00];
+
+    fn deserialize_two_fields(reader: impl std::io::Read, buffer_len: usize) -> Error {
+        let map = HashMap::from([
+            (0x2d82, String::from("field1")),
+            (0x2d83, String::from("field2")),
+        ]);
+        let mut builder = eu4_builder();
+        builder.reader_buffer(vec![0; buffer_len]);
+        builder
+            .deserialize_reader::<_, TwoFields, _>(reader, &map)
+            .unwrap_err()
+    }
+
+    fn assert_reader_error(err: Error, kind: std::io::ErrorKind, msg: &str, offset: usize) {
+        match err.kind() {
+            crate::ErrorKind::Io(e) => assert_eq!(e.kind(), kind),
+            kind => panic!("expected an io error, got {kind:?}"),
+        }
+        assert_eq!(
+            err.to_string(),
+            format!("io error: {msg} (offset: {offset})")
+        );
+    }
+
+    #[test]
+    fn reader_error_keeps_its_message_after_enough_bytes() {
+        // The first read gives enough bytes for `field1`, so the error of the
+        // next read is held until `field2` needs more bytes.
+        let reader = FailsAfter::new(ONE_FIELD, "the blob changed");
+        let err = deserialize_two_fields(reader, 1024);
+        let other = std::io::ErrorKind::Other;
+        assert_reader_error(err, other, "the blob changed", ONE_FIELD.len());
+    }
+
+    #[test]
+    fn reader_error_keeps_its_message_when_the_first_read_fails() {
+        let reader = FailsAfter::new(&[], "no permission");
+        let err = deserialize_two_fields(reader, 1024);
+        assert_reader_error(err, std::io::ErrorKind::Other, "no permission", 0);
+    }
+
+    #[test]
+    fn reader_error_keeps_its_message_when_the_buffer_refills() {
+        // A buffer of 4 bytes refills in the middle of `field1`, and so the
+        // position the error is kept at is past bytes of earlier windows.
+        let reader = FailsAfter::new(ONE_FIELD, "inflate failed");
+        let err = deserialize_two_fields(reader, 4);
+        let other = std::io::ErrorKind::Other;
+        assert_reader_error(err, other, "inflate failed", ONE_FIELD.len());
+    }
+
+    #[test]
+    fn reader_error_of_an_early_end_keeps_its_message() {
+        let eof = std::io::ErrorKind::UnexpectedEof;
+        let reader = FailsAfter {
+            data: ONE_FIELD,
+            kind: eof,
+            msg: "corrupt deflate stream",
+        };
+        let err = deserialize_two_fields(reader, 1024);
+        assert_reader_error(err, eof, "corrupt deflate stream", ONE_FIELD.len());
+    }
+
+    #[test]
+    fn data_that_ends_early_is_still_eof() {
+        // The data ends in the middle of the value of `field1`.
+        let data = &ONE_FIELD[..ONE_FIELD.len() - 1];
+        let err = deserialize_two_fields(data, 1024);
+        assert!(matches!(err.kind(), crate::ErrorKind::Eof), "{err:?}");
+    }
+
+    #[test]
+    fn reader_error_keeps_its_message_through_a_direct_deserialize() {
+        // As an arena deserialization calls it, without `deserialize()`.
+        let reader = FailsAfter::new(ONE_FIELD, "the blob changed");
+        let map = HashMap::from([
+            (0x2d82, String::from("field1")),
+            (0x2d83, String::from("field2")),
+        ]);
+        let mut de = eu4_builder().from_reader(reader, &map);
+        let err = TwoFields::deserialize(&mut de).unwrap_err();
+        let other = std::io::ErrorKind::Other;
+        assert_reader_error(err, other, "the blob changed", ONE_FIELD.len());
     }
 }

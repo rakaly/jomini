@@ -29,6 +29,32 @@ impl Error {
         self
     }
 
+    /// Swap in `full`, the error of the reader that this error stands for,
+    /// and locate it at the position the reader error was returned at if it
+    /// has no offset. An I/O error stands for a reader error of the same kind,
+    /// and an end of the data for a reader error of
+    /// [`std::io::ErrorKind::UnexpectedEof`], as a reader error is never a
+    /// clean end. Any other error is kept, as the reader error was then
+    /// handled before it.
+    #[cfg(feature = "serde")]
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn restore_io(mut self, full: Option<(std::io::Error, usize)>) -> Error {
+        let Some((full, position)) = full else {
+            return self;
+        };
+        let stands_for = match &self.0.kind {
+            ErrorKind::Io(kind_only) => kind_only.kind() == full.kind(),
+            ErrorKind::Eof => full.kind() == std::io::ErrorKind::UnexpectedEof,
+            _ => false,
+        };
+        if !stands_for {
+            return self;
+        }
+        self.0.kind = ErrorKind::Io(full);
+        self.or_offset(position)
+    }
+
     #[inline(never)]
     #[cold]
     pub(crate) fn eof() -> Error {
@@ -432,6 +458,24 @@ mod tests {
             ReaderError::new(usize::MAX, ReaderErrorKind::Eof).position(),
             u32::MAX as usize
         );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn restore_io_keeps_an_error_that_does_not_stand_for_the_reader_error() {
+        use super::ErrorKind;
+        use std::io;
+
+        // A reader error of another kind was handled before this error.
+        let kind_only = Error::new(ErrorKind::Io(io::ErrorKind::Other.into()));
+        let full = io::Error::new(io::ErrorKind::InvalidData, "stale");
+        let err = kind_only.restore_io(Some((full, 7)));
+        assert_eq!(err.to_string(), "io error: other error");
+
+        // Only a reader that ends early stands for an end of the data.
+        let err = Error::eof().restore_io(Some((io::Error::other("stale"), 7)));
+        assert!(matches!(err.kind(), ErrorKind::Eof));
+        assert_eq!(err.offset(), None);
     }
 
     #[cfg(feature = "serde")]
