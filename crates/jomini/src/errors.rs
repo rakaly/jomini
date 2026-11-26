@@ -29,6 +29,28 @@ impl Error {
         self
     }
 
+    /// Replaces this error with the reader's full error if the reader caused
+    /// it: an I/O error of the same kind, or an end of data when the reader
+    /// reported `UnexpectedEof`. Adds the reader error's position as the offset.
+    #[cfg(feature = "serde")]
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn restore_io(mut self, full: Option<(std::io::Error, usize)>) -> Error {
+        let Some((full, position)) = full else {
+            return self;
+        };
+        let stands_for = match &self.0.kind {
+            ErrorKind::Io(kind_only) => kind_only.kind() == full.kind(),
+            ErrorKind::Eof => full.kind() == std::io::ErrorKind::UnexpectedEof,
+            _ => false,
+        };
+        if !stands_for {
+            return self;
+        }
+        self.0.kind = ErrorKind::Io(full);
+        self.or_offset(position)
+    }
+
     #[inline(never)]
     #[cold]
     pub(crate) fn eof() -> Error {
@@ -432,6 +454,24 @@ mod tests {
             ReaderError::new(usize::MAX, ReaderErrorKind::Eof).position(),
             u32::MAX as usize
         );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn restore_io_keeps_an_error_that_does_not_stand_for_the_reader_error() {
+        use super::ErrorKind;
+        use std::io;
+
+        // Different kinds: the reader error isn't the cause.
+        let kind_only = Error::new(ErrorKind::Io(io::ErrorKind::Other.into()));
+        let full = io::Error::new(io::ErrorKind::InvalidData, "stale");
+        let err = kind_only.restore_io(Some((full, 7)));
+        assert_eq!(err.to_string(), "io error: other error");
+
+        // An end of data is only caused by a reader reporting `UnexpectedEof`.
+        let err = Error::eof().restore_io(Some((io::Error::other("stale"), 7)));
+        assert!(matches!(err.kind(), ErrorKind::Eof));
+        assert_eq!(err.offset(), None);
     }
 
     #[cfg(feature = "serde")]

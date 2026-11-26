@@ -94,7 +94,11 @@ enum Backing<'a> {
 
         /// An error of the reader after it gave bytes that were enough, to
         /// return once more bytes are needed.
-        error: Option<io::ErrorKind>,
+        error: Option<io::Error>,
+
+        /// The last reader error returned, and its position. A [`ParserError`]
+        /// keeps only the kind, to stay small in hot loops.
+        returned: Option<(io::Error, usize)>,
     },
     Owned {
         owner: Box<dyn AsRef<[u8]> + 'a>,
@@ -239,6 +243,7 @@ impl<'a> ParserSource<'a> {
                 buffer: vec,
                 source: Box::new(source),
                 error: None,
+                returned: None,
             })),
             _marker: PhantomData,
         }
@@ -274,6 +279,20 @@ impl<'a> ParserSource<'a> {
             Ok(false)
         } else {
             Err(ParserError::eof())
+        }
+    }
+
+    /// Takes the last reader error and its position, unless bytes were read
+    /// since, which means it was handled.
+    #[cfg(feature = "serde")]
+    #[cold]
+    pub(crate) fn take_io_error(&mut self) -> Option<(io::Error, usize)> {
+        let position = self.position();
+        match self.streaming.as_deref_mut() {
+            Some(Backing::Stream { returned, .. }) => {
+                returned.take().filter(|(_, at)| *at == position)
+            }
+            Some(Backing::Owned { .. }) | None => None,
         }
     }
 
@@ -345,13 +364,16 @@ impl<'a> ParserSource<'a> {
     /// refilled, so they return `Ok(0)`.
     #[inline]
     pub fn refill(&mut self) -> Result<usize, ParserError> {
-        let (buffer, source, error) = match self.streaming.as_deref_mut() {
+        // A refill moves the window but not the position.
+        let position = self.position();
+        let (buffer, source, error, returned) = match self.streaming.as_deref_mut() {
             Some(Backing::Owned { .. }) | None => return Ok(0),
             Some(Backing::Stream {
                 buffer,
                 source,
                 error,
-            }) => (buffer, source, error),
+                returned,
+            }) => (buffer, source, error, returned),
         };
 
         let unparsed_len = unsafe { self.end.offset_from_unsigned(self.ptr) };
@@ -359,8 +381,8 @@ impl<'a> ParserSource<'a> {
             return Err(ParserError::BufferTooSmall);
         }
 
-        if let Some(kind) = error.take() {
-            return Err(ParserError::Io(kind));
+        if let Some(err) = error.take() {
+            return Err(keep_io_error(returned, err, position));
         }
 
         let consumed_in_window = unsafe { self.ptr.offset_from_unsigned(self.base_ptr) };
@@ -376,7 +398,10 @@ impl<'a> ParserSource<'a> {
         self.ptr = internal_buffer_start;
         self.end = unsafe { internal_buffer_start.add(unparsed_len) };
 
-        let bytes_written = read_into(source, &mut buffer[unparsed_len..])?;
+        let bytes_written = match read_into(source, &mut buffer[unparsed_len..]) {
+            Ok(read) => read,
+            Err(e) => return Err(keep_io_error(returned, e, position)),
+        };
         // SAFETY: `read_into` returns at most the length of the slice, which
         // starts at `end` and stops at the end of the buffer.
         self.end = unsafe { self.end.add(bytes_written) };
@@ -497,7 +522,8 @@ impl<'a> ParserSource<'a> {
         // request is bigger than what remains, so the answer is EOF — do *not*
         // slide, because the data lives in the caller's allocation, not in a
         // mutable refill buffer.
-        let (buffer, source, error) = match self.streaming.as_deref_mut() {
+        let position = self.position();
+        let (buffer, source, error, returned) = match self.streaming.as_deref_mut() {
             Some(Backing::Owned { .. }) | None => {
                 return Ok(self.window_len() >= required);
             }
@@ -505,15 +531,16 @@ impl<'a> ParserSource<'a> {
                 buffer,
                 source,
                 error,
-            }) => (buffer, source, error),
+                returned,
+            }) => (buffer, source, error, returned),
         };
 
         if required > buffer.len() {
             return Err(ParserError::BufferTooSmall);
         }
 
-        if let Some(kind) = error.take() {
-            return Err(ParserError::Io(kind));
+        if let Some(err) = error.take() {
+            return Err(keep_io_error(returned, err, position));
         }
 
         // 1. Commit metrics before transforming pointer arrays
@@ -549,10 +576,10 @@ impl<'a> ParserSource<'a> {
                 Ok(read) => read,
                 // The bytes before the error are still good.
                 Err(e) if current_buffer_len >= required => {
-                    *error = Some(e.kind());
+                    *error = Some(e);
                     return Ok(true);
                 }
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(keep_io_error(returned, e, position)),
             };
 
             if bytes_written == 0 {
@@ -671,6 +698,19 @@ impl<'a> ParserSource<'a> {
         }
         Ok(())
     }
+}
+
+/// Stores `err` and its position, and returns its kind.
+#[cold]
+#[inline(never)]
+fn keep_io_error(
+    returned: &mut Option<(io::Error, usize)>,
+    err: io::Error,
+    position: usize,
+) -> ParserError {
+    let kind = err.kind();
+    *returned = Some((err, position));
+    ParserError::Io(kind)
 }
 
 /// Read into `buf`, returning how many bytes were written.
@@ -1202,6 +1242,61 @@ mod tests {
 
         assert_ne!(err, ParserError::Io(io::ErrorKind::UnexpectedEof));
         assert_eq!(err, ParserError::Io(io::ErrorKind::InvalidData));
+    }
+
+    /// Gives `data`, and then fails with `msg`.
+    #[cfg(feature = "serde")]
+    struct FailsAfter {
+        data: &'static [u8],
+        msg: &'static str,
+    }
+
+    #[cfg(feature = "serde")]
+    impl Read for FailsAfter {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.data.is_empty() {
+                return Err(io::Error::other(self.msg));
+            }
+            let n = buf.len().min(self.data.len());
+            buf[..n].copy_from_slice(&self.data[..n]);
+            self.data = &self.data[n..];
+            Ok(n)
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn refill_keeps_the_full_io_error() {
+        let reader = FailsAfter {
+            data: &[1, 2],
+            msg: "inflate failed",
+        };
+        let mut parser = ParserSource::from_reader_with_buf(reader, vec![0; 8]);
+        assert_eq!(parser.refill().unwrap(), 2);
+        assert_eq!(parser.take::<1>().unwrap(), &[1]);
+        let err = parser.refill().unwrap_err();
+        assert_eq!(err, ParserError::Io(io::ErrorKind::Other));
+
+        let (full, position) = parser.take_io_error().unwrap();
+        assert_eq!(full.to_string(), "inflate failed");
+        assert_eq!(position, 1);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn io_error_is_not_given_after_bytes_were_read() {
+        // Enough bytes for the first read, then an error held for the next.
+        let reader = FailsAfter {
+            data: &[1, 2, 3],
+            msg: "inflate failed",
+        };
+        let mut parser = ParserSource::from_reader_with_buf(reader, vec![0; 8]);
+        assert_eq!(parser.take::<1>().unwrap(), &[1]);
+        parser.ensure_bytes(4).unwrap_err();
+
+        // The caller handles the error and keeps reading, so it's dropped.
+        assert_eq!(parser.take::<1>().unwrap(), &[2]);
+        assert!(parser.take_io_error().is_none());
     }
 
     #[test]
